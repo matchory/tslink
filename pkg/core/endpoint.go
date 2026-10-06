@@ -3,6 +3,7 @@ package core
 import (
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"sync"
 
 	"github.com/docker/go-plugins-helpers/network"
@@ -190,6 +191,10 @@ func (e *Endpoint) Join(sandboxKey string) (*network.JoinResponse, error) {
 	}, nil
 }
 
+// validHostname matches hostnames that are safe to use as a directory name:
+// container names, Swarm task names (which contain dots) and DNS labels.
+var validHostname = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$`)
+
 // StartTailscale starts the Tailscale daemon with the provided container info.
 // This is called by the event handler when container info becomes available.
 // It uses the correct hostname and state directory for identity reuse.
@@ -224,7 +229,11 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 	authKey := e.Network.AuthKey
 	e.mu.Unlock()
 
-	// Compute state directory from hostname
+	// Compute state directory from hostname. The hostname may come from a
+	// label, so it must not be able to name a path outside by-hostname.
+	if !validHostname.MatchString(info.Hostname) {
+		return fmt.Errorf("invalid hostname %q", info.Hostname)
+	}
 	stateDir := filepath.Join(dataDir, "by-hostname", info.Hostname)
 
 	// Check if auth key changed - if so, wipe state for fresh registration

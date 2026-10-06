@@ -159,6 +159,14 @@ func (e *Endpoint) Join(sandboxKey string) (*network.JoinResponse, error) {
 		return nil, fmt.Errorf("failed to set up container routing: %w", err)
 	}
 
+	// Fail closed: tailnet traffic must not fall through to the host's tailscaled
+	if err := netutil.SetupTailnetBlackhole(sandboxKey); err != nil {
+		if cleanupErr := netutil.DeleteVeth(vethHost); cleanupErr != nil {
+			logger.Warn("failed to cleanup veth %s after error: %v", vethHost, cleanupErr)
+		}
+		return nil, fmt.Errorf("failed to blackhole tailnet ranges: %w", err)
+	}
+
 	// Set up NAT/MASQUERADE for internet access
 	if err := netutil.SetupNAT(vethHost); err != nil {
 		logger.Info("Warning: failed to set up NAT: %v", err)
@@ -354,6 +362,7 @@ func (e *Endpoint) GetInfo() (tailscaleIP, hostname string) {
 func (e *Endpoint) Leave() error {
 	e.mu.Lock()
 	vethName := e.VethName
+	sandboxKey := e.SandboxKey
 	supervisor := e.supervisor
 	e.supervisor = nil
 	e.tailscaleStarted = false
@@ -372,6 +381,12 @@ func (e *Endpoint) Leave() error {
 	if vethName != "" {
 		if err := netutil.CleanupNAT(vethName); err != nil {
 			logger.Info("Warning: failed to cleanup NAT for %s: %v", vethName, err)
+		}
+	}
+
+	if sandboxKey != "" {
+		if err := netutil.CleanupTailnetBlackhole(sandboxKey); err != nil {
+			logger.Info("Warning: failed to remove tailnet blackhole routes: %v", err)
 		}
 	}
 

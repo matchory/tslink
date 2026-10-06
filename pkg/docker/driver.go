@@ -157,15 +157,13 @@ func (d *Driver) GetCapabilities() (*network.CapabilitiesResponse, error) {
 // CreateNetwork creates a new network.
 func (d *Driver) CreateNetwork(req *network.CreateNetworkRequest) error {
 	logger.Info("CreateNetwork: %s", req.NetworkID)
-	logger.Info("CreateNetwork raw: %+v", req)
 
-	// Debug: log all options to understand Docker's format
+	// Log option keys only: values include the auth key
 	for k, v := range req.Options {
-		logger.Info("  Option: %q = %v (type: %T)", k, v, v)
-		// Check if value is a nested map
+		logger.Debug("  Option: %q (type: %T)", k, v)
 		if nested, ok := v.(map[string]any); ok {
-			for nk, nv := range nested {
-				logger.Info("    Nested: %q = %v", nk, nv)
+			for nk := range nested {
+				logger.Debug("    Nested: %q", nk)
 			}
 		}
 	}
@@ -199,7 +197,7 @@ func (d *Driver) CreateNetwork(req *network.CreateNetworkRequest) error {
 
 // AllocateNetwork is called during network creation (for multi-host networks).
 func (d *Driver) AllocateNetwork(req *network.AllocateNetworkRequest) (*network.AllocateNetworkResponse, error) {
-	logger.Info("AllocateNetwork: %s opts=%v", req.NetworkID, req.Options)
+	logger.Info("AllocateNetwork: %s", req.NetworkID)
 	// spike: hand the options back so swarm stores them as driver state
 	return &network.AllocateNetworkResponse{Options: req.Options}, nil
 }

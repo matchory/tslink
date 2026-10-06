@@ -135,6 +135,12 @@ services:
 | `tslink.authkey` | Tailscale auth key | Required (or set via plugin env) |
 | `tslink.tags` | ACL tags (comma-separated) for every container on the network; overrides the `tslink.tags` label | None |
 
+A network created by `docker stack deploy` serves only that stack's tasks:
+tslink does not start Tailscale for containers from other stacks or outside
+any stack. Stack tasks keep their state under `by-stack/<stack>/<hostname>`.
+See [docs/credentials.md](docs/credentials.md) for running per-stack
+identities on Swarm.
+
 ### Container Labels
 
 Configure per-container Tailscale settings using labels:

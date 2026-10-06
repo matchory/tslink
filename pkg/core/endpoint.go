@@ -55,7 +55,14 @@ type ContainerInfo struct {
 	Service   string            // Parsed tslink.service label (e.g., "svc:hello-world")
 	Endpoints []ServeEndpoint   // Parsed tslink.serve.<port> labels
 	Direct    bool              // Enable direct machine serve (default: true, set tslink.direct=false to disable)
+
+	Stack        string // Container's com.docker.stack.namespace label
+	NetworkStack string // Network's com.docker.stack.namespace label
 }
+
+// StackLabel is the label docker stack deploy puts on a stack's services,
+// containers and networks. It overrides any value from the compose file.
+const StackLabel = "com.docker.stack.namespace"
 
 // NewEndpoint creates a new endpoint with the given configuration.
 func NewEndpoint(id string, net *Network, opts EndpointOptions, cfg *Config) (*Endpoint, error) {
@@ -196,6 +203,24 @@ func (e *Endpoint) Join(sandboxKey string) (*network.JoinResponse, error) {
 // container names, Swarm task names (which contain dots) and DNS labels.
 var validHostname = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$`)
 
+// stateDirFor returns the tailscaled state directory for a container.
+// Stack tasks get <data>/by-stack/<stack>/<hostname>, so one stack cannot
+// reuse or wipe another's state by choosing a hostname; other containers
+// keep <data>/by-hostname/<hostname>. Both names may come from labels, so
+// neither may name a path outside its directory.
+func stateDirFor(dataDir, stack, hostname string) (string, error) {
+	if !validHostname.MatchString(hostname) {
+		return "", fmt.Errorf("invalid hostname %q", hostname)
+	}
+	if stack == "" {
+		return filepath.Join(dataDir, "by-hostname", hostname), nil
+	}
+	if !validHostname.MatchString(stack) {
+		return "", fmt.Errorf("invalid stack name %q", stack)
+	}
+	return filepath.Join(dataDir, "by-stack", stack, hostname), nil
+}
+
 // StartTailscale starts the Tailscale daemon with the provided container info.
 // This is called by the event handler when container info becomes available.
 // It uses the correct hostname and state directory for identity reuse.
@@ -239,12 +264,16 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 	}
 	e.mu.Unlock()
 
-	// Compute state directory from hostname. The hostname may come from a
-	// label, so it must not be able to name a path outside by-hostname.
-	if !validHostname.MatchString(info.Hostname) {
-		return fmt.Errorf("invalid hostname %q", info.Hostname)
+	// A stack's network serves only that stack's tasks, so another stack
+	// cannot attach to it and take its credentials and tags.
+	if info.NetworkStack != "" && info.Stack != info.NetworkStack {
+		return fmt.Errorf("container stack %q does not match network stack %q", info.Stack, info.NetworkStack)
 	}
-	stateDir := filepath.Join(dataDir, "by-hostname", info.Hostname)
+
+	stateDir, err := stateDirFor(dataDir, info.Stack, info.Hostname)
+	if err != nil {
+		return err
+	}
 
 	// Check if auth key changed - if so, wipe state for fresh registration
 	if tailscale.StateExists(stateDir) && !tailscale.CheckAuthKeyMatch(stateDir, authKey) {

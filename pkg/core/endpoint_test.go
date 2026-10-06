@@ -1,6 +1,9 @@
 package core
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestValidHostname(t *testing.T) {
 	for _, h := range []string{"web", "my-app_1", "billing_api.1.rhqn99qc3kawxeu8hgljewtff", "A1"} {
@@ -11,6 +14,42 @@ func TestValidHostname(t *testing.T) {
 	for _, h := range []string{"", ".", "..", "../other", "a/b", "/abs", "-lead", ".hidden", "a b", "a\x00b"} {
 		if validHostname.MatchString(h) {
 			t.Errorf("%q should be invalid", h)
+		}
+	}
+}
+
+func TestStateDirFor(t *testing.T) {
+	tests := []struct {
+		stack, hostname, want string
+	}{
+		{"", "web", "/data/by-hostname/web"},
+		{"billing", "billing_api.1.abc", "/data/by-stack/billing/billing_api.1.abc"},
+	}
+	for _, tt := range tests {
+		got, err := stateDirFor("/data", tt.stack, tt.hostname)
+		if err != nil || got != tt.want {
+			t.Errorf("stateDirFor(%q, %q) = %q, %v; want %q", tt.stack, tt.hostname, got, err, tt.want)
+		}
+	}
+	for _, tt := range [][2]string{{"", "../x"}, {"..", "web"}, {"a/b", "web"}, {"billing", ""}} {
+		if got, err := stateDirFor("/data", tt[0], tt[1]); err == nil {
+			t.Errorf("stateDirFor(%q, %q) = %q, want error", tt[0], tt[1], got)
+		}
+	}
+}
+
+func TestStartTailscaleRejectsForeignStack(t *testing.T) {
+	e := &Endpoint{
+		ID:         "0123456789abcdef",
+		Network:    &Network{ID: "net", AuthKey: "tskey-test"},
+		SandboxKey: "/var/run/docker/netns/test",
+		DataDir:    t.TempDir(),
+	}
+	for _, stack := range []string{"other", ""} {
+		info := &ContainerInfo{Hostname: "web", Stack: stack, NetworkStack: "billing"}
+		err := e.StartTailscale(info)
+		if err == nil || !strings.Contains(err.Error(), "does not match network stack") {
+			t.Errorf("stack %q: got %v, want stack mismatch error", stack, err)
 		}
 	}
 }

@@ -173,6 +173,14 @@ func WatchEvents(ctx context.Context, cache *ContainerCache, networkDriverName s
 
 			containerInfo := parseContainerInfo(name, labels)
 
+			// The network's stack decides which tasks may use it
+			netInfo, err := cli.NetworkInspect(ctx, netSettings.NetworkID, dockerclient.NetworkInspectOptions{})
+			if err != nil {
+				logger.Error("Failed to inspect network %s: %v", networkName, err)
+				continue
+			}
+			containerInfo.NetworkStack = netInfo.Network.Labels[core.StackLabel]
+
 			// Store in cache
 			cache.Store(endpointID, containerInfo)
 
@@ -190,6 +198,7 @@ func parseContainerInfo(name string, labels map[string]string) *core.ContainerIn
 		Name:   name,
 		Labels: labels,
 		Direct: true, // Default: direct serve enabled
+		Stack:  labels[core.StackLabel],
 	}
 
 	// tslink.hostname - override Tailscale hostname

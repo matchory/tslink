@@ -578,6 +578,7 @@ func (d *Driver) recoverEndpoint(
 	}
 
 	tsInfo := parseContainerInfo(name, labels)
+	tsInfo.NetworkStack = networkResult.Network.Labels[core.StackLabel]
 
 	// Create endpoint
 	endpoint, err := core.NewEndpoint(endpointID, net, core.EndpointOptions{Hostname: tsInfo.Hostname}, d.config)

@@ -149,7 +149,7 @@ func (d *Driver) onContainerInfo(endpointID string, info *core.ContainerInfo) {
 func (d *Driver) GetCapabilities() (*network.CapabilitiesResponse, error) {
 	logger.Info("GetCapabilities called")
 	return &network.CapabilitiesResponse{
-		Scope:             "local",
+		Scope:             "global", // spike: so swarm carries driver options to nodes
 		ConnectivityScope: "global", // Containers can reach the tailnet
 	}, nil
 }
@@ -199,8 +199,9 @@ func (d *Driver) CreateNetwork(req *network.CreateNetworkRequest) error {
 
 // AllocateNetwork is called during network creation (for multi-host networks).
 func (d *Driver) AllocateNetwork(req *network.AllocateNetworkRequest) (*network.AllocateNetworkResponse, error) {
-	logger.Info("AllocateNetwork: %s", req.NetworkID)
-	return &network.AllocateNetworkResponse{}, nil
+	logger.Info("AllocateNetwork: %s opts=%v", req.NetworkID, req.Options)
+	// spike: hand the options back so swarm stores them as driver state
+	return &network.AllocateNetworkResponse{Options: req.Options}, nil
 }
 
 // DeleteNetwork deletes a network.

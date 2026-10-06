@@ -2,6 +2,7 @@ package core
 
 import (
 	"os"
+	"strings"
 )
 
 // Config holds the plugin configuration.
@@ -15,6 +16,7 @@ type Config struct {
 // NetworkOptions holds options for network creation.
 type NetworkOptions struct {
 	AuthKey string
+	Tags    []string
 }
 
 // EndpointOptions holds options for endpoint creation.
@@ -63,7 +65,24 @@ func ParseNetworkOptions(opts map[string]any) NetworkOptions {
 		}
 	}
 
+	if v, ok := genericOpts["tslink.tags"]; ok {
+		if s, ok := v.(string); ok {
+			options.Tags = ParseTags(s)
+		}
+	}
+
 	return options
+}
+
+// ParseTags splits a comma-separated tag list (e.g. "tag:web, tag:prod").
+func ParseTags(s string) []string {
+	var tags []string
+	for t := range strings.SplitSeq(s, ",") {
+		if t = strings.TrimSpace(t); t != "" {
+			tags = append(tags, t)
+		}
+	}
+	return tags
 }
 
 // ParseEndpointOptions parses endpoint creation options.

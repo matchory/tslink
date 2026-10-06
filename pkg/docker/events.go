@@ -201,11 +201,7 @@ func parseContainerInfo(name string, labels map[string]string) *core.ContainerIn
 
 	// tslink.tags - comma-separated ACL tags (e.g., "tag:web,tag:prod")
 	if v, ok := labels["tslink.tags"]; ok && v != "" {
-		tags := strings.Split(v, ",")
-		for i, t := range tags {
-			tags[i] = strings.TrimSpace(t)
-		}
-		info.Tags = tags
+		info.Tags = core.ParseTags(v)
 	}
 
 	// tslink.service - service name (e.g., "svc:hello-world")

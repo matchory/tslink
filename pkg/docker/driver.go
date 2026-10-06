@@ -187,6 +187,7 @@ func (d *Driver) CreateNetwork(req *network.CreateNetworkRequest) error {
 	net := &core.Network{
 		ID:      req.NetworkID,
 		AuthKey: authKey,
+		Tags:    opts.Tags,
 	}
 
 	d.networks[req.NetworkID] = net
@@ -561,6 +562,7 @@ func (d *Driver) recoverEndpoint(
 		net = &core.Network{
 			ID:      networkID,
 			AuthKey: authKey,
+			Tags:    core.ParseTags(networkResult.Network.Options["tslink.tags"]),
 		}
 		d.networks[networkID] = net
 		logger.Info("recoverEndpoint: recovered network %s", networkID[:12])

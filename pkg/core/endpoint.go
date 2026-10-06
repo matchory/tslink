@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sync"
 
 	"github.com/docker/go-plugins-helpers/network"
@@ -227,6 +228,15 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 	tsVersion := e.TSVersion
 	tsPath := e.TSPath
 	authKey := e.Network.AuthKey
+	tags := info.Tags
+	if len(e.Network.Tags) > 0 {
+		// Tags set on the network win, so a container cannot choose its own
+		if len(info.Tags) > 0 && !slices.Equal(info.Tags, e.Network.Tags) {
+			logger.Warn("Endpoint %s: ignoring tslink.tags label %v, network sets %v",
+				e.ID[:12], info.Tags, e.Network.Tags)
+		}
+		tags = e.Network.Tags
+	}
 	e.mu.Unlock()
 
 	// Compute state directory from hostname. The hostname may come from a
@@ -287,7 +297,7 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 		NetNSPath:     sandboxKey,
 		TailscaleBin:  tailscaleBin,
 		TailscaledBin: tailscaledBin,
-		Tags:          info.Tags,
+		Tags:          tags,
 		Service:       info.Service,
 		Endpoints:     tsEndpoints,
 		Direct:        info.Direct,
@@ -326,7 +336,7 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 	e.supervisor = supervisor
 	e.TailscaleIP = status.IP
 	e.Hostname = info.Hostname
-	e.Tags = info.Tags
+	e.Tags = tags
 	e.Service = info.Service
 	e.Endpoints = info.Endpoints
 	e.Direct = info.Direct

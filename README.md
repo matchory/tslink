@@ -133,6 +133,7 @@ services:
 | Option | Description | Default |
 |--------|-------------|---------|
 | `tslink.authkey` | Tailscale auth key | Required (or set via plugin env) |
+| `tslink.tags` | ACL tags (comma-separated) for every container on the network; overrides the `tslink.tags` label | None |
 
 ### Container Labels
 

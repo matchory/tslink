@@ -1,0 +1,12 @@
+#!/bin/bash
+# deploy <stack> [secret] -- docker stack deploy on $MGR (default mgr), with ~/.tslink-test/<secret>.secret as
+# TSLINK_OAUTH_SECRET; the secret travels on stdin, never on a command line
+set -euo pipefail
+B=$(dirname "$0")
+st=$1
+sec=${2:-$1}
+scp -q -F "$B/ssh_config" "$B/stacks/$st.yml" "${MGR:-mgr}:/root/$st.yml"
+{
+	printf 'TSLINK_OAUTH_SECRET='
+	cat ~/.tslink-test/"$sec".secret
+} | "$B/s" "${MGR:-mgr}" "set -a; . /dev/stdin; set +a; docker stack deploy -d -c /root/$st.yml $st"

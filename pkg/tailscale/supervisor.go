@@ -31,6 +31,10 @@ const (
 	crashLoopWindow    = 30 * time.Second
 	crashLoopThreshold = 5
 
+	// Pause after a crash loop before trying again; the container keeps
+	// running, so giving up would leave it without its identity for good.
+	crashLoopCooldown = 5 * time.Minute
+
 	// Health check interval.
 	healthCheckInterval = 5 * time.Second
 
@@ -40,6 +44,46 @@ const (
 	// Startup jitter to prevent thundering herd on host reboot (0-500ms).
 	maxStartupJitter = 500 * time.Millisecond
 )
+
+// needsLoginChecks is how many health checks in a row must find the node
+// logged out, as when its device was deleted or expired, before it logs in
+// again; maxLoginBackoff caps the checks skipped after a failed login.
+const (
+	needsLoginChecks = 2
+	maxLoginBackoff  = 24
+)
+
+// loginWatch decides when a logged-out node should log in again.
+type loginWatch struct {
+	count   int
+	backoff int // checks to skip after a failed login
+	skip    int
+}
+
+// observe records whether the node is logged out and reports whether to log
+// in again now.
+func (w *loginWatch) observe(loggedOut bool) bool {
+	if !loggedOut {
+		*w = loginWatch{}
+		return false
+	}
+	if w.skip > 0 {
+		w.skip--
+		return false
+	}
+	w.count++
+	if w.count < needsLoginChecks {
+		return false
+	}
+	w.count = 0
+	return true
+}
+
+// failed records a failed login, so the next waits longer.
+func (w *loginWatch) failed() {
+	w.backoff = min(max(w.backoff*2, needsLoginChecks), maxLoginBackoff)
+	w.skip = w.backoff
+}
 
 // DaemonSupervisor manages a Daemon with automatic restart on failure.
 type DaemonSupervisor struct {
@@ -144,6 +188,15 @@ func (s *DaemonSupervisor) Logout() error {
 	return d.Logout()
 }
 
+// Drain stops new connections to the node's backend for a Tailscale Service.
+func (s *DaemonSupervisor) Drain(service string) error {
+	d := s.GetDaemon()
+	if d == nil || !d.IsRunning() {
+		return fmt.Errorf("tailscaled is not running")
+	}
+	return d.Drain(service)
+}
+
 // Status returns the current supervisor status and restart count.
 func (s *DaemonSupervisor) Status() (SupervisorStatus, int) {
 	s.mu.RLock()
@@ -216,11 +269,20 @@ func (s *DaemonSupervisor) supervisionLoop() {
 				s.mu.Lock()
 				s.status = StatusCrashLoop
 				s.mu.Unlock()
-				logger.Error("Crash loop detected for endpoint %s (5+ crashes in 30s), stopping recovery",
-					s.cfg.EndpointID[:8])
+				logger.Error("Crash loop detected for endpoint %s (5+ crashes in 30s), retrying in %v",
+					s.cfg.EndpointID[:8], crashLoopCooldown)
 				s.signalStartup(fmt.Errorf("crash loop detected"))
 				s.stopDaemon()
-				return
+
+				select {
+				case <-s.ctx.Done():
+					return
+				case <-time.After(crashLoopCooldown):
+				}
+				s.mu.Lock()
+				s.crashTimes = s.crashTimes[:0]
+				s.mu.Unlock()
+				s.resetBackoff()
 			}
 
 			delay := s.nextBackoff()
@@ -320,6 +382,7 @@ func (s *DaemonSupervisor) stopDaemon() {
 func (s *DaemonSupervisor) waitForExit() error {
 	ticker := time.NewTicker(healthCheckInterval)
 	defer ticker.Stop()
+	var login loginWatch
 
 	for {
 		select {
@@ -338,6 +401,15 @@ func (s *DaemonSupervisor) waitForExit() error {
 
 			if !daemon.IsRunning() {
 				return fmt.Errorf("daemon process exited")
+			}
+
+			// tailscaled keeps running when its node is deleted, logged out
+			if login.observe(daemon.LoggedOut()) {
+				logger.Warn("Endpoint %s: node is logged out, logging in again", s.cfg.EndpointID[:8])
+				if err := daemon.Reauthenticate(); err != nil {
+					logger.Error("Endpoint %s: logging in again failed: %v", s.cfg.EndpointID[:8], err)
+					login.failed()
+				}
 			}
 		}
 	}

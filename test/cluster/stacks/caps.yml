@@ -1,0 +1,15 @@
+services:
+  whoami:
+    image: traefik/whoami:v1.11
+    networks: [tailnet]
+    labels:
+      tslink.service: svc:tslink-test-callee
+      tslink.serve.80: http:80?accept-app-caps=matchory.com/cap/tslink-test
+      tslink.direct: "false"
+networks:
+  tailnet:
+    driver: ghcr.io/matchory/tslink:latest
+    driver_opts:
+      tslink.authkey: ${TSLINK_OAUTH_SECRET}?ephemeral=true&preauthorized=true
+      com.docker.network.driver.mtu: "1450"
+      tslink.tags: tag:tslink-test-callee

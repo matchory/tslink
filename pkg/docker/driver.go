@@ -34,6 +34,10 @@ type Driver struct {
 	wg     sync.WaitGroup
 }
 
+// drainGrace is how long a shutdown waits after draining Service backends,
+// for the tailnet to learn of it before the backends disappear.
+const drainGrace = 2 * time.Second
+
 // watchdogInterval is the interval at which the watchdog checks for orphaned endpoints.
 const watchdogInterval = 60 * time.Second
 
@@ -77,20 +81,26 @@ func NewDriver() (*Driver, error) {
 	// Start event watcher in background (tracked by waitgroup)
 	// Pass callback to trigger Tailscale setup when container info arrives
 	d.wg.Go(func() {
-		WatchEvents(ctx, cache, d.ownsNetwork, d.onContainerInfo)
+		WatchEvents(ctx, cache, d.ownsNetwork, d.onContainerInfo, d.onContainerStop)
 	})
 
 	// Recover orphaned endpoints from previous plugin instance (host reboot, plugin restart)
 	// Run in background so plugin starts accepting requests immediately
 	d.wg.Go(func() {
-		// Small delay to let Docker daemon finish startup
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(5 * time.Second):
-		}
-		if err := d.RecoverEndpoints(ctx); err != nil {
-			logger.Error("Initial endpoint recovery failed: %v", err)
+		// Every second until it works: tasks have no tailnet until recovered,
+		// and the Docker API may still be starting after a host reboot
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(time.Second):
+			}
+			err := d.RecoverEndpoints(ctx)
+			if err == nil {
+				d.collectGarbage()
+				return
+			}
+			logger.Warn("Initial endpoint recovery failed, retrying: %v", err)
 		}
 	})
 
@@ -163,11 +173,29 @@ func (d *Driver) onContainerInfo(endpointID string, info *core.ContainerInfo) {
 	)
 
 	// Start Tailscale in a goroutine so we don't block the event handler
-	d.wg.Go(func() {
-		if err := endpoint.StartTailscale(info); err != nil {
-			logger.Error("onContainerInfo: failed to start Tailscale for endpoint %s: %v", endpointID[:12], err)
+	d.wg.Go(func() { endpoint.RunTailscale(info) })
+}
+
+// onContainerStop drains the Tailscale Service backends of a stopping
+// container. Docker sends the stop signal before it tears down the network,
+// so callers move to other backends while the application can still finish
+// its requests, instead of when the backend disappears.
+func (d *Driver) onContainerStop(containerID string) {
+	info, err := d.docker.ContainerInspect(d.ctx, containerID, dockerclient.ContainerInspectOptions{})
+	if err != nil || info.Container.NetworkSettings == nil {
+		return
+	}
+	for _, settings := range info.Container.NetworkSettings.Networks {
+		if settings == nil || !d.ownsNetwork(settings.NetworkID) {
+			continue
 		}
-	})
+		d.mu.RLock()
+		endpoint, ok := d.endpoints[settings.EndpointID]
+		d.mu.RUnlock()
+		if ok {
+			d.wg.Go(endpoint.DrainService)
+		}
+	}
 }
 
 // GetCapabilities returns the capabilities of the driver.
@@ -213,6 +241,7 @@ func (d *Driver) CreateNetwork(req *network.CreateNetworkRequest) error {
 		ID:      req.NetworkID,
 		AuthKey: authKey,
 		Tags:    opts.Tags,
+		MTU:     opts.MTU,
 	}
 
 	d.networks[req.NetworkID] = net
@@ -345,11 +374,7 @@ func (d *Driver) Join(req *network.JoinRequest) (*network.JoinResponse, error) {
 	// cache has its own internal lock, so this is safe
 	if info, ok := d.cache.GetByEndpoint(req.EndpointID); ok {
 		logger.Info("Join: container info already cached, triggering immediate Tailscale setup")
-		d.wg.Go(func() {
-			if err := endpoint.StartTailscale(info); err != nil {
-				logger.Error("Join: failed to start Tailscale: %v", err)
-			}
-		})
+		d.wg.Go(func() { endpoint.RunTailscale(info) })
 	} else {
 		logger.Info("Join: waiting for Docker event to trigger Tailscale setup for endpoint %s", req.EndpointID[:12])
 	}
@@ -419,6 +444,20 @@ func (d *Driver) Shutdown(ctx context.Context) error {
 	}
 	d.mu.Unlock()
 
+	// tailscaled stops with the plugin. Drain Service backends first, so
+	// callers use other nodes' backends until the plugin is back.
+	var drains sync.WaitGroup
+	for _, ep := range endpoints {
+		drains.Go(ep.DrainService)
+	}
+	drains.Wait()
+	if len(endpoints) > 0 {
+		select {
+		case <-ctx.Done():
+		case <-time.After(drainGrace):
+		}
+	}
+
 	for _, ep := range endpoints {
 		logger.Info("Stopping endpoint %s", ep.ID[:12])
 		if err := ep.Stop(); err != nil {
@@ -449,8 +488,34 @@ func (d *Driver) Shutdown(ctx context.Context) error {
 	return nil
 }
 
-// runWatchdog periodically scans for orphaned endpoints and recovers them.
-// This handles cases where containers restart after initial recovery.
+// gcMinAge protects state that an endpoint still starting may be using.
+const gcMinAge = 2 * time.Minute
+
+// collectGarbage removes state and sockets of endpoints that are gone without
+// a Leave, as after a host crash. It runs once recovery knows every endpoint,
+// and after each watchdog scan.
+func (d *Driver) collectGarbage() {
+	d.mu.RLock()
+	endpoints := make([]*core.Endpoint, 0, len(d.endpoints))
+	for _, ep := range d.endpoints {
+		endpoints = append(endpoints, ep)
+	}
+	d.mu.RUnlock()
+
+	// Endpoint methods take the endpoint's lock: never under driver.mu
+	state := make(map[string]bool, len(endpoints))
+	sockets := make(map[string]bool, len(endpoints))
+	for _, ep := range endpoints {
+		sockets[ep.ID[:12]] = true
+		state[ep.GetStateDir()] = true
+	}
+
+	core.CollectGarbage(d.config.DataDir, state, sockets, gcMinAge)
+}
+
+// runWatchdog periodically scans for orphaned endpoints and recovers them,
+// then collects garbage. This handles cases where containers restart after
+// initial recovery.
 func (d *Driver) runWatchdog(ctx context.Context) {
 	// Wait before first check (let initial recovery complete)
 	select {
@@ -470,7 +535,10 @@ func (d *Driver) runWatchdog(ctx context.Context) {
 		case <-ticker.C:
 			if err := d.RecoverEndpoints(ctx); err != nil {
 				logger.Error("Watchdog recovery failed: %v", err)
+				continue
 			}
+			// Again here: state younger than gcMinAge survives the first run
+			d.collectGarbage()
 		}
 	}
 }
@@ -593,6 +661,7 @@ func (d *Driver) recoverEndpoint(
 			ID:      networkID,
 			AuthKey: authKey,
 			Tags:    core.ParseTags(networkResult.Network.Options["tslink.tags"]),
+			MTU:     core.ParseMTU(networkResult.Network.Options[core.MTUOption]),
 		}
 		d.networks[networkID] = net
 		logger.Info("recoverEndpoint: recovered network %s", networkID[:12])
@@ -627,8 +696,19 @@ func (d *Driver) recoverEndpoint(
 	d.endpoints[endpointID] = endpoint
 	d.mu.Unlock()
 
-	// Set sandbox key on endpoint (normally done by Join)
-	endpoint.SetSandboxKey(sandboxKey)
+	// Before garbage collection runs, which would take the directory for unused
+	if err := endpoint.ClaimStateDir(tsInfo); err != nil {
+		logger.Warn("recoverEndpoint: %v", err)
+	}
+
+	// Adopt what Join set up (normally done by Join). Without its routes the
+	// task could reach the tailnet through the host, so do not start it.
+	if err := endpoint.Recover(sandboxKey); err != nil {
+		d.mu.Lock()
+		delete(d.endpoints, endpointID)
+		d.mu.Unlock()
+		return fmt.Errorf("failed to recover routing: %w", err)
+	}
 
 	// Store in cache for event handler
 	d.cache.Store(endpointID, tsInfo)
@@ -642,15 +722,7 @@ func (d *Driver) recoverEndpoint(
 		tsInfo.Hostname,
 	)
 
-	d.wg.Go(func() {
-		if err := endpoint.StartTailscale(tsInfo); err != nil {
-			logger.Error("recoverEndpoint: failed to start Tailscale for endpoint %s: %v", endpointID[:12], err)
-			// Remove failed endpoint from state
-			d.mu.Lock()
-			delete(d.endpoints, endpointID)
-			d.mu.Unlock()
-		}
-	})
+	d.wg.Go(func() { endpoint.RunTailscale(tsInfo) })
 
 	return nil
 }

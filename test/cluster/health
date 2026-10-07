@@ -1,0 +1,6 @@
+#!/bin/bash
+# health: every task tailscaled on every node answers and is Running
+B=$(dirname "$0")
+# shellcheck disable=SC2016 # runs on the node
+check='ok=0; bad=""; for s in /var/lib/docker-plugins/tailscale/sock/*.sock; do [ -S "$s" ] || continue; st=$(curl -s -m5 --unix-socket "$s" "http://local-tailscaled.sock/localapi/v0/status?peers=false" | jq -r .BackendState); if [ "$st" = Running ]; then ok=$((ok+1)); else bad="$bad $(basename "$s" .sock)=${st:-NO-ANSWER}"; fi; done; echo "$(hostname): running=$ok tasks=$(docker ps -q -f label=com.docker.swarm.task | wc -l) bad:${bad:- none}"'
+for n in $("$B/nodes"); do "$B/s" "$n" "$check"; done

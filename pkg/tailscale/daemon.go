@@ -797,6 +797,12 @@ func (d *Daemon) Stop() error {
 		case <-time.After(5 * time.Second):
 			logger.Warn("Timeout waiting for tailscaled to exit")
 		}
+
+		// The socket outlives a killed tailscaled; sockets no longer sit in
+		// the state directory, so nothing else would clean it up
+		if err := os.Remove(d.socketPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			logger.Warn("Failed to remove socket %s: %v", d.socketPath, err)
+		}
 	}
 
 	// Close pipes to unblock reader goroutines

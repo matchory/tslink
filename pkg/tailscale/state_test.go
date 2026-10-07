@@ -13,7 +13,7 @@ func TestIsEphemeralKey(t *testing.T) {
 		"tskey-client-abc?preauthorized=true":                 true,
 		"tskey-client-abc?ephemeral=false&preauthorized=true": false,
 		"tskey-auth-abc":                false, // unknown from the key
-		"tskey-auth-abc?ephemeral=true": true,
+		"tskey-auth-abc?ephemeral=true": false, // passed on unchanged, not parsed
 		"":                              false,
 	}
 	for key, want := range tests {

@@ -1,7 +1,7 @@
 #!/bin/bash
 # add-node.sh <name>... -- Hetzner Cloud provisioner: add cpx32 workers (e.g. w3 w4) to the test
 # swarm with provision.sh's settings, add them to $TSLINK_TEST_SSH_CONFIG, install the plugin last
-# built by install-plugin.sh, and join their host tailscaled with node.authkey as
+# built by install-plugin.sh as tslink, and join their host tailscaled with node.authkey as
 # $TSLINK_TEST_TAG-node
 set -euo pipefail
 B=$(cd "$(dirname "$0")" && pwd)
@@ -32,7 +32,7 @@ until ready "$@"; do sleep 10; done
 
 MGR=$(hcloud server describe tslink-test-mgr -o json | jq -r '.private_net[0].ip')
 TOKEN=$("$S" mgr docker swarm join-token -q worker)
-P=ghcr.io/matchory/tslink:latest
+P=tslink:latest
 for n in "$@"; do
 	"$S" mgr 'cat /root/plugin.tgz' | "$S" "$n" 'rm -rf /root/plugin && tar -xz -C /root'
 	"$S" "$n" "set -e; docker plugin create $P /root/plugin >/dev/null; docker plugin enable $P >/dev/null"

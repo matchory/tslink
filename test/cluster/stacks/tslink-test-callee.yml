@@ -33,7 +33,7 @@ services:
       placement: {constraints: [node.hostname==tslink-test-w1]}
 networks:
   tailnet:
-    driver: ghcr.io/matchory/tslink:latest
+    driver: tslink:latest
     driver_opts:
       com.docker.network.driver.mtu: "1450"
       tslink.tags: tag:tslink-test-callee

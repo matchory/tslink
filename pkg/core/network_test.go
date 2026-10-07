@@ -185,6 +185,33 @@ func TestNewNetworkRejectsParametersOnNonOAuthKeys(t *testing.T) {
 	}
 }
 
+func TestKeyEphemeralParam(t *testing.T) {
+	tests := []struct {
+		key       string
+		want, has bool
+	}{
+		{key: "tskey-client-x"},
+		{key: "tskey-client-x?ephemeral=true", want: true, has: true},
+		{key: "tskey-client-x?preauthorized=true&ephemeral=false", has: true},
+		{key: "tskey-client-x?preauthorized=true"},
+		// Only OAuth client secrets take parameters
+		{key: "tskey-auth-x?ephemeral=true"},
+		{key: "hskey-auth-x?ephemeral=false"},
+	}
+	for _, tt := range tests {
+		if got, has := keyEphemeralParam(tt.key); got != tt.want || has != tt.has {
+			t.Errorf(
+				"keyEphemeralParam(%q) = %t, %t, want %t, %t",
+				tt.key,
+				got,
+				has,
+				tt.want,
+				tt.has,
+			)
+		}
+	}
+}
+
 func TestNewNetworkRejectsInvalidEphemeral(t *testing.T) {
 	for _, v := range []string{"yes", "1", "TRUE", " true"} {
 		_, err := NewNetwork(

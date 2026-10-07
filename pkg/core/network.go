@@ -58,6 +58,13 @@ func NewNetwork(id string, opts NetworkOptions, cfg *Config) (*Network, error) {
 	if err := n.resolveCredential(cfg); err != nil {
 		return nil, err
 	}
+	source := "tslink.authkey"
+	if opts.AuthKey == "" {
+		source = "TS_AUTHKEY"
+	}
+	if err := n.checkKeyParams(source); err != nil {
+		return nil, err
+	}
 	if err := n.checkEphemeral(); err != nil {
 		return nil, err
 	}
@@ -156,6 +163,22 @@ func (n *Network) resolveCredential(cfg *Config) error {
 		)
 	}
 	return nil
+}
+
+// checkKeyParams refuses parameters appended to a key that is not an OAuth
+// client secret: tailscale up parses them for OAuth client secrets only and
+// passes any other key to control unchanged, where it is invalid. The error
+// names where the key came from, never the key.
+func (n *Network) checkKeyParams(source string) error {
+	if n.UsesClusterCredential() || strings.HasPrefix(n.AuthKey, "tskey-client-") ||
+		!strings.Contains(n.AuthKey, "?") {
+		return nil
+	}
+	return fmt.Errorf(
+		"%s has parameters appended (?...), which only OAuth client secrets "+
+			"(tskey-client-...) take: remove them",
+		source,
+	)
 }
 
 // checkEphemeral refuses a tslink.ephemeral option the credential contradicts:

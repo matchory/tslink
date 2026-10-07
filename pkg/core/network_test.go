@@ -125,14 +125,12 @@ func TestEphemeral(t *testing.T) {
 	keys := []string{
 		"tskey-client-x", "tskey-client-x?ephemeral=false", "tskey-client-x?ephemeral=true",
 		"tskey-auth-x", "hskey-auth-x", cluster,
-		// tailscale up passes an auth key on unchanged: a parameter means nothing
-		"tskey-auth-x?ephemeral=true",
 	}
 	// Ephemeral() per key, in the order of keys; "err" if NewNetwork fails
 	tests := map[string][]string{
-		"":      {"true", "false", "true", "false", "false", "true", "false"},
-		"true":  {"true", "err", "true", "true", "true", "true", "true"},
-		"false": {"false", "false", "err", "false", "false", "err", "false"},
+		"":      {"true", "false", "true", "false", "false", "true"},
+		"true":  {"true", "err", "true", "true", "true", "true"},
+		"false": {"false", "false", "err", "false", "false", "err"},
 	}
 	for option, wants := range tests {
 		for i, key := range keys {
@@ -154,6 +152,33 @@ func TestEphemeral(t *testing.T) {
 				}
 				if got := strconv.FormatBool(n.Ephemeral()); got != wants[i] {
 					t.Errorf("Ephemeral() = %s, want %s", got, wants[i])
+				}
+			})
+		}
+	}
+}
+
+func TestNewNetworkRejectsParametersOnNonOAuthKeys(t *testing.T) {
+	// tailscale up parses parameters of OAuth client secrets only, and passes
+	// any other key to control unchanged, where the suffix makes it invalid
+	for _, key := range []string{
+		"tskey-auth-k3y?ephemeral=true", "hskey-auth-k3y?preauthorized=true", "tskey-auth-k3y?",
+	} {
+		for _, source := range []string{"tslink.authkey", "TS_AUTHKEY"} {
+			t.Run(source+"/"+key, func(t *testing.T) {
+				opts := NetworkOptions{}
+				cfg := &Config{DataDir: t.TempDir()}
+				if source == "TS_AUTHKEY" {
+					cfg.AuthKey = key
+				} else {
+					opts.AuthKey = key
+				}
+				_, err := NewNetwork("net", opts, cfg)
+				if err == nil || !strings.Contains(err.Error(), source) {
+					t.Fatalf("err = %v, want an error naming %s", err, source)
+				}
+				if strings.Contains(err.Error(), "k3y") {
+					t.Errorf("err = %v reveals the key", err)
 				}
 			})
 		}

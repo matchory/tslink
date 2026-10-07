@@ -251,19 +251,6 @@ func getTailscaleStatus(socketPath string) (*tailscaleStatusResult, error) {
 
 // findTailscaleBinary looks for the tailscale binary in common locations.
 func findTailscaleBinary() string {
-	// Check in data directory first (downloaded binaries)
-	entries, err := os.ReadDir("/data/tailscale-bin")
-	if err == nil {
-		for _, e := range entries {
-			if e.IsDir() {
-				binPath := filepath.Join("/data/tailscale-bin", e.Name(), "tailscale")
-				if _, err := os.Stat(binPath); err == nil {
-					return binPath
-				}
-			}
-		}
-	}
-
 	paths := []string{
 		"/usr/bin/tailscale",
 		"/usr/local/bin/tailscale",

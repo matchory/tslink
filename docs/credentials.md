@@ -14,7 +14,7 @@ put the tags next to it:
 ```yaml
 networks:
   tailnet:
-    driver: tslink
+    driver: tslink:latest
     driver_opts:
       tslink.authkey: ${TSLINK_OAUTH_SECRET}?ephemeral=true&preauthorized=true
       tslink.tags: tag:svc-billing

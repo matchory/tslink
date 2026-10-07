@@ -173,6 +173,10 @@ const (
 	tailscaledLogMaxBytes = 10 << 20
 )
 
+// untaggedServiceHostError is what "tailscale serve --service" fails with on
+// a node without tags.
+const untaggedServiceHostError = "service hosts must be tagged nodes"
+
 // DaemonConfig holds configuration for a tailscaled instance.
 type DaemonConfig struct {
 	EndpointID    string
@@ -744,7 +748,7 @@ func (d *Daemon) configureServeEndpoint(ep ServeEndpoint) error {
 			return fmt.Errorf("service %s not found: create it in Tailscale admin console first",
 				d.config.Service)
 		}
-		if strings.Contains(output, "tagged") || strings.Contains(output, "tag") {
+		if strings.Contains(output, untaggedServiceHostError) {
 			return fmt.Errorf("tailscale serve failed: requires tagged auth key (output: %s)", output)
 		}
 

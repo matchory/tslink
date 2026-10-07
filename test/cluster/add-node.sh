@@ -7,19 +7,24 @@ B=$(cd "$(dirname "$0")" && pwd)
 HCLOUD_TOKEN=$(cat ~/.tslink-test/hcloud.token)
 export HCLOUD_TOKEN
 S="$B/s"
+ready() {
+	for n in "$@"; do "$S" "$n" test -f /var/lib/cloud-init-done 2>/dev/null || return 1; done
+}
 for n in "$@"; do
+	hcloud server describe "tslink-test-$n" >/dev/null 2>&1 && continue
 	hcloud server create --name "tslink-test-$n" --type cpx32 --location fsn1 --image ubuntu-24.04 \
 		--ssh-key tslink-test --network tslink-test --firewall tslink-test \
 		--user-data-from-file "$B/cloud-init.yaml" --label purpose=tslink-test --label role="$n" >/dev/null &
 done
 wait
 for n in "$@"; do
+	grep -qx "Host $n" "$B/ssh_config" && continue
 	# insert before the "Host *" block, whose settings apply to every node
 	awk -v n="$n" -v ip="$(hcloud server ip "tslink-test-$n")" \
 		'$0 == "Host *" { printf "Host %s\n  HostName %s\n", n, ip } { print }' "$B/ssh_config" >"$B/ssh_config.new"
 	mv "$B/ssh_config.new" "$B/ssh_config"
 done
-until for n in "$@"; do "$S" "$n" test -f /var/lib/cloud-init-done || exit 1; done; do sleep 10; done
+until ready "$@"; do sleep 10; done
 
 MGR=$(hcloud server describe tslink-test-mgr -o json | jq -r '.private_net[0].ip')
 TOKEN=$("$S" mgr docker swarm join-token -q worker)

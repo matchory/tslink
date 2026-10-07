@@ -27,6 +27,7 @@ type ServeEndpoint struct {
 	Path   string // L7 only - path prefix (e.g., "/api")
 
 	ProxyProtocol string // L4 only - PROXY protocol version sent to the target ("1", "2" or "")
+	AcceptAppCaps string // L7 only - comma-separated app capabilities forwarded to the target
 }
 
 // Endpoint represents a container endpoint with Tailscale connectivity.
@@ -365,6 +366,7 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 			Path:   ep.Path,
 
 			ProxyProtocol: ep.ProxyProtocol,
+			AcceptAppCaps: ep.AcceptAppCaps,
 		}
 	}
 
@@ -778,6 +780,7 @@ func (e *Endpoint) ApplyServiceConfig(info *ContainerInfo) error {
 			Path:   ep.Path,
 
 			ProxyProtocol: ep.ProxyProtocol,
+			AcceptAppCaps: ep.AcceptAppCaps,
 		}
 	}
 

@@ -91,14 +91,19 @@ type ServeEndpoint struct {
 	Path   string // L7 only - path prefix (e.g., "/api")
 
 	ProxyProtocol string // L4 only - PROXY protocol version sent to the target ("1", "2" or "")
+	AcceptAppCaps string // L7 only - comma-separated app capabilities forwarded to the target
 }
 
 // serveOptionArgs returns the "tailscale serve" flags for the endpoint's options.
 func serveOptionArgs(ep ServeEndpoint) []string {
-	if ep.ProxyProtocol == "" {
-		return nil
+	var args []string
+	if ep.ProxyProtocol != "" {
+		args = append(args, "--proxy-protocol="+ep.ProxyProtocol)
 	}
-	return []string{"--proxy-protocol=" + ep.ProxyProtocol}
+	if ep.AcceptAppCaps != "" {
+		args = append(args, "--accept-app-caps="+ep.AcceptAppCaps)
+	}
+	return args
 }
 
 // Arguments of the "tailscale serve" commands the daemon runs.
@@ -624,6 +629,7 @@ func (d *Daemon) configureDirectServeEndpoint(ep ServeEndpoint) error {
 		if ep.Path != "" {
 			args = append(args, "--set-path="+ep.Path)
 		}
+		args = append(args, serveOptionArgs(ep)...)
 		args = append(args, fmt.Sprintf("http://127.0.0.1:%s", ep.Target))
 
 	case "tcp":
@@ -705,6 +711,7 @@ func (d *Daemon) configureServeEndpoint(ep ServeEndpoint) error {
 		if ep.Path != "" {
 			args = append(args, "--set-path="+ep.Path)
 		}
+		args = append(args, serveOptionArgs(ep)...)
 		args = append(args, fmt.Sprintf("127.0.0.1:%s", ep.Target))
 
 	case "tcp":

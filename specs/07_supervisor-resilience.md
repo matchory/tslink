@@ -87,7 +87,7 @@ level=ERROR msg="Crash loop detected: 5 crashes in 30s, giving up"
 # Check endpoint status
 docker run --rm -v /var/lib/docker-plugins/tailscale:/data \
   --entrypoint /tslink \
-  ghcr.io/aaomidi/tslink:latest diag
+  ghcr.io/matchory/tslink:latest diag
 ```
 
 ## Security Considerations

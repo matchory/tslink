@@ -308,7 +308,11 @@ func TestCollectGarbageBoundsLogouts(t *testing.T) {
 	loggedOut := stubLogout(t, func(context.Context, string) error {
 		n := running.Add(1)
 		defer running.Add(-1)
-		for m := most.Load(); n > m && !most.CompareAndSwap(m, n); m = most.Load() { //nolint:revive // CAS loop
+		for {
+			m := most.Load()
+			if n <= m || most.CompareAndSwap(m, n) {
+				break
+			}
 		}
 		time.Sleep(50 * time.Millisecond)
 		return nil

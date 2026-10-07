@@ -307,7 +307,7 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 	}
 	authKey := func() (string, error) { return network.Credential(dataDir) }
 
-	stateDir, err := e.prepareStateDir(info, network, dataDir)
+	stateDir, err := e.prepareStateDir(info, network)
 	if err != nil {
 		return err
 	}
@@ -510,15 +510,7 @@ func startSupervisor(supervisor *tailscale.DaemonSupervisor) (string, error) {
 func toTailscaleEndpoints(endpoints []ServeEndpoint) []tailscale.ServeEndpoint {
 	tsEndpoints := make([]tailscale.ServeEndpoint, len(endpoints))
 	for i, ep := range endpoints {
-		tsEndpoints[i] = tailscale.ServeEndpoint{
-			Proto:  ep.Proto,
-			Port:   ep.Port,
-			Target: ep.Target,
-			Path:   ep.Path,
-
-			ProxyProtocol: ep.ProxyProtocol,
-			AcceptAppCaps: ep.AcceptAppCaps,
-		}
+		tsEndpoints[i] = tailscale.ServeEndpoint(ep)
 	}
 	return tsEndpoints
 }
@@ -745,12 +737,8 @@ func wipeStateOnKeyChange(stateDir string, network *Network) {
 
 // prepareStateDir claims the container's state directory and readies it for
 // the network: marked if the node is ephemeral, wiped if the auth key changed.
-func (e *Endpoint) prepareStateDir(
-	info *ContainerInfo,
-	network *Network,
-	dataDir string,
-) (string, error) {
-	stateDir, err := stateDirFor(dataDir, info.Stack, info.Hostname)
+func (e *Endpoint) prepareStateDir(info *ContainerInfo, network *Network) (string, error) {
+	stateDir, err := stateDirFor(e.DataDir, info.Stack, info.Hostname)
 	if err != nil {
 		return "", permanentError{err}
 	}

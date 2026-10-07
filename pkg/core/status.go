@@ -67,10 +67,8 @@ func (e *Endpoint) writeStatus(info *ContainerInfo, state string, attempts int, 
 
 // removeStatus deletes the endpoint's status file.
 func (e *Endpoint) removeStatus() {
-	if err := os.Remove(
-		StatusPath(e.DataDir, e.ID),
-	); err != nil &&
-		!errors.Is(err, os.ErrNotExist) {
+	err := os.Remove(StatusPath(e.DataDir, e.ID))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		logger.Warnf("Failed to remove status of endpoint %s: %v", e.ID[:12], err)
 	}
 }

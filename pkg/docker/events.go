@@ -139,12 +139,11 @@ func WatchEvents(
 				msg.Action, msg.Actor.ID, msg.Actor.Attributes["type"])
 
 			if msg.Type == events.ContainerEventType {
-				if msg.Action == events.ActionKill && onStop != nil &&
-					isStopSignal(
-						msg.Actor.Attributes["signal"],
-						stopSignalOf(ctx, cli, msg.Actor.ID),
-					) {
-					onStop(msg.Actor.ID)
+				if msg.Action == events.ActionKill && onStop != nil {
+					signal := msg.Actor.Attributes["signal"]
+					if isStopSignal(signal, stopSignalOf(ctx, cli, msg.Actor.ID)) {
+						onStop(msg.Actor.ID)
+					}
 				}
 				continue
 			}

@@ -337,19 +337,14 @@ func (d *Daemon) Start() error {
 
 	logger.Infof("tailscaled started with PID %d", d.cmd.Process.Pid)
 
-	debugFile := filepath.Join(d.config.StateDir, "debug.log")
-
 	d.drainOutput(stdoutPipe, stderrPipe)
 
-	d.watchProcess(debugFile)
+	d.watchProcess()
 
 	if err := d.waitForSocket(); err != nil {
 		// Write timeout debug info
-		debugInfo := fmt.Sprintf("SOCKET TIMEOUT\nSocket: %s\nPID: %d\n",
-			d.socketPath, d.cmd.Process.Pid)
-		if writeErr := os.WriteFile(debugFile, []byte(debugInfo), 0o600); writeErr != nil {
-			logger.Warnf("Failed to write debug file: %v", writeErr)
-		}
+		d.writeDebug(fmt.Sprintf("SOCKET TIMEOUT\nSocket: %s\nPID: %d\n",
+			d.socketPath, d.cmd.Process.Pid))
 
 		if stopErr := d.Stop(); stopErr != nil {
 			logger.Warnf("Failed to stop daemon after socket timeout: %v", stopErr)
@@ -711,20 +706,17 @@ func (d *Daemon) drainOutput(stdoutPipe, stderrPipe io.ReadCloser) {
 	})
 }
 
-// watchProcess records tailscaled's PID, and its exit if it fails, in
-// debugFile.
-func (d *Daemon) watchProcess(debugFile string) {
+// watchProcess records tailscaled's PID, and its exit if it fails, in the
+// debug file.
+func (d *Daemon) watchProcess() {
 	// Write debug info to a file (cancellable via context)
 	d.wg.Go(func() {
 		select {
 		case <-d.ctx.Done():
 			return
 		case <-time.After(2 * time.Second):
-			debugInfo := fmt.Sprintf("PID: %d\nSocket: %s\nEndpoint: %s\n",
-				d.cmd.Process.Pid, d.socketPath, d.config.EndpointID)
-			if err := os.WriteFile(debugFile, []byte(debugInfo), 0o600); err != nil {
-				logger.Warnf("Failed to write debug file: %v", err)
-			}
+			d.writeDebug(fmt.Sprintf("PID: %d\nSocket: %s\nEndpoint: %s\n",
+				d.cmd.Process.Pid, d.socketPath, d.config.EndpointID))
 		}
 	})
 
@@ -741,14 +733,19 @@ func (d *Daemon) watchProcess(debugFile string) {
 		case err := <-done:
 			if err != nil {
 				logger.Errorf("tailscaled exited with error: %v", err)
-				debugInfo := fmt.Sprintf("EXITED WITH ERROR\nPID: %d\nError: %v\n",
-					d.cmd.Process.Pid, err)
-				if writeErr := os.WriteFile(debugFile, []byte(debugInfo), 0o600); writeErr != nil {
-					logger.Warnf("Failed to write debug file: %v", writeErr)
-				}
+				d.writeDebug(fmt.Sprintf("EXITED WITH ERROR\nPID: %d\nError: %v\n",
+					d.cmd.Process.Pid, err))
 			}
 		}
 	})
+}
+
+// writeDebug replaces the debug file in the state directory with info.
+func (d *Daemon) writeDebug(info string) {
+	path := filepath.Join(d.config.StateDir, "debug.log")
+	if err := os.WriteFile(path, []byte(info), 0o600); err != nil {
+		logger.Warnf("Failed to write debug file: %v", err)
+	}
 }
 
 // setUp brings the node up and configures its serve endpoints and service.

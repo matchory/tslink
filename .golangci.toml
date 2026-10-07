@@ -66,6 +66,11 @@ check-type-assertions = true
 enable-all = true
 disable = ["fieldalignment", "shadow"]
 
+# errcheck and the std-error-handling preset decide which unchecked errors
+# matter; gosec's G104 repeats that check with a different allowlist.
+[linters.settings.gosec]
+excludes = ["G104"]
+
 [linters.settings.nakedret]
 max-func-lines = 0
 

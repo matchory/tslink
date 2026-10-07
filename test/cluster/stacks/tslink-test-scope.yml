@@ -1,0 +1,14 @@
+# Cluster credential with another stack's tag: the task's tailscaled must not start
+services:
+  client:
+    image: alpine:3.23
+    command: ["sh","-c","while :; do sleep 3600; done"]
+    networks: [tailnet]
+    deploy:
+      replicas: 1
+networks:
+  tailnet:
+    driver: ghcr.io/matchory/tslink:latest
+    driver_opts:
+      com.docker.network.driver.mtu: "1450"
+      tslink.tags: tag:tslink-test-callee

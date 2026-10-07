@@ -68,7 +68,31 @@ kernel and NIC driver that support it; check with `ethtool -k <uplink>`.
    To use your own registry, mirror the image and install it from there under
    the same alias.
 
-4. **Upgrades**: move the host's containers off first if you can (on Swarm,
+4. **Cluster credential** (optional, see
+   [Cluster Credential](../README.md#cluster-credential)): the OAuth client
+   secret, the same on every node, readable by root only:
+
+   ```bash
+   install -m 0600 /dev/stdin /var/lib/docker-plugins/tailscale/oauth-client.secret <<<"$SECRET"
+   ```
+
+   Replacing the file rotates it; no restart is needed.
+
+5. **Shared certificate directory** (optional): mount a volume shared between
+   the nodes, such as GlusterFS or NFS, and point the plugin's `shared` mount
+   at it, so a Tailscale Service's certificate is issued once for the cluster
+   rather than once per node. `docker plugin set` needs the plugin disabled:
+
+   ```bash
+   docker plugin disable tslink
+   docker plugin set tslink shared.source=/mnt/shared/tslink
+   docker plugin enable tslink
+   ```
+
+   tslink keeps the certificates and their ACME account key in `certs/` there.
+   Restrict the volume to the nodes: it holds every Service's private key.
+
+6. **Upgrades**: move the host's containers off first if you can (on Swarm,
    drain the node). Then:
 
    ```bash

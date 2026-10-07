@@ -11,8 +11,9 @@ import (
 
 // Config holds the plugin configuration.
 type Config struct {
-	AuthKey string
-	DataDir string
+	AuthKey   string
+	DataDir   string
+	SharedDir string // Directory shared between hosts, for certificates; empty for none
 }
 
 // NetworkOptions holds options for network creation.
@@ -44,8 +45,9 @@ type EndpointOptions struct {
 // LoadConfig loads configuration from environment variables.
 func LoadConfig() (*Config, error) {
 	cfg := &Config{
-		AuthKey: os.Getenv("TS_AUTHKEY"),
-		DataDir: os.Getenv("TS_DATA_DIR"),
+		AuthKey:   os.Getenv("TS_AUTHKEY"),
+		DataDir:   os.Getenv("TS_DATA_DIR"),
+		SharedDir: os.Getenv("TS_SHARED_DIR"),
 	}
 
 	if cfg.DataDir == "" {

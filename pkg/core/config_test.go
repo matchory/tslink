@@ -56,3 +56,14 @@ func TestLoadConfigIgnoresDownloadSettings(t *testing.T) {
 		t.Fatalf("LoadConfig: %v", err)
 	}
 }
+
+func TestLoadConfigDataDir(t *testing.T) {
+	t.Setenv("TS_DATA_DIR", "")
+	if cfg, err := LoadConfig(); err != nil || cfg.DataDir != "/data" {
+		t.Errorf("without TS_DATA_DIR: config %+v, err %v, want DataDir /data", cfg, err)
+	}
+	t.Setenv("TS_DATA_DIR", "/var/lib/tslink")
+	if cfg, err := LoadConfig(); err != nil || cfg.DataDir != "/var/lib/tslink" {
+		t.Errorf("config %+v, err %v, want DataDir from TS_DATA_DIR", cfg, err)
+	}
+}

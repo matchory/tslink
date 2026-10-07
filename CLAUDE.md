@@ -53,7 +53,10 @@ error is a `permanentError` (wrong stack, invalid hostname). The supervisor rest
 a crash-loop cooldown, and logs a node in again with `--force-reauth` when control answers 404 node not found. After a
 plugin restart, recovery adopts running containers' endpoints, and a node still logged in comes up without the auth
 key, so a rotated or revoked secret does not take it down. Garbage collection then removes ephemeral state (marked by
-an `ephemeral` file), sockets and status files no endpoint uses.
+an `ephemeral` file), sockets and status files no endpoint uses. It first logs each such ephemeral node out, which
+deletes its device and frees its name: `tailscale.LogoutState` runs tailscaled with userspace networking on a copy of
+the state with only the machine key and the current profile, its prefs logged out (so it never logs in or comes
+online) and without services or serve config. The state goes even if the logout fails.
 
 **Stop and drain**: a Docker `kill` event with the container's stop signal drains its Tailscale Service backends before
 the container exits; plugin shutdown drains all of them. `Leave` logs ephemeral nodes out, with retries, and deletes

@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -89,7 +90,11 @@ func CollectGarbage(
 
 // The shared certificate directory holds tailscaled's <domain>.crt and
 // <domain>.key and its ACME account key, and tslink's <domain>.lease and
-// .tmp-* files (see tailscale/certs.go).
+// .tmp-* files (see tailscale/certs.go). tailscaled writes its files through
+// temporary ones named <file>.tmp<random digits> (atomicfile.WriteFile, which
+// uses os.CreateTemp), left behind when it dies while writing.
+var tailscaledTmpFile = regexp.MustCompile(`\.(crt|key|pem)\.tmp[0-9]+$`)
+
 const (
 	acmeAccountKey  = "acme-account.key.pem"
 	certExpiredKeep = 7 * 24 * time.Hour // how long an expired certificate is kept
@@ -99,8 +104,8 @@ const (
 
 // collectCertificates removes what accumulates in the shared certificate
 // directory, as certificates of per-task names do: certificates expired more
-// than certExpiredKeep ago, keys without a certificate and temporary files
-// older than certOrphanAge, and leases not refreshed for certLeaseMaxAge. It
+// than certExpiredKeep ago, keys without a certificate and temporary files,
+// tslink's and tailscaled's, older than certOrphanAge, and leases not refreshed for certLeaseMaxAge. It
 // leaves the ACME account key, and files it does not know, alone. Hosts
 // sharing the directory collect it at the same time, so a file gone already
 // is no error.
@@ -117,7 +122,7 @@ func collectCertificates(dir string, now time.Time) {
 		path := filepath.Join(dir, name)
 		switch {
 		case !entry.Type().IsRegular() || name == acmeAccountKey:
-		case strings.HasPrefix(name, ".tmp-"):
+		case strings.HasPrefix(name, ".tmp-") || tailscaledTmpFile.MatchString(name):
 			removeOlder(path, now.Add(-certOrphanAge))
 		case strings.HasSuffix(name, ".lease"):
 			removeOlder(path, now.Add(-certLeaseMaxAge))

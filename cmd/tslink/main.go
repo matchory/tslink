@@ -97,11 +97,11 @@ Diagnostics:
 
     docker run --rm -v /var/lib/docker-plugins/tailscale:/data \
       --entrypoint /tslink \
-      ghcr.io/aaomidi/tslink:latest diag
+      ghcr.io/matchory/tslink:latest diag
 
-  Or use the helper script:
+  Or use the helper script from a checkout of the repository:
 
-    curl -sL https://raw.githubusercontent.com/aaomidi/tslink/main/scripts/tslink-diag.sh | bash
+    ./scripts/tslink-diag.sh
 
 `)
 }

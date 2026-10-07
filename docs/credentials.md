@@ -13,7 +13,7 @@ definition at deploy time; the tags sit next to it:
 ```yaml
 networks:
   tailnet:
-    driver: ghcr.io/aaomidi/tslink:latest
+    driver: ghcr.io/matchory/tslink:latest
     driver_opts:
       tslink.authkey: ${TSLINK_OAUTH_SECRET}?ephemeral=true&preauthorized=true
       tslink.tags: tag:svc-billing

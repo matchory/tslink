@@ -1,6 +1,6 @@
 {
   "description": "Tailscale network plugin - per-container identity",
-  "documentation": "https://github.com/aaomidi/tslink",
+  "documentation": "https://github.com/matchory/tslink",
   "entrypoint": ["/tslink"],
   "interface": {
     "types": ["docker.networkdriver/1.0"],

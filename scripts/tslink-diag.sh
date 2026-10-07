@@ -9,7 +9,6 @@
 set -e
 
 DATA_DIR="/var/lib/docker-plugins/tailscale"
-PLUGIN_IMAGE="ghcr.io/aaomidi/tslink:latest"
 
 # Colors for output
 RED='\033[0;31m'

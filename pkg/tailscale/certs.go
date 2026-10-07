@@ -210,6 +210,7 @@ func (l *certLease) release() {
 // configured, but control adds it seconds later, and the next attempt would
 // be an hour away.
 func (d *Daemon) requestCert(dir, domain string) error {
+	var lastErr string
 	for !validCert(dir, domain, time.Now()) {
 		ctx, cancel := context.WithTimeout(d.ctx, certLeaseStale)
 		// The certificate and its key go to stdout, which is discarded
@@ -221,7 +222,10 @@ func (d *Daemon) requestCert(dir, domain string) error {
 			if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 				err = fmt.Errorf("%w: %s", err, strings.TrimSpace(string(exitErr.Stderr)))
 			}
-			logger.Info("Certificate for %s not issued yet: %v", domain, err)
+			if err.Error() != lastErr {
+				logger.Info("Certificate for %s not issued yet: %v", domain, err)
+				lastErr = err.Error()
+			}
 		}
 		select {
 		case <-d.ctx.Done():

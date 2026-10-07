@@ -49,8 +49,10 @@ sudo mkdir -p /var/lib/docker-plugins/tailscale
 
 Docker plugins have no multi-architecture
 images, so each image tag names its architecture. Always install under the
-alias `tslink`: networks and stack files then name the driver `tslink`,
-whatever the version and architecture, and upgrades keep the name.
+alias `tslink`: networks and stack files then name the driver
+`tslink:latest`, whatever the version and architecture, and upgrades keep the
+name. Docker stores the alias with the tag `latest`; plugin commands accept
+`tslink`, but a network driver must be named in full.
 
 ```bash
 # amd64 (Intel/AMD, most cloud VMs); use <version>-arm64 on ARM
@@ -80,13 +82,13 @@ On production nodes, see [docs/node-provisioning.md](docs/node-provisioning.md).
 ```bash
 # With auth key in command (ephemeral nodes by default)
 docker network create \
-  --driver tslink \
+  --driver tslink:latest \
   --opt tslink.authkey=tskey-auth-xxxxx \
   my-tailnet
 
 # Or set the auth key globally when installing the plugin
 docker plugin set tslink TS_AUTHKEY=tskey-auth-xxxxx
-docker network create --driver tslink my-tailnet
+docker network create --driver tslink:latest my-tailnet
 ```
 
 ### Run Containers
@@ -116,7 +118,7 @@ curl http://web.your-tailnet.ts.net
 ```yaml
 networks:
   tailnet:
-    driver: tslink
+    driver: tslink:latest
     driver_opts:
       tslink.authkey: ${TS_AUTHKEY}
 
@@ -154,9 +156,13 @@ Set with `docker plugin set` while the plugin is disabled.
 
 | Setting | Description | Default |
 | --------- | ------------- | --------- |
-| `TS_VERSION` | `bundled` uses the Tailscale shipped in the plugin image; `latest` or a version such as `1.102.5` downloads it from pkgs.tailscale.com | `bundled` |
-| `TS_PATH` | Directory with your own `tailscale` and `tailscaled`; overrides `TS_VERSION` | None |
 | `TS_AUTHKEY` | Default auth key for networks without `tslink.authkey` | None |
+
+The plugin image ships the Tailscale it runs, so each tslink release pins
+one Tailscale version; upgrade the plugin to upgrade Tailscale. Earlier
+releases could download Tailscale or use your own binaries with
+`TS_VERSION` and `TS_PATH`; tslink now ignores these settings and logs a
+warning.
 
 ### Container Labels
 
@@ -210,7 +216,7 @@ docker plugin set tslink TS_AUTHKEY=tskey-auth-xxxxx
 docker plugin enable tslink
 
 # Now create networks without specifying the auth key
-docker network create --driver tslink my-tailnet
+docker network create --driver tslink:latest my-tailnet
 ```
 
 ## Auth Key Types
@@ -255,7 +261,9 @@ and [docs/swarm-cluster-followup-2026-10-07.md](docs/swarm-cluster-followup-2026
   about 40% of the host's.
 - **Self-healing:** tslink retries a Tailscale start that failed, logs a node
   in again when its device was deleted or expired, and cleans up after
-  containers that stopped without telling it, as on power loss.
+  containers that stopped without telling it, as on power loss: it logs
+  their ephemeral nodes out, so a container with a fixed `tslink.hostname`
+  gets its name back instead of `<hostname>-1`.
 - **Monitoring:** a container whose Tailscale is not running looks healthy to
   Docker. tslink writes each endpoint's state to
   `/var/lib/docker-plugins/tailscale/status/<endpoint>.json` (`running`,

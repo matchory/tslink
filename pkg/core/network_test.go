@@ -125,12 +125,14 @@ func TestEphemeral(t *testing.T) {
 	keys := []string{
 		"tskey-client-x", "tskey-client-x?ephemeral=false", "tskey-client-x?ephemeral=true",
 		"tskey-auth-x", "hskey-auth-x", cluster,
+		// tailscale up passes an auth key on unchanged: a parameter means nothing
+		"tskey-auth-x?ephemeral=true",
 	}
 	// Ephemeral() per key, in the order of keys; "err" if NewNetwork fails
 	tests := map[string][]string{
-		"":      {"true", "false", "true", "false", "false", "true"},
-		"true":  {"true", "err", "true", "true", "true", "true"},
-		"false": {"false", "false", "err", "false", "false", "err"},
+		"":      {"true", "false", "true", "false", "false", "true", "false"},
+		"true":  {"true", "err", "true", "true", "true", "true", "true"},
+		"false": {"false", "false", "err", "false", "false", "err", "false"},
 	}
 	for option, wants := range tests {
 		for i, key := range keys {

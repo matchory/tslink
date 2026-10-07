@@ -71,13 +71,13 @@
 		},
 		{
 			"name": "TS_VERSION",
-			"description": "Tailscale version: bundled (shipped in the plugin image), latest, or a version to download",
+			"description": "Only bundled (shipped in the plugin image) is supported; other values are ignored",
 			"settable": ["value"],
 			"value": "bundled"
 		},
 		{
 			"name": "TS_PATH",
-			"description": "Path to custom Tailscale binaries (optional, overrides TS_VERSION)",
+			"description": "No longer supported and ignored: tslink runs the bundled Tailscale",
 			"settable": ["value"],
 			"value": ""
 		},

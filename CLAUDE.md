@@ -10,7 +10,7 @@ make test-network test-container
 
 ## Prerequisites
 
-- Go 1.25+
+- Go 1.26+
 - Docker (via OrbStack, Docker Desktop, or native Linux)
 - Tailscale auth key from <https://login.tailscale.com/admin/settings/keys>
 
@@ -179,7 +179,8 @@ return fmt.Errorf("failed to create endpoint: %w", err)
   each architecture is built on a native runner and pushed under its own tag.
 - Dependencies are updated by Dependabot (`.github/dependabot.yml`): Actions, Go modules and the Dockerfile base images.
 
-`test/cluster` builds a three-node Swarm on Hetzner Cloud and runs `regress.sh` against a real tailnet; see `test/cluster/README.md`.
+`test/cluster` builds a three-node Swarm on a cloud provider (the scripts currently target Hetzner Cloud) and runs
+`regress.sh` against a real tailnet; see `test/cluster/README.md`.
 
 ## Troubleshooting
 

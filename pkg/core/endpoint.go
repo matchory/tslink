@@ -44,8 +44,6 @@ type Endpoint struct {
 	TailscaleIP string
 	VethName    string
 	StateDir    string
-	TSVersion   string // Tailscale version to use
-	TSPath      string // Optional custom Tailscale binary path
 	SandboxKey  string // Container's network namespace path, stored during Join
 	DataDir     string // Base data directory for state
 
@@ -101,14 +99,12 @@ func NewEndpoint(id string, net *Network, opts EndpointOptions, cfg *Config) (*E
 	stateDir := filepath.Join(cfg.DataDir, "by-hostname", hostname)
 
 	return &Endpoint{
-		ID:        id,
-		Network:   net,
-		Hostname:  hostname,
-		Direct:    true, // Default to direct serve enabled
-		StateDir:  stateDir,
-		DataDir:   cfg.DataDir,
-		TSVersion: cfg.TSVersion,
-		TSPath:    cfg.TSPath,
+		ID:       id,
+		Network:  net,
+		Hostname: hostname,
+		Direct:   true, // Default to direct serve enabled
+		StateDir: stateDir,
+		DataDir:  cfg.DataDir,
 	}, nil
 }
 
@@ -289,8 +285,6 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 	// Copy immutable config needed for supervisor creation
 	endpointID := e.ID
 	dataDir := e.DataDir
-	tsVersion := e.TSVersion
-	tsPath := e.TSPath
 	authKey := e.Network.AuthKey
 	tags := info.Tags
 	if len(e.Network.Tags) > 0 {
@@ -340,20 +334,9 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 		return permanentError{fmt.Errorf("tslink.service requires at least one tslink.serve.<port> endpoint")}
 	}
 
-	// Ensure Tailscale binaries are available (may download - blocking!)
-	tailscaleBin, tailscaledBin, err := tailscale.EnsureBinaries(tsVersion, tsPath)
+	tailscaleBin, tailscaledBin, err := tailscale.BundledBinaries()
 	if err != nil {
-		return fmt.Errorf("failed to ensure Tailscale binaries: %w", err)
-	}
-
-	// Version check only when Services are used
-	if info.Service != "" {
-		version, err := tailscale.GetInstalledVersion(tailscaleBin)
-		if err != nil {
-			logger.Info("Warning: could not determine Tailscale version: %v", err)
-		} else if err := tailscale.CheckVersionForServices(version); err != nil {
-			return permanentError{err}
-		}
+		return err
 	}
 
 	// Convert core.ServeEndpoint to tailscale.ServeEndpoint

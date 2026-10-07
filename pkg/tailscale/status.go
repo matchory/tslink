@@ -3,6 +3,7 @@ package tailscale
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -21,7 +22,7 @@ type Status struct {
 
 // WaitForIP waits for Tailscale to get an IP address.
 func (d *Daemon) WaitForIP() (*Status, error) {
-	logger.Debug("Waiting for Tailscale IP for endpoint %s", d.config.EndpointID)
+	logger.Debugf("Waiting for Tailscale IP for endpoint %s", d.config.EndpointID)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -29,7 +30,7 @@ func (d *Daemon) WaitForIP() (*Status, error) {
 	for {
 		select {
 		case <-ctx.Done():
-			return nil, fmt.Errorf("timeout waiting for Tailscale IP")
+			return nil, errors.New("timeout waiting for Tailscale IP")
 		default:
 			status, err := d.getStatus()
 			if err == nil && status.IP != "" {
@@ -109,7 +110,9 @@ func (d *Daemon) BackendState() (string, error) {
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("tailscaled status: %s", resp.Status)
 	}
-	var status struct{ BackendState string }
+	var status struct {
+		BackendState string `json:"BackendState"`
+	}
 	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
 		return "", fmt.Errorf("failed to parse tailscaled status: %w", err)
 	}

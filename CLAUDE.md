@@ -135,6 +135,9 @@ Config is in `.golangci.toml`. Key linters enabled:
 - `govet`, `staticcheck` - correctness
 - `modernize` - Go 1.22+ idioms
 
+Formatters are `gci`, `gofumpt` and `golines` (100 columns). `golines` counts trailing comments, so put a
+`//nolint` that would not fit on the line before. Functions stay under a cyclomatic complexity of 15.
+
 ### Error Handling
 
 **Always handle errors explicitly** - never ignore silently:
@@ -142,7 +145,7 @@ Config is in `.golangci.toml`. Key linters enabled:
 ```go
 // GOOD - log cleanup errors
 if err := cleanup(); err != nil {
-    logger.Warn("cleanup failed: %v", err)
+    logger.Warnf("cleanup failed: %v", err)
 }
 
 // BAD - silent ignore

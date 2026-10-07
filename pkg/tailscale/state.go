@@ -47,7 +47,7 @@ func StateExists(stateDir string) bool {
 // WipeState removes all state files from the directory to allow fresh registration.
 // Removes tailscaled.state, tailscaled.sock, debug.log, and authkey hash.
 func WipeState(stateDir string) error {
-	logger.Info("Wiping state directory: %s", stateDir)
+	logger.Infof("Wiping state directory: %s", stateDir)
 
 	files := []string{
 		filepath.Join(stateDir, "tailscaled.state"),
@@ -58,7 +58,7 @@ func WipeState(stateDir string) error {
 
 	for _, f := range files {
 		if err := os.Remove(f); err != nil && !os.IsNotExist(err) {
-			logger.Warn("Failed to remove %s: %v", f, err)
+			logger.Warnf("Failed to remove %s: %v", f, err)
 		}
 	}
 
@@ -75,7 +75,7 @@ func hashAuthKey(authKey string) string {
 func SaveAuthKeyHash(stateDir, authKey string) error {
 	hashPath := filepath.Join(stateDir, authKeyHashFile)
 	hash := hashAuthKey(authKey)
-	return os.WriteFile(hashPath, []byte(hash), 0600)
+	return os.WriteFile(hashPath, []byte(hash), 0o600)
 }
 
 // CheckAuthKeyMatch checks if the provided auth key matches the stored hash.
@@ -89,14 +89,14 @@ func CheckAuthKeyMatch(stateDir, authKey string) bool {
 			// No stored hash - this is a new state or old state without hash
 			return true
 		}
-		logger.Warn("Failed to read auth key hash: %v", err)
+		logger.Warnf("Failed to read auth key hash: %v", err)
 		return true // Assume match on error to avoid breaking existing setups
 	}
 
 	currentHash := hashAuthKey(authKey)
 	match := strings.TrimSpace(string(stored)) == currentHash
 	if !match {
-		logger.Info("Auth key changed - state will be wiped for fresh registration")
+		logger.Infof("Auth key changed - state will be wiped for fresh registration")
 	}
 	return match
 }
@@ -107,16 +107,19 @@ const ephemeralMarker = "ephemeral"
 
 // MarkEphemeral marks stateDir as holding an ephemeral node.
 func MarkEphemeral(stateDir string) error {
-	if err := os.MkdirAll(stateDir, 0700); err != nil {
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(stateDir, ephemeralMarker), nil, 0600)
+	return os.WriteFile(filepath.Join(stateDir, ephemeralMarker), nil, 0o600)
 }
 
 // ClearEphemeral removes the mark MarkEphemeral set, if any, when stateDir is
 // used by a network whose nodes are not ephemeral.
 func ClearEphemeral(stateDir string) error {
-	if err := os.Remove(filepath.Join(stateDir, ephemeralMarker)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	if err := os.Remove(
+		filepath.Join(stateDir, ephemeralMarker),
+	); err != nil &&
+		!errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
 	return nil

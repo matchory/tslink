@@ -135,7 +135,13 @@ func TestDrainAndWaitTimesOut(t *testing.T) {
 	if elapsed := time.Since(start); elapsed < drainAckTimeout || elapsed > time.Second {
 		t.Errorf("returned after %v, want about %v", elapsed, drainAckTimeout)
 	}
-	if want := [][]string{{"serve", "drain", "svc:web"}}; !slices.EqualFunc(cli.snapshot(), want, slices.Equal) {
+	if want := [][]string{
+		{"serve", "drain", "svc:web"},
+	}; !slices.EqualFunc(
+		cli.snapshot(),
+		want,
+		slices.Equal,
+	) {
 		t.Errorf("calls = %q, want %q", cli.snapshot(), want)
 	}
 }
@@ -181,7 +187,11 @@ func failingCertBin(t *testing.T, msg string) string {
 	t.Helper()
 	bin := filepath.Join(t.TempDir(), "tailscale")
 	script := "#!/bin/sh\necho '" + msg + "' >&2\nexit 1\n"
-	if err := os.WriteFile(bin, []byte(script), 0o700); err != nil { //nolint:gosec // test binary must be executable
+	if err := os.WriteFile(
+		bin,
+		[]byte(script),
+		0o700,
+	); err != nil {
 		t.Fatal(err)
 	}
 	return bin
@@ -236,7 +246,13 @@ func TestDrainedWaitingReplicaNotAdvertised(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("still waiting for the certificate after the drain")
 	}
-	if want := [][]string{{"serve", "drain", "svc:web"}}; !slices.EqualFunc(cli.snapshot(), want, slices.Equal) {
+	if want := [][]string{
+		{"serve", "drain", "svc:web"},
+	}; !slices.EqualFunc(
+		cli.snapshot(),
+		want,
+		slices.Equal,
+	) {
 		t.Errorf("calls = %q, want only the drain", cli.snapshot())
 	}
 }
@@ -246,8 +262,11 @@ func TestDrainedWaitingReplicaNotAdvertised(t *testing.T) {
 func TestDrainSurvivesDaemonRestart(t *testing.T) {
 	dir := t.TempDir()
 	s := NewDaemonSupervisor(DaemonConfig{
-		EndpointID: "0123456789abcdef", StateDir: dir, SocketPath: filepath.Join(dir, "sock"),
-		Service: "svc:web", Endpoints: []ServeEndpoint{{Proto: "https", Port: "443", Target: "8080"}},
+		EndpointID: "0123456789abcdef",
+		StateDir:   dir,
+		SocketPath: filepath.Join(dir, "sock"),
+		Service:    "svc:web",
+		Endpoints:  []ServeEndpoint{{Proto: "https", Port: "443", Target: "8080"}},
 	})
 	t.Cleanup(s.cancel)
 	if err := s.Drain("svc:web"); err == nil {
@@ -261,7 +280,10 @@ func TestDrainSurvivesDaemonRestart(t *testing.T) {
 	cli := &fakeCLI{}
 	d.runCLI = cli.run
 	if err := d.configureServiceWhenCertified(); err != nil {
-		t.Errorf("configureServiceWhenCertified = %v, want nil: a drain must not fail the start", err)
+		t.Errorf(
+			"configureServiceWhenCertified = %v, want nil: a drain must not fail the start",
+			err,
+		)
 	}
 	if err := d.configureService(); !errors.Is(err, errDrained) {
 		t.Errorf("configureService = %v, want errDrained", err)
@@ -318,7 +340,11 @@ func TestLeaseHolderAdvertisedOnlyWithCert(t *testing.T) {
 	d.config.TailscaleBin = failingCertBin(t, "not issued yet")
 
 	done := runAfterCert(d, dir)
-	waitFor(t, "the serve configuration", func() bool { return ran(cli.snapshot(), "serve", "drain", "svc:web") })
+	waitFor(
+		t,
+		"the serve configuration",
+		func() bool { return ran(cli.snapshot(), "serve", "drain", "svc:web") },
+	)
 	time.Sleep(50 * time.Millisecond)
 	if ran(cli.snapshot(), "serve", "advertise", "svc:web") {
 		t.Fatal("lease holder advertised before its certificate existed")
@@ -349,10 +375,17 @@ func TestLeaseHolderAdvertisesWhenDomainRefused(t *testing.T) {
 	setDuration(t, &certDomainGrace, 50*time.Millisecond)
 	cli := &fakeCLI{}
 	d, dir := newCertDaemon(t, cli)
-	d.config.TailscaleBin = failingCertBin(t, `invalid domain "api.example.ts.net"; must be one of []`)
+	d.config.TailscaleBin = failingCertBin(
+		t,
+		`invalid domain "api.example.ts.net"; must be one of []`,
+	)
 
 	done := runAfterCert(d, dir)
-	waitFor(t, "the advertisement", func() bool { return ran(cli.snapshot(), "serve", "advertise", "svc:web") })
+	waitFor(
+		t,
+		"the advertisement",
+		func() bool { return ran(cli.snapshot(), "serve", "advertise", "svc:web") },
+	)
 	writeCert(t, dir, certDomain, certDomain, time.Now().Add(time.Hour))
 	select {
 	case <-done:
@@ -370,7 +403,11 @@ func TestDrainedLeaseHolderStops(t *testing.T) {
 	d.config.TailscaleBin = failingCertBin(t, "not issued yet")
 
 	done := runAfterCert(d, dir)
-	waitFor(t, "the serve configuration", func() bool { return ran(cli.snapshot(), "serve", "drain", "svc:web") })
+	waitFor(
+		t,
+		"the serve configuration",
+		func() bool { return ran(cli.snapshot(), "serve", "drain", "svc:web") },
+	)
 	if err := d.Drain("svc:web"); err != nil {
 		t.Fatal(err)
 	}

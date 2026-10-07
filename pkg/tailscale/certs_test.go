@@ -42,7 +42,12 @@ func TestLinkCertsDir(t *testing.T) {
 	if err := LinkCertsDir(stateDir, shared); err != nil {
 		t.Fatal(err)
 	}
-	if again, _ := os.ReadFile(filepath.Join(shared, acmeAccountKeyFile)); !bytes.Equal(again, key) {
+	if again, _ := os.ReadFile(
+		filepath.Join(shared, acmeAccountKeyFile),
+	); !bytes.Equal(
+		again,
+		key,
+	) {
 		t.Error("account key was replaced")
 	}
 }
@@ -50,7 +55,7 @@ func TestLinkCertsDir(t *testing.T) {
 func TestLinkCertsDirKeepsDirectory(t *testing.T) {
 	stateDir := t.TempDir()
 	own := filepath.Join(stateDir, certsDirName)
-	if err := os.Mkdir(own, 0700); err != nil {
+	if err := os.Mkdir(own, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := LinkCertsDir(stateDir, filepath.Join(t.TempDir(), "certs")); err != nil {
@@ -115,11 +120,11 @@ func writeCert(t *testing.T, dir, domain, name string, notAfter time.Time) {
 		t.Fatal(err)
 	}
 	crt := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
-	if err := os.WriteFile(filepath.Join(dir, domain+".crt"), crt, 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, domain+".crt"), crt, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
-	if err := os.WriteFile(filepath.Join(dir, domain+".key"), keyPEM, 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, domain+".key"), keyPEM, 0o600); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -161,7 +166,7 @@ func TestValidCert(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(dir, domain+".key"), key, 0600); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, domain+".key"), key, 0o600); err != nil {
 			t.Fatal(err)
 		}
 		if validCert(dir, domain, now) {

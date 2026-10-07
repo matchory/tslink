@@ -10,7 +10,11 @@ import (
 
 func writeClusterCredential(t *testing.T, dir, secret string) {
 	t.Helper()
-	if err := os.WriteFile(filepath.Join(dir, ClusterCredentialFile), []byte(secret), 0600); err != nil {
+	if err := os.WriteFile(
+		filepath.Join(dir, ClusterCredentialFile),
+		[]byte(secret),
+		0o600,
+	); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -25,7 +29,13 @@ func TestNewNetworkPrecedence(t *testing.T) {
 		wantKey     string // "" means the cluster credential
 		wantErr     bool
 	}{
-		{name: "option wins over cluster file", option: "tskey-auth-opt", env: "tskey-auth-env", clusterFile: true, wantKey: "tskey-auth-opt"},
+		{
+			name:        "option wins over cluster file",
+			option:      "tskey-auth-opt",
+			env:         "tskey-auth-env",
+			clusterFile: true,
+			wantKey:     "tskey-auth-opt",
+		},
 		{name: "cluster file wins over env", env: "tskey-auth-env", clusterFile: true, wantKey: ""},
 		{name: "env as last resort", env: "tskey-auth-env", wantKey: "tskey-auth-env"},
 		{name: "no credential", wantErr: true},
@@ -75,11 +85,17 @@ func TestCredential(t *testing.T) {
 		dir := t.TempDir()
 		n := &Network{}
 		writeClusterCredential(t, dir, "tskey-client-old\n")
-		if got, err := n.Credential(dir); err != nil || got != "tskey-client-old?ephemeral=true&preauthorized=true" {
+		if got, err := n.Credential(
+			dir,
+		); err != nil ||
+			got != "tskey-client-old?ephemeral=true&preauthorized=true" {
 			t.Errorf("Credential() = %q, %v", got, err)
 		}
 		writeClusterCredential(t, dir, "tskey-client-new")
-		if got, err := n.Credential(dir); err != nil || got != "tskey-client-new?ephemeral=true&preauthorized=true" {
+		if got, err := n.Credential(
+			dir,
+		); err != nil ||
+			got != "tskey-client-new?ephemeral=true&preauthorized=true" {
 			t.Errorf("after rotation, Credential() = %q, %v", got, err)
 		}
 	})
@@ -144,7 +160,11 @@ func TestEphemeral(t *testing.T) {
 
 func TestNewNetworkRejectsInvalidEphemeral(t *testing.T) {
 	for _, v := range []string{"yes", "1", "TRUE", " true"} {
-		_, err := NewNetwork("net", NetworkOptions{AuthKey: "tskey-auth-x", Ephemeral: v}, &Config{DataDir: t.TempDir()})
+		_, err := NewNetwork(
+			"net",
+			NetworkOptions{AuthKey: "tskey-auth-x", Ephemeral: v},
+			&Config{DataDir: t.TempDir()},
+		)
 		if err == nil || !strings.Contains(err.Error(), "tslink.ephemeral") {
 			t.Errorf("Ephemeral %q: err = %v, want an error naming tslink.ephemeral", v, err)
 		}
@@ -158,20 +178,39 @@ func TestCredentialAppliesEphemeralOption(t *testing.T) {
 		{key: "tskey-client-x", want: "tskey-client-x"},
 		{key: "tskey-client-x", option: "true", want: "tskey-client-x?ephemeral=true"},
 		{key: "tskey-client-x", option: "false", want: "tskey-client-x?ephemeral=false"},
-		{key: "tskey-client-x?preauthorized=true", option: "false", want: "tskey-client-x?preauthorized=true&ephemeral=false"},
-		{key: "tskey-client-x?ephemeral=false", option: "false", want: "tskey-client-x?ephemeral=false"},
+		{
+			key:    "tskey-client-x?preauthorized=true",
+			option: "false",
+			want:   "tskey-client-x?preauthorized=true&ephemeral=false",
+		},
+		{
+			key:    "tskey-client-x?ephemeral=false",
+			option: "false",
+			want:   "tskey-client-x?ephemeral=false",
+		},
 		// Auth keys take no parameters: their ephemerality is set at creation
 		{key: "tskey-auth-x", option: "true", want: "tskey-auth-x"},
 		{key: "hskey-auth-x", option: "true", want: "hskey-auth-x"},
 	}
 	for _, tt := range tests {
 		dir := t.TempDir()
-		n, err := NewNetwork("net", NetworkOptions{AuthKey: tt.key, Ephemeral: tt.option}, &Config{DataDir: dir})
+		n, err := NewNetwork(
+			"net",
+			NetworkOptions{AuthKey: tt.key, Ephemeral: tt.option},
+			&Config{DataDir: dir},
+		)
 		if err != nil {
 			t.Fatalf("%s with %q: %v", tt.key, tt.option, err)
 		}
 		if got, err := n.Credential(dir); err != nil || got != tt.want {
-			t.Errorf("%s with %q: Credential() = %q, %v, want %q", tt.key, tt.option, got, err, tt.want)
+			t.Errorf(
+				"%s with %q: Credential() = %q, %v, want %q",
+				tt.key,
+				tt.option,
+				got,
+				err,
+				tt.want,
+			)
 		}
 	}
 }

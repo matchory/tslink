@@ -1,7 +1,7 @@
 version = "2"
 
 [formatters]
-enable = ["gci"]
+enable = ["gci", "gofumpt", "golines"]
 
 [formatters.settings.gci]
 sections = ["standard", "default", "prefix(github.com/aaomidi/tslink)"]
@@ -30,6 +30,19 @@ enable = [
   "unconvert",   # unnecessary conversions
   "unparam",     # unused params
   "wastedassign", # wasted assignments
+  "funcorder",      # constructors after types, exported methods first
+  "nonamedreturns", # no named results
+  "containedctx",     # contexts stored in structs
+  "goprintffuncname", # printf-like functions named ...f
+  "musttag",          # marshalled structs have field tags
+  "perfsprint",       # fmt.Sprintf where a faster call does
+  "revive",           # golint successor: docs, naming, unused params
+
+  # Security
+  "gosec",
+
+  # Tests
+  "usetesting", # t.TempDir, t.Context and friends
 
   # Modern Go (1.22+)
   "intrange",    # integer ranges
@@ -43,7 +56,7 @@ enable = [
 ]
 
 [linters.settings.cyclop]
-max-complexity = 30
+max-complexity = 15
 package-average = 10.0
 
 [linters.settings.errcheck]
@@ -52,6 +65,11 @@ check-type-assertions = true
 [linters.settings.govet]
 enable-all = true
 disable = ["fieldalignment", "shadow"]
+
+# errcheck and the std-error-handling preset decide which unchecked errors
+# matter; gosec's G104 repeats that check with a different allowlist.
+[linters.settings.gosec]
+excludes = ["G104"]
 
 [linters.settings.nakedret]
 max-func-lines = 0
@@ -71,6 +89,7 @@ linters = ["godot"]
 path = "_test\\.go"
 linters = [
   "bodyclose",
+  "cyclop",
   "dupl",
   "errcheck",
   "goconst",
@@ -91,3 +110,10 @@ linters = ["noctx"]
 path = "pkg/tailscale/binary\\.go"
 linters = ["noctx"]
 
+
+# tslink runs the tailscale and tailscaled binaries shipped in the plugin
+# image, with arguments it builds itself.
+[[linters.exclusions.rules]]
+path = "pkg/tailscale/"
+text = "G204:"
+linters = ["gosec"]

@@ -52,8 +52,16 @@ type fakeDocker struct {
 func newFakeDocker() *fakeDocker {
 	return &fakeDocker{
 		plugins: []plugin.Plugin{
-			{Name: pluginName, Enabled: true, Config: plugin.Config{Entrypoint: []string{"/tslink"}}},
-			{Name: "other:latest", Enabled: true, Config: plugin.Config{Entrypoint: []string{"/other"}}},
+			{
+				Name:    pluginName,
+				Enabled: true,
+				Config:  plugin.Config{Entrypoint: []string{"/tslink"}},
+			},
+			{
+				Name:    "other:latest",
+				Enabled: true,
+				Config:  plugin.Config{Entrypoint: []string{"/other"}},
+			},
 		},
 		networks: make(map[string]dockernetwork.Inspect),
 		events:   make(chan events.Message),
@@ -61,42 +69,10 @@ func newFakeDocker() *fakeDocker {
 	}
 }
 
-// addNetwork adds a network with the given driver and returns its ID.
-func (f *fakeDocker) addNetwork(name, driver string, opts, labels map[string]string) string {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	id := fakeID("network/" + name)
-	var n dockernetwork.Inspect
-	n.ID, n.Name, n.Driver, n.Options, n.Labels = id, name, driver, opts, labels
-	f.networks[id] = n
-	return id
-}
-
-// attachment is a container's endpoint on a network.
-type attachment struct {
-	netName, netID, endpointID string
-}
-
-// addContainer adds a running container attached to the given networks,
-// whose namespace is sandbox.
-func (f *fakeDocker) addContainer(name string, labels map[string]string, nets ...attachment) string {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	id := fakeID("container/" + name)
-	settings := make(map[string]*dockernetwork.EndpointSettings, len(nets))
-	for _, a := range nets {
-		settings[a.netName] = &dockernetwork.EndpointSettings{NetworkID: a.netID, EndpointID: a.endpointID}
-	}
-	var c container.InspectResponse
-	c.ID = id
-	c.Name = "/" + name
-	c.Config = &container.Config{Labels: labels}
-	c.NetworkSettings = &container.NetworkSettings{SandboxKey: sandbox, Networks: settings}
-	f.containers = append(f.containers, c)
-	return id
-}
-
-func (f *fakeDocker) PluginList(context.Context, dockerclient.PluginListOptions) (dockerclient.PluginListResult, error) {
+func (f *fakeDocker) PluginList(
+	context.Context,
+	dockerclient.PluginListOptions,
+) (dockerclient.PluginListResult, error) {
 	f.mu.Lock()
 	var err error
 	if len(f.pluginErrs) > 0 {
@@ -114,7 +90,15 @@ func (f *fakeDocker) PluginList(context.Context, dockerclient.PluginListOptions)
 	return dockerclient.PluginListResult{Items: items}, nil
 }
 
-func (f *fakeDocker) ContainerList(context.Context, dockerclient.ContainerListOptions) (dockerclient.ContainerListResult, error) {
+// attachment is a container's endpoint on a network.
+type attachment struct {
+	netName, netID, endpointID string
+}
+
+func (f *fakeDocker) ContainerList(
+	context.Context,
+	dockerclient.ContainerListOptions,
+) (dockerclient.ContainerListResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.listErr != nil {
@@ -123,9 +107,11 @@ func (f *fakeDocker) ContainerList(context.Context, dockerclient.ContainerListOp
 	var res dockerclient.ContainerListResult
 	for _, c := range f.containers {
 		res.Items = append(res.Items, container.Summary{
-			ID:              c.ID,
-			Names:           []string{c.Name},
-			NetworkSettings: &container.NetworkSettingsSummary{Networks: c.NetworkSettings.Networks},
+			ID:    c.ID,
+			Names: []string{c.Name},
+			NetworkSettings: &container.NetworkSettingsSummary{
+				Networks: c.NetworkSettings.Networks,
+			},
 		})
 	}
 	return res, nil
@@ -164,7 +150,10 @@ func (f *fakeDocker) NetworkInspect(
 	return dockerclient.NetworkInspectResult{Network: n}, nil
 }
 
-func (f *fakeDocker) Events(_ context.Context, options dockerclient.EventsListOptions) dockerclient.EventsResult {
+func (f *fakeDocker) Events(
+	_ context.Context,
+	options dockerclient.EventsListOptions,
+) dockerclient.EventsResult {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.eventsCalls = append(f.eventsCalls, options)
@@ -176,6 +165,43 @@ func (f *fakeDocker) Close() error {
 	defer f.mu.Unlock()
 	f.closed = true
 	return nil
+}
+
+// addNetwork adds a network with the given driver and returns its ID.
+func (f *fakeDocker) addNetwork(name, driver string, opts, labels map[string]string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	id := fakeID("network/" + name)
+	var n dockernetwork.Inspect
+	n.ID, n.Name, n.Driver, n.Options, n.Labels = id, name, driver, opts, labels
+	f.networks[id] = n
+	return id
+}
+
+// addContainer adds a running container attached to the given networks,
+// whose namespace is sandbox.
+func (f *fakeDocker) addContainer(
+	name string,
+	labels map[string]string,
+	nets ...attachment,
+) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	id := fakeID("container/" + name)
+	settings := make(map[string]*dockernetwork.EndpointSettings, len(nets))
+	for _, a := range nets {
+		settings[a.netName] = &dockernetwork.EndpointSettings{
+			NetworkID:  a.netID,
+			EndpointID: a.endpointID,
+		}
+	}
+	var c container.InspectResponse
+	c.ID = id
+	c.Name = "/" + name
+	c.Config = &container.Config{Labels: labels}
+	c.NetworkSettings = &container.NetworkSettings{SandboxKey: sandbox, Networks: settings}
+	f.containers = append(f.containers, c)
+	return id
 }
 
 func (f *fakeDocker) eventStreams() int {
@@ -308,10 +334,14 @@ func (td *testDriver) createNetwork(t *testing.T, id string, opts map[string]str
 // join creates an endpoint on the network and joins it.
 func (td *testDriver) join(t *testing.T, netID, endpointID, sandboxKey string) {
 	t.Helper()
-	if _, err := td.CreateEndpoint(&network.CreateEndpointRequest{NetworkID: netID, EndpointID: endpointID}); err != nil {
+	if _, err := td.CreateEndpoint(
+		&network.CreateEndpointRequest{NetworkID: netID, EndpointID: endpointID},
+	); err != nil {
 		t.Fatalf("CreateEndpoint: %v", err)
 	}
-	if _, err := td.Join(&network.JoinRequest{NetworkID: netID, EndpointID: endpointID, SandboxKey: sandboxKey}); err != nil {
+	if _, err := td.Join(
+		&network.JoinRequest{NetworkID: netID, EndpointID: endpointID, SandboxKey: sandboxKey},
+	); err != nil {
 		t.Fatalf("Join: %v", err)
 	}
 }
@@ -336,8 +366,12 @@ func connectEvent(netID, netName, containerID string) events.Message {
 		Type:   events.NetworkEventType,
 		Action: events.ActionConnect,
 		Actor: events.Actor{
-			ID:         netID,
-			Attributes: map[string]string{"container": containerID, "name": netName, "type": pluginName},
+			ID: netID,
+			Attributes: map[string]string{
+				"container": containerID,
+				"name":      netName,
+				"type":      pluginName,
+			},
 		},
 	}
 }

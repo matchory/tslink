@@ -114,7 +114,7 @@ func (d *Daemon) configureServiceBackend(advertise bool) error {
 	}
 
 	if len(d.config.Endpoints) == 0 {
-		logger.Warn("Service %s configured but no endpoints defined", d.config.Service)
+		logger.Warnf("Service %s configured but no endpoints defined", d.config.Service)
 		return nil
 	}
 
@@ -122,11 +122,11 @@ func (d *Daemon) configureServiceBackend(advertise bool) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if d.isDrained() {
-		logger.Info("Not configuring %s for %s: drained", d.config.Service, d.config.EndpointID)
+		logger.Infof("Not configuring %s for %s: drained", d.config.Service, d.config.EndpointID)
 		return errDrained
 	}
 
-	logger.Info("Configuring Tailscale Service %s with %d endpoint(s) for %s",
+	logger.Infof("Configuring Tailscale Service %s with %d endpoint(s) for %s",
 		d.config.Service, len(d.config.Endpoints), d.config.EndpointID)
 
 	// Configure each endpoint
@@ -165,12 +165,15 @@ func (d *Daemon) configureDirectServe() error {
 		return nil // No endpoints to configure
 	}
 
-	logger.Info("Configuring direct machine serve with %d endpoint(s) for %s",
+	logger.Infof("Configuring direct machine serve with %d endpoint(s) for %s",
 		len(d.config.Endpoints), d.config.EndpointID)
 	if servesWeb(d.config.Endpoints) {
-		logger.Warn("Endpoint %s serves HTTP on its own name %s: tailscaled issues a certificate for it, "+
-			"even for plain HTTP, and every new task's name counts against Let's Encrypt's weekly limit for the tailnet",
-			d.config.EndpointID[:12], d.config.Hostname)
+		logger.Warnf(
+			"Endpoint %s serves HTTP on its own name %s: tailscaled issues a certificate for it, "+
+				"even for plain HTTP, and every new task's name counts against Let's Encrypt's weekly limit for the tailnet",
+			d.config.EndpointID[:12],
+			d.config.Hostname,
+		)
 	}
 
 	// Configure each endpoint for direct serve
@@ -186,7 +189,7 @@ func (d *Daemon) configureDirectServe() error {
 
 // configureDirectServeEndpoint configures a single direct serve endpoint (without --service).
 func (d *Daemon) configureDirectServeEndpoint(ep ServeEndpoint) error {
-	logger.Debug("configureDirectServeEndpoint: proto=%s port=%s target=%s path=%s",
+	logger.Debugf("configureDirectServeEndpoint: proto=%s port=%s target=%s path=%s",
 		ep.Proto, ep.Port, ep.Target, ep.Path)
 
 	args, err := serveArgs(ep, "")
@@ -195,7 +198,7 @@ func (d *Daemon) configureDirectServeEndpoint(ep ServeEndpoint) error {
 	}
 	if args == nil {
 		// L3: not applicable for direct serve without service
-		logger.Debug("Skipping L3 (tun) endpoint for direct serve - only supported with services")
+		logger.Debugf("Skipping L3 (tun) endpoint for direct serve - only supported with services")
 		return nil
 	}
 	args = append([]string{"--socket=" + d.socketPath}, args...)
@@ -206,20 +209,19 @@ func (d *Daemon) configureDirectServeEndpoint(ep ServeEndpoint) error {
 	// Use streaming to see output as it arrives
 	prefix := fmt.Sprintf("direct-serve:%s:%s", ep.Proto, ep.Port)
 	output, err := d.tailscale(ctx, prefix, args...)
-
 	if err != nil {
-		logger.Error("tailscale serve (direct) failed: %v", err)
+		logger.Errorf("tailscale serve (direct) failed: %v", err)
 		return fmt.Errorf("tailscale serve (direct) failed: %w (output: %s)", err, output)
 	}
 
-	logger.Info("Direct serve endpoint %s:%s configured", ep.Proto, ep.Port)
+	logger.Infof("Direct serve endpoint %s:%s configured", ep.Proto, ep.Port)
 	return nil
 }
 
 // configureServeEndpoint configures a single serve endpoint for a service backend.
 // Supports L3 (tun), L4 (tcp, tls-terminated-tcp), and L7 (http, https).
 func (d *Daemon) configureServeEndpoint(ep ServeEndpoint) error {
-	logger.Debug("configureServeEndpoint: proto=%s port=%s target=%s path=%s service=%s",
+	logger.Debugf("configureServeEndpoint: proto=%s port=%s target=%s path=%s service=%s",
 		ep.Proto, ep.Port, ep.Target, ep.Path, d.config.Service)
 
 	args, err := serveArgs(ep, d.config.Service)
@@ -227,11 +229,11 @@ func (d *Daemon) configureServeEndpoint(ep ServeEndpoint) error {
 		return err
 	}
 	if ep.Proto == "tun" {
-		logger.Warn("L3 (tun) endpoints require additional iptables configuration")
+		logger.Warnf("L3 (tun) endpoints require additional iptables configuration")
 	}
 	args = append([]string{"--socket=" + d.socketPath}, args...)
 
-	d.serveDebug("Running: %s %v\n", d.config.TailscaleBin, args)
+	d.serveDebugf("Running: %s %v\n", d.config.TailscaleBin, args)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -239,17 +241,20 @@ func (d *Daemon) configureServeEndpoint(ep ServeEndpoint) error {
 	// Use streaming to see output as it arrives
 	prefix := fmt.Sprintf("serve:%s:%s", ep.Proto, ep.Port)
 	output, err := d.tailscale(ctx, prefix, args...)
-
 	if err != nil {
-		d.serveDebug("FAILED: %v\nOutput: %s\n", err, output)
-		logger.Error("tailscale serve failed: %v", err)
+		d.serveDebugf("FAILED: %v\nOutput: %s\n", err, output)
+		logger.Errorf("tailscale serve failed: %v", err)
 
-		if strings.Contains(output, "service not found") || strings.Contains(output, "unknown service") {
+		if strings.Contains(output, "service not found") ||
+			strings.Contains(output, "unknown service") {
 			return fmt.Errorf("service %s not found: create it in Tailscale admin console first",
 				d.config.Service)
 		}
 		if strings.Contains(output, untaggedServiceHostError) {
-			return fmt.Errorf("tailscale serve failed: requires tagged auth key (output: %s)", output)
+			return fmt.Errorf(
+				"tailscale serve failed: requires tagged auth key (output: %s)",
+				output,
+			)
 		}
 
 		return fmt.Errorf("tailscale serve failed: %w (output: %s)", err, output)
@@ -257,35 +262,40 @@ func (d *Daemon) configureServeEndpoint(ep ServeEndpoint) error {
 
 	// Check for approval pending (command succeeds but backend not active yet)
 	if strings.Contains(output, "approval from an admin is required") {
-		logger.Warn("Service backend registered but pending admin approval: %s", d.config.Service)
+		logger.Warnf("Service backend registered but pending admin approval: %s", d.config.Service)
 	}
 
-	d.serveDebug("SUCCESS\nOutput: %s\n", output)
-	logger.Info("tailscale serve endpoint %s:%s configured", ep.Proto, ep.Port)
+	d.serveDebugf("SUCCESS\nOutput: %s\n", output)
+	logger.Infof("tailscale serve endpoint %s:%s configured", ep.Proto, ep.Port)
 	return nil
 }
 
-// serveDebug appends a message to serve-debug.log in the state directory,
+// serveDebugf appends a message to serve-debug.log in the state directory,
 // which keeps a record of the serve attempts for debugging.
-func (d *Daemon) serveDebug(format string, args ...any) {
+func (d *Daemon) serveDebugf(format string, args ...any) {
 	path := filepath.Join(d.config.StateDir, "serve-debug.log")
 	f, err := logger.OpenRotating(path, serveDebugLogMaxBytes)
 	if err != nil {
-		logger.Warn("Failed to open serve debug file: %v", err)
+		logger.Warnf("Failed to open serve debug file: %v", err)
 		return
 	}
 	if _, err := fmt.Fprintf(f, format, args...); err != nil {
-		logger.Warn("Failed to write serve debug file: %v", err)
+		logger.Warnf("Failed to write serve debug file: %v", err)
 	}
 	if err := f.Close(); err != nil {
-		logger.Warn("Failed to close serve debug file: %v", err)
+		logger.Warnf("Failed to close serve debug file: %v", err)
 	}
 }
 
 // ConfigureServeEndpoints configures multiple Tailscale serve endpoints after startup.
 // This is called when container info is obtained from cache after initial Join.
-func (d *Daemon) ConfigureServeEndpoints(service string, endpoints []ServeEndpoint, tags []string, direct bool) error {
-	logger.Info("Late-configuring serve endpoints: service=%s endpoints=%d direct=%v for %s",
+func (d *Daemon) ConfigureServeEndpoints(
+	service string,
+	endpoints []ServeEndpoint,
+	tags []string,
+	direct bool,
+) error {
+	logger.Infof("Late-configuring serve endpoints: service=%s endpoints=%d direct=%v for %s",
 		service, len(endpoints), direct, d.config.EndpointID)
 
 	// Update tags if provided
@@ -301,7 +311,7 @@ func (d *Daemon) ConfigureServeEndpoints(service string, endpoints []ServeEndpoi
 		defer cancel()
 
 		if output, err := d.tailscale(ctx, "set-tags", args...); err != nil {
-			logger.Warn("Failed to set tags: %v (output: %s)", err, output)
+			logger.Warnf("Failed to set tags: %v (output: %s)", err, output)
 		}
 	}
 
@@ -318,7 +328,7 @@ func (d *Daemon) ConfigureServeEndpoints(service string, endpoints []ServeEndpoi
 					i, ep.Proto, ep.Port, err)
 			}
 		}
-		logger.Info("Late direct serve configuration completed")
+		logger.Infof("Late direct serve configuration completed")
 	}
 
 	// Configure service backend if specified
@@ -328,7 +338,7 @@ func (d *Daemon) ConfigureServeEndpoints(service string, endpoints []ServeEndpoi
 		case err != nil:
 			return err
 		default:
-			logger.Info("Late service configuration completed")
+			logger.Infof("Late service configuration completed")
 		}
 	}
 

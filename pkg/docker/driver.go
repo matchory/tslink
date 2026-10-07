@@ -492,7 +492,8 @@ func (d *Driver) Shutdown(ctx context.Context) error {
 const gcMinAge = 2 * time.Minute
 
 // collectGarbage removes state and sockets of endpoints that are gone without
-// a Leave, as after a host crash. It runs once recovery knows every endpoint.
+// a Leave, as after a host crash. It runs once recovery knows every endpoint,
+// and after each watchdog scan.
 func (d *Driver) collectGarbage() {
 	d.mu.RLock()
 	endpoints := make([]*core.Endpoint, 0, len(d.endpoints))
@@ -512,8 +513,9 @@ func (d *Driver) collectGarbage() {
 	core.CollectGarbage(d.config.DataDir, state, sockets, gcMinAge)
 }
 
-// runWatchdog periodically scans for orphaned endpoints and recovers them.
-// This handles cases where containers restart after initial recovery.
+// runWatchdog periodically scans for orphaned endpoints and recovers them,
+// then collects garbage. This handles cases where containers restart after
+// initial recovery.
 func (d *Driver) runWatchdog(ctx context.Context) {
 	// Wait before first check (let initial recovery complete)
 	select {
@@ -533,7 +535,10 @@ func (d *Driver) runWatchdog(ctx context.Context) {
 		case <-ticker.C:
 			if err := d.RecoverEndpoints(ctx); err != nil {
 				logger.Error("Watchdog recovery failed: %v", err)
+				continue
 			}
+			// Again here: state younger than gcMinAge survives the first run
+			d.collectGarbage()
 		}
 	}
 }

@@ -1,0 +1,16 @@
+#!/bin/bash
+# probelog <node>: the probe log of the caller task on a node, from the newest caller_client
+# container that has one, running or exited, so the log survives the task's replacement (as after
+# a reset); says so on stderr when it comes from an exited container
+B=$(dirname "$0")
+# shellcheck disable=SC2016 # runs on the node
+"$B/s" "$1" 'f=$(mktemp -u)
+for c in $(docker ps -aq -f label=com.docker.swarm.service.name=caller_client); do
+	docker cp "$c:/tmp/probe.log" "$f" 2>/dev/null || continue
+	cat "$f"
+	rm -f "$f"
+	[ "$(docker inspect -f "{{.State.Running}}" "$c")" = true ] ||
+		echo "(probe log of the exited container $c)" >&2
+	exit 0
+done
+echo "(no probe log)" >&2'

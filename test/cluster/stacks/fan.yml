@@ -1,0 +1,23 @@
+services:
+  client:
+    image: alpine:3.23
+    # one request a second to the VIP; prints "<epoch> <backend>", or "<epoch> FAIL"
+    command:
+      - sh
+      - -c
+      - >-
+        until apk add -q curl >/dev/null 2>&1; do sleep 1; done;
+        while :; do b=$$(curl -s -m2 http://$${VIP}/ | sed -n 's/^Hostname: //p');
+        echo "$$(date +%s) $${b:-FAIL}"; sleep 1; done
+    environment:
+      VIP: 100.93.19.42
+    networks: [tailnet]
+    deploy:
+      replicas: 30
+networks:
+  tailnet:
+    driver: ghcr.io/matchory/tslink:latest
+    driver_opts:
+      tslink.authkey: ${TSLINK_OAUTH_SECRET}?ephemeral=true&preauthorized=true
+      com.docker.network.driver.mtu: "1450"
+      tslink.tags: tag:tslink-test-caller

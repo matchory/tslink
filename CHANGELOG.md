@@ -76,6 +76,11 @@ three- and five-node swarms; see [docs/testing](docs/testing).
   a Tailscale Service share its certificate: one replica issues it while the
   others wait, and they are advertised once it exists.
 
+- Garbage collection cleans the shared certificate directory: certificates
+  (and keys) of names that expired more than 7 days ago, keys without a
+  certificate and temporary files older than a day, and certificate leases
+  not refreshed for an hour. The ACME account key and unknown files are kept.
+
 ### Changed
 
 - Images are published as `ghcr.io/matchory/tslink:<version>-<arch>`. The
@@ -130,6 +135,15 @@ three- and five-node swarms; see [docs/testing](docs/testing).
   persistent network used it after an ephemeral one, so garbage collection
   could log the persistent node out and delete its state. The marker now
   follows the network that uses the directory.
+
+- A container whose endpoint recovery failed, for example because its
+  routing could not be restored, could not start Tailscale on its next
+  endpoint: its state directory stayed claimed and the start retried forever.
+- A container that joined while the Docker event stream was down never
+  started Tailscale. The watcher now asks for missed events when it
+  reconnects, and the watchdog starts joined endpoints that never got a start.
+- Recovery no longer crashes on containers whose network settings Docker
+  leaves out.
 
 ### Security
 

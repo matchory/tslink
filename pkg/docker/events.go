@@ -339,7 +339,9 @@ func parseServeEndpoints(labels map[string]string) []core.ServeEndpoint {
 }
 
 // parseServeValue parses a serve label value.
-// Format: <proto>[:<target>][/<path>]
+// Format: <proto>[:<target>][/<path>][?proxy-protocol=1|2]
+// The proxy-protocol option, for tcp and tls-terminated-tcp, sends the target
+// the caller's tailnet address in a PROXY protocol header.
 // Examples:
 //   - "https:8080"      → proto=https, target=8080
 //   - "http:3000/api"   → proto=http, target=3000, path=/api
@@ -353,6 +355,18 @@ func parseServeValue(externalPort, value string) *core.ServeEndpoint {
 	endpoint := &core.ServeEndpoint{
 		Port:   externalPort,
 		Target: externalPort, // Default: same as external
+	}
+
+	value, options, _ := strings.Cut(value, "?")
+	if options != "" {
+		for opt := range strings.SplitSeq(options, "&") {
+			key, v, _ := strings.Cut(opt, "=")
+			if key != "proxy-protocol" || (v != "1" && v != "2") {
+				logger.Warn("tslink.serve.%s: ignoring endpoint with invalid option %q (want proxy-protocol=1 or 2)", externalPort, opt)
+				return nil
+			}
+			endpoint.ProxyProtocol = v
+		}
 	}
 
 	// Split by colon to get proto and target
@@ -378,6 +392,11 @@ func parseServeValue(externalPort, value string) *core.ServeEndpoint {
 		} else {
 			endpoint.Target = targetAndPath
 		}
+	}
+
+	if endpoint.ProxyProtocol != "" && endpoint.Proto != "tcp" && endpoint.Proto != "tls-terminated-tcp" {
+		logger.Warn("tslink.serve.%s: ignoring endpoint: proxy-protocol needs tcp or tls-terminated-tcp, not %s", externalPort, endpoint.Proto)
+		return nil
 	}
 
 	// Default target to external port if empty

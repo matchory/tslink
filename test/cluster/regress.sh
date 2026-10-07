@@ -20,7 +20,8 @@ test_devices() {
 orphans() {
 	devices | jq --arg since "$1" '[.devices[]|select(any(.tags[]?; startswith("tag:tslink-test-c") or .=="tag:tslink-test-nogrant") and (.connectedToControl|not) and .isEphemeral and (.lastSeen > $since))]|length'
 }
-mapfile -t CALLEES < <(devices | jq -r '.devices[]|select(any(.tags[]?; .=="tag:tslink-test-callee") and .connectedToControl and (.hostname|startswith("callee-whoami-")))|.addresses[0]')
+CALLEES=()
+while read -r a; do CALLEES+=("$a"); done < <(devices | jq -r '.devices[]|select(any(.tags[]?; .=="tag:tslink-test-callee") and .connectedToControl and (.hostname|startswith("callee-whoami-")))|.addresses[0]')
 VIP=$("$B/tsapi" GET '/tailnet/-/services/svc:tslink-test-callee' | jq -r '.addrs[0]')
 SUFFIX=$("$B/s" mgr 'tailscale status --json | jq -r .MagicDNSSuffix')
 START=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -31,7 +32,7 @@ check "task tailscaleds healthy" "$([ -z "$bad" ] && echo ok || echo "$bad")"
 
 # 2. Isolation. Each host's tailscaled (node tag) may reach the callees, so traffic leaking out
 #    of a nogrant task through its host would succeed instead of being refused.
-for n in mgr w1 w2; do
+for n in $("$B/nodes"); do
 	c=$("$B/cxs" "$n" caller_client "$B/reach.sh" "${CALLEES[@]}" "$VIP")
 	g=$("$B/cxs" "$n" nogrant_client "$B/reach.sh" "${CALLEES[@]}" "$VIP")
 	h=$("$B/s" "$n" "for t in ${CALLEES[*]}; do curl -s -m4 -o /dev/null -w '%{http_code} ' http://\$t/; done")
@@ -42,7 +43,7 @@ done
 
 # 3. DNS from overlay + tslink tasks using quad-100
 D=$(devices | jq -r '[.devices[]|select(.hostname|startswith("callee-whoami-"))|.hostname][0]')
-for n in mgr w1 w2; do
+for n in $("$B/nodes"); do
 	r=$("$B/cxs" "$n" caller_client "$B/dns.sh" "$D" "tslink-test-callee.$SUFFIX" example.com echo tasks.echo)
 	check "DNS on $n" "$(echo "$r" | grep -q FAIL && echo "$r" || echo ok)"
 done
@@ -54,7 +55,7 @@ sleep 5
 "$B/s" mgr 'docker service update -d -q --update-order start-first --force callee_whoami' >/dev/null
 "$B/await" callee_whoami >/dev/null
 sleep 12
-for n in mgr w1 w2; do
+for n in $("$B/nodes"); do
 	# shellcheck disable=SC2016 # awk program, expanded in the container
 	f=$("$B/cx" "$n" caller_client 'awk "\$3!=200" /tmp/probe.log | wc -l' | tr -d ' ')
 	check "rolling update: caller@$n failed requests ($f)" "$([ "$f" -le 3 ] && echo ok || echo "$f failed")"

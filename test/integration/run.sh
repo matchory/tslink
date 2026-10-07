@@ -58,6 +58,8 @@ reaches() {
 
 nodes_named() { hs nodes list -o json | jq --arg n "$1" '[(. // [])[] | select(.given_name == $n)] | length'; }
 node_gone() { [ "$(nodes_named "$1")" = 0 ]; }
+# state_gone HOSTNAME: whether tslink deleted the hostname's state directory
+state_gone() { ! sudo test -e "$DATA/by-hostname/$1"; }
 
 dump_logs() {
 	log "Diagnostics"
@@ -115,11 +117,12 @@ key() { hs preauthkeys create --user "$1" --reusable --expiration 1h "${@:2}" | 
 network() {
 	# A plain "tslink" does not resolve: the driver is registered under the
 	# plugin's full name
-	docker network create --driver "$PLUGIN:latest" --opt tslink.loginserver="$URL" --opt tslink.authkey="$2" "$1" >/dev/null
+	docker network create --driver "$PLUGIN:latest" --opt tslink.loginserver="$URL" --opt tslink.authkey="$2" "${@:3}" "$1" >/dev/null
 }
 network e2e-alice "$(key "$alice")"
 network e2e-bob "$(key "$bob")"
-network e2e-ephemeral "$(key "$alice" --ephemeral)"
+# headscale's keys do not say whether they are ephemeral: the option does
+network e2e-ephemeral "$(key "$alice" --ephemeral)" --opt tslink.ephemeral=true
 
 # The server answers every connection on port 8080 with $MARK
 docker run -d --name e2e-server --network e2e-alice "$ALPINE" sh -c \
@@ -133,6 +136,12 @@ client_ip=$(wait_ip e2e-client)
 echo "server $server_ip, client $client_ip"
 retry 120 reaches e2e-client "$server_ip" || fail "client cannot reach the server"
 
+log "A persistent network's state is not marked ephemeral"
+sudo test -s "$DATA/by-hostname/e2e-server/tailscaled.state" || fail "server has no state"
+if sudo test -e "$DATA/by-hostname/e2e-server/ephemeral"; then
+	fail "server's state is marked ephemeral"
+fi
+
 log "The ACL refuses a container it does not grant"
 outsider_ip=$(wait_ip e2e-outsider)
 echo "outsider $outsider_ip"
@@ -142,13 +151,16 @@ if retry 30 reaches e2e-outsider "$server_ip"; then
 	fail "outsider reached the server"
 fi
 
-log "Stopping a container removes its ephemeral node"
+log "Stopping a container logs its ephemeral node out and deletes its state"
 docker run -d --name e2e-ephemeral --network e2e-ephemeral "$ALPINE" sleep 3600
 wait_ip e2e-ephemeral
 [ "$(nodes_named e2e-ephemeral)" = 1 ] || fail "ephemeral node not in headscale"
+sudo test -e "$DATA/by-hostname/e2e-ephemeral/ephemeral" || fail "ephemeral node's state is not marked"
 docker stop -t 1 e2e-ephemeral >/dev/null
-# headscale deletes it after node.ephemeral.inactivity_timeout (70s)
-retry 240 node_gone e2e-ephemeral || fail "ephemeral node still in headscale"
+# Well under headscale's node.ephemeral.inactivity_timeout (70s): only
+# tslink's logout removes the node this soon
+retry 20 node_gone e2e-ephemeral || fail "ephemeral node not logged out within 20s"
+retry 20 state_gone e2e-ephemeral || fail "ephemeral node's state not deleted"
 
 log "A plugin restart keeps the containers' identities"
 docker plugin disable -f "$PLUGIN"

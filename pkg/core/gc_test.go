@@ -81,6 +81,33 @@ func TestCollectGarbage(t *testing.T) {
 	}
 }
 
+func TestCollectGarbageKeepsStateReusedByPersistentNetwork(t *testing.T) {
+	// A hostname's state directory, marked while on an ephemeral network,
+	// then used by a persistent one: once orphaned, its node must not be
+	// logged out and deleted as ephemeral.
+	data := t.TempDir()
+	dir := filepath.Join(data, "by-hostname", "db")
+	syncEphemeralMarker(dir, true)
+	if !tailscale.IsMarkedEphemeral(dir) {
+		t.Fatal("ephemeral network did not mark the directory")
+	}
+	syncEphemeralMarker(dir, false)
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(dir, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	loggedOut := stubLogout(t, nil)
+	CollectGarbage(context.Background(), data, nil, nil, time.Minute)
+
+	if got := loggedOut(); len(got) != 0 {
+		t.Errorf("logged out %v, want none", got)
+	}
+	if _, err := os.Stat(dir); err != nil {
+		t.Errorf("%s should be kept: %v", dir, err)
+	}
+}
+
 func TestClaimStateDir(t *testing.T) {
 	// Recovery must claim the directory before garbage collection runs; the
 	// start that would claim it otherwise runs in the background.

@@ -4,8 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/aaomidi/tslink/pkg/tailscale"
@@ -24,6 +26,8 @@ type Network struct {
 	MTU     int      // veth MTU; 0 for the default
 
 	LoginServer string // control server URL; empty for Tailscale's
+
+	ephemeral *bool // tslink.ephemeral; nil if unset
 }
 
 // NewNetwork builds a network from its options and resolves its credential:
@@ -34,8 +38,25 @@ func NewNetwork(id string, opts NetworkOptions, cfg *Config) (*Network, error) {
 		return nil, err
 	}
 	n := &Network{ID: id, AuthKey: opts.AuthKey, Tags: opts.Tags, MTU: opts.MTU, LoginServer: opts.LoginServer}
+	if opts.Ephemeral != "" {
+		v, err := strconv.ParseBool(opts.Ephemeral)
+		if err != nil || strconv.FormatBool(v) != opts.Ephemeral {
+			return nil, fmt.Errorf("%s must be true or false, not %q", EphemeralOption, opts.Ephemeral)
+		}
+		n.ephemeral = &v
+	}
+	if err := n.resolveCredential(cfg); err != nil {
+		return nil, err
+	}
+	if err := n.checkEphemeral(); err != nil {
+		return nil, err
+	}
+	return n, nil
+}
+
+func (n *Network) resolveCredential(cfg *Config) error {
 	if n.AuthKey != "" {
-		return n, nil
+		return nil
 	}
 
 	_, err := os.Stat(filepath.Join(cfg.DataDir, ClusterCredentialFile))
@@ -44,19 +65,51 @@ func NewNetwork(id string, opts NetworkOptions, cfg *Config) (*Network, error) {
 		// Tags are checked against the stack when a task starts, since Docker
 		// does not pass the network's labels here
 		if len(n.Tags) == 0 {
-			return nil, errors.New("tslink.tags is required with the cluster credential")
+			return errors.New("tslink.tags is required with the cluster credential")
 		}
-		return n, nil
+		return nil
 	case !errors.Is(err, fs.ErrNotExist):
-		return nil, fmt.Errorf("failed to check the cluster credential: %w", err)
+		return fmt.Errorf("failed to check the cluster credential: %w", err)
 	}
 
 	n.AuthKey = cfg.AuthKey
 	if n.AuthKey == "" {
-		return nil, fmt.Errorf("no Tailscale credential: provide %s, set TS_AUTHKEY, or use --opt tslink.authkey=xxx",
+		return fmt.Errorf("no Tailscale credential: provide %s, set TS_AUTHKEY, or use --opt tslink.authkey=xxx",
 			ClusterCredentialFile)
 	}
-	return n, nil
+	return nil
+}
+
+// checkEphemeral refuses a tslink.ephemeral option the credential contradicts:
+// the cluster credential registers ephemeral nodes only, and an OAuth client
+// secret may say otherwise in its own ephemeral parameter.
+func (n *Network) checkEphemeral() error {
+	if n.ephemeral == nil {
+		return nil
+	}
+	if n.UsesClusterCredential() {
+		if !*n.ephemeral {
+			return fmt.Errorf("%s=false is not possible with the cluster credential, which registers ephemeral "+
+				"nodes only: use tslink.authkey for persistent nodes", EphemeralOption)
+		}
+		return nil
+	}
+	if v, ok := keyEphemeralParam(n.AuthKey); ok && v != *n.ephemeral {
+		return fmt.Errorf("%s=%t contradicts ephemeral=%t in tslink.authkey: remove one of them",
+			EphemeralOption, *n.ephemeral, v)
+	}
+	return nil
+}
+
+// keyEphemeralParam returns the ephemeral parameter appended to a key, as in
+// "tskey-client-...?ephemeral=false", and whether there is one.
+func keyEphemeralParam(key string) (value, ok bool) {
+	_, query, _ := strings.Cut(key, "?")
+	params, err := url.ParseQuery(query)
+	if err != nil || !params.Has("ephemeral") {
+		return false, false
+	}
+	return params.Get("ephemeral") == "true", true
 }
 
 // UsesClusterCredential reports whether the network's nodes register with the
@@ -65,18 +118,36 @@ func (n *Network) UsesClusterCredential() bool {
 	return n.AuthKey == ""
 }
 
-// Ephemeral reports whether the network's nodes are ephemeral. The cluster
-// credential registers ephemeral nodes only.
+// Ephemeral reports whether the network's nodes are ephemeral: always with the
+// cluster credential, which registers ephemeral nodes only, else as the
+// tslink.ephemeral option says, else as far as the key says. Unknown counts as
+// not ephemeral, so a persistent node is never logged out by guess.
 func (n *Network) Ephemeral() bool {
-	return n.UsesClusterCredential() || tailscale.IsEphemeralKey(n.AuthKey)
+	switch {
+	case n.UsesClusterCredential():
+		return true
+	case n.ephemeral != nil:
+		return *n.ephemeral
+	default:
+		return tailscale.IsEphemeralKey(n.AuthKey)
+	}
 }
 
 // Credential returns the key a node registers with. The cluster credential is
 // read on every call, so replacing the file takes effect at the next
-// registration.
+// registration. An OAuth client secret without an ephemeral parameter gets
+// one from the tslink.ephemeral option, so its nodes are what the option says.
 func (n *Network) Credential(dataDir string) (string, error) {
 	if !n.UsesClusterCredential() {
-		return n.AuthKey, nil
+		key := n.AuthKey
+		if _, ok := keyEphemeralParam(key); n.ephemeral != nil && !ok && strings.HasPrefix(key, "tskey-client-") {
+			sep := "?"
+			if strings.Contains(key, "?") {
+				sep = "&"
+			}
+			key += sep + "ephemeral=" + strconv.FormatBool(*n.ephemeral)
+		}
+		return key, nil
 	}
 	path := filepath.Join(dataDir, ClusterCredentialFile)
 	b, err := os.ReadFile(path) // #nosec G304 -- fixed name in the plugin's data directory

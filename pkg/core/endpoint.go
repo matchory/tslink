@@ -318,11 +318,7 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 	if err := e.ClaimStateDir(info); err != nil {
 		return err
 	}
-	if network.Ephemeral() {
-		if err := tailscale.MarkEphemeral(stateDir); err != nil {
-			logger.Warn("Failed to mark %s as ephemeral: %v", stateDir, err)
-		}
-	}
+	syncEphemeralMarker(stateDir, network.Ephemeral())
 
 	wipeStateOnKeyChange(stateDir, network)
 
@@ -642,6 +638,22 @@ func checkStackScope(info *ContainerInfo, network *Network, tags []string) error
 // wipeStateOnKeyChange wipes the state if the network's auth key changed, for
 // a fresh registration. A replaced cluster credential is a rotation, which a
 // logged-in node survives, so its state is kept.
+// syncEphemeralMarker marks stateDir as holding an ephemeral node, or clears
+// the mark, as the network using it says. A hostname's directory may move from
+// an ephemeral network to a persistent one; a stale mark would have garbage
+// collection log the persistent node out and delete its state.
+func syncEphemeralMarker(stateDir string, ephemeral bool) {
+	if ephemeral {
+		if err := tailscale.MarkEphemeral(stateDir); err != nil {
+			logger.Warn("Failed to mark %s as ephemeral: %v", stateDir, err)
+		}
+		return
+	}
+	if err := tailscale.ClearEphemeral(stateDir); err != nil {
+		logger.Warn("Failed to clear the ephemeral mark of %s: %v", stateDir, err)
+	}
+}
+
 func wipeStateOnKeyChange(stateDir string, network *Network) {
 	if network.UsesClusterCredential() || !tailscale.StateExists(stateDir) ||
 		tailscale.CheckAuthKeyMatch(stateDir, network.AuthKey) {

@@ -23,6 +23,25 @@ func TestIsEphemeralKey(t *testing.T) {
 	}
 }
 
+func TestClearEphemeral(t *testing.T) {
+	dir := t.TempDir()
+	if err := ClearEphemeral(dir); err != nil {
+		t.Fatalf("ClearEphemeral on an unmarked directory: %v", err)
+	}
+	if err := MarkEphemeral(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := ClearEphemeral(dir); err != nil {
+		t.Fatal(err)
+	}
+	if IsMarkedEphemeral(dir) {
+		t.Error("directory still marked ephemeral")
+	}
+	if _, err := os.Stat(dir); err != nil {
+		t.Errorf("directory removed: %v", err)
+	}
+}
+
 func TestBundledBinaries(t *testing.T) {
 	dir := t.TempDir()
 	orig := bundledDir

@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -20,12 +21,10 @@ import (
 
 const (
 	socketAddress = "/run/docker/plugins/tailscale.sock"
-	dataDir       = "/data"
-	logPath       = "/data/plugin.log"
 )
 
 func main() {
-	if err := logger.Init(logPath); err != nil {
+	if err := logger.Init(filepath.Join(core.DataDir(), "plugin.log")); err != nil {
 		log.Printf("Warning: failed to initialize file logger: %v", err)
 	}
 
@@ -45,12 +44,6 @@ func main() {
 
 func runPlugin() {
 	logger.Infof("Starting Tailscale Docker network plugin")
-
-	pluginDataDir := os.Getenv("TS_DATA_DIR")
-	if pluginDataDir == "" {
-		pluginDataDir = dataDir
-	}
-	core.RemoveDownloadCache(pluginDataDir)
 
 	driver, err := docker.NewDriver()
 	if err != nil {
@@ -87,7 +80,7 @@ func runPlugin() {
 }
 
 func runDiag() {
-	if err := diag.Run(dataDir, os.Stdout); err != nil {
+	if err := diag.Run(core.DataDir(), os.Stdout); err != nil {
 		log.Fatalf("Diagnostic failed: %v", err)
 	}
 }

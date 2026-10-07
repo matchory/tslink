@@ -49,8 +49,10 @@ sudo mkdir -p /var/lib/docker-plugins/tailscale
 
 Docker plugins have no multi-architecture
 images, so each image tag names its architecture. Always install under the
-alias `tslink`: networks and stack files then name the driver `tslink`,
-whatever the version and architecture, and upgrades keep the name.
+alias `tslink`: networks and stack files then name the driver
+`tslink:latest`, whatever the version and architecture, and upgrades keep the
+name. Docker stores the alias with the tag `latest`; plugin commands accept
+`tslink`, but a network driver must be named in full.
 
 ```bash
 # amd64 (Intel/AMD, most cloud VMs); use <version>-arm64 on ARM
@@ -80,13 +82,13 @@ On production nodes, see [docs/node-provisioning.md](docs/node-provisioning.md).
 ```bash
 # With auth key in command (ephemeral nodes by default)
 docker network create \
-  --driver tslink \
+  --driver tslink:latest \
   --opt tslink.authkey=tskey-auth-xxxxx \
   my-tailnet
 
 # Or set the auth key globally when installing the plugin
 docker plugin set tslink TS_AUTHKEY=tskey-auth-xxxxx
-docker network create --driver tslink my-tailnet
+docker network create --driver tslink:latest my-tailnet
 ```
 
 ### Run Containers
@@ -116,7 +118,7 @@ curl http://web.your-tailnet.ts.net
 ```yaml
 networks:
   tailnet:
-    driver: tslink
+    driver: tslink:latest
     driver_opts:
       tslink.authkey: ${TS_AUTHKEY}
 
@@ -210,7 +212,7 @@ docker plugin set tslink TS_AUTHKEY=tskey-auth-xxxxx
 docker plugin enable tslink
 
 # Now create networks without specifying the auth key
-docker network create --driver tslink my-tailnet
+docker network create --driver tslink:latest my-tailnet
 ```
 
 ## Auth Key Types

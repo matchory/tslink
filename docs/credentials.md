@@ -4,6 +4,28 @@ How to give each Swarm task a tailnet identity without letting a task choose
 someone else's. Based on the [Swarm spike](testing/swarm-spike-2026-10-06.md)
 and the [cluster test](testing/swarm-cluster-test-2026-10-07.md).
 
+## Cluster credential (2026-10-07)
+
+The cluster now shares one OAuth client, read by the plugin from
+`oauth-client.secret` in its data directory, so stacks carry no secret and
+need no client of their own; see
+[spec 09](../specs/09_cluster-credential-and-shared-certificates.md). The file
+is the same on every node and names no stack, so deploying a stack still
+needs no node change. The per-stack model below remains available: a
+network's `tslink.authkey` takes precedence over the file.
+
+The cluster client owns every stack's tags, so Tailscale no longer stops a
+stack from declaring another stack's tags. tslink does instead: with the
+cluster credential, a stack's tags must be `tag:<stack>` or start with
+`tag:<stack>-`, where `<stack>` is the network's
+`com.docker.stack.namespace`, and networks outside a stack cannot use it. The
+boundary stays where it was: whoever can deploy a stack under a name acts as
+that stack. What changes is breadth: root on any node can read a credential
+for every stack's tags, not only those of the stacks running there.
+
+Rotating the cluster credential means replacing the file; it is read at every
+registration, so no network needs recreating.
+
 ## Recommended setup
 
 Give each stack its own Tailscale OAuth client, allowed to apply only that
@@ -57,7 +79,8 @@ fail to register and retry until the network carries a valid secret.
 ## Alternatives not recommended
 
 - **A policy file on each node** mapping stacks to credentials: couples
-  cluster deployments to node provisioning.
+  cluster deployments to node provisioning. (The cluster credential file
+  mentions no stack, so it does not.)
 - **Docker secrets:** Swarm hands secret contents only to the tasks they are
   mounted into, so tslink would have to read the secret from the application's
   own container. A compromised application would then hold a non-expiring

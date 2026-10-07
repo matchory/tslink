@@ -17,24 +17,16 @@ const networkInspectTimeout = 10 * time.Second
 // networkFromInspect rebuilds a network from the options Docker stored when
 // it was created. It is the only place that builds one from inspect data.
 func networkFromInspect(res dockerclient.NetworkInspectResult, cfg *core.Config) (*core.Network, error) {
-	id, opts := res.Network.ID, res.Network.Options
-
 	// As in CreateNetwork
-	authKey := opts["tslink.authkey"]
-	if authKey == "" {
-		authKey = cfg.AuthKey
+	opts := make(map[string]any, len(res.Network.Options))
+	for k, v := range res.Network.Options {
+		opts[k] = v
 	}
-	if authKey == "" {
-		return nil, fmt.Errorf("no auth key available for network %s", id)
+	net, err := core.NewNetwork(res.Network.ID, core.ParseNetworkOptions(opts), cfg)
+	if err != nil {
+		return nil, fmt.Errorf("network %s: %w", res.Network.ID, err)
 	}
-
-	return &core.Network{
-		ID:          id,
-		AuthKey:     authKey,
-		Tags:        core.ParseTags(opts["tslink.tags"]),
-		MTU:         core.ParseMTU(opts[core.MTUOption]),
-		LoginServer: opts[core.LoginServerOption],
-	}, nil
+	return net, nil
 }
 
 // adoptNetwork stores the network rebuilt from an inspect result, unless the

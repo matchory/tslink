@@ -187,7 +187,7 @@ type DaemonConfig struct {
 	StateDir      string
 	SocketPath    string // tailscaled socket; defaults to <StateDir>/tailscaled.sock
 	Hostname      string
-	AuthKey       string
+	AuthKey       func() (string, error) // Read at each login, so a replaced credential takes effect
 	NetNSPath     string
 	TailscaleBin  string          // Path to tailscale CLI binary
 	TailscaledBin string          // Path to tailscaled daemon binary
@@ -313,7 +313,7 @@ func (d *Daemon) Start() error {
 	logger.Debug("Running: nsenter %v", nsenterArgs)
 
 	d.cmd = exec.CommandContext(d.ctx, "nsenter", nsenterArgs...)
-	d.cmd.Env = append(os.Environ(), "TS_AUTHKEY="+d.config.AuthKey)
+	d.cmd.Env = os.Environ()
 
 	// Set up streaming output - logs each line as it arrives
 	stdoutPipe, err := d.cmd.StdoutPipe()
@@ -606,7 +606,11 @@ func (d *Daemon) tryBringUp(withKey bool, extraArgs ...string) error {
 
 	cmd := exec.CommandContext(ctx, d.config.TailscaleBin, args...)
 	if withKey {
-		cmd.Stdin = strings.NewReader(d.config.AuthKey)
+		key, err := d.config.AuthKey()
+		if err != nil {
+			return err
+		}
+		cmd.Stdin = strings.NewReader(key)
 	}
 	output, err := cmd.CombinedOutput()
 	if err != nil {

@@ -15,7 +15,7 @@ networks:
     driver_opts:
       com.docker.network.driver.mtu: "1450"
   tailnet:
-    driver: ghcr.io/matchory/tslink:latest
+    driver: tslink:latest
     driver_opts:
       tslink.authkey: ${TSLINK_OAUTH_SECRET}?ephemeral=true&preauthorized=true
       com.docker.network.driver.mtu: "1450"

@@ -22,8 +22,8 @@ services:
     networks: [n]
 networks:
   c:
-    driver: ghcr.io/matchory/tslink:latest
+    driver: tslink:latest
     driver_opts: {tslink.authkey: "${CALLER_SECRET}?ephemeral=true&preauthorized=true", tslink.tags: "${TSLINK_TEST_TAG:-tag:tslink-test}-caller"}
   n:
-    driver: ghcr.io/matchory/tslink:latest
+    driver: tslink:latest
     driver_opts: {tslink.authkey: "${NOGRANT_SECRET}?ephemeral=true&preauthorized=true", tslink.tags: "${TSLINK_TEST_TAG:-tag:tslink-test}-nogrant"}

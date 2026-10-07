@@ -32,7 +32,7 @@ services:
       placement: {constraints: [node.hostname==tslink-test-w1]}
 networks:
   tailnet:
-    driver: ghcr.io/matchory/tslink:latest
+    driver: tslink:latest
     driver_opts:
       tslink.authkey: ${TSLINK_OAUTH_SECRET}?ephemeral=true&preauthorized=true
       com.docker.network.driver.mtu: "1450"

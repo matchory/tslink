@@ -51,11 +51,16 @@ not run against headscale. A few stacks for single experiments pin tasks to the 
 ## Run
 
 ```bash
-./install-plugin.sh WT             # or a git ref; replaces the plugin on every node
+./install-plugin.sh WT             # or a git ref; installs it as tslink on every node
 ./deploy callee && ./deploy caller && ./deploy nogrant
 ./regress.sh --upgrade             # exits non-zero if a check fails
 ./cleanup.sh                       # delete the test devices, Services and keys
 ```
+
+`install-plugin.sh` installs the plugin as `tslink` (`tslink:latest`), the name the documented
+`docker plugin install --alias tslink` gives it, and the stacks name the driver `tslink:latest`.
+A network keeps its driver: to move a Swarm from another plugin name, remove the stacks and that
+plugin first.
 
 ## Optional: provisioning on Hetzner Cloud
 

@@ -45,6 +45,22 @@ for n in $("$B/nodes"); do
 	echo "  caller@$n uses $("$B/cx" "$n" caller_client 'tail -1 /tmp/probe.log | cut -d" " -f4')"
 done
 t0=$(date +%s)
+# Until the managers miss its heartbeats, a node that went down still shows Ready: watch for
+# another status while the action runs, so that "node Ready" below means it came back
+status() { "$B/s" "$ctl" "docker node inspect -f '{{.Status.State}}' $host" 2>/dev/null; }
+downlog=$(mktemp)
+(
+	end=$((SECONDS + 90))
+	while [ $SECONDS -lt $end ]; do
+		st=$(status)
+		if [ -n "$st" ] && [ "$st" != ready ]; then
+			echo "$(ts) node $st (+$(($(date +%s) - t0))s)" >"$downlog"
+			exit
+		fi
+		sleep 1
+	done
+) &
+watch=$!
 echo "$(ts) [$node] $action"
 # shellcheck disable=SC2016 # docker-kill's command runs on the node
 case $action in
@@ -68,8 +84,15 @@ until "$B/s" "$node" true 2>/dev/null; do sleep 2; done
 echo "$(ts) ssh up (+$(($(date +%s) - t0))s)"
 until "$B/s" "$node" 'docker info --format "{{.Swarm.LocalNodeState}}"' 2>/dev/null | grep -q active; do sleep 1; done
 echo "$(ts) docker up, swarm active (+$(($(date +%s) - t0))s)"
-until "$B/s" "$ctl" "docker node ls --format '{{.Hostname}} {{.Status}}'" | grep -qx "$host Ready"; do sleep 1; done
-echo "$(ts) node Ready (+$(($(date +%s) - t0))s)"
+wait "$watch"
+if [ -s "$downlog" ]; then
+	cat "$downlog"
+	until [ "$(status)" = ready ]; do sleep 1; done
+	echo "$(ts) node Ready (+$(($(date +%s) - t0))s)"
+else
+	echo "$(ts) node never left Ready"
+fi
+rm -f "$downlog"
 until tsready "$node" 2>/dev/null; do sleep 1; done
 echo "$(ts) node's tasks Running on the tailnet (+$(($(date +%s) - t0))s)"
 sleep 20

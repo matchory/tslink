@@ -509,6 +509,9 @@ func (e *Endpoint) ClaimStateDir(info *ContainerInfo) error {
 	stateClaimsMu.Lock()
 	defer stateClaimsMu.Unlock()
 	if owner, ok := stateClaims[dir]; ok && owner != e.ID {
+		if owner == gcClaim {
+			return fmt.Errorf("state directory %s is being garbage collected", dir)
+		}
 		return fmt.Errorf("state directory %s is in use by endpoint %s: is tslink.hostname %q set on a replicated service?",
 			dir, owner[:12], info.Hostname)
 	}

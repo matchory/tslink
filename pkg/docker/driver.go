@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -32,9 +33,6 @@ type Driver struct {
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 }
-
-// NetworkDriverName is the base name used to identify our network driver (without tag).
-const NetworkDriverName = "ghcr.io/aaomidi/tslink"
 
 // watchdogInterval is the interval at which the watchdog checks for orphaned endpoints.
 const watchdogInterval = 60 * time.Second
@@ -79,7 +77,7 @@ func NewDriver() (*Driver, error) {
 	// Start event watcher in background (tracked by waitgroup)
 	// Pass callback to trigger Tailscale setup when container info arrives
 	d.wg.Go(func() {
-		WatchEvents(ctx, cache, NetworkDriverName, d.onContainerInfo)
+		WatchEvents(ctx, cache, d.ownsNetwork, d.onContainerInfo)
 	})
 
 	// Recover orphaned endpoints from previous plugin instance (host reboot, plugin restart)
@@ -102,6 +100,33 @@ func NewDriver() (*Driver, error) {
 	})
 
 	return d, nil
+}
+
+// ownsNetwork reports whether Docker created the network through this driver.
+func (d *Driver) ownsNetwork(id string) bool {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	_, ok := d.networks[id]
+	return ok
+}
+
+// ownPluginNames returns the names of enabled plugins running tslink, which
+// are the driver names of its networks. The plugin can be installed under any
+// name, and recovery runs before Docker has told it about any network.
+// If several tslink plugins are enabled at once, each recovers the others'
+// networks too.
+func (d *Driver) ownPluginNames(ctx context.Context) (map[string]bool, error) {
+	plugins, err := d.docker.PluginList(ctx, dockerclient.PluginListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list plugins: %w", err)
+	}
+	names := make(map[string]bool)
+	for _, p := range plugins.Items {
+		if p.Enabled && slices.Equal(p.Config.Entrypoint, []string{"/tslink"}) {
+			names[p.Name] = true
+		}
+	}
+	return names, nil
 }
 
 // onContainerInfo is called by the event watcher when container info is stored.
@@ -455,6 +480,11 @@ func (d *Driver) runWatchdog(ctx context.Context) {
 func (d *Driver) RecoverEndpoints(ctx context.Context) error {
 	logger.Info("RecoverEndpoints: scanning for orphaned endpoints")
 
+	ownNames, err := d.ownPluginNames(ctx)
+	if err != nil {
+		return err
+	}
+
 	// List all running containers
 	containerList, err := d.docker.ContainerList(ctx, dockerclient.ContainerListOptions{})
 	if err != nil {
@@ -484,7 +514,7 @@ func (d *Driver) RecoverEndpoints(ctx context.Context) error {
 				continue
 			}
 
-			if !strings.HasPrefix(networkResult.Network.Driver, NetworkDriverName) {
+			if !ownNames[networkResult.Network.Driver] {
 				continue
 			}
 

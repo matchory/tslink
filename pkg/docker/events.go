@@ -64,8 +64,9 @@ type ContainerInfoCallback func(endpointID string, info *core.ContainerInfo)
 // WatchEvents watches Docker events and caches container info.
 // When container info is stored, the callback is invoked to trigger Tailscale setup.
 // The context controls the lifecycle - when cancelled, the watcher stops.
-func WatchEvents(ctx context.Context, cache *ContainerCache, networkDriverName string, onInfo ContainerInfoCallback) {
-	logger.Info("Starting Docker event watcher for network driver: %s", networkDriverName)
+// ownsNetwork reports whether a network ID belongs to this driver.
+func WatchEvents(ctx context.Context, cache *ContainerCache, ownsNetwork func(id string) bool, onInfo ContainerInfoCallback) {
+	logger.Info("Starting Docker event watcher")
 
 	cli, err := dockerclient.New(dockerclient.FromEnv)
 	if err != nil {
@@ -119,11 +120,12 @@ func WatchEvents(ctx context.Context, cache *ContainerCache, networkDriverName s
 
 		case msg := <-result.Messages:
 			// Log all network events for debugging
-			networkType := msg.Actor.Attributes["type"]
-			logger.Debug("Event received: type=%s driver=%s (want prefix=%s)", msg.Action, networkType, networkDriverName)
+			logger.Debug("Event received: type=%s network=%s driver=%s",
+				msg.Action, msg.Actor.ID, msg.Actor.Attributes["type"])
 
-			// Only process events for our network driver (match by prefix to handle any tag)
-			if !strings.HasPrefix(networkType, networkDriverName) {
+			// Only process events for networks Docker created through this driver,
+			// whatever name the plugin was installed under
+			if !ownsNetwork(msg.Actor.ID) {
 				continue
 			}
 

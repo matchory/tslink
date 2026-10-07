@@ -163,7 +163,7 @@ Configure per-container Tailscale settings using labels:
 |-------|-------------|---------|
 | `tslink.hostname` | Tailscale hostname. On a node, only one container at a time can use a hostname: a second replica waits without an identity until the first one leaves | `tslink.hostname=my-api` |
 | `tslink.tags` | ACL tags (comma-separated) | `tslink.tags=tag:server,tag:prod` |
-| `tslink.serve.<port>` | Expose port via Tailscale Serve | `tslink.serve.443=https:8080` |
+| `tslink.serve.<port>` | Expose port via Tailscale Serve: `<proto>[:<target>][/<path>][?proxy-protocol=1\|2]` | `tslink.serve.443=https:8080` |
 | `tslink.service` | Register as Tailscale Service backend | `tslink.service=svc:my-api` |
 | `tslink.direct` | Enable direct machine serve | `tslink.direct=true` (default) |
 
@@ -180,6 +180,13 @@ docker run -d --network my-tailnet \
   --label tslink.serve.443=https:8080 \
   my-web-app
 ```
+
+**Caller addresses.** In `http` and `https` mode, Tailscale Serve passes the
+caller's tailnet address in `X-Forwarded-For`. In `tcp` and
+`tls-terminated-tcp` mode, the target sees connections from `127.0.0.1`;
+`?proxy-protocol=1` or `=2` (e.g. `tslink.serve.5432=tcp:5432?proxy-protocol=2`)
+makes Tailscale send a PROXY protocol header with the caller's address, which
+the application must accept.
 
 ### Setting Default Auth Key
 

@@ -82,7 +82,7 @@ type Daemon struct {
 
 	// runCLI runs the tailscale CLI and returns its output; tests replace it.
 	// Nil runs config.TailscaleBin.
-	runCLI func(ctx context.Context, prefix string, args ...string) (string, error)
+	runCLI func(ctx context.Context, c cliCall) (cliOutput, error)
 }
 
 // NewDaemon creates a new Daemon instance.
@@ -502,17 +502,13 @@ func (d *Daemon) waitForSocket() error {
 // killProcess takes tailscaled down, kills it, waits for it to exit and
 // removes its socket.
 func (d *Daemon) killProcess(cmd *exec.Cmd) {
-	// Try graceful shutdown first
-	args := []string{
-		"--socket=" + d.socketPath,
-		"down",
-	}
-
+	// Try graceful shutdown first. It fails if tailscaled has crashed: kill
+	// it anyway
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
-	downCmd := exec.CommandContext(ctx, d.config.TailscaleBin, args...)
-	_ = downCmd.Run() // Ignore errors
+	if out, err := d.tailscale(ctx, "down", "--socket="+d.socketPath, "down"); err != nil {
+		logger.Debugf("tailscale down failed: %v (output: %s)", err, strings.TrimSpace(out))
+	}
 
 	// Kill the process
 	if err := killError(cmd.Process.Kill()); err != nil {

@@ -3,8 +3,6 @@ package tailscale
 import (
 	"bytes"
 	"context"
-	"errors"
-	"io"
 	"os/exec"
 	"strings"
 	"sync"
@@ -12,10 +10,12 @@ import (
 	"github.com/matchory/tslink/pkg/logger"
 )
 
-// streamingWriter wraps output and logs each line as it arrives.
+// streamingWriter keeps output and logs each line as it arrives, unless its
+// prefix is empty.
 type streamingWriter struct {
 	prefix string
 	buf    bytes.Buffer
+	logged int // Bytes of buf logged so far
 	mu     sync.Mutex
 }
 
@@ -24,23 +24,19 @@ func (w *streamingWriter) Write(p []byte) (int, error) {
 	defer w.mu.Unlock()
 
 	n, err := w.buf.Write(p)
-	if err != nil {
+	if err != nil || w.prefix == "" {
 		return n, err
 	}
 
-	// Log complete lines as they arrive
+	// Log complete lines as they arrive; the buffer keeps them for String
 	for {
-		line, readErr := w.buf.ReadString('\n')
-		if errors.Is(readErr, io.EOF) {
-			// Put back incomplete line
-			w.buf.WriteString(line)
+		rest := w.buf.Bytes()[w.logged:]
+		i := bytes.IndexByte(rest, '\n')
+		if i < 0 {
 			break
 		}
-		if readErr != nil {
-			break
-		}
-		line = strings.TrimRight(line, "\n\r")
-		if line != "" {
+		w.logged += i + 1
+		if line := strings.TrimRight(string(rest[:i]), "\r"); line != "" {
 			logger.Debugf("[%s] %s", w.prefix, line)
 		}
 	}
@@ -53,35 +49,54 @@ func (w *streamingWriter) String() string {
 	return w.buf.String()
 }
 
-// runCommandWithStreaming runs a command and streams its output to the logger.
-func runCommandWithStreaming(
-	ctx context.Context,
-	prefix string,
-	name string,
-	args ...string,
-) (string, error) {
-	cmd := exec.CommandContext(ctx, name, args...)
+// cliCall is a run of the tailscale CLI.
+type cliCall struct {
+	prefix string // Logs the output line by line under prefix; empty logs nothing
+	stdin  string // The CLI's standard input
+	args   []string
+}
 
-	stdout := &streamingWriter{prefix: prefix + ":stdout"}
-	stderr := &streamingWriter{prefix: prefix + ":stderr"}
+// cliOutput is what a run of the tailscale CLI wrote.
+type cliOutput struct {
+	stdout string
+	stderr string
+}
 
+// combined returns the standard output followed by the standard error.
+func (o cliOutput) combined() string {
+	return o.stdout + o.stderr
+}
+
+// execCLI runs the CLI at bin and streams its output to the logger.
+func execCLI(ctx context.Context, bin string, c cliCall) (cliOutput, error) {
+	cmd := exec.CommandContext(ctx, bin, c.args...)
+	cmd.Stdin = strings.NewReader(c.stdin)
+
+	stdout := &streamingWriter{}
+	stderr := &streamingWriter{}
+	if c.prefix != "" {
+		stdout.prefix = c.prefix + ":stdout"
+		stderr.prefix = c.prefix + ":stderr"
+		logger.Debugf("[%s] Running: %s %v", c.prefix, bin, c.args)
+	}
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 
-	logger.Debugf("[%s] Running: %s %v", prefix, name, args)
-
 	err := cmd.Run()
-
-	// Combine output for return
-	output := stdout.String() + stderr.String()
-
-	return output, err
+	return cliOutput{stdout: stdout.String(), stderr: stderr.String()}, err
 }
 
-// tailscale runs the tailscale CLI with args, logging its output under prefix.
-func (d *Daemon) tailscale(ctx context.Context, prefix string, args ...string) (string, error) {
+// runTailscale runs the tailscale CLI.
+func (d *Daemon) runTailscale(ctx context.Context, c cliCall) (cliOutput, error) {
 	if d.runCLI != nil {
-		return d.runCLI(ctx, prefix, args...)
+		return d.runCLI(ctx, c)
 	}
-	return runCommandWithStreaming(ctx, prefix, d.config.TailscaleBin, args...)
+	return execCLI(ctx, d.config.TailscaleBin, c)
+}
+
+// tailscale runs the tailscale CLI with args, logging its output under prefix,
+// and returns its standard output followed by its standard error.
+func (d *Daemon) tailscale(ctx context.Context, prefix string, args ...string) (string, error) {
+	out, err := d.runTailscale(ctx, cliCall{prefix: prefix, args: args})
+	return out.combined(), err
 }

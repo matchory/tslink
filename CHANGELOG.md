@@ -176,6 +176,10 @@ three- and five-node swarms; see [docs/testing.md](docs/testing.md).
 - A connect event or watchdog start that arrived while a container was
   leaving could start its tailscaled again, which then ran until Docker
   deleted the endpoint. Once a container begins to leave, nothing starts it.
+- Errors from `tailscale serve`, `advertise`, `drain` and `logout` include
+  the CLI's output again, and the hints for untagged Service hosts and
+  pending approval appear: tslink dropped the output of every completed
+  line.
 
 ### Security
 

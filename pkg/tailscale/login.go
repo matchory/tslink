@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os/exec"
 	"strings"
 	"time"
 
@@ -76,13 +75,15 @@ func (d *Daemon) waitBackendState() string {
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		ctx, cancel := context.WithTimeout(d.ctx, 5*time.Second)
-		out, err := exec.CommandContext(ctx, d.config.TailscaleBin, "--socket="+d.socketPath, "status", "--json").
-			Output()
+		out, err := d.runTailscale(ctx, cliCall{
+			args: []string{"--socket=" + d.socketPath, "status", "--json"},
+		})
 		cancel()
 		var st struct {
 			BackendState string `json:"BackendState"`
 		}
-		if err == nil && json.Unmarshal(out, &st) == nil && st.BackendState != "NoState" {
+		if err == nil && json.Unmarshal([]byte(out.stdout), &st) == nil &&
+			st.BackendState != "NoState" {
 			return st.BackendState
 		}
 		if time.Now().After(deadline) {
@@ -122,35 +123,25 @@ func (d *Daemon) tryBringUp(withKey bool, extraArgs ...string) error {
 		args = append(args, "--advertise-tags="+tagsArg)
 	}
 
-	// Log with redacted authkey
-	redactedArgs := make([]string, len(args))
-	for i, arg := range args {
-		if strings.HasPrefix(arg, "--authkey=") {
-			redactedArgs[i] = "--authkey=(redacted)"
-		} else {
-			redactedArgs[i] = arg
-		}
-	}
-	logger.Debugf("Running: %s %v", d.config.TailscaleBin, redactedArgs)
-
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, d.config.TailscaleBin, args...)
+	call := cliCall{prefix: "up", args: args}
 	if withKey {
 		key, err := d.config.AuthKey()
 		if err != nil {
 			return err
 		}
-		cmd.Stdin = strings.NewReader(key)
+		call.stdin = key
 	}
-	output, err := cmd.CombinedOutput()
+	out, err := d.runTailscale(ctx, call)
+	output := out.combined()
 	if err != nil {
-		logger.Errorf("tailscale up failed with output: %s", string(output))
-		return fmt.Errorf("tailscale up failed: %w (output: %s)", err, string(output))
+		logger.Errorf("tailscale up failed with output: %s", output)
+		return fmt.Errorf("tailscale up failed: %w (output: %s)", err, output)
 	}
 
-	logger.Infof("tailscale up succeeded: %s", string(output))
+	logger.Infof("tailscale up succeeded: %s", output)
 	return nil
 }
 
@@ -195,38 +186,5 @@ func (d *Daemon) Reauthenticate() error {
 			return fmt.Errorf("failed to configure Tailscale service: %w", err)
 		}
 	}
-	return nil
-}
-
-// SetHostname updates the Tailscale hostname for a running daemon. It returns
-// once tailscaled has applied the new preference; the node's MagicDNS name
-// follows when control answers with a new network map.
-func (d *Daemon) SetHostname(hostname string) error {
-	logger.Infof("Setting hostname to %s for endpoint %s", hostname, d.config.EndpointID)
-
-	args := []string{
-		"--socket=" + d.socketPath,
-		"set",
-		"--hostname=" + hostname,
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	output, err := d.tailscale(ctx, "set-hostname", args...)
-	if err != nil {
-		return fmt.Errorf(
-			"tailscale set --hostname failed: %w (output: %s)",
-			err,
-			strings.TrimSpace(output),
-		)
-	}
-
-	// Update internal config (protected by mutex)
-	d.mu.Lock()
-	d.config.Hostname = hostname
-	d.mu.Unlock()
-
-	logger.Infof("Hostname updated successfully")
 	return nil
 }

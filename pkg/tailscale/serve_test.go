@@ -9,7 +9,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 )
 
 func TestServeOptionArgs(t *testing.T) {
@@ -34,20 +33,23 @@ func TestServeOptionArgs(t *testing.T) {
 	}
 }
 
-// fakeCLI records the tailscale CLI calls of a daemon and answers them with
-// out and err.
+// fakeCLI records the tailscale CLI calls of a daemon and their standard
+// input, and answers them with out on standard output, stderr and err.
 type fakeCLI struct {
-	mu    sync.Mutex
-	calls [][]string
-	out   string
-	err   error
+	mu     sync.Mutex
+	calls  [][]string
+	stdins []string
+	out    string
+	stderr string
+	err    error
 }
 
-func (f *fakeCLI) run(_ context.Context, _ string, args ...string) (string, error) {
+func (f *fakeCLI) run(_ context.Context, c cliCall) (cliOutput, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.calls = append(f.calls, args)
-	return f.out, f.err
+	f.calls = append(f.calls, c.args)
+	f.stdins = append(f.stdins, c.stdin)
+	return cliOutput{stdout: f.out, stderr: f.stderr}, f.err
 }
 
 // snapshot returns the calls so far, without the socket argument.
@@ -384,9 +386,11 @@ func TestConfigureServiceErrors(t *testing.T) {
 		want string
 	}{
 		{
-			"unknown service",
+			// The CLI does not check that the Service exists: it configures
+			// it, and reports that it awaits approval
+			"no special case for missing services",
 			"error: service not found",
-			"service svc:web not found: create it in Tailscale admin console first",
+			"tailscale serve failed: exit status 1 (output: error: service not found)",
 		},
 		{"untagged node", "service hosts must be tagged nodes", "requires tagged auth key"},
 		{
@@ -416,11 +420,11 @@ func TestConfigureServiceAdvertiseError(t *testing.T) {
 	cli := &fakeCLI{}
 	d := newTestDaemon(t, cli, "svc:web")
 	d.config.Endpoints = []ServeEndpoint{{Proto: "tcp", Port: "22", Target: "22"}}
-	d.runCLI = func(ctx context.Context, prefix string, args ...string) (string, error) {
-		if slices.Contains(args, "advertise") {
-			return " not allowed\n", errors.New("exit status 1")
+	d.runCLI = func(ctx context.Context, c cliCall) (cliOutput, error) {
+		if slices.Contains(c.args, "advertise") {
+			return cliOutput{stdout: " not allowed\n"}, errors.New("exit status 1")
 		}
-		return cli.run(ctx, prefix, args...)
+		return cli.run(ctx, c)
 	}
 	err := d.configureService()
 	if err == nil ||
@@ -457,35 +461,6 @@ func TestDrain(t *testing.T) {
 	}
 	if err := d.Drain("svc:web"); err == nil || len(cli.calls) != 2 {
 		t.Errorf("drain after a failure = %v, calls %q; want it run again", err, cli.calls)
-	}
-}
-
-func TestConfigureServeEndpoints(t *testing.T) {
-	cli := &fakeCLI{}
-	d := newTestDaemon(t, cli, "")
-	endpoints := []ServeEndpoint{
-		{Proto: "https", Port: "443", Target: "8080"},
-		{Proto: "tun", Port: "0", Target: "0"},
-	}
-	if err := d.ConfigureServeEndpoints(
-		"svc:web",
-		endpoints,
-		[]string{"tag:a", "tag:b"},
-		true,
-	); err != nil {
-		t.Fatal(err)
-	}
-	s := "--socket=" + testSocket
-	// Direct serve skips the tun endpoint
-	want := [][]string{
-		{s, "set", "--advertise-tags=tag:a,tag:b"},
-		{s, "serve", "--bg", "--https=443", "http://127.0.0.1:8080"},
-		{s, "serve", "--service=svc:web", "--https=443", "127.0.0.1:8080"},
-		{s, "serve", "--service=svc:web", "--tun"},
-		{s, "serve", "advertise", "svc:web"},
-	}
-	if !slices.EqualFunc(cli.calls, want, slices.Equal) {
-		t.Errorf("calls =\n  %q\nwant\n  %q", cli.calls, want)
 	}
 }
 
@@ -537,34 +512,5 @@ func TestServeDebugLogIsBounded(t *testing.T) {
 		if st.Size() > serveDebugLogMaxBytes {
 			t.Errorf("%s is %d bytes, want at most %d", p, st.Size(), serveDebugLogMaxBytes)
 		}
-	}
-}
-
-func TestSetHostname(t *testing.T) {
-	cli := &fakeCLI{}
-	d := newTestDaemon(t, cli, "")
-	start := time.Now()
-	if err := d.SetHostname("web-2"); err != nil {
-		t.Fatal(err)
-	}
-	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
-		t.Errorf("SetHostname took %v, want no fixed wait", elapsed)
-	}
-	want := []string{"--socket=" + testSocket, "set", "--hostname=web-2"}
-	if len(cli.calls) != 1 || !slices.Equal(cli.calls[0], want) {
-		t.Errorf("calls = %q, want %q", cli.calls, want)
-	}
-	if d.config.Hostname != "web-2" {
-		t.Errorf("hostname = %q, want web-2", d.config.Hostname)
-	}
-
-	cli.out, cli.err = "invalid hostname\n", errors.New("exit status 1")
-	err := d.SetHostname("-bad")
-	if err == nil ||
-		err.Error() != "tailscale set --hostname failed: exit status 1 (output: invalid hostname)" {
-		t.Errorf("error = %v", err)
-	}
-	if d.config.Hostname != "web-2" {
-		t.Errorf("hostname = %q after a failure, want web-2", d.config.Hostname)
 	}
 }

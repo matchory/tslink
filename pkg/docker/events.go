@@ -17,6 +17,7 @@ import (
 
 	"github.com/matchory/tslink/pkg/core"
 	"github.com/matchory/tslink/pkg/logger"
+	"github.com/matchory/tslink/pkg/tailscale"
 )
 
 // ContainerCache caches container info for quick lookup during Join().
@@ -371,8 +372,8 @@ func hostnameFromName(name string) string {
 //   - tslink.serve.443=https:8080       → HTTPS on 443 → localhost:8080
 //   - tslink.serve.80=http:3000/api     → HTTP on 80 → localhost:3000 at /api
 //   - tslink.serve.5432=tcp             → TCP on 5432 → localhost:5432 (same port)
-func parseServeEndpoints(labels map[string]string) []core.ServeEndpoint {
-	var endpoints []core.ServeEndpoint
+func parseServeEndpoints(labels map[string]string) []tailscale.ServeEndpoint {
+	var endpoints []tailscale.ServeEndpoint
 
 	for key, value := range labels {
 		if !strings.HasPrefix(key, "tslink.serve.") {
@@ -407,12 +408,12 @@ func parseServeEndpoints(labels map[string]string) []core.ServeEndpoint {
 //   - "http:3000/api"   → proto=http, target=3000, path=/api
 //   - "tcp"             → proto=tcp, target=<same as external port>
 //   - "tcp:5432"        → proto=tcp, target=5432
-func parseServeValue(externalPort, value string) *core.ServeEndpoint {
+func parseServeValue(externalPort, value string) *tailscale.ServeEndpoint {
 	if value == "" {
 		return nil
 	}
 
-	endpoint := &core.ServeEndpoint{
+	endpoint := &tailscale.ServeEndpoint{
 		Port:   externalPort,
 		Target: externalPort, // Default: same as external
 	}
@@ -479,7 +480,7 @@ func parseServeValue(externalPort, value string) *core.ServeEndpoint {
 
 // parseServeOptions sets the endpoint's options from the query after the
 // "?" of a tslink.serve value, and reports false if one is invalid.
-func parseServeOptions(endpoint *core.ServeEndpoint, options string) bool {
+func parseServeOptions(endpoint *tailscale.ServeEndpoint, options string) bool {
 	for opt := range strings.SplitSeq(options, "&") {
 		key, v, _ := strings.Cut(opt, "=")
 		switch {

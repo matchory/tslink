@@ -114,8 +114,8 @@ func TestDrainAndWaitFloor(t *testing.T) {
 	cli := &fakeCLI{}
 	s, d := newTestSupervisor(t, cli)
 	cli.out = ""
-	d.runCLI = func(ctx context.Context, prefix string, args ...string) (string, error) {
-		out, err := cli.run(ctx, prefix, args...)
+	d.runCLI = func(ctx context.Context, c cliCall) (cliOutput, error) {
+		out, err := cli.run(ctx, c)
 		d.handleLine(servicesFetchLine) // as fast as it gets
 		return out, err
 	}
@@ -355,9 +355,6 @@ func TestDrainSurvivesDaemonRestart(t *testing.T) {
 	if err := d.advertise("svc:web"); !errors.Is(err, errDrained) {
 		t.Errorf("advertise = %v, want errDrained", err)
 	}
-	if err := d.ConfigureServeEndpoints("svc:web", d.config.Endpoints, nil, false); err != nil {
-		t.Errorf("ConfigureServeEndpoints = %v", err)
-	}
 	if calls := cli.snapshot(); len(calls) != 0 {
 		t.Errorf("drained backend ran %q", calls)
 	}
@@ -369,12 +366,12 @@ func TestDrainAfterConfigureInProgress(t *testing.T) {
 	d := newTestDaemon(t, cli, "svc:web")
 	d.config.Endpoints = []ServeEndpoint{{Proto: "tcp", Port: "22", Target: "22"}}
 	started, release := make(chan struct{}), make(chan struct{})
-	d.runCLI = func(ctx context.Context, prefix string, args ...string) (string, error) {
-		if slices.Contains(args, "--tcp=22") {
+	d.runCLI = func(ctx context.Context, c cliCall) (cliOutput, error) {
+		if slices.Contains(c.args, "--tcp=22") {
 			close(started)
 			<-release
 		}
-		return cli.run(ctx, prefix, args...)
+		return cli.run(ctx, c)
 	}
 	configured := make(chan error)
 	go func() { configured <- d.configureService() }()

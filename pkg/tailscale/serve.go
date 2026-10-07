@@ -2,7 +2,6 @@ package tailscale
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"path/filepath"
 	"strconv"
@@ -13,6 +12,7 @@ import (
 )
 
 // ServeEndpoint represents a single Tailscale serve configuration.
+// Configured via labels like: tslink.serve.443=https:8080/api.
 type ServeEndpoint struct {
 	Proto  string // http, https, tcp, tls-terminated-tcp, tun
 	Port   string // External port Tailscale exposes
@@ -268,11 +268,6 @@ func (d *Daemon) configureServeEndpoint(ep ServeEndpoint) error {
 		d.serveDebugf("FAILED: %v\nOutput: %s\n", err, output)
 		logger.Errorf("tailscale serve failed: %v", err)
 
-		if strings.Contains(output, "service not found") ||
-			strings.Contains(output, "unknown service") {
-			return fmt.Errorf("service %s not found: create it in Tailscale admin console first",
-				d.config.Service)
-		}
 		if strings.Contains(output, untaggedServiceHostError) {
 			return fmt.Errorf(
 				"tailscale serve failed: requires tagged auth key (output: %s)",
@@ -283,9 +278,15 @@ func (d *Daemon) configureServeEndpoint(ep ServeEndpoint) error {
 		return fmt.Errorf("tailscale serve failed: %w (output: %s)", err, output)
 	}
 
-	// Check for approval pending (command succeeds but backend not active yet)
+	// Check for approval pending (command succeeds but backend not active
+	// yet). The CLI says so too for a Service that does not exist: control
+	// has given the node no addresses for it
 	if strings.Contains(output, "approval from an admin is required") {
-		logger.Warnf("Service backend registered but pending admin approval: %s", d.config.Service)
+		logger.Warnf(
+			"Service backend registered but pending admin approval, "+
+				"or the Service is not defined in the admin console: %s",
+			d.config.Service,
+		)
 	}
 
 	d.serveDebugf("SUCCESS\nOutput: %s\n", output)
@@ -308,62 +309,4 @@ func (d *Daemon) serveDebugf(format string, args ...any) {
 	if err := f.Close(); err != nil {
 		logger.Warnf("Failed to close serve debug file: %v", err)
 	}
-}
-
-// ConfigureServeEndpoints configures multiple Tailscale serve endpoints after startup.
-// This is called when container info is obtained from cache after initial Join.
-func (d *Daemon) ConfigureServeEndpoints(
-	service string,
-	endpoints []ServeEndpoint,
-	tags []string,
-	direct bool,
-) error {
-	logger.Infof("Late-configuring serve endpoints: service=%s endpoints=%d direct=%v for %s",
-		service, len(endpoints), direct, d.config.EndpointID)
-
-	// Update tags if provided
-	if len(tags) > 0 {
-		tagsArg := strings.Join(tags, ",")
-		args := []string{
-			"--socket=" + d.socketPath,
-			"set",
-			"--advertise-tags=" + tagsArg,
-		}
-
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-
-		if output, err := d.tailscale(ctx, "set-tags", args...); err != nil {
-			logger.Warnf("Failed to set tags: %v (output: %s)", err, output)
-		}
-	}
-
-	// Store config for endpoint configuration
-	d.config.Service = service
-	d.config.Endpoints = endpoints
-	d.config.Direct = direct
-
-	// Configure direct serve first (fast access via machine hostname)
-	if direct && len(endpoints) > 0 {
-		for i, ep := range endpoints {
-			if err := d.configureDirectServeEndpoint(ep); err != nil {
-				return fmt.Errorf("failed to configure direct endpoint %d (%s:%s): %w",
-					i, ep.Proto, ep.Port, err)
-			}
-		}
-		logger.Infof("Late direct serve configuration completed")
-	}
-
-	// Configure service backend if specified
-	if service != "" {
-		switch err := d.configureService(); {
-		case errors.Is(err, errDrained):
-		case err != nil:
-			return err
-		default:
-			logger.Infof("Late service configuration completed")
-		}
-	}
-
-	return nil
 }

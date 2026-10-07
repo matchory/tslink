@@ -231,39 +231,6 @@ func (s *DaemonSupervisor) WaitForIP() (*Status, error) {
 	return daemon.WaitForIP()
 }
 
-// SetHostname updates the Tailscale hostname.
-// Delegates to the underlying daemon.
-func (s *DaemonSupervisor) SetHostname(hostname string) error {
-	s.mu.RLock()
-	daemon := s.daemon
-	s.mu.RUnlock()
-
-	if daemon == nil {
-		return errors.New("no daemon running")
-	}
-
-	return daemon.SetHostname(hostname)
-}
-
-// ConfigureServeEndpoints configures serve endpoints.
-// Delegates to the underlying daemon.
-func (s *DaemonSupervisor) ConfigureServeEndpoints(
-	service string,
-	endpoints []ServeEndpoint,
-	tags []string,
-	direct bool,
-) error {
-	s.mu.RLock()
-	daemon := s.daemon
-	s.mu.RUnlock()
-
-	if daemon == nil {
-		return errors.New("no daemon running")
-	}
-
-	return daemon.ConfigureServeEndpoints(service, endpoints, tags, direct)
-}
-
 // signalStartup safely sends the startup result exactly once.
 func (s *DaemonSupervisor) signalStartup(err error) {
 	s.startupDoneOnce.Do(func() {

@@ -23,7 +23,12 @@ type NetworkOptions struct {
 	MTU     int // 0 if unset or invalid
 
 	LoginServer string // control server URL; empty for Tailscale's
+	Ephemeral   string // tslink.ephemeral as given; NewNetwork validates it
 }
+
+// EphemeralOption says whether a network's nodes are ephemeral, for keys
+// that do not say so themselves.
+const EphemeralOption = "tslink.ephemeral"
 
 // MTUOption is Docker's standard network option for the interface MTU.
 const MTUOption = "com.docker.network.driver.mtu"
@@ -97,6 +102,12 @@ func ParseNetworkOptions(opts map[string]any) NetworkOptions {
 	if v, ok := genericOpts[LoginServerOption]; ok {
 		if s, ok := v.(string); ok {
 			options.LoginServer = s
+		}
+	}
+
+	if v, ok := genericOpts[EphemeralOption]; ok {
+		if s, ok := v.(string); ok {
+			options.Ephemeral = s
 		}
 	}
 

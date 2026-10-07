@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -32,9 +33,6 @@ type Driver struct {
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 }
-
-// NetworkDriverName is the base name used to identify our network driver (without tag).
-const NetworkDriverName = "ghcr.io/aaomidi/tslink"
 
 // watchdogInterval is the interval at which the watchdog checks for orphaned endpoints.
 const watchdogInterval = 60 * time.Second
@@ -79,7 +77,7 @@ func NewDriver() (*Driver, error) {
 	// Start event watcher in background (tracked by waitgroup)
 	// Pass callback to trigger Tailscale setup when container info arrives
 	d.wg.Go(func() {
-		WatchEvents(ctx, cache, NetworkDriverName, d.onContainerInfo)
+		WatchEvents(ctx, cache, d.ownsNetwork, d.onContainerInfo)
 	})
 
 	// Recover orphaned endpoints from previous plugin instance (host reboot, plugin restart)
@@ -102,6 +100,33 @@ func NewDriver() (*Driver, error) {
 	})
 
 	return d, nil
+}
+
+// ownsNetwork reports whether Docker created the network through this driver.
+func (d *Driver) ownsNetwork(id string) bool {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	_, ok := d.networks[id]
+	return ok
+}
+
+// ownPluginNames returns the names of enabled plugins running tslink, which
+// are the driver names of its networks. The plugin can be installed under any
+// name, and recovery runs before Docker has told it about any network.
+// If several tslink plugins are enabled at once, each recovers the others'
+// networks too.
+func (d *Driver) ownPluginNames(ctx context.Context) (map[string]bool, error) {
+	plugins, err := d.docker.PluginList(ctx, dockerclient.PluginListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list plugins: %w", err)
+	}
+	names := make(map[string]bool)
+	for _, p := range plugins.Items {
+		if p.Enabled && slices.Equal(p.Config.Entrypoint, []string{"/tslink"}) {
+			names[p.Name] = true
+		}
+	}
+	return names, nil
 }
 
 // onContainerInfo is called by the event watcher when container info is stored.
@@ -149,7 +174,7 @@ func (d *Driver) onContainerInfo(endpointID string, info *core.ContainerInfo) {
 func (d *Driver) GetCapabilities() (*network.CapabilitiesResponse, error) {
 	logger.Info("GetCapabilities called")
 	return &network.CapabilitiesResponse{
-		Scope:             "local",
+		Scope:             "global", // spike: so swarm carries driver options to nodes
 		ConnectivityScope: "global", // Containers can reach the tailnet
 	}, nil
 }
@@ -157,15 +182,13 @@ func (d *Driver) GetCapabilities() (*network.CapabilitiesResponse, error) {
 // CreateNetwork creates a new network.
 func (d *Driver) CreateNetwork(req *network.CreateNetworkRequest) error {
 	logger.Info("CreateNetwork: %s", req.NetworkID)
-	logger.Info("CreateNetwork raw: %+v", req)
 
-	// Debug: log all options to understand Docker's format
+	// Log option keys only: values include the auth key
 	for k, v := range req.Options {
-		logger.Info("  Option: %q = %v (type: %T)", k, v, v)
-		// Check if value is a nested map
+		logger.Debug("  Option: %q (type: %T)", k, v)
 		if nested, ok := v.(map[string]any); ok {
-			for nk, nv := range nested {
-				logger.Info("    Nested: %q = %v", nk, nv)
+			for nk := range nested {
+				logger.Debug("    Nested: %q", nk)
 			}
 		}
 	}
@@ -189,6 +212,7 @@ func (d *Driver) CreateNetwork(req *network.CreateNetworkRequest) error {
 	net := &core.Network{
 		ID:      req.NetworkID,
 		AuthKey: authKey,
+		Tags:    opts.Tags,
 	}
 
 	d.networks[req.NetworkID] = net
@@ -200,7 +224,8 @@ func (d *Driver) CreateNetwork(req *network.CreateNetworkRequest) error {
 // AllocateNetwork is called during network creation (for multi-host networks).
 func (d *Driver) AllocateNetwork(req *network.AllocateNetworkRequest) (*network.AllocateNetworkResponse, error) {
 	logger.Info("AllocateNetwork: %s", req.NetworkID)
-	return &network.AllocateNetworkResponse{}, nil
+	// spike: hand the options back so swarm stores them as driver state
+	return &network.AllocateNetworkResponse{Options: req.Options}, nil
 }
 
 // DeleteNetwork deletes a network.
@@ -455,6 +480,11 @@ func (d *Driver) runWatchdog(ctx context.Context) {
 func (d *Driver) RecoverEndpoints(ctx context.Context) error {
 	logger.Info("RecoverEndpoints: scanning for orphaned endpoints")
 
+	ownNames, err := d.ownPluginNames(ctx)
+	if err != nil {
+		return err
+	}
+
 	// List all running containers
 	containerList, err := d.docker.ContainerList(ctx, dockerclient.ContainerListOptions{})
 	if err != nil {
@@ -484,7 +514,7 @@ func (d *Driver) RecoverEndpoints(ctx context.Context) error {
 				continue
 			}
 
-			if !strings.HasPrefix(networkResult.Network.Driver, NetworkDriverName) {
+			if !ownNames[networkResult.Network.Driver] {
 				continue
 			}
 
@@ -562,6 +592,7 @@ func (d *Driver) recoverEndpoint(
 		net = &core.Network{
 			ID:      networkID,
 			AuthKey: authKey,
+			Tags:    core.ParseTags(networkResult.Network.Options["tslink.tags"]),
 		}
 		d.networks[networkID] = net
 		logger.Info("recoverEndpoint: recovered network %s", networkID[:12])
@@ -577,6 +608,7 @@ func (d *Driver) recoverEndpoint(
 	}
 
 	tsInfo := parseContainerInfo(name, labels)
+	tsInfo.NetworkStack = networkResult.Network.Labels[core.StackLabel]
 
 	// Create endpoint
 	endpoint, err := core.NewEndpoint(endpointID, net, core.EndpointOptions{Hostname: tsInfo.Hostname}, d.config)

@@ -16,6 +16,7 @@ Access at `https://web-server.<your-tailnet>.ts.net`
 Load-balanced backends using [Tailscale Services](https://tailscale.com/kb/1438/services).
 
 **Setup:**
+
 1. Create a service named `my-app` in the [Tailscale admin console](https://login.tailscale.com/admin/services)
 2. Use a tag-based auth key (required for services)
 

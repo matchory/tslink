@@ -12,7 +12,7 @@ make test-network test-container
 
 - Go 1.25+
 - Docker (via OrbStack, Docker Desktop, or native Linux)
-- Tailscale auth key from https://login.tailscale.com/admin/settings/keys
+- Tailscale auth key from <https://login.tailscale.com/admin/settings/keys>
 
 ## Development Cycle
 
@@ -22,34 +22,40 @@ make reinstall
 
 # Test
 source .env
-docker network create --driver ghcr.io/aaomidi/tslink:latest --opt tslink.authkey=$TS_AUTHKEY tailnet
+docker network create --driver ghcr.io/matchory/tslink:latest --opt tslink.authkey=$TS_AUTHKEY tailnet
 docker run --rm --network tailnet alpine sh -c "ip addr && ping -c 2 8.8.8.8"
 docker network rm tailnet
 ```
 
 ## Key Design Decisions
 
-**Hostname-based state directories**: Tailscale state is stored in `/data/by-hostname/<hostname>/` not by endpoint ID. This enables identity reuse - if a container restarts with the same name, it keeps its Tailscale identity and IP.
+**Hostname-based state directories**: Tailscale state is stored in `/data/by-hostname/<hostname>/`, or
+`/data/by-stack/<stack>/<hostname>/` for Swarm stack tasks, not by endpoint ID. This enables identity reuse - if a
+container restarts with the same name, it keeps its Tailscale identity and IP.
 
 **Async Tailscale setup**: Docker's `Join()` must return quickly, but Tailscale auth can take 60+ seconds. Solution:
+
 1. `Join()` sets up veth networking and returns immediately
 2. Docker event watcher detects container start, gets container name
 3. Tailscale setup runs async in background goroutine
 
-**Veth IP allocation**: Each container gets a unique /30 subnet from 10.200.0.0/16, derived by hashing the endpoint ID. This avoids IP conflicts without coordination.
+**Veth IP allocation**: Each container gets a unique /30 subnet from 10.200.0.0/16, derived by hashing the endpoint
+ID. This avoids IP conflicts without coordination.
 
 ## Concurrency Notes
 
-**Lock ordering**: Never hold `driver.mu` when calling endpoint methods (they acquire `endpoint.mu`). Always: driver.mu → endpoint.mu, never reversed.
+**Lock ordering**: Never hold `driver.mu` when calling endpoint methods (they acquire `endpoint.mu`). Always:
+driver.mu → endpoint.mu, never reversed.
 
-**Long operations outside locks**: Network syscalls, Tailscale binary downloads, and `tailscale up` can block for seconds. Don't hold locks during these.
+**Long operations outside locks**: Network syscalls, Tailscale binary downloads, and `tailscale up` can block for
+seconds. Don't hold locks during these.
 
 ## Debugging
 
 ```bash
 # View endpoint debug logs
 docker run --rm -v /var/lib/docker-plugins/tailscale:/data alpine \
-  sh -c 'for d in /data/*/; do echo "=== $d ==="; cat "$d/debug.log" 2>/dev/null | tail -20; done'
+  sh -c 'for d in /data/by-hostname/*/ /data/by-stack/*/*/; do echo "=== $d ==="; tail -20 "$d/debug.log" 2>/dev/null; done'
 
 # Plugin logs (Linux)
 journalctl -u docker -f | grep -i tailscale
@@ -61,7 +67,7 @@ docker run --rm -it --privileged --pid=host alpine nsenter -t 1 -m -u -n -i sh
 
 ## Project Structure
 
-```
+```text
 pkg/
 ├── docker/     # Docker network driver (driver.go, events.go)
 ├── core/       # Endpoint/network logic (endpoint.go, network.go)
@@ -71,9 +77,11 @@ pkg/
 ```
 
 **Key paths at runtime:**
-- State: `/data/by-hostname/<hostname>/tailscaled.state`
-- Socket: `/data/by-hostname/<hostname>/tailscaled.sock`
-- Debug: `/data/by-hostname/<hostname>/debug.log`
+
+- State: `/data/by-hostname/<hostname>/tailscaled.state`, or `/data/by-stack/<stack>/<hostname>/` for stack tasks
+- Socket: `/data/sock/<endpoint-id[:12]>.sock` (kept short: Unix socket paths are limited to 108 bytes), linked
+  from `<state dir>/tailscaled.sock`
+- Debug: `<state dir>/debug.log`
 
 ## Code Style
 
@@ -86,6 +94,7 @@ golangci-lint fmt        # Format code
 ```
 
 Config is in `.golangci.toml`. Key linters enabled:
+
 - `errcheck`, `errorlint`, `nilerr` - error handling
 - `gosec` - security
 - `govet`, `staticcheck` - correctness
@@ -123,11 +132,26 @@ if err == io.EOF { ... }
 return fmt.Errorf("failed to create endpoint: %w", err)
 ```
 
+## CI
+
+- `ci.yml`: golangci-lint, pinned to the version `.golangci.toml` is written for, and the Go tests. The network
+  namespace tests in `pkg/netutil` skip without root, so CI runs them a second time with `sudo`.
+- `linter.yml`: super-linter for everything except Go (Markdown, YAML, shell, Dockerfile). Configs are in
+  `.github/linters/`.
+- `codeql-analysis.yml`: CodeQL for Go and the workflows.
+- `release.yml`: a push to `main` publishes `ghcr.io/matchory/tslink:main-<arch>`; a `vX.Y.Z` tag publishes
+  `vX.Y.Z-<arch>` and `latest-<arch>` and creates a GitHub release. Docker plugins have no multi-arch manifests, so
+  each architecture is built on a native runner and pushed under its own tag.
+- Dependencies are updated by Dependabot (`.github/dependabot.yml`): Actions, Go modules and the Dockerfile base images.
+
+`test/integration` runs against upstream's tailnet (`atlas-diminished.ts.net`) and is not part of CI.
+
 ## Troubleshooting
 
 ### Plugin won't enable
 
 Check that the state directory exists:
+
 ```bash
 docker run --rm --privileged -v /var/lib:/var/lib alpine \
   mkdir -p /var/lib/docker-plugins/tailscale
@@ -136,6 +160,7 @@ docker run --rm --privileged -v /var/lib:/var/lib alpine \
 ### Options not being passed
 
 Docker passes options with the full key. Debug by adding logging:
+
 ```go
 log.Printf("Options: %+v", req.Options)
 ```
@@ -143,6 +168,7 @@ log.Printf("Options: %+v", req.Options)
 ### Container networking issues
 
 Check that tailscaled is running in the container's netns:
+
 ```bash
 # From inside container
 ps aux | grep tailscale

@@ -89,10 +89,17 @@ type ServeEndpoint struct {
 	Path   string // L7 only - path prefix (e.g., "/api")
 }
 
+// Arguments of the "tailscale serve" commands the daemon runs.
+const (
+	serveCmd        = "serve"
+	serveBackground = "--bg"
+)
+
 // DaemonConfig holds configuration for a tailscaled instance.
 type DaemonConfig struct {
 	EndpointID    string
 	StateDir      string
+	SocketPath    string // tailscaled socket; defaults to <StateDir>/tailscaled.sock
 	Hostname      string
 	AuthKey       string
 	NetNSPath     string
@@ -138,7 +145,29 @@ func NewDaemon(cfg DaemonConfig) (*Daemon, error) {
 		return nil, fmt.Errorf("failed to create state dir: %w", err)
 	}
 
-	socketPath := filepath.Join(cfg.StateDir, "tailscaled.sock")
+	socketPath := cfg.SocketPath
+	if socketPath == "" {
+		socketPath = filepath.Join(cfg.StateDir, "tailscaled.sock")
+	}
+	if err := os.MkdirAll(filepath.Dir(socketPath), 0700); err != nil {
+		return nil, fmt.Errorf("failed to create socket dir: %w", err)
+	}
+
+	// Link <StateDir>/tailscaled.sock to the socket, so tools find a daemon
+	// from its state directory. The link is relative, so it resolves wherever
+	// the data directory is mounted. Connect through the target: the link's
+	// own path may exceed the socket path limit.
+	if cfg.SocketPath != "" {
+		link := filepath.Join(cfg.StateDir, "tailscaled.sock")
+		if err := os.Remove(link); err != nil && !errors.Is(err, os.ErrNotExist) {
+			logger.Warn("Failed to remove stale socket link %s: %v", link, err)
+		}
+		if target, err := filepath.Rel(cfg.StateDir, socketPath); err != nil {
+			logger.Warn("Failed to link socket into state dir: %v", err)
+		} else if err := os.Symlink(target, link); err != nil {
+			logger.Warn("Failed to link socket into state dir: %v", err)
+		}
+	}
 
 	// Clean stale socket from previous run (prevents "address in use" errors)
 	if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
@@ -495,8 +524,8 @@ func (d *Daemon) configureDirectServeEndpoint(ep ServeEndpoint) error {
 		// L7: tailscale serve --bg --http=80 localhost:8080 OR --https=443 localhost:8080
 		args = []string{
 			"--socket=" + d.socketPath,
-			"serve",
-			"--bg", // Run in background
+			serveCmd,
+			serveBackground, // Run in background
 			"--" + ep.Proto + "=" + ep.Port,
 		}
 		if ep.Path != "" {
@@ -508,8 +537,8 @@ func (d *Daemon) configureDirectServeEndpoint(ep ServeEndpoint) error {
 		// L4: tailscale serve --bg --tcp=5432 tcp://127.0.0.1:5432
 		args = []string{
 			"--socket=" + d.socketPath,
-			"serve",
-			"--bg", // Run in background
+			serveCmd,
+			serveBackground, // Run in background
 			"--tcp=" + ep.Port,
 			fmt.Sprintf("tcp://127.0.0.1:%s", ep.Target),
 		}
@@ -518,8 +547,8 @@ func (d *Daemon) configureDirectServeEndpoint(ep ServeEndpoint) error {
 		// L4 with TLS termination: tailscale serve --bg --tls-terminated-tcp=443 tcp://127.0.0.1:8080
 		args = []string{
 			"--socket=" + d.socketPath,
-			"serve",
-			"--bg", // Run in background
+			serveCmd,
+			serveBackground, // Run in background
 			"--tls-terminated-tcp=" + ep.Port,
 			fmt.Sprintf("tcp://127.0.0.1:%s", ep.Target),
 		}
@@ -574,7 +603,7 @@ func (d *Daemon) configureServeEndpoint(ep ServeEndpoint) error {
 		// Per Tailscale docs, service mode auto-runs in background, target is just host:port
 		args = []string{
 			"--socket=" + d.socketPath,
-			"serve",
+			serveCmd,
 			"--service=" + d.config.Service,
 			"--" + ep.Proto + "=" + ep.Port,
 		}
@@ -587,7 +616,7 @@ func (d *Daemon) configureServeEndpoint(ep ServeEndpoint) error {
 		// L4: tailscale serve --service=svc:name --tcp=5432 tcp://127.0.0.1:5432
 		args = []string{
 			"--socket=" + d.socketPath,
-			"serve",
+			serveCmd,
 			"--service=" + d.config.Service,
 			"--tcp=" + ep.Port,
 			fmt.Sprintf("tcp://127.0.0.1:%s", ep.Target),
@@ -597,7 +626,7 @@ func (d *Daemon) configureServeEndpoint(ep ServeEndpoint) error {
 		// L4 with TLS termination: tailscale serve --service=svc:name --tls-terminated-tcp=443 tcp://127.0.0.1:8080
 		args = []string{
 			"--socket=" + d.socketPath,
-			"serve",
+			serveCmd,
 			"--service=" + d.config.Service,
 			"--tls-terminated-tcp=" + ep.Port,
 			fmt.Sprintf("tcp://127.0.0.1:%s", ep.Target),
@@ -608,7 +637,7 @@ func (d *Daemon) configureServeEndpoint(ep ServeEndpoint) error {
 		// Note: L3 requires additional iptables configuration
 		args = []string{
 			"--socket=" + d.socketPath,
-			"serve",
+			serveCmd,
 			"--service=" + d.config.Service,
 			"--tun",
 		}
@@ -790,6 +819,12 @@ func (d *Daemon) Stop() error {
 		case <-time.After(5 * time.Second):
 			logger.Warn("Timeout waiting for tailscaled to exit")
 		}
+
+		// The socket outlives a killed tailscaled; sockets no longer sit in
+		// the state directory, so nothing else would clean it up
+		if err := os.Remove(d.socketPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			logger.Warn("Failed to remove socket %s: %v", d.socketPath, err)
+		}
 	}
 
 	// Close pipes to unblock reader goroutines
@@ -819,6 +854,18 @@ func (d *Daemon) Stop() error {
 		return fmt.Errorf("timeout waiting for daemon goroutines")
 	}
 
+	return nil
+}
+
+// Logout logs the node out, which deletes an ephemeral node from the tailnet.
+func (d *Daemon) Logout() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx, d.config.TailscaleBin, "--socket="+d.socketPath, "logout").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("tailscale logout failed: %w (output: %s)", err, strings.TrimSpace(string(out)))
+	}
 	return nil
 }
 

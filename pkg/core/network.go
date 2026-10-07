@@ -4,4 +4,5 @@ package core
 type Network struct {
 	ID      string
 	AuthKey string
+	Tags    []string // If set, overrides the tslink.tags container label
 }

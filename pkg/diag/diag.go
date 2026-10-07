@@ -1,6 +1,7 @@
 package diag
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -59,25 +60,33 @@ func Run(dataDir string, w io.Writer) error {
 	}
 	result.DataDirExists = info.IsDir()
 
-	entries, err := os.ReadDir(dataDir)
-	if err != nil {
-		return fmt.Errorf("failed to read data directory: %w", err)
+	// Each state directory links to its daemon's socket under <dataDir>/sock
+	// (see tailscale.NewDaemon). Sockets no state directory links to are
+	// reported on their own.
+	linked := make(map[string]bool)
+	for _, stateDir := range stateDirs(dataDir) {
+		status, socketPath := checkStateDir(dataDir, stateDir)
+		if socketPath != "" {
+			linked[socketPath] = true
+		}
+		result.Endpoints = append(result.Endpoints, status)
 	}
 
-	for _, entry := range entries {
-		if !entry.IsDir() {
+	sockets, err := filepath.Glob(filepath.Join(dataDir, "sock", "*.sock"))
+	if err != nil {
+		return fmt.Errorf("failed to list sockets: %w", err)
+	}
+	for _, socketPath := range sockets {
+		if linked[socketPath] {
 			continue
 		}
-
-		// Skip non-endpoint directories (like tailscale-bin cache)
-		if entry.Name() == "tailscale-bin" {
-			continue
-		}
-
-		status := checkEndpoint(dataDir, entry.Name())
+		id := strings.TrimSuffix(filepath.Base(socketPath), ".sock")
+		status := &EndpointStatus{ID: id, ShortID: "socket " + id, SocketExists: true}
+		queryDaemon(status, socketPath)
 		result.Endpoints = append(result.Endpoints, status)
+	}
 
-		// Update summary
+	for _, status := range result.Endpoints {
 		result.Summary.Total++
 		switch {
 		case status.Error != "":
@@ -92,18 +101,34 @@ func Run(dataDir string, w io.Writer) error {
 	return outputResult(result, w)
 }
 
-// checkEndpoint checks the status of a single endpoint.
-func checkEndpoint(dataDir, endpointID string) *EndpointStatus {
-	stateDir := filepath.Join(dataDir, endpointID)
-	status := &EndpointStatus{
-		ID:       endpointID,
-		ShortID:  truncateID(endpointID),
-		StateDir: stateDir,
+// stateDirs returns the tailscaled state directories: by-hostname/<hostname>
+// for standalone containers and by-stack/<stack>/<hostname> for stack tasks.
+func stateDirs(dataDir string) []string {
+	var dirs []string
+	for _, pattern := range []string{"by-hostname/*", "by-stack/*/*"} {
+		matches, err := filepath.Glob(filepath.Join(dataDir, pattern))
+		if err != nil {
+			continue
+		}
+		for _, m := range matches {
+			if info, err := os.Stat(m); err == nil && info.IsDir() {
+				dirs = append(dirs, m)
+			}
+		}
 	}
+	return dirs
+}
 
-	socketPath := filepath.Join(stateDir, "tailscaled.sock")
-	if _, err := os.Stat(socketPath); err == nil {
-		status.SocketExists = true
+// checkStateDir reports one state directory and, if its socket link points
+// at a live socket, the daemon behind it. It returns that socket's path.
+func checkStateDir(dataDir, stateDir string) (*EndpointStatus, string) {
+	rel, err := filepath.Rel(dataDir, stateDir)
+	if err != nil {
+		rel = stateDir
+	}
+	status := &EndpointStatus{
+		ShortID:  rel,
+		StateDir: stateDir,
 	}
 
 	statePath := filepath.Join(stateDir, "tailscaled.state")
@@ -117,20 +142,31 @@ func checkEndpoint(dataDir, endpointID string) *EndpointStatus {
 		status.DebugLog = string(data)
 	}
 
-	// Try to get tailscale status if socket exists
-	if status.SocketExists {
-		tsStatus, err := getTailscaleStatus(socketPath)
-		if err != nil {
-			status.Error = err.Error()
-		} else {
-			status.TailscaleIP = tsStatus.IP
-			status.Hostname = tsStatus.Hostname
-			status.Online = tsStatus.Online
-			status.BackendState = tsStatus.BackendState
-		}
+	target, err := os.Readlink(filepath.Join(stateDir, "tailscaled.sock"))
+	if err != nil {
+		return status, ""
 	}
+	socketPath := filepath.Clean(filepath.Join(stateDir, target))
+	if info, err := os.Stat(socketPath); err != nil || info.Mode()&os.ModeSocket == 0 {
+		return status, "" // daemon stopped; the link dangles
+	}
+	status.ID = strings.TrimSuffix(filepath.Base(socketPath), ".sock")
+	status.SocketExists = true
+	queryDaemon(status, socketPath)
+	return status, socketPath
+}
 
-	return status
+// queryDaemon fills status from the daemon listening on socketPath.
+func queryDaemon(status *EndpointStatus, socketPath string) {
+	tsStatus, err := getTailscaleStatus(socketPath)
+	if err != nil {
+		status.Error = err.Error()
+		return
+	}
+	status.TailscaleIP = tsStatus.IP
+	status.Hostname = tsStatus.Hostname
+	status.Online = tsStatus.Online
+	status.BackendState = tsStatus.BackendState
 }
 
 type tailscaleStatusResult struct {
@@ -140,6 +176,10 @@ type tailscaleStatusResult struct {
 	BackendState string
 }
 
+// statusTimeout bounds a status query, so a hung daemon is reported as an
+// error rather than hanging the report.
+var statusTimeout = 5 * time.Second
+
 // getTailscaleStatus queries tailscale status via the socket.
 func getTailscaleStatus(socketPath string) (*tailscaleStatusResult, error) {
 	// Find tailscale binary - check common locations
@@ -148,7 +188,9 @@ func getTailscaleStatus(socketPath string) (*tailscaleStatusResult, error) {
 		return nil, fmt.Errorf("tailscale binary not found")
 	}
 
-	cmd := exec.Command(tailscaleBin, "--socket="+socketPath, "status", "--json")
+	ctx, cancel := context.WithTimeout(context.Background(), statusTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, tailscaleBin, "--socket="+socketPath, "status", "--json")
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("tailscale status failed: %w", err)
@@ -208,13 +250,6 @@ func findTailscaleBinary() string {
 	return ""
 }
 
-func truncateID(id string) string {
-	if len(id) > 12 {
-		return id[:12]
-	}
-	return id
-}
-
 func outputResult(result *DiagResult, w io.Writer) error {
 	fmt.Fprintf(w, "=== tslink Diagnostic Report ===\n")
 	fmt.Fprintf(w, "Timestamp: %s\n", result.Timestamp.Format(time.RFC3339))
@@ -237,6 +272,9 @@ func outputResult(result *DiagResult, w io.Writer) error {
 	fmt.Fprintf(w, "=== Endpoints ===\n")
 	for _, ep := range result.Endpoints {
 		fmt.Fprintf(w, "\n--- %s ---\n", ep.ShortID)
+		if ep.StateDir != "" {
+			fmt.Fprintf(w, "  State dir: %s\n", ep.StateDir)
+		}
 		fmt.Fprintf(w, "  Socket:    %v\n", ep.SocketExists)
 		fmt.Fprintf(w, "  State:     %v\n", ep.StateExists)
 

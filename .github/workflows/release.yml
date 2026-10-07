@@ -2,23 +2,27 @@ name: Release
 
 on:
   push:
-    branches: [main]
-    tags: ["v*"]
-  pull_request:
-    branches: [main]
+    branches:
+      - main
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: read
 
 env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  PLUGIN: ghcr.io/${{ github.repository }}
 
 jobs:
-  build:
-    # Skip forks - they don't have write access to GHCR anyway
-    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+  plugin:
+    name: Publish plugin (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
       packages: write
 
+    # Docker plugins have no multi-arch manifests, so each architecture is
+    # pushed under its own tag, built on a native runner.
     strategy:
       matrix:
         include:
@@ -27,71 +31,67 @@ jobs:
           - arch: arm64
             runner: ubuntu-24.04-arm
 
-    runs-on: ${{ matrix.runner }}
-
     steps:
       - name: Checkout
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
-
-      - name: Set up Go
-        uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c # v6
+        id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          go-version-file: 'go.mod'
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+          persist-credentials: "false"
 
       - name: Log in to GHCR
+        id: login
         uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3
         with:
-          registry: ${{ env.REGISTRY }}
+          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build plugin rootfs
+        id: rootfs
         run: |
-          docker build \
-            -t tslink:rootfs \
-            -f docker/Dockerfile \
-            .
-
+          docker build -t tslink:rootfs -f docker/Dockerfile .
           mkdir -p docker/rootfs
-          docker create --name tslink-tmp tslink:rootfs
-          docker export tslink-tmp | tar -x -C docker/rootfs
-          docker rm tslink-tmp
+          docker create --name tslink-rootfs tslink:rootfs
+          docker export tslink-rootfs | tar -x -C docker/rootfs
+          docker rm tslink-rootfs
 
-      - name: Push PR plugin
-        if: github.event_name == 'pull_request'
+      - name: Push plugin
+        id: push
+        env:
+          ARCH: ${{ matrix.arch }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          PLUGIN_NAME=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:pr-${{ github.event.pull_request.number }}-${{ matrix.arch }}
-          docker plugin create ${PLUGIN_NAME} docker/
-          docker plugin disable ${PLUGIN_NAME} || true
-          docker plugin push ${PLUGIN_NAME}
+          push() {
+            docker plugin create "$1" docker/
+            docker plugin push "$1"
+          }
 
-      - name: Push main plugin
-        if: github.ref == 'refs/heads/main'
-        run: |
-          PLUGIN_NAME=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:main-${{ matrix.arch }}
-          docker plugin create ${PLUGIN_NAME} docker/
-          docker plugin disable ${PLUGIN_NAME} || true
-          docker plugin push ${PLUGIN_NAME}
+          if [ "$REF_TYPE" != "tag" ]; then
+            push "${PLUGIN}:main-${ARCH}"
+            exit 0
+          fi
 
-      - name: Push version plugin
-        if: startsWith(github.ref, 'refs/tags/v')
-        run: |
-          VERSION=${GITHUB_REF#refs/tags/}
+          push "${PLUGIN}:${REF_NAME}-${ARCH}"
 
-          # Push version tag
-          VERSION_PLUGIN=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${VERSION}-${{ matrix.arch }}
-          docker plugin create ${VERSION_PLUGIN} docker/
-          docker plugin disable ${VERSION_PLUGIN} || true
-          docker plugin push ${VERSION_PLUGIN}
+          # Docker refuses to create a second plugin from identical
+          # content, so latest carries a version marker to differ.
+          echo "${REF_NAME}" > docker/rootfs/.plugin-version
+          push "${PLUGIN}:latest-${ARCH}"
 
-          # Create latest tag with different content (add version marker to avoid "content already exists" error)
-          LATEST_PLUGIN=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest-${{ matrix.arch }}
-          echo "${VERSION}" > docker/rootfs/.plugin-version
-          docker plugin rm ${LATEST_PLUGIN} || true
-          docker plugin create ${LATEST_PLUGIN} docker/
-          docker plugin disable ${LATEST_PLUGIN} || true
-          docker plugin push ${LATEST_PLUGIN}
-          rm docker/rootfs/.plugin-version
+  github-release:
+    name: Create GitHub release
+    if: github.ref_type == 'tag'
+    needs: plugin
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Create release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: gh release create "$TAG" --verify-tag --generate-notes

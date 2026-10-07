@@ -1,0 +1,3 @@
+#!/bin/bash
+# s <node> <cmd...> -- ssh to a test node (mgr, w1, w2) using the generated ssh_config
+exec ssh -F "$(dirname "$0")/ssh_config" "$@"

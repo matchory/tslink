@@ -137,6 +137,7 @@ services:
 |--------|-------------|---------|
 | `tslink.authkey` | Tailscale auth key | Required (or set via plugin env) |
 | `tslink.tags` | ACL tags (comma-separated) for every container on the network; overrides the `tslink.tags` label | None |
+| `com.docker.network.driver.mtu` | MTU of the interface tslink adds to the container | 1500 |
 
 A network created by `docker stack deploy` serves only that stack's tasks:
 tslink does not start Tailscale for containers from other stacks or outside
@@ -144,13 +145,23 @@ any stack. Stack tasks keep their state under `by-stack/<stack>/<hostname>`.
 See [docs/credentials.md](docs/credentials.md) for running per-stack
 identities on Swarm.
 
+### Plugin Settings
+
+Set with `docker plugin set` while the plugin is disabled.
+
+| Setting | Description | Default |
+|---------|-------------|---------|
+| `TS_VERSION` | `bundled` uses the Tailscale shipped in the plugin image; `latest` or a version such as `1.102.5` downloads it from pkgs.tailscale.com | `bundled` |
+| `TS_PATH` | Directory with your own `tailscale` and `tailscaled`; overrides `TS_VERSION` | None |
+| `TS_AUTHKEY` | Default auth key for networks without `tslink.authkey` | None |
+
 ### Container Labels
 
 Configure per-container Tailscale settings using labels:
 
 | Label | Description | Example |
 |-------|-------------|---------|
-| `tslink.hostname` | Tailscale hostname | `tslink.hostname=my-api` |
+| `tslink.hostname` | Tailscale hostname. On a node, only one container at a time can use a hostname: a second replica waits without an identity until the first one leaves | `tslink.hostname=my-api` |
 | `tslink.tags` | ACL tags (comma-separated) | `tslink.tags=tag:server,tag:prod` |
 | `tslink.serve.<port>` | Expose port via Tailscale Serve | `tslink.serve.443=https:8080` |
 | `tslink.service` | Register as Tailscale Service backend | `tslink.service=svc:my-api` |
@@ -195,6 +206,34 @@ docker network create --driver ghcr.io/matchory/tslink:latest-amd64 my-tailnet
 
 For most use cases, use an ephemeral, reusable, pre-approved key.
 
+## Running on Swarm
+
+Measured on a three-node swarm; see
+[docs/swarm-cluster-test-2026-10-07.md](docs/swarm-cluster-test-2026-10-07.md).
+
+- **Zero-downtime updates of a Tailscale Service.** tslink drains a task's
+  Service backend when Docker sends it the stop signal, and callers move to
+  other replicas. They need a moment to learn of it, so the application
+  should keep serving for a few seconds after SIGTERM; one that exits at once
+  costs its callers a second or so of errors.
+- **Maintenance:** drain a node (`docker node update --availability drain`)
+  before rebooting it or restarting Docker. Docker stops reporting events
+  once it shuts down, so a node that just stops drops callers pinned to its
+  backends for the length of the stop timeout.
+- **Upgrading the plugin** restarts every tailscaled on the node, which keeps
+  its identity; the node's tasks are off the tailnet for about three seconds.
+- **Throughput:** enable UDP GRO forwarding on the node's uplink
+  (`ethtool -K <iface> rx-udp-gro-forwarding on rx-gro-list off`, persisted
+  by your provisioning). Without it, a container's tailnet throughput is
+  about 40% of the host's.
+- **Self-healing:** tslink retries a Tailscale start that failed, logs a node
+  in again when its device was deleted or expired, and cleans up after
+  containers that stopped without telling it, as on power loss.
+- **Monitoring:** a container whose Tailscale is not running looks healthy to
+  Docker. tslink writes each endpoint's state to
+  `/var/lib/docker-plugins/tailscale/status/<endpoint>.json` (`running`,
+  `retrying` with the error, or `failed`), and `tslink diag` lists them.
+
 ## Cleanup
 
 ```bash
@@ -209,12 +248,14 @@ docker network rm my-tailnet
 
 ### View Debug Logs
 
-Each container's Tailscale daemon writes logs to the host:
+Each container's Tailscale daemon logs to `tailscaled.log` in its state directory, rotated at 10 MB:
 
 ```bash
-# List all endpoint logs
+# Show the end of every endpoint's log
 docker run --rm -v /var/lib/docker-plugins/tailscale:/data alpine \
-  sh -c 'for d in /data/by-hostname/*/; do echo "=== $d ==="; cat "$d/debug.log" 2>/dev/null | tail -20; done'
+  sh -c 'for d in /data/by-hostname/*/ /data/by-stack/*/*/; do
+    echo "=== $d ==="; tail -20 "$d/tailscaled.log" 2>/dev/null
+  done'
 
 # Check plugin logs (Linux)
 journalctl -u docker -f | grep -i tailscale
@@ -257,7 +298,7 @@ docker run --rm -v /var/lib/docker-plugins/tailscale:/data alpine \
 ## Known Limitations
 
 - **macOS/Windows**: Only works with Docker in a Linux VM (OrbStack, Docker Desktop)
-- **MagicDNS in container**: Containers can reach tailnet by IP; MagicDNS resolution requires additional DNS config
+- **MagicDNS in container**: Containers can reach tailnet by IP; for MagicDNS names, set `dns: [100.100.100.100]`
 - **Tailscale starts after the application**: Docker gives the plugin no way to identify a container while it is
   starting, so tslink brings Tailscale up once the container has started, which usually takes a few seconds. Until
   then, connections to tailnet addresses fail immediately with "host unreachable"; they never fall back to the host's

@@ -38,7 +38,16 @@ networks:
   not log option values.
 
 Rotating the secret means recreating the network, which takes the stack down
-briefly. OAuth client secrets do not expire, so this should be rare.
+briefly: 14 seconds from `docker stack rm` until the redeployed stack answered
+on its Service VIP, in the [cluster test](swarm-cluster-test-2026-10-07.md).
+OAuth client secrets do not expire, so this should be rare. A stack that
+cannot afford the gap can be deployed under a new stack name with the new
+client first, and the old one removed once the new one serves.
+
+The secret is only used to register nodes. Revoking it leaves running tasks
+online, and they also survive a plugin restart or reboot, since a node that is
+still logged in comes up without its key; tasks started after the revocation
+fail to register and retry until the network carries a valid secret.
 
 ### Rejected
 

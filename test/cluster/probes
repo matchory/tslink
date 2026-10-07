@@ -1,0 +1,16 @@
+#!/bin/bash
+# probes start [ip]|stop|report -- VIP probes in the caller tasks on all nodes
+B=$(dirname "$0")
+target=${2:-100.93.19.42}
+# shellcheck disable=SC2016 # awk program, expanded in the container
+report='awk "{n++; if(\$3!=\"200\"){f++; if(!fs)fs=\$2; fe=\$2}; b[\$4]++} END{printf \"requests=%d failed=%d fail_window=%.1fs\n\", n, f, fe-fs; for(k in b) printf \"  %s %d\n\", k, b[k]}" /tmp/probe.log'
+for n in mgr w1 w2; do
+	case $1 in
+	start) "$B/s" "$n" "c=\$(docker ps -q -f label=com.docker.swarm.service.name=caller_client|head -1); cat > /tmp/probe.sh; docker cp /tmp/probe.sh \$c:/probe.sh; docker exec -d \$c sh /probe.sh $target /tmp/probe.log" <"$B/probe.sh" ;;
+	stop) "$B/cx" "$n" caller_client 'pkill -f probe.sh' ;;
+	report)
+		echo "== $n"
+		"$B/cx" "$n" caller_client "$report"
+		;;
+	esac
+done

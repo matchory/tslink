@@ -130,6 +130,19 @@ three- and five-node swarms; see [docs/testing](docs/testing).
   persistent network used it after an ephemeral one, so garbage collection
   could log the persistent node out and delete its state. The marker now
   follows the network that uses the directory.
+- Callers of a Tailscale Service failed for minutes when a backend left right
+  after it was drained: its node was logged out before control had processed
+  the drain. Leaving now waits for control to fetch the drained Service list,
+  at least one and at most ten seconds, before it logs the node out or stops
+  its tailscaled.
+- A Service backend whose task crashed or completed got no stop signal and
+  was never drained. Leaving drains it.
+- Leaving or deleting an endpoint held the driver's lock while it logged the
+  node out, and blocked every other network call on the node meanwhile.
+- A replica drained while it waited for its Service's certificate was
+  advertised again once the certificate appeared, or when its tailscaled
+  restarted. The replica issuing the certificate was advertised before the
+  certificate existed; it now waits for it.
 
 ### Security
 

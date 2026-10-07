@@ -66,9 +66,26 @@ func TestParseServeValueProxyProtocol(t *testing.T) {
 		port, value string
 		want        *core.ServeEndpoint
 	}{
-		{"5432", "tcp:5432?proxy-protocol=2", &core.ServeEndpoint{Proto: "tcp", Port: "5432", Target: "5432", ProxyProtocol: "2"}},
-		{"5432", "tcp?proxy-protocol=1", &core.ServeEndpoint{Proto: "tcp", Port: "5432", Target: "5432", ProxyProtocol: "1"}},
-		{"443", "tls-terminated-tcp:8443?proxy-protocol=2", &core.ServeEndpoint{Proto: "tls-terminated-tcp", Port: "443", Target: "8443", ProxyProtocol: "2"}},
+		{
+			"5432",
+			"tcp:5432?proxy-protocol=2",
+			&core.ServeEndpoint{Proto: "tcp", Port: "5432", Target: "5432", ProxyProtocol: "2"},
+		},
+		{
+			"5432",
+			"tcp?proxy-protocol=1",
+			&core.ServeEndpoint{Proto: "tcp", Port: "5432", Target: "5432", ProxyProtocol: "1"},
+		},
+		{
+			"443",
+			"tls-terminated-tcp:8443?proxy-protocol=2",
+			&core.ServeEndpoint{
+				Proto:         "tls-terminated-tcp",
+				Port:          "443",
+				Target:        "8443",
+				ProxyProtocol: "2",
+			},
+		},
 		{"5432", "tcp:5432", &core.ServeEndpoint{Proto: "tcp", Port: "5432", Target: "5432"}},
 		{"5432", "tcp:5432?proxy-protocol=3", nil},
 		{"5432", "tcp:5432?proxy-protocol=", nil},
@@ -88,8 +105,27 @@ func TestParseServeValueAcceptAppCaps(t *testing.T) {
 		port, value string
 		want        *core.ServeEndpoint
 	}{
-		{"80", "http:80?accept-app-caps=example.com/cap/a", &core.ServeEndpoint{Proto: "http", Port: "80", Target: "80", AcceptAppCaps: "example.com/cap/a"}},
-		{"443", "https:8080/api?accept-app-caps=example.com/cap/a,example.com/cap/b", &core.ServeEndpoint{Proto: "https", Port: "443", Target: "8080", Path: "/api", AcceptAppCaps: "example.com/cap/a,example.com/cap/b"}},
+		{
+			"80",
+			"http:80?accept-app-caps=example.com/cap/a",
+			&core.ServeEndpoint{
+				Proto:         "http",
+				Port:          "80",
+				Target:        "80",
+				AcceptAppCaps: "example.com/cap/a",
+			},
+		},
+		{
+			"443",
+			"https:8080/api?accept-app-caps=example.com/cap/a,example.com/cap/b",
+			&core.ServeEndpoint{
+				Proto:         "https",
+				Port:          "443",
+				Target:        "8080",
+				Path:          "/api",
+				AcceptAppCaps: "example.com/cap/a,example.com/cap/b",
+			},
+		},
 		{"80", "http:80?accept-app-caps=", nil},
 		{"80", "http:80?accept-app-caps=nodomain", nil},
 		{"80", "http:80?accept-app-caps=example.com/cap/a,,example.com/cap/b", nil},
@@ -112,7 +148,11 @@ func TestParseContainerInfoDirect(t *testing.T) {
 	}{
 		{"default without a Service", map[string]string{}, true},
 		{"default with a Service", map[string]string{"tslink.service": "svc:web"}, false},
-		{"explicit with a Service", map[string]string{"tslink.service": "svc:web", "tslink.direct": "true"}, true},
+		{
+			"explicit with a Service",
+			map[string]string{"tslink.service": "svc:web", "tslink.direct": "true"},
+			true,
+		},
 		{"explicit off", map[string]string{"tslink.direct": "false"}, false},
 	}
 	for _, tt := range tests {

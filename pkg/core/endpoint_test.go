@@ -28,7 +28,14 @@ func TestStateDirFor(t *testing.T) {
 	for _, tt := range tests {
 		got, err := stateDirFor("/data", tt.stack, tt.hostname)
 		if err != nil || got != tt.want {
-			t.Errorf("stateDirFor(%q, %q) = %q, %v; want %q", tt.stack, tt.hostname, got, err, tt.want)
+			t.Errorf(
+				"stateDirFor(%q, %q) = %q, %v; want %q",
+				tt.stack,
+				tt.hostname,
+				got,
+				err,
+				tt.want,
+			)
 		}
 	}
 	for _, tt := range [][2]string{{"", "../x"}, {"..", "web"}, {"a/b", "web"}, {"billing", ""}} {

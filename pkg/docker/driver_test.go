@@ -30,8 +30,10 @@ func TestCreateNetworkOptions(t *testing.T) {
 				"tslink.authkey": "tskey-auth-net", "tslink.tags": "tag:a,tag:b",
 				core.MTUOption: "1400", core.LoginServerOption: "https://hs.example.com",
 			}},
-			want: core.Network{AuthKey: "tskey-auth-net", Tags: []string{"tag:a", "tag:b"}, MTU: 1400,
-				LoginServer: "https://hs.example.com"},
+			want: core.Network{
+				AuthKey: "tskey-auth-net", Tags: []string{"tag:a", "tag:b"}, MTU: 1400,
+				LoginServer: "https://hs.example.com",
+			},
 		},
 		{
 			name: "top-level options",
@@ -59,7 +61,11 @@ func TestCreateNetworkOptions(t *testing.T) {
 			net, stored := td.network(id)
 			if tt.wantErr {
 				if err == nil || stored {
-					t.Fatalf("CreateNetwork = %v, stored %v; want an error and nothing stored", err, stored)
+					t.Fatalf(
+						"CreateNetwork = %v, stored %v; want an error and nothing stored",
+						err,
+						stored,
+					)
 				}
 				return
 			}
@@ -88,7 +94,9 @@ func TestDeleteNetwork(t *testing.T) {
 		t.Error("network still owned after DeleteNetwork")
 	}
 	// Docker may delete a network the restarted plugin never saw
-	if err := td.DeleteNetwork(&network.DeleteNetworkRequest{NetworkID: fakeID("unknown")}); err != nil {
+	if err := td.DeleteNetwork(
+		&network.DeleteNetworkRequest{NetworkID: fakeID("unknown")},
+	); err != nil {
 		t.Errorf("DeleteNetwork of an unknown network: %v", err)
 	}
 }
@@ -108,7 +116,8 @@ func TestCreateEndpointRebuildsIdleNetwork(t *testing.T) {
 	if !ok {
 		t.Fatal("network not adopted")
 	}
-	if net.AuthKey != "tskey-auth-idle" || net.MTU != 1380 || !slices.Equal(net.Tags, []string{"tag:idle"}) {
+	if net.AuthKey != "tskey-auth-idle" || net.MTU != 1380 ||
+		!slices.Equal(net.Tags, []string{"tag:idle"}) {
 		t.Errorf("rebuilt network %+v", net)
 	}
 	ep, ok := td.endpoint(fakeID("ep1"))
@@ -132,7 +141,9 @@ func TestCreateEndpointUnknownNetwork(t *testing.T) {
 	td.config.AuthKey = ""
 
 	for name, netID := range map[string]string{"not in Docker": fakeID("gone"), "no credential": noKey} {
-		_, err := td.CreateEndpoint(&network.CreateEndpointRequest{NetworkID: netID, EndpointID: fakeID(name)})
+		_, err := td.CreateEndpoint(
+			&network.CreateEndpointRequest{NetworkID: netID, EndpointID: fakeID(name)},
+		)
 		if err == nil {
 			t.Errorf("%s: CreateEndpoint succeeded", name)
 		}
@@ -151,7 +162,9 @@ func TestJoinDoesNotBlockOnTailscale(t *testing.T) {
 	td := newTestDriver(t, newFakeDocker())
 	netID, epID := fakeID("net"), fakeID("ep")
 	td.createNetwork(t, netID, map[string]string{"tslink.authkey": "k"})
-	if _, err := td.CreateEndpoint(&network.CreateEndpointRequest{NetworkID: netID, EndpointID: epID}); err != nil {
+	if _, err := td.CreateEndpoint(
+		&network.CreateEndpointRequest{NetworkID: netID, EndpointID: epID},
+	); err != nil {
 		t.Fatal(err)
 	}
 	info := parseContainerInfo("web", nil)
@@ -159,7 +172,9 @@ func TestJoinDoesNotBlockOnTailscale(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := td.Join(&network.JoinRequest{NetworkID: netID, EndpointID: epID, SandboxKey: sandbox})
+		_, err := td.Join(
+			&network.JoinRequest{NetworkID: netID, EndpointID: epID, SandboxKey: sandbox},
+		)
 		done <- err
 	}()
 	if err := receive(t, done, "Join to return"); err != nil {
@@ -189,18 +204,24 @@ func TestJoinErrors(t *testing.T) {
 	netID, epID := fakeID("net"), fakeID("ep")
 	td.createNetwork(t, netID, map[string]string{"tslink.authkey": "k"})
 
-	if _, err := td.Join(&network.JoinRequest{NetworkID: netID, EndpointID: epID, SandboxKey: sandbox}); err == nil {
+	if _, err := td.Join(
+		&network.JoinRequest{NetworkID: netID, EndpointID: epID, SandboxKey: sandbox},
+	); err == nil {
 		t.Error("Join of an unknown endpoint succeeded")
 	}
 
-	if _, err := td.CreateEndpoint(&network.CreateEndpointRequest{NetworkID: netID, EndpointID: epID}); err != nil {
+	if _, err := td.CreateEndpoint(
+		&network.CreateEndpointRequest{NetworkID: netID, EndpointID: epID},
+	); err != nil {
 		t.Fatal(err)
 	}
 	td.cache.Store(epID, parseContainerInfo("web", nil))
 	td.joinEndpoint = func(*core.Endpoint, string) (*network.JoinResponse, error) {
 		return nil, errors.New("veth failed")
 	}
-	if _, err := td.Join(&network.JoinRequest{NetworkID: netID, EndpointID: epID, SandboxKey: sandbox}); err == nil {
+	if _, err := td.Join(
+		&network.JoinRequest{NetworkID: netID, EndpointID: epID, SandboxKey: sandbox},
+	); err == nil {
 		t.Error("Join succeeded although setting up the veth failed")
 	}
 	td.noRun(t)
@@ -222,7 +243,9 @@ func TestLeaveAndDeleteEndpoint(t *testing.T) {
 		t.Error("Leave removed the endpoint; DeleteEndpoint does")
 	}
 
-	if err := td.DeleteEndpoint(&network.DeleteEndpointRequest{NetworkID: netID, EndpointID: epID}); err != nil {
+	if err := td.DeleteEndpoint(
+		&network.DeleteEndpointRequest{NetworkID: netID, EndpointID: epID},
+	); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := td.endpoint(epID); ok {
@@ -231,7 +254,9 @@ func TestLeaveAndDeleteEndpoint(t *testing.T) {
 	if _, ok := td.cache.GetByEndpoint(epID); ok {
 		t.Error("container info kept after DeleteEndpoint")
 	}
-	if _, err := td.EndpointInfo(&network.InfoRequest{NetworkID: netID, EndpointID: epID}); err == nil {
+	if _, err := td.EndpointInfo(
+		&network.InfoRequest{NetworkID: netID, EndpointID: epID},
+	); err == nil {
 		t.Error("EndpointInfo of a deleted endpoint succeeded")
 	}
 
@@ -239,7 +264,9 @@ func TestLeaveAndDeleteEndpoint(t *testing.T) {
 	if err := td.Leave(&network.LeaveRequest{NetworkID: netID, EndpointID: epID}); err != nil {
 		t.Errorf("Leave of an unknown endpoint: %v", err)
 	}
-	if err := td.DeleteEndpoint(&network.DeleteEndpointRequest{NetworkID: netID, EndpointID: epID}); err != nil {
+	if err := td.DeleteEndpoint(
+		&network.DeleteEndpointRequest{NetworkID: netID, EndpointID: epID},
+	); err != nil {
 		t.Errorf("DeleteEndpoint of an unknown endpoint: %v", err)
 	}
 }
@@ -261,7 +288,9 @@ func otherDriverCallsComplete(t *testing.T, td *testDriver, netID string) {
 	done := make(chan error, 1)
 	go func() {
 		other := fakeID("other")
-		if _, err := td.CreateEndpoint(&network.CreateEndpointRequest{NetworkID: netID, EndpointID: other}); err != nil {
+		if _, err := td.CreateEndpoint(
+			&network.CreateEndpointRequest{NetworkID: netID, EndpointID: other},
+		); err != nil {
 			done <- err
 			return
 		}
@@ -353,8 +382,10 @@ func TestRecoverEndpoints(t *testing.T) {
 		map[string]string{core.StackLabel: "billing"})
 	bridgeID := fake.addNetwork("bridge", "bridge", nil, nil)
 	epID := fakeID("ep")
-	fake.addContainer("billing_api.1.abc", map[string]string{core.StackLabel: "billing", "tslink.service": "svc:api",
-		"tslink.serve.443": "https:8080"},
+	fake.addContainer("billing_api.1.abc", map[string]string{
+		core.StackLabel: "billing", "tslink.service": "svc:api",
+		"tslink.serve.443": "https:8080",
+	},
 		attachment{"billing_net", netID, epID}, attachment{"bridge", bridgeID, fakeID("bridge-ep")})
 	dns := netip.MustParseAddr("100.100.100.100")
 	fake.setDNS(fakeID("container/billing_api.1.abc"), dns)
@@ -365,7 +396,8 @@ func TestRecoverEndpoints(t *testing.T) {
 	}
 
 	net, ok := td.network(netID)
-	if !ok || net.AuthKey != "tskey-auth-billing" || !slices.Equal(net.Tags, []string{"tag:billing"}) {
+	if !ok || net.AuthKey != "tskey-auth-billing" ||
+		!slices.Equal(net.Tags, []string{"tag:billing"}) {
 		t.Fatalf("network not rebuilt from inspect: %+v", net)
 	}
 	if _, ok := td.network(bridgeID); ok {
@@ -381,14 +413,23 @@ func TestRecoverEndpoints(t *testing.T) {
 	if ep.Network != net || ep.GetSandboxKey() != sandbox {
 		t.Errorf("endpoint network %p (want %p), sandbox %q", ep.Network, net, ep.GetSandboxKey())
 	}
-	if want := filepath.Join(td.config.DataDir, "by-stack", "billing", "billing-api-1-abc"); ep.GetStateDir() != want {
+	if want := filepath.Join(
+		td.config.DataDir,
+		"by-stack",
+		"billing",
+		"billing-api-1-abc",
+	); ep.GetStateDir() != want {
 		t.Errorf("state dir %q, want %q claimed before garbage collection", ep.GetStateDir(), want)
 	}
 
 	r := td.nextRun(t)
-	if r.endpointID != epID || r.info.Name != "billing_api.1.abc" || r.info.Hostname != "billing-api-1-abc" ||
-		r.info.Stack != "billing" || r.info.NetworkStack != "billing" || r.info.Service != "svc:api" ||
-		len(r.info.Endpoints) != 1 || !slices.Equal(r.info.DNS, []netip.Addr{dns}) {
+	if r.endpointID != epID || r.info.Name != "billing_api.1.abc" ||
+		r.info.Hostname != "billing-api-1-abc" ||
+		r.info.Stack != "billing" ||
+		r.info.NetworkStack != "billing" ||
+		r.info.Service != "svc:api" ||
+		len(r.info.Endpoints) != 1 ||
+		!slices.Equal(r.info.DNS, []netip.Addr{dns}) {
 		t.Errorf("started Tailscale with %+v", r.info)
 	}
 	if info, ok := td.cache.GetByEndpoint(epID); !ok || info != r.info {
@@ -432,7 +473,9 @@ func TestRecoverEndpointsSkips(t *testing.T) {
 			name: "endpoint without sandbox",
 			setup: func(t *testing.T, td *testDriver, _ *fakeDocker, netID, epID string) {
 				// Created, not yet joined: Join starts it
-				if _, err := td.CreateEndpoint(&network.CreateEndpointRequest{NetworkID: netID, EndpointID: epID}); err != nil {
+				if _, err := td.CreateEndpoint(
+					&network.CreateEndpointRequest{NetworkID: netID, EndpointID: epID},
+				); err != nil {
 					t.Fatal(err)
 				}
 			},
@@ -462,7 +505,12 @@ func TestRecoverEndpointsSkips(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fake := newFakeDocker()
-			netID := fake.addNetwork("net", pluginName, map[string]string{"tslink.authkey": "k"}, nil)
+			netID := fake.addNetwork(
+				"net",
+				pluginName,
+				map[string]string{"tslink.authkey": "k"},
+				nil,
+			)
 			epID := fakeID("ep")
 			fake.addContainer("web", nil, attachment{"net", netID, epID})
 			td := newTestDriver(t, fake)
@@ -498,7 +546,12 @@ func TestRecoverEndpointsDockerErrors(t *testing.T) {
 func TestRecoverEndpointsPluginAlias(t *testing.T) {
 	fake := newFakeDocker()
 	fake.plugins[0].Name = "ghcr.io/example/tslink:v1"
-	netID := fake.addNetwork("net", "ghcr.io/example/tslink:v1", map[string]string{"tslink.authkey": "k"}, nil)
+	netID := fake.addNetwork(
+		"net",
+		"ghcr.io/example/tslink:v1",
+		map[string]string{"tslink.authkey": "k"},
+		nil,
+	)
 	epID := fakeID("ep")
 	fake.addContainer("web", nil, attachment{"net", netID, epID})
 	td := newTestDriver(t, fake)
@@ -577,7 +630,13 @@ func TestFailedRecoveryReleasesStateDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	net, _ := td.network(netID)
-	restarted, err := core.NewEndpoint(fakeID("ep-new"), net, core.EndpointOptions{}, td.config, td.claims)
+	restarted, err := core.NewEndpoint(
+		fakeID("ep-new"),
+		net,
+		core.EndpointOptions{},
+		td.config,
+		td.claims,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}

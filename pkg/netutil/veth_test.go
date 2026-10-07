@@ -123,9 +123,23 @@ func TestNATRules(t *testing.T) {
 
 	r = listNATRules(t, nsPath)
 	assertRules(t, "FORWARD after restart", r.forward, []string{"-P FORWARD ACCEPT", jump, drop})
-	assertRules(t, chainName+" after restart", r.chain,
-		slices.Concat([]string{"-N " + chainName}, accept("vethtslinka"), accept("vethtslinkb"), accept("vethtslinkc")))
-	assertRules(t, "POSTROUTING after restart", r.postrouting, []string{"-P POSTROUTING ACCEPT", masquerade})
+	assertRules(
+		t,
+		chainName+" after restart",
+		r.chain,
+		slices.Concat(
+			[]string{"-N " + chainName},
+			accept("vethtslinka"),
+			accept("vethtslinkb"),
+			accept("vethtslinkc"),
+		),
+	)
+	assertRules(
+		t,
+		"POSTROUTING after restart",
+		r.postrouting,
+		[]string{"-P POSTROUTING ACCEPT", masquerade},
+	)
 
 	// CleanupNAT removes one veth's rules, and tolerates their absence.
 	for range 2 {
@@ -136,7 +150,12 @@ func TestNATRules(t *testing.T) {
 	assertRules(t, "FORWARD after CleanupNAT", r.forward, []string{"-P FORWARD ACCEPT", jump, drop})
 	assertRules(t, chainName+" after CleanupNAT", r.chain,
 		slices.Concat([]string{"-N " + chainName}, accept("vethtslinkb"), accept("vethtslinkc")))
-	assertRules(t, "POSTROUTING after CleanupNAT", r.postrouting, []string{"-P POSTROUTING ACCEPT", masquerade})
+	assertRules(
+		t,
+		"POSTROUTING after CleanupNAT",
+		r.postrouting,
+		[]string{"-P POSTROUTING ACCEPT", masquerade},
+	)
 
 	// CleanupAllNAT removes the chain, the jump and MASQUERADE, and
 	// tolerates their absence.
@@ -149,5 +168,10 @@ func TestNATRules(t *testing.T) {
 	if r.chain != nil {
 		t.Errorf("chain %s still exists: %q", chainName, r.chain)
 	}
-	assertRules(t, "POSTROUTING after CleanupAllNAT", r.postrouting, []string{"-P POSTROUTING ACCEPT"})
+	assertRules(
+		t,
+		"POSTROUTING after CleanupAllNAT",
+		r.postrouting,
+		[]string{"-P POSTROUTING ACCEPT"},
+	)
 }

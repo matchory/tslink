@@ -27,9 +27,11 @@ func testState(t *testing.T, prefs map[string]any) []byte {
 		t.Fatal(err)
 	}
 	state := map[string][]byte{
-		"_machinekey":        []byte(testMachineKey),
-		"_current-profile":   []byte("profile-1a2b"),
-		"_profiles":          []byte(`{"1a2b":{"ID":"1a2b","Name":"web.example.ts.net","Key":"profile-1a2b"}}`),
+		"_machinekey":      []byte(testMachineKey),
+		"_current-profile": []byte("profile-1a2b"),
+		"_profiles": []byte(
+			`{"1a2b":{"ID":"1a2b","Name":"web.example.ts.net","Key":"profile-1a2b"}}`,
+		),
 		"profile-1a2b":       prefsJSON,
 		"_serve/1a2b":        []byte(`{"Services":{"svc:web":{"TCP":{"443":{"HTTPS":true}}}}}`),
 		"_taildrop-received": []byte("1"),
@@ -72,7 +74,15 @@ func TestLogoutState(t *testing.T) {
 		keys = append(keys, k)
 	}
 	slices.Sort(keys)
-	if want := []string{"_current-profile", "_machinekey", "_profiles", "profile-1a2b"}; !slices.Equal(keys, want) {
+	if want := []string{
+		"_current-profile",
+		"_machinekey",
+		"_profiles",
+		"profile-1a2b",
+	}; !slices.Equal(
+		keys,
+		want,
+	) {
 		t.Errorf("keys = %v, want %v", keys, want)
 	}
 	if string(state["_machinekey"]) != testMachineKey {
@@ -86,7 +96,11 @@ func TestLogoutState(t *testing.T) {
 	// Logged out, tailscaled starts its control client without logging in,
 	// so the node neither polls a network map nor comes up
 	if prefs["WantRunning"] != false || prefs["LoggedOut"] != true {
-		t.Errorf("WantRunning = %v, LoggedOut = %v; want false, true", prefs["WantRunning"], prefs["LoggedOut"])
+		t.Errorf(
+			"WantRunning = %v, LoggedOut = %v; want false, true",
+			prefs["WantRunning"],
+			prefs["LoggedOut"],
+		)
 	}
 	if _, ok := prefs["AdvertiseServices"]; ok {
 		t.Error("AdvertiseServices kept")
@@ -144,14 +158,18 @@ func TestLogoutStateWithoutNode(t *testing.T) {
 func TestLogoutStateDir(t *testing.T) {
 	stateDir := t.TempDir()
 	socket := filepath.Join(t.TempDir(), "sock", "gc.sock")
-	if err := os.WriteFile(filepath.Join(stateDir, "tailscaled.state"), testState(t, runningPrefs()), 0600); err != nil {
+	if err := os.WriteFile(
+		filepath.Join(stateDir, "tailscaled.state"),
+		testState(t, runningPrefs()),
+		0o600,
+	); err != nil {
 		t.Fatal(err)
 	}
 
 	var workDir string
 	saved := runLogout
 	t.Cleanup(func() { runLogout = saved })
-	runLogout = func(ctx context.Context, tailscaleBin, tailscaledBin, dir, sock string) error {
+	runLogout = func(_ context.Context, tailscaleBin, tailscaledBin, dir, sock string) error {
 		workDir = dir
 		if tailscaleBin != "ts" || tailscaledBin != "tsd" || sock != socket {
 			t.Errorf("runLogout(%q, %q, _, %q)", tailscaleBin, tailscaledBin, sock)
@@ -168,7 +186,10 @@ func TestLogoutStateDir(t *testing.T) {
 		if _, ok := state["_serve/1a2b"]; ok {
 			t.Error("serve config in the copy")
 		}
-		if st, err := os.Stat(filepath.Join(dir, "tailscaled.state")); err != nil || st.Mode().Perm() != 0600 {
+		if st, err := os.Stat(
+			filepath.Join(dir, "tailscaled.state"),
+		); err != nil ||
+			st.Mode().Perm() != 0o600 {
 			t.Errorf("copy mode = %v (err=%v), want 0600", st.Mode().Perm(), err)
 		}
 		if _, err := os.Stat(filepath.Dir(sock)); err != nil {
@@ -202,12 +223,22 @@ func TestLogoutStateDirWithoutNode(t *testing.T) {
 	}
 
 	// A start that failed before tailscaled wrote any state
-	if err := LogoutState(context.Background(), "ts", "tsd", t.TempDir(), "unused.sock"); err != nil {
+	if err := LogoutState(
+		context.Background(),
+		"ts",
+		"tsd",
+		t.TempDir(),
+		"unused.sock",
+	); err != nil {
 		t.Errorf("no state: %v", err)
 	}
 
 	stateDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(stateDir, "tailscaled.state"), []byte("{}"), 0600); err != nil {
+	if err := os.WriteFile(
+		filepath.Join(stateDir, "tailscaled.state"),
+		[]byte("{}"),
+		0o600,
+	); err != nil {
 		t.Fatal(err)
 	}
 	if err := LogoutState(context.Background(), "ts", "tsd", stateDir, "unused.sock"); err != nil {
@@ -219,7 +250,7 @@ func TestLogoutStateDirWithoutNode(t *testing.T) {
 func writeScript(t *testing.T, dir, name, body string) string {
 	t.Helper()
 	p := filepath.Join(dir, name)
-	if err := os.WriteFile(p, []byte("#!/bin/sh\n"+body), 0700); err != nil {
+	if err := os.WriteFile(p, []byte("#!/bin/sh\n"+body), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	return p
@@ -265,7 +296,10 @@ echo "$@" >>"`+log+`"
 			t.Errorf("tailscaled args %q lack %s", daemonArgs, want)
 		}
 	}
-	if env, err := os.ReadFile(log + ".env"); err != nil || strings.Contains(string(env), "tskey-auth-secret") {
+	if env, err := os.ReadFile(
+		log + ".env",
+	); err != nil ||
+		strings.Contains(string(env), "tskey-auth-secret") {
 		t.Errorf("auth key passed to tailscaled (err=%v)", err)
 	}
 }

@@ -19,11 +19,11 @@ type streamingWriter struct {
 	mu     sync.Mutex
 }
 
-func (w *streamingWriter) Write(p []byte) (n int, err error) {
+func (w *streamingWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	n, err = w.buf.Write(p)
+	n, err := w.buf.Write(p)
 	if err != nil {
 		return n, err
 	}
@@ -41,7 +41,7 @@ func (w *streamingWriter) Write(p []byte) (n int, err error) {
 		}
 		line = strings.TrimRight(line, "\n\r")
 		if line != "" {
-			logger.Debug("[%s] %s", w.prefix, line)
+			logger.Debugf("[%s] %s", w.prefix, line)
 		}
 	}
 	return n, nil
@@ -54,7 +54,12 @@ func (w *streamingWriter) String() string {
 }
 
 // runCommandWithStreaming runs a command and streams its output to the logger.
-func runCommandWithStreaming(ctx context.Context, prefix string, name string, args ...string) (string, error) {
+func runCommandWithStreaming(
+	ctx context.Context,
+	prefix string,
+	name string,
+	args ...string,
+) (string, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 
 	stdout := &streamingWriter{prefix: prefix + ":stdout"}
@@ -63,7 +68,7 @@ func runCommandWithStreaming(ctx context.Context, prefix string, name string, ar
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 
-	logger.Debug("[%s] Running: %s %v", prefix, name, args)
+	logger.Debugf("[%s] Running: %s %v", prefix, name, args)
 
 	err := cmd.Run()
 

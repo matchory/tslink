@@ -81,9 +81,17 @@ func (d *Daemon) Drain(service string) error {
 func (d *Daemon) runServe(ctx context.Context, prefix string, args ...string) error {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	out, err := d.tailscale(ctx, prefix, append([]string{"--socket=" + d.socketPath, serveCmd}, args...)...)
+	out, err := d.tailscale(
+		ctx,
+		prefix,
+		append([]string{"--socket=" + d.socketPath, serveCmd}, args...)...)
 	if err != nil {
-		return fmt.Errorf("tailscale serve %s failed: %w (output: %s)", args[0], err, strings.TrimSpace(out))
+		return fmt.Errorf(
+			"tailscale serve %s failed: %w (output: %s)",
+			args[0],
+			err,
+			strings.TrimSpace(out),
+		)
 	}
 	return nil
 }
@@ -113,7 +121,7 @@ func (d *Daemon) waitServicesFetch(after int64, deadline time.Time) bool {
 func (s *DaemonSupervisor) DrainAndWait(service string) {
 	id := s.cfg.EndpointID[:min(12, len(s.cfg.EndpointID))]
 	if err := s.Drain(service); err != nil {
-		logger.Warn("Endpoint %s: failed to drain %s before leaving: %v", id, service, err)
+		logger.Warnf("Endpoint %s: failed to drain %s before leaving: %v", id, service, err)
 	}
 
 	g := s.cfg.gate
@@ -130,16 +138,16 @@ func (s *DaemonSupervisor) DrainAndWait(service string) {
 		after = 0
 	}
 
-	logger.Info("Endpoint %s: %s drained, waiting for control to fetch it", id, service)
+	logger.Infof("Endpoint %s: %s drained, waiting for control to fetch it", id, service)
 	acked := d.waitServicesFetch(after, drain.at.Add(drainAckTimeout))
 	if wait := time.Until(drain.at.Add(drainAckFloor)); wait > 0 {
 		time.Sleep(wait)
 	}
 	if acked {
-		logger.Info("Endpoint %s: control fetched the drained %s, %v after the drain",
+		logger.Infof("Endpoint %s: control fetched the drained %s, %v after the drain",
 			id, service, time.Since(drain.at).Round(time.Millisecond))
 		return
 	}
-	logger.Warn("Endpoint %s: control did not fetch the drained %s within %v, leaving anyway",
+	logger.Warnf("Endpoint %s: control did not fetch the drained %s within %v, leaving anyway",
 		id, service, drainAckTimeout)
 }

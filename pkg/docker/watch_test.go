@@ -25,7 +25,11 @@ type eventSetup struct {
 func newEventSetup(t *testing.T, join bool) *eventSetup {
 	t.Helper()
 	fake := newFakeDocker()
-	s := &eventSetup{epID: fakeID("ep"), handled: make(chan string, 8), stopped: make(chan string, 8)}
+	s := &eventSetup{
+		epID:    fakeID("ep"),
+		handled: make(chan string, 8),
+		stopped: make(chan string, 8),
+	}
 	s.netID = fake.addNetwork("billing_net", pluginName, map[string]string{"tslink.authkey": "k"},
 		map[string]string{core.StackLabel: "billing"})
 	s.containerID = fake.addContainer("billing_web.1.xyz",
@@ -55,8 +59,11 @@ func TestEventStartsTailscaleWithContainerName(t *testing.T) {
 		t.Fatalf("handled endpoint %s, want %s", id[:12], s.epID[:12])
 	}
 	r := s.td.nextRun(t)
-	if r.endpointID != s.epID || r.info.Name != "billing_web.1.xyz" || r.info.Hostname != "billing-web-1-xyz" ||
-		r.info.Stack != "billing" || r.info.NetworkStack != "billing" || !slices.Equal(r.info.Tags, []string{"tag:web"}) ||
+	if r.endpointID != s.epID || r.info.Name != "billing_web.1.xyz" ||
+		r.info.Hostname != "billing-web-1-xyz" ||
+		r.info.Stack != "billing" ||
+		r.info.NetworkStack != "billing" ||
+		!slices.Equal(r.info.Tags, []string{"tag:web"}) ||
 		!slices.Equal(r.info.DNS, []netip.Addr{dns}) {
 		t.Errorf("started Tailscale with %+v", r.info)
 	}
@@ -72,7 +79,9 @@ func TestEventBeforeJoin(t *testing.T) {
 	receive(t, s.handled, "the connect event")
 	s.td.noRun(t)
 
-	if _, err := s.td.Join(&network.JoinRequest{NetworkID: s.netID, EndpointID: s.epID, SandboxKey: sandbox}); err != nil {
+	if _, err := s.td.Join(
+		&network.JoinRequest{NetworkID: s.netID, EndpointID: s.epID, SandboxKey: sandbox},
+	); err != nil {
 		t.Fatal(err)
 	}
 	if r := s.td.nextRun(t); r.endpointID != s.epID || r.info.Hostname != "billing-web-1-xyz" {
@@ -89,7 +98,10 @@ func TestEventsIgnored(t *testing.T) {
 	fake.send(t, connectEvent(bridgeID, "bridge", other))              // another driver's network
 	fake.send(t, connectEvent(s.netID, "billing_net", ""))             // no container
 	fake.send(t, connectEvent(s.netID, "billing_net", fakeID("gone"))) // container already gone
-	fake.send(t, connectEvent(s.netID, "other_net", s.containerID))    // container not on that network
+	fake.send(
+		t,
+		connectEvent(s.netID, "other_net", s.containerID),
+	) // container not on that network
 	fake.send(t, connectEvent(s.netID, "billing_net", s.containerID))
 	// Events are handled in order: the first one handled is the last one sent
 	if id := receive(t, s.handled, "the connect event"); id != s.epID {

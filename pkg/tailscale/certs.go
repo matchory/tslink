@@ -61,7 +61,7 @@ func LinkCertsDir(stateDir, shared string) error {
 	if shared == "" {
 		return nil
 	}
-	if err := os.MkdirAll(shared, 0700); err != nil {
+	if err := os.MkdirAll(shared, 0o700); err != nil {
 		return fmt.Errorf("failed to create certificate directory: %w", err)
 	}
 	// Two tailscaleds would each create their own key, and certificates issued
@@ -76,7 +76,7 @@ func LinkCertsDir(stateDir, shared string) error {
 	case err != nil:
 		return fmt.Errorf("failed to check %s: %w", link, err)
 	case st.Mode()&fs.ModeSymlink == 0:
-		logger.Warn("%s is a directory, not shared: keeping it", link)
+		logger.Warnf("%s is a directory, not shared: keeping it", link)
 		return nil
 	default:
 		if target, err := os.Readlink(link); err == nil && target == shared {
@@ -109,7 +109,7 @@ func ensureAccountKey(dir string) error {
 		return fmt.Errorf("failed to encode ACME account key: %w", err)
 	}
 	pemKey := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: der})
-	if err := createExclusive(path, pemKey, 0600); err != nil && !errors.Is(err, fs.ErrExist) {
+	if err := createExclusive(path, pemKey, 0o600); err != nil && !errors.Is(err, fs.ErrExist) {
 		return fmt.Errorf("failed to write ACME account key: %w", err)
 	}
 	return nil
@@ -124,7 +124,7 @@ func createExclusive(path string, data []byte, perm os.FileMode) error {
 	}
 	defer func() {
 		if err := os.Remove(tmp.Name()); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			logger.Warn("Failed to remove %s: %v", tmp.Name(), err)
+			logger.Warnf("Failed to remove %s: %v", tmp.Name(), err)
 		}
 	}()
 	if _, err := tmp.Write(data); err != nil {
@@ -145,7 +145,10 @@ func createExclusive(path string, data []byte, perm os.FileMode) error {
 // with its key, in tailscaled's file names. Whether it chains to a trusted
 // root is left to tailscaled, which issues a new one if not.
 func validCert(dir, domain string, now time.Time) bool {
-	pair, err := tls.LoadX509KeyPair(filepath.Join(dir, domain+".crt"), filepath.Join(dir, domain+".key"))
+	pair, err := tls.LoadX509KeyPair(
+		filepath.Join(dir, domain+".crt"),
+		filepath.Join(dir, domain+".key"),
+	)
 	if err != nil || pair.Leaf == nil {
 		return false
 	}
@@ -165,7 +168,7 @@ type certLease struct {
 // another replica holds it and it is not stale.
 func tryLease(dir, domain, holder string) (*certLease, error) {
 	path := filepath.Join(dir, domain+".lease")
-	err := createExclusive(path, []byte(holder+"\n"), 0600)
+	err := createExclusive(path, []byte(holder+"\n"), 0o600)
 	if errors.Is(err, fs.ErrExist) {
 		st, statErr := os.Stat(path)
 		if statErr != nil || time.Since(st.ModTime()) < certLeaseStale {
@@ -173,11 +176,11 @@ func tryLease(dir, domain, holder string) (*certLease, error) {
 		}
 		// Two replicas may both find it stale and both take it; that costs
 		// one certificate, not the limit
-		logger.Warn("Taking over stale certificate lease %s", path)
+		logger.Warnf("Taking over stale certificate lease %s", path)
 		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return nil, fmt.Errorf("failed to remove stale lease: %w", err)
 		}
-		err = createExclusive(path, []byte(holder+"\n"), 0600)
+		err = createExclusive(path, []byte(holder+"\n"), 0o600)
 		if errors.Is(err, fs.ErrExist) {
 			return nil, errLeaseHeld
 		}
@@ -201,7 +204,7 @@ func (l *certLease) refresh() {
 			return
 		case now := <-ticker.C:
 			if err := os.Chtimes(l.path, now, now); err != nil {
-				logger.Warn("Failed to refresh certificate lease %s: %v", l.path, err)
+				logger.Warnf("Failed to refresh certificate lease %s: %v", l.path, err)
 			}
 		}
 	}
@@ -212,7 +215,7 @@ func (l *certLease) release() {
 	close(l.stop)
 	<-l.done
 	if err := os.Remove(l.path); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		logger.Warn("Failed to release certificate lease %s: %v", l.path, err)
+		logger.Warnf("Failed to release certificate lease %s: %v", l.path, err)
 	}
 }
 
@@ -243,12 +246,18 @@ func (d *Daemon) requestCert(dir, domain string) error {
 				err = fmt.Errorf("%w: %s", err, strings.TrimSpace(string(exitErr.Stderr)))
 			}
 			if err.Error() != lastErr {
-				logger.Info("Certificate for %s not issued yet: %v", domain, err)
+				logger.Infof("Certificate for %s not issued yet: %v", domain, err)
 				lastErr = err.Error()
 			}
-			if !advertised && strings.Contains(err.Error(), certDomainError) && time.Since(start) >= certDomainGrace {
-				logger.Warn("Control has not made %s a certificate domain of %s within %v: advertising %s",
-					domain, d.config.EndpointID, certDomainGrace, d.config.Service)
+			if !advertised && strings.Contains(err.Error(), certDomainError) &&
+				time.Since(start) >= certDomainGrace {
+				logger.Warnf(
+					"Control has not made %s a certificate domain of %s within %v: advertising %s",
+					domain,
+					d.config.EndpointID,
+					certDomainGrace,
+					d.config.Service,
+				)
 				if err := d.advertise(d.config.Service); err != nil {
 					return err
 				}
@@ -270,7 +279,7 @@ func (d *Daemon) requestCert(dir, domain string) error {
 // hold up the daemon's start. A drained backend is left alone.
 func (d *Daemon) configureServiceWhenCertified() error {
 	if d.isDrained() {
-		logger.Info("Not configuring %s for %s: drained", d.config.Service, d.config.EndpointID)
+		logger.Infof("Not configuring %s for %s: drained", d.config.Service, d.config.EndpointID)
 		return nil
 	}
 	if !servesHTTPS(d.config.Endpoints) {
@@ -284,7 +293,11 @@ func (d *Daemon) configureServiceWhenCertified() error {
 	if validCert(dir, domain, time.Now()) {
 		return ignoreDrained(d.configureService())
 	}
-	logger.Info("No certificate for %s yet: configuring %s once there is one", domain, d.config.Service)
+	logger.Infof(
+		"No certificate for %s yet: configuring %s once there is one",
+		domain,
+		d.config.Service,
+	)
 	go d.configureServiceAfterCert(dir, domain)
 	return nil
 }
@@ -301,7 +314,7 @@ func (d *Daemon) configureServiceAfterCert(dir, domain string) {
 	for {
 		err := d.configureServiceWithCert(dir, domain)
 		if errors.Is(err, errDrained) {
-			logger.Info("%s drained for %s: no longer waiting for the certificate for %s",
+			logger.Infof("%s drained for %s: no longer waiting for the certificate for %s",
 				d.config.Service, d.config.EndpointID, domain)
 			return
 		}
@@ -309,7 +322,7 @@ func (d *Daemon) configureServiceAfterCert(dir, domain string) {
 			return
 		}
 		if !errors.Is(err, errLeaseHeld) {
-			logger.Warn("Failed to configure %s, retrying: %v", d.config.Service, err)
+			logger.Warnf("Failed to configure %s, retrying: %v", d.config.Service, err)
 		}
 		select {
 		case <-d.ctx.Done():
@@ -331,7 +344,7 @@ func (d *Daemon) configureServiceWithCert(dir, domain string) error {
 		if err := d.configureService(); err != nil {
 			return err
 		}
-		logger.Info("Configured %s with the certificate for %s", d.config.Service, domain)
+		logger.Infof("Configured %s with the certificate for %s", d.config.Service, domain)
 		return nil
 	}
 
@@ -340,7 +353,7 @@ func (d *Daemon) configureServiceWithCert(dir, domain string) error {
 		return err
 	}
 	defer lease.release()
-	logger.Info("Holding the certificate lease for %s: configuring %s, unadvertised, to issue it",
+	logger.Infof("Holding the certificate lease for %s: configuring %s, unadvertised, to issue it",
 		domain, d.config.Service)
 	if err := d.configureServiceBackend(false); err != nil {
 		return err
@@ -349,7 +362,7 @@ func (d *Daemon) configureServiceWithCert(dir, domain string) error {
 	if err := d.requestCert(dir, domain); err != nil {
 		return err
 	}
-	logger.Info("Certificate for %s issued: advertising %s", domain, d.config.Service)
+	logger.Infof("Certificate for %s issued: advertising %s", domain, d.config.Service)
 	return d.advertise(d.config.Service)
 }
 
@@ -378,7 +391,8 @@ func servesWeb(endpoints []ServeEndpoint) bool {
 func (d *Daemon) serviceDomain() (string, error) {
 	ctx, cancel := context.WithTimeout(d.ctx, 10*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, d.config.TailscaleBin, "--socket="+d.socketPath, "status", "--json").Output()
+	out, err := exec.CommandContext(ctx, d.config.TailscaleBin, "--socket="+d.socketPath, "status", "--json").
+		Output()
 	if err != nil {
 		return "", fmt.Errorf("tailscale status failed: %w", err)
 	}

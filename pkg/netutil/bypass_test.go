@@ -39,7 +39,10 @@ func TestBypassRoute(t *testing.T) {
 		var routes []netlink.Route
 		if err := inNetNS(nsPath, func() error {
 			var err error
-			routes, err = netlink.RouteGetWithOptions(net.ParseIP("1.1.1.1"), &netlink.RouteGetOptions{Mark: mark})
+			routes, err = netlink.RouteGetWithOptions(
+				net.ParseIP("1.1.1.1"),
+				&netlink.RouteGetOptions{Mark: mark},
+			)
 			return err
 		}); err != nil || len(routes) == 0 {
 			t.Fatalf("route get (mark %#x): %v", mark, err)

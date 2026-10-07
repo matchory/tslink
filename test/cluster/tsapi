@@ -1,18 +1,22 @@
 #!/bin/bash
-# tsapi METHOD PATH [json-body]  -- Tailscale API via the tslink-test OAuth client; token cached 50 min.
+# tsapi METHOD PATH [json-body]  -- Tailscale API ($TSLINK_TEST_API) via the OAuth client in
+# $TSLINK_TEST_DIR/tailscale-api.secret; token cached 50 min.
 set -euo pipefail
-D=~/.tslink-test
+# shellcheck source=config.sh
+. "$(dirname "$0")/config.sh"
+D=$TSLINK_TEST_DIR
 TOK=$D/.api-token
-if [ ! -s $TOK ] || [ $(($(date +%s) - $(stat -f %m $TOK))) -gt 3000 ]; then
-	sec=$(cat $D/tailscale-api.secret)
+mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1"; } # GNU, else BSD
+if [ ! -s "$TOK" ] || [ $(($(date +%s) - $(mtime "$TOK"))) -gt 3000 ]; then
+	sec=$(cat "$D/tailscale-api.secret")
 	id=${sec#tskey-client-}
 	id=${id%%-*}
 	(
 		umask 077
-		curl -fsS https://api.tailscale.com/api/v2/oauth/token -d client_id="$id" --data-urlencode client_secret@<(printf %s "$sec") | jq -r .access_token >$TOK
+		curl -fsS "$TSLINK_TEST_API/oauth/token" -d client_id="$id" --data-urlencode client_secret@<(printf %s "$sec") | jq -r .access_token >"$TOK"
 	)
 fi
 m=$1
 p=$2
 shift 2
-curl -sS -X "$m" -H "Authorization: Bearer $(cat $TOK)" ${1:+-H 'Content-Type: application/json' --data "$1"} "https://api.tailscale.com/api/v2$p"
+curl -sS -X "$m" -H "Authorization: Bearer $(cat "$TOK")" ${1:+-H 'Content-Type: application/json' --data "$1"} "$TSLINK_TEST_API$p"

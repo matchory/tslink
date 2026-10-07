@@ -1,3 +1,5 @@
 #!/bin/bash
-# s <node> <cmd...> -- ssh to a test node (mgr, w1, w2) using the generated ssh_config
-exec ssh -F "$(dirname "$0")/ssh_config" "$@"
+# s <node> <cmd...> -- ssh to a test node (mgr, w1, w2) using $TSLINK_TEST_SSH_CONFIG
+# shellcheck source=config.sh
+. "$(dirname "$0")/config.sh"
+exec ssh -F "$TSLINK_TEST_SSH_CONFIG" "$@"

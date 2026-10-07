@@ -1,3 +1,6 @@
 #!/bin/bash
-# nodes: the test nodes in ssh_config (mgr, w1, w2 and any added by add-node.sh), one per line
-awk '$1 == "Host" && NF == 2 && $2 != "*" { print $2 }' "$(dirname "$0")/ssh_config"
+# nodes: the test nodes, one per line: the Host entries of $TSLINK_TEST_SSH_CONFIG without
+# wildcards (mgr, w1, w2 and any added by add-node.sh)
+# shellcheck source=config.sh
+. "$(dirname "$0")/config.sh"
+awk 'tolower($1) == "host" && NF == 2 && $2 !~ /[*?!]/ { print $2 }' "$TSLINK_TEST_SSH_CONFIG"

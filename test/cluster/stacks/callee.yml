@@ -5,7 +5,7 @@ services:
     stop_grace_period: 15s
     networks: [tailnet]
     labels:
-      tslink.service: svc:tslink-test-callee
+      tslink.service: ${TSLINK_TEST_SVC:-svc:tslink-test}-callee
       tslink.serve.80: http:80
       tslink.direct: "false"
     deploy:
@@ -18,7 +18,7 @@ services:
     image: traefik/whoami:v1.11
     networks: [tailnet]
     labels:
-      tslink.service: svc:tslink-test-other
+      tslink.service: ${TSLINK_TEST_SVC:-svc:tslink-test}-other
       tslink.serve.80: http:80
       tslink.direct: "false"
     deploy:
@@ -36,4 +36,4 @@ networks:
     driver_opts:
       tslink.authkey: ${TSLINK_OAUTH_SECRET}?ephemeral=true&preauthorized=true
       com.docker.network.driver.mtu: "1450"
-      tslink.tags: tag:tslink-test-callee
+      tslink.tags: ${TSLINK_TEST_TAG:-tag:tslink-test}-callee

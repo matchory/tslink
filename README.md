@@ -399,3 +399,6 @@ Report security issues as described in [SECURITY.md](SECURITY.md); changes are l
 
 MIT, see [LICENSE](LICENSE). tslink is a fork of
 [aaomidi/tslink](https://github.com/aaomidi/tslink) by Amir Omidi.
+
+The plugin image bundles Tailscale (BSD 3-Clause) and Go modules under their
+own licenses; their notices are in the image under `/usr/share/licenses`.

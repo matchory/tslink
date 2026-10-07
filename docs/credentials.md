@@ -1,8 +1,8 @@
 # Credentials and tags for Swarm services
 
 How to give each Swarm task a tailnet identity without letting a task choose
-someone else's. Based on the [Swarm spike](testing/swarm-spike-2026-10-06.md)
-and the [cluster test](testing/swarm-cluster-test-2026-10-07.md).
+someone else's. Based on tests on a Swarm against a real tailnet; see
+[testing](testing.md).
 
 ## Cluster credential (2026-10-07)
 
@@ -99,7 +99,7 @@ fixes the tags. Custom issuers work if Tailscale can reach their discovery
 document and JWKS over the public internet.
 
 Swarm has no token issuer, and hosts without a cloud workload identity (such
-as the Hetzner Cloud servers of the cluster test) have none either, so a
+as bare-metal servers or VMs at many hosting providers) have none either, so a
 cluster would need its own:
 
 - A token issuer service on the managers, holding one signing key for the

@@ -709,8 +709,6 @@ func (d *Daemon) configureDirectServeEndpoint(ep ServeEndpoint) error {
 func (d *Daemon) configureServeEndpoint(ep ServeEndpoint) error {
 	logger.Debug("configureServeEndpoint: proto=%s port=%s target=%s path=%s service=%s",
 		ep.Proto, ep.Port, ep.Target, ep.Path, d.config.Service)
-	logger.Debug("Configuring serve endpoint: proto=%s port=%s target=%s path=%s",
-		ep.Proto, ep.Port, ep.Target, ep.Path)
 
 	args, err := serveArgs(ep, d.config.Service)
 	if err != nil {

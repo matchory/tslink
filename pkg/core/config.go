@@ -47,16 +47,20 @@ type EndpointOptions struct {
 	Hostname string
 }
 
+// DataDir returns the plugin's data directory: TS_DATA_DIR, or /data.
+func DataDir() string {
+	if dir := os.Getenv("TS_DATA_DIR"); dir != "" {
+		return dir
+	}
+	return "/data"
+}
+
 // LoadConfig loads configuration from environment variables.
 func LoadConfig() (*Config, error) {
 	cfg := &Config{
 		AuthKey:   os.Getenv("TS_AUTHKEY"),
-		DataDir:   os.Getenv("TS_DATA_DIR"),
+		DataDir:   DataDir(),
 		SharedDir: os.Getenv("TS_SHARED_DIR"),
-	}
-
-	if cfg.DataDir == "" {
-		cfg.DataDir = "/data"
 	}
 
 	// tslink no longer downloads Tailscale or runs other binaries: an

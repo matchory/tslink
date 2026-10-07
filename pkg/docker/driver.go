@@ -68,6 +68,7 @@ func NewDriver() (*Driver, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to load config: %w", err)
 	}
+	core.RemoveDownloadCache(cfg.DataDir)
 
 	// Create Docker client for container inspection and recovery
 	docker, err := dockerclient.New(dockerclient.FromEnv)

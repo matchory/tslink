@@ -39,6 +39,11 @@ var errDrained = errors.New("service backend is drained")
 type serviceGate struct {
 	drained atomic.Bool // set by the first drain, even one that failed
 
+	// Set once tslink advertised the Service, or tailscaled started on node
+	// state that may advertise it from before. A backend never advertised
+	// gives control nothing to fetch when it is drained.
+	advertised atomic.Bool
+
 	// Held while tslink changes the Service's serve configuration or
 	// advertisement, so a drain cannot slip between a check and a change
 	mu    sync.Mutex
@@ -117,7 +122,8 @@ func (d *Daemon) waitServicesFetch(after int64, deadline time.Time) bool {
 // DrainAndWait drains the node's backend for service, unless that was done,
 // as when the container got its stop signal, and waits for control to learn
 // of it: until control fetched the drained Service list, at least
-// drainAckFloor and at most drainAckTimeout after the drain.
+// drainAckFloor and at most drainAckTimeout after the drain. A backend never
+// advertised has nothing for control to fetch, and is not waited for.
 func (s *DaemonSupervisor) DrainAndWait(service string) {
 	id := s.cfg.EndpointID[:min(12, len(s.cfg.EndpointID))]
 	if err := s.Drain(service); err != nil {
@@ -130,6 +136,10 @@ func (s *DaemonSupervisor) DrainAndWait(service string) {
 	g.mu.Unlock()
 	d := s.GetDaemon()
 	if drain.at.IsZero() || d == nil {
+		return
+	}
+	if !g.advertised.Load() {
+		logger.Debugf("Endpoint %s: %s was never advertised, not waiting for control", id, service)
 		return
 	}
 	after := drain.fetches

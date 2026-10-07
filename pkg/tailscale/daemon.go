@@ -142,6 +142,7 @@ func (d *Daemon) Start() error {
 	if err := LinkCertsDir(d.config.StateDir, d.config.CertsDir); err != nil {
 		return err
 	}
+	d.noteSurvivingState()
 
 	// Build tailscaled arguments
 	// Use a real tun device (tailscale0) so containers can use Tailscale networking directly

@@ -141,7 +141,30 @@ func (d *Daemon) configureServiceBackend(advertise bool) error {
 		// "tailscale serve --service" advertises the Service by itself
 		return d.runServe(context.Background(), "serve-unadvertise", "drain", d.config.Service)
 	}
-	return d.runServe(context.Background(), "serve-advertise", "advertise", d.config.Service)
+	return d.runAdvertise(d.config.Service)
+}
+
+// runAdvertise runs "tailscale serve advertise" and notes that the backend
+// was advertised. The caller holds the gate's lock.
+func (d *Daemon) runAdvertise(service string) error {
+	if err := d.runServe(
+		context.Background(),
+		"serve-advertise",
+		"advertise",
+		service,
+	); err != nil {
+		return err
+	}
+	d.config.gate.advertised.Store(true)
+	return nil
+}
+
+// noteSurvivingState marks the backend advertised if the node's state exists
+// before tailscaled starts: it may advertise the Service from a previous run.
+func (d *Daemon) noteSurvivingState() {
+	if StateExists(d.config.StateDir) {
+		d.config.gate.advertised.Store(true)
+	}
 }
 
 // advertise runs "tailscale serve advertise", unless the backend was drained.
@@ -154,7 +177,7 @@ func (d *Daemon) advertise(service string) error {
 	if d.isDrained() {
 		return errDrained
 	}
-	return d.runServe(context.Background(), "serve-advertise", "advertise", service)
+	return d.runAdvertise(service)
 }
 
 // configureDirectServe runs "tailscale serve" without --service flag to configure

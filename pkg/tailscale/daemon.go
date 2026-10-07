@@ -44,6 +44,10 @@ type DaemonConfig struct {
 	LoginServer   string          // Control server URL for --login-server; empty for Tailscale's
 	ContainerDNS  []netip.Addr    // DNS servers the container was given, as with docker run --dns
 
+	// Warn records a warning in the endpoint's status under key, or clears it
+	// if message is empty; nil ignores warnings
+	Warn func(key, message string)
+
 	gate *serviceGate // Shared by the daemons of one supervisor; NewDaemon creates one if nil
 }
 
@@ -397,6 +401,8 @@ func (d *Daemon) handleLine(line string) {
 			d.fetched = nil
 		}
 		d.fetchMu.Unlock()
+	case strings.Contains(line, `cert("`):
+		d.handleCertLine(line)
 	}
 }
 

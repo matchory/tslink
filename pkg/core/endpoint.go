@@ -60,6 +60,10 @@ type Endpoint struct {
 	runCtx  context.Context            //nolint:containedctx // Cancelled when the endpoint leaves
 	stopRun context.CancelFunc         // Cancels runCtx
 	startFn func(*ContainerInfo) error // Replaces StartTailscale in tests
+
+	statusMu sync.Mutex               // Protects status and warnings; never held with mu
+	status   *EndpointStatusFile      // Last status written; nil before the first, after Leave
+	warnings map[string]StatusWarning // Reported by tailscaled's supervision, by key
 }
 
 // Delays between attempts to start Tailscale; variables so tests can shorten them.
@@ -359,6 +363,7 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 		Direct:        info.Direct,
 		LoginServer:   e.Network.LoginServer, // set once, at creation
 		ContainerDNS:  info.DNS,
+		Warn:          e.setWarning,
 	})
 
 	tailscaleIP, err := startSupervisor(supervisor)

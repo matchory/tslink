@@ -5,14 +5,14 @@ production: reachable through a Tailscale Service VIP, calling other tailnet
 endpoints as themselves, surviving failures and upgrades without leaking
 traffic through the node? The [spike](swarm-spike-2026-10-06.md) answered this
 on one node; this test answers it on three, with failure scenarios, against
-Matchory's production tailnet.
+a production tailnet of about 130 devices.
 
 ## Verdict
 
 **Ready for a production pilot, with conditions** (below), once the fixes from
 this test are merged. `main` as it was before this test is **not** fit for
 production: a node reboot took Docker down for good, and a task's tailscaled
-froze at random within minutes on a tailnet of our size.
+froze at random within minutes on a tailnet of that size.
 
 With the fixes, every case below passes, including the regression run on the
 final build (`test/cluster/regress.sh --upgrade`: 19 of 19 checks). Isolation
@@ -37,7 +37,8 @@ remaining risks are known, bounded, and have operational mitigations.
 - Stacks: `callee` (3 replicas backing `svc:tslink-test-callee`, one backing
   `svc:tslink-test-other`, an iperf3 server), `caller` (global, overlay +
   tslink, `dns: 100.100.100.100`) and `nogrant` (global, tslink only). Later
-  per Matchory's convention: daemon `mtu: 1450`, network MTU 1450.
+  as on the production swarms the test modelled: daemon `mtu: 1450`, network
+  MTU 1450.
 - The scripts are in [test/cluster](../../test/cluster): provisioning, plugin
   install, stacks, probes and the regression suite.
 
@@ -46,10 +47,11 @@ to the VIP every 200 ms, 2 s timeout, logging the answering backend.
 
 ## Assumptions
 
-- Production swarms look like the test bed: Hetzner Cloud, amd64, fsn1,
-  Docker 29, Ubuntu 24.04, swarm on a private network, nodes with public
-  egress. Not tested: more than three nodes, several managers, arm64,
-  encrypted overlays, a NAT gateway instead of public addresses.
+- The production swarms this test modelled look like the test bed: Hetzner
+  Cloud, amd64, fsn1, Docker 29, Ubuntu 24.04, swarm on a private network,
+  nodes with public egress. Not tested: more than three nodes, several
+  managers, arm64, encrypted overlays, a NAT gateway instead of public
+  addresses.
 - Credentials follow [credentials.md](../credentials.md): one OAuth client per
   stack, `tslink.tags` on the network, ephemeral nodes.
 - Services reachable on the tailnet are exposed as Tailscale Services in HTTP
@@ -57,7 +59,7 @@ to the VIP every 200 ms, 2 s timeout, logging the answering backend.
 - Applications retry tailnet connections at startup and keep serving a few
   seconds after SIGTERM. Both are verified to matter below.
 - Tailscale's control plane and DERP behave as on the test day; the API was
-  never rate-limited at our volumes (60 simultaneous registrations).
+  never rate-limited at the volumes tested (60 simultaneous registrations).
 
 ## Results
 
@@ -236,7 +238,7 @@ node failure turned out to cost 21-48 s rather than 17 s.
   eight further updates.
 - **Not tested**: more nodes, manager failover, multi-day soak, arm64,
   encrypted overlays, Tailscale upgrades across versions, Docker upgrades, and
-  the release pipeline (GitHub Actions are disabled, so no image was published).
+  the release pipeline (images were built on the test bed; CI published none).
 
 ## Conditions for the pilot
 

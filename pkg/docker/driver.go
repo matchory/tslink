@@ -236,12 +236,17 @@ func (d *Driver) CreateNetwork(req *network.CreateNetworkRequest) error {
 	if authKey == "" {
 		return fmt.Errorf("no Tailscale auth key provided: set TS_AUTHKEY env var or use --opt tslink.authkey=xxx")
 	}
+	if err := core.ValidateLoginServer(opts.LoginServer); err != nil {
+		return err
+	}
 
 	net := &core.Network{
 		ID:      req.NetworkID,
 		AuthKey: authKey,
 		Tags:    opts.Tags,
 		MTU:     opts.MTU,
+
+		LoginServer: opts.LoginServer,
 	}
 
 	d.networks[req.NetworkID] = net
@@ -662,6 +667,8 @@ func (d *Driver) recoverEndpoint(
 			AuthKey: authKey,
 			Tags:    core.ParseTags(networkResult.Network.Options["tslink.tags"]),
 			MTU:     core.ParseMTU(networkResult.Network.Options[core.MTUOption]),
+
+			LoginServer: networkResult.Network.Options[core.LoginServerOption],
 		}
 		d.networks[networkID] = net
 		logger.Info("recoverEndpoint: recovered network %s", networkID[:12])

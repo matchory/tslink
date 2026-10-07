@@ -137,6 +137,7 @@ type DaemonConfig struct {
 	Service       string          // Service name for tailscale serve (e.g., "svc:hello-world")
 	Endpoints     []ServeEndpoint // Serve endpoints (L3/L4/L7)
 	Direct        bool            // Enable direct machine serve (HTTPS on machine hostname)
+	LoginServer   string          // Control server URL for --login-server; empty for Tailscale's
 }
 
 // Status represents the status of a Tailscale connection.
@@ -507,6 +508,9 @@ func (d *Daemon) tryBringUp(withKey bool, extraArgs ...string) error {
 	if withKey {
 		// From stdin: arguments are visible to every process on the host
 		args = append(args, "--authkey=file:/dev/stdin")
+	}
+	if d.config.LoginServer != "" {
+		args = append(args, "--login-server="+d.config.LoginServer)
 	}
 	args = append(args, extraArgs...)
 

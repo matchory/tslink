@@ -142,7 +142,7 @@ return fmt.Errorf("failed to create endpoint: %w", err)
 - `release.yml`: a push to `main` publishes `ghcr.io/matchory/tslink:main-<arch>`; a `vX.Y.Z` tag publishes
   `vX.Y.Z-<arch>` and `latest-<arch>` and creates a GitHub release. Docker plugins have no multi-arch manifests, so
   each architecture is built on a native runner and pushed under its own tag.
-- Dependencies are updated by Renovate, extending the organisation preset `github>matchory/coding-style`.
+- Dependencies are updated by Dependabot (`.github/dependabot.yml`): Actions, Go modules and the Dockerfile base images.
 
 `test/integration` runs against upstream's tailnet (`atlas-diminished.ts.net`) and is not part of CI.
 

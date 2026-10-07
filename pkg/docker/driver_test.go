@@ -467,7 +467,6 @@ func TestStartCollectsGarbageAfterRecovery(t *testing.T) {
 // give the claim up: otherwise the container, restarted with a new endpoint,
 // cannot start Tailscale on its state and retries forever.
 func TestFailedRecoveryReleasesStateDir(t *testing.T) {
-	t.Skip("bug: recoverEndpoint keeps the state directory claim when restoring the routing fails")
 	fake := newFakeDocker()
 	netID := fake.addNetwork("net", pluginName, map[string]string{"tslink.authkey": "k"}, nil)
 	fake.addContainer("web", nil, attachment{"net", netID, fakeID("ep")})

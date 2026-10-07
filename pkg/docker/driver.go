@@ -699,6 +699,10 @@ func (d *Driver) recoverEndpoint(
 		d.mu.Lock()
 		delete(d.endpoints, endpointID)
 		d.mu.Unlock()
+		// Give the state directory up: the container's next endpoint needs it
+		if stopErr := endpoint.Stop(); stopErr != nil {
+			logger.Warn("recoverEndpoint: failed to stop endpoint %s: %v", endpointID[:12], stopErr)
+		}
 		return fmt.Errorf("failed to recover routing: %w", err)
 	}
 

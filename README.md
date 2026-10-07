@@ -1,6 +1,7 @@
 # Tailscale Container Network Plugin
 
-A Docker network plugin that gives each container its own Tailscale identity. Containers appear as individual nodes in your tailnet with their own Tailscale IPs.
+A Docker network plugin that gives each container its own Tailscale identity. Containers appear as individual nodes
+in your tailnet with their own Tailscale IPs.
 
 ## How It Works
 
@@ -11,7 +12,7 @@ When you create a Docker network with this plugin and run containers on it:
 3. The container can reach other nodes in your tailnet
 4. The container also has internet access via NAT
 
-```
+```text
 ┌──────────────────────────────────────────────────────────┐
 │ Docker Host                                              │
 │                                                          │
@@ -37,7 +38,7 @@ When you create a Docker network with this plugin and run containers on it:
 ### Prerequisites
 
 - Docker 19.03+ or OrbStack
-- A Tailscale auth key from https://login.tailscale.com/admin/settings/keys
+- A Tailscale auth key from <https://login.tailscale.com/admin/settings/keys>
 
 ### Install the Plugin
 
@@ -238,6 +239,7 @@ docker run --rm -it --privileged --pid=host alpine nsenter -t 1 -m -u -n -i sh
 ### Internet Works but Can't Reach Tailnet
 
 Check debug logs for:
+
 - `Switching ipn state Starting -> Running` = connected successfully
 - `Switching ipn state NeedsLogin` = auth key issue
 - `network is unreachable` = veth setup failed
@@ -256,7 +258,10 @@ docker run --rm -v /var/lib/docker-plugins/tailscale:/data alpine \
 
 - **macOS/Windows**: Only works with Docker in a Linux VM (OrbStack, Docker Desktop)
 - **MagicDNS in container**: Containers can reach tailnet by IP; MagicDNS resolution requires additional DNS config
-- **Tailscale starts after the application**: Docker gives the plugin no way to identify a container while it is starting, so tslink brings Tailscale up once the container has started, which usually takes a few seconds. Until then, connections to tailnet addresses fail immediately with "host unreachable"; they never fall back to the host's own Tailscale. Applications that need the tailnet at startup should retry.
+- **Tailscale starts after the application**: Docker gives the plugin no way to identify a container while it is
+  starting, so tslink brings Tailscale up once the container has started, which usually takes a few seconds. Until
+  then, connections to tailnet addresses fail immediately with "host unreachable"; they never fall back to the host's
+  own Tailscale. Applications that need the tailnet at startup should retry.
 
 ## Development
 

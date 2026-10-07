@@ -12,7 +12,7 @@ make test-network test-container
 
 - Go 1.25+
 - Docker (via OrbStack, Docker Desktop, or native Linux)
-- Tailscale auth key from https://login.tailscale.com/admin/settings/keys
+- Tailscale auth key from <https://login.tailscale.com/admin/settings/keys>
 
 ## Development Cycle
 
@@ -29,20 +29,26 @@ docker network rm tailnet
 
 ## Key Design Decisions
 
-**Hostname-based state directories**: Tailscale state is stored in `/data/by-hostname/<hostname>/` not by endpoint ID. This enables identity reuse - if a container restarts with the same name, it keeps its Tailscale identity and IP.
+**Hostname-based state directories**: Tailscale state is stored in `/data/by-hostname/<hostname>/`, or
+`/data/by-stack/<stack>/<hostname>/` for Swarm stack tasks, not by endpoint ID. This enables identity reuse - if a
+container restarts with the same name, it keeps its Tailscale identity and IP.
 
 **Async Tailscale setup**: Docker's `Join()` must return quickly, but Tailscale auth can take 60+ seconds. Solution:
+
 1. `Join()` sets up veth networking and returns immediately
 2. Docker event watcher detects container start, gets container name
 3. Tailscale setup runs async in background goroutine
 
-**Veth IP allocation**: Each container gets a unique /30 subnet from 10.200.0.0/16, derived by hashing the endpoint ID. This avoids IP conflicts without coordination.
+**Veth IP allocation**: Each container gets a unique /30 subnet from 10.200.0.0/16, derived by hashing the endpoint
+ID. This avoids IP conflicts without coordination.
 
 ## Concurrency Notes
 
-**Lock ordering**: Never hold `driver.mu` when calling endpoint methods (they acquire `endpoint.mu`). Always: driver.mu → endpoint.mu, never reversed.
+**Lock ordering**: Never hold `driver.mu` when calling endpoint methods (they acquire `endpoint.mu`). Always:
+driver.mu → endpoint.mu, never reversed.
 
-**Long operations outside locks**: Network syscalls, Tailscale binary downloads, and `tailscale up` can block for seconds. Don't hold locks during these.
+**Long operations outside locks**: Network syscalls, Tailscale binary downloads, and `tailscale up` can block for
+seconds. Don't hold locks during these.
 
 ## Debugging
 
@@ -61,7 +67,7 @@ docker run --rm -it --privileged --pid=host alpine nsenter -t 1 -m -u -n -i sh
 
 ## Project Structure
 
-```
+```text
 pkg/
 ├── docker/     # Docker network driver (driver.go, events.go)
 ├── core/       # Endpoint/network logic (endpoint.go, network.go)
@@ -71,9 +77,11 @@ pkg/
 ```
 
 **Key paths at runtime:**
-- State: `/data/by-hostname/<hostname>/tailscaled.state`
-- Socket: `/data/sock/<endpoint-id[:12]>.sock` (kept short: Unix socket paths are limited to 108 bytes), linked from `<state dir>/tailscaled.sock`
-- Debug: `/data/by-hostname/<hostname>/debug.log`
+
+- State: `/data/by-hostname/<hostname>/tailscaled.state`, or `/data/by-stack/<stack>/<hostname>/` for stack tasks
+- Socket: `/data/sock/<endpoint-id[:12]>.sock` (kept short: Unix socket paths are limited to 108 bytes), linked
+  from `<state dir>/tailscaled.sock`
+- Debug: `<state dir>/debug.log`
 
 ## Code Style
 
@@ -86,6 +94,7 @@ golangci-lint fmt        # Format code
 ```
 
 Config is in `.golangci.toml`. Key linters enabled:
+
 - `errcheck`, `errorlint`, `nilerr` - error handling
 - `gosec` - security
 - `govet`, `staticcheck` - correctness
@@ -128,6 +137,7 @@ return fmt.Errorf("failed to create endpoint: %w", err)
 ### Plugin won't enable
 
 Check that the state directory exists:
+
 ```bash
 docker run --rm --privileged -v /var/lib:/var/lib alpine \
   mkdir -p /var/lib/docker-plugins/tailscale
@@ -136,6 +146,7 @@ docker run --rm --privileged -v /var/lib:/var/lib alpine \
 ### Options not being passed
 
 Docker passes options with the full key. Debug by adding logging:
+
 ```go
 log.Printf("Options: %+v", req.Options)
 ```
@@ -143,6 +154,7 @@ log.Printf("Options: %+v", req.Options)
 ### Container networking issues
 
 Check that tailscaled is running in the container's netns:
+
 ```bash
 # From inside container
 ps aux | grep tailscale

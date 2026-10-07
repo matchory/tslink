@@ -56,7 +56,7 @@ check_networks() {
     if [ -z "$NETWORKS" ]; then
         echo "  (none)"
     else
-        echo "$NETWORKS" | while read net; do
+        echo "$NETWORKS" | while read -r net; do
             CONTAINERS=$(docker network inspect "$net" --format '{{range .Containers}}{{.Name}} {{end}}' 2>/dev/null || true)
             echo "  $net: ${CONTAINERS:-no containers}"
         done

@@ -204,12 +204,28 @@ func (l *certLease) release() {
 	}
 }
 
-// awaitCert returns once dir holds a valid certificate for domain.
-func awaitCert(ctx context.Context, dir, domain string) error {
+// requestCert asks tailscaled for domain's certificate until dir holds it.
+// Serving the Service would make tailscaled fetch it only if the domain were
+// already among the node's certificate domains when the Service was
+// configured, but control adds it seconds later, and the next attempt would
+// be an hour away.
+func (d *Daemon) requestCert(dir, domain string) error {
 	for !validCert(dir, domain, time.Now()) {
+		ctx, cancel := context.WithTimeout(d.ctx, certLeaseStale)
+		// The certificate and its key go to stdout, which is discarded
+		cmd := exec.CommandContext(ctx, d.config.TailscaleBin, "--socket="+d.socketPath,
+			"cert", "--cert-file=-", "--key-file=-", domain)
+		_, err := cmd.Output()
+		cancel()
+		if err != nil {
+			if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
+				err = fmt.Errorf("%w: %s", err, strings.TrimSpace(string(exitErr.Stderr)))
+			}
+			logger.Info("Certificate for %s not issued yet: %v", domain, err)
+		}
 		select {
-		case <-ctx.Done():
-			return ctx.Err()
+		case <-d.ctx.Done():
+			return d.ctx.Err()
 		case <-time.After(certPollInterval):
 		}
 	}
@@ -276,7 +292,7 @@ func (d *Daemon) configureServiceWithCert(dir, domain string) error {
 		return err
 	}
 	// Keep the lease until the certificate exists, so the others wait for it
-	if err := awaitCert(d.ctx, dir, domain); err != nil {
+	if err := d.requestCert(dir, domain); err != nil {
 		return err
 	}
 	logger.Info("Certificate for %s issued", domain)

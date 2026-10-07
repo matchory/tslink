@@ -7,6 +7,7 @@ services:
     labels:
       tslink.service: svc:tslink-test-callee
       tslink.serve.80: http:80
+      tslink.serve.443: https:80
       tslink.direct: "false"
     deploy:
       replicas: 3

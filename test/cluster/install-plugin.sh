@@ -1,6 +1,7 @@
 #!/bin/bash
 # install-plugin.sh [ref|WT] -- build tslink from a git ref (default main) or the working tree (WT)
-# on mgr, and replace ghcr.io/matchory/tslink:latest with it on every node
+# on mgr, and replace ghcr.io/matchory/tslink:latest with it on every node. PLUGIN_SETTINGS, if set, is
+# passed to docker plugin set before the plugin is enabled (e.g. "shared.source=/mnt/x KEY=value")
 set -euo pipefail
 B=$(cd "$(dirname "$0")" && pwd)
 REF=${1:-main}
@@ -30,6 +31,7 @@ for h in $("$B/nodes"); do
 	"$S" "$h" "set -e; mkdir -p /var/lib/docker-plugins/tailscale
     if docker plugin inspect $P >/dev/null 2>&1; then docker plugin disable -f $P >/dev/null || true; docker plugin rm -f $P >/dev/null; fi
     docker plugin create $P /root/plugin >/dev/null
+    ${PLUGIN_SETTINGS:+docker plugin set $P $PLUGIN_SETTINGS}
     docker plugin enable $P >/dev/null
     echo \"\$(hostname): \$(docker plugin ls --format '{{.Name}} {{.Enabled}}')\"" &
 done

@@ -48,6 +48,7 @@ type Endpoint struct {
 	DataDir     string // Base data directory for state
 	SharedDir   string // Directory shared between hosts; empty for none
 
+	claims           *StateClaims // The driver's state directory claims
 	supervisor       *tailscale.DaemonSupervisor
 	tailscaleStarted bool // Whether Tailscale setup has been completed
 
@@ -87,8 +88,9 @@ type ContainerInfo struct {
 // containers and networks. It overrides any value from the compose file.
 const StackLabel = "com.docker.stack.namespace"
 
-// NewEndpoint creates a new endpoint with the given configuration.
-func NewEndpoint(id string, net *Network, opts EndpointOptions, cfg *Config) (*Endpoint, error) {
+// NewEndpoint creates a new endpoint with the given configuration. It claims
+// state directories in claims.
+func NewEndpoint(id string, net *Network, opts EndpointOptions, cfg *Config, claims *StateClaims) (*Endpoint, error) {
 	hostname := opts.Hostname
 	if hostname == "" {
 		// Use short endpoint ID as default hostname (will be updated when container info arrives)
@@ -107,6 +109,7 @@ func NewEndpoint(id string, net *Network, opts EndpointOptions, cfg *Config) (*E
 		StateDir:  stateDir,
 		DataDir:   cfg.DataDir,
 		SharedDir: cfg.SharedDir,
+		claims:    claims,
 	}, nil
 }
 
@@ -489,12 +492,6 @@ func (e *Endpoint) cancelRun() {
 	e.runCtx, e.stopRun = nil, nil
 }
 
-// stateClaims maps each state directory in use to the endpoint using it.
-var (
-	stateClaimsMu sync.Mutex
-	stateClaims   = map[string]string{}
-)
-
 // ClaimStateDir records the state directory the container's tailscaled
 // uses, so garbage collection leaves it alone. A directory serves one
 // endpoint at a time: two replicas with the same tslink.hostname on a node
@@ -506,16 +503,13 @@ func (e *Endpoint) ClaimStateDir(info *ContainerInfo) error {
 		return nil
 	}
 
-	stateClaimsMu.Lock()
-	defer stateClaimsMu.Unlock()
-	if owner, ok := stateClaims[dir]; ok && owner != e.ID {
+	if owner, ok := e.claims.claim(dir, e.ID); !ok {
 		if owner == gcClaim {
 			return fmt.Errorf("state directory %s is being garbage collected", dir)
 		}
 		return fmt.Errorf("state directory %s is in use by endpoint %s: is tslink.hostname %q set on a replicated service?",
 			dir, owner[:12], info.Hostname)
 	}
-	stateClaims[dir] = e.ID
 
 	e.mu.Lock()
 	e.StateDir = dir
@@ -525,12 +519,7 @@ func (e *Endpoint) ClaimStateDir(info *ContainerInfo) error {
 
 // releaseStateDir gives up the endpoint's claim on its state directory.
 func (e *Endpoint) releaseStateDir() {
-	dir := e.GetStateDir()
-	stateClaimsMu.Lock()
-	defer stateClaimsMu.Unlock()
-	if stateClaims[dir] == e.ID {
-		delete(stateClaims, dir)
-	}
+	e.claims.release(e.GetStateDir(), e.ID)
 }
 
 // GetStateDir returns the endpoint's state directory safely.

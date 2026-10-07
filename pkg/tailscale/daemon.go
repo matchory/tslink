@@ -44,6 +44,10 @@ type DaemonConfig struct {
 	LoginServer   string          // Control server URL for --login-server; empty for Tailscale's
 	ContainerDNS  []netip.Addr    // DNS servers the container was given, as with docker run --dns
 
+	// Warn records a warning in the endpoint's status under key, or clears it
+	// if message is empty; nil ignores warnings
+	Warn func(key, message string)
+
 	gate *serviceGate // Shared by the daemons of one supervisor; NewDaemon creates one if nil
 }
 
@@ -142,6 +146,7 @@ func (d *Daemon) Start() error {
 	if err := LinkCertsDir(d.config.StateDir, d.config.CertsDir); err != nil {
 		return err
 	}
+	d.noteSurvivingState()
 
 	// Build tailscaled arguments
 	// Use a real tun device (tailscale0) so containers can use Tailscale networking directly
@@ -396,6 +401,8 @@ func (d *Daemon) handleLine(line string) {
 			d.fetched = nil
 		}
 		d.fetchMu.Unlock()
+	case strings.Contains(line, `cert("`):
+		d.handleCertLine(line)
 	}
 }
 
@@ -508,7 +515,7 @@ func (d *Daemon) killProcess(cmd *exec.Cmd) {
 	_ = downCmd.Run() // Ignore errors
 
 	// Kill the process
-	if err := cmd.Process.Kill(); err != nil {
+	if err := killError(cmd.Process.Kill()); err != nil {
 		logger.Warnf("Failed to kill tailscaled: %v", err)
 	}
 
@@ -533,4 +540,13 @@ func (d *Daemon) killProcess(cmd *exec.Cmd) {
 	if err := os.Remove(d.socketPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		logger.Warnf("Failed to remove socket %s: %v", d.socketPath, err)
 	}
+}
+
+// killError returns the error of killing tailscaled, or nil if it had exited
+// already, as it does by itself after "tailscale down" or a logout.
+func killError(err error) error {
+	if errors.Is(err, os.ErrProcessDone) {
+		return nil
+	}
+	return err
 }

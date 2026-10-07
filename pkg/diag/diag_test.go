@@ -121,3 +121,39 @@ func TestRunReportsEndpointsNotRunning(t *testing.T) {
 		t.Errorf("running endpoint reported as not running:\n%s", got)
 	}
 }
+
+func TestRunReportsWarnings(t *testing.T) {
+	dataDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dataDir, "status"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"endpoint":"aaaaaaaaaaaa","hostname":"web-1","stack":"app","state":"running",` +
+		`"warnings":[{"key":"renewal-blocked/web.example.ts.net",` +
+		`"message":"Renewing the certificate for web.example.ts.net is blocked",` +
+		`"since":"2026-10-07T12:00:00Z"}]}`
+	if err := os.WriteFile(
+		filepath.Join(dataDir, "status", "aaaaaaaaaaaa.json"),
+		[]byte(body),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := Run(dataDir, &out); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	for _, want := range []string{
+		"Warnings: 1",
+		"=== Warnings ===",
+		"app/web-1: Renewing the certificate for web.example.ts.net is blocked",
+		"since 2026-10-07T12:00:00Z",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output lacks %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "Containers without Tailscale") {
+		t.Errorf("running endpoint with a warning reported as not running:\n%s", got)
+	}
+}

@@ -313,10 +313,19 @@ and [docs/testing/swarm-cluster-followup-2026-10-07.md](docs/testing/swarm-clust
     task, so avoid them for replicated services.
   - Introduce new Services at a pace that stays well below 50 a week, together
     with anything else in the tailnet that uses Tailscale's HTTPS certificates.
+  - Every replica renews the shared certificate on its own, about 30 days
+    before it expires. While one replica's renewal is pending, Let's Encrypt
+    refuses the others' with `alreadyReplaced` until it completes, or expires
+    after at most 7 days. Refused renewals count against no limit, and the
+    current certificate stays in use, so with 90-day certificates this is
+    harmless. tslink warns about it in the plugin log (once an hour per name)
+    and in the replicas' status, and warns once a day when a certificate has
+    less than 14 days left.
 - **Monitoring:** a container whose Tailscale is not running looks healthy to
   Docker. tslink writes each endpoint's state to
   `/var/lib/docker-plugins/tailscale/status/<endpoint>.json` (`running`,
-  `retrying` with the error, or `failed`), and `tslink diag` lists them.
+  `retrying` with the error, or `failed`, and `warnings` such as a blocked
+  certificate renewal), and `tslink diag` lists them.
 
 ## Cleanup
 

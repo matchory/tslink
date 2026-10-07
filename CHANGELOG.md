@@ -78,8 +78,15 @@ three- and five-node swarms; see [docs/testing](docs/testing).
 
 - Garbage collection cleans the shared certificate directory: certificates
   (and keys) of names that expired more than 7 days ago, keys without a
-  certificate and temporary files older than a day, and certificate leases
-  not refreshed for an hour. The ACME account key and unknown files are kept.
+  certificate and temporary files, tslink's and tailscaled's, older than a
+  day, and certificate leases not refreshed for an hour. The ACME account key
+  and unknown files are kept.
+- Warnings about shared HTTPS certificates: a renewal the ACME server refused
+  because another replica's renewal order is pending (`alreadyReplaced`), and
+  a certificate with less than 14 days left. The plugin log warns once an
+  hour, or once a day for the expiry, per name; the endpoint's status file
+  lists them under the new `warnings` field until a certificate is issued, and
+  so does `tslink diag`.
 
 ### Changed
 
@@ -153,6 +160,10 @@ three- and five-node swarms; see [docs/testing](docs/testing).
   advertised again once the certificate appeared, or when its tailscaled
   restarted. The replica issuing the certificate was advertised before the
   certificate existed; it now waits for it.
+- Such a replica, never advertised, waited ten seconds when it left and
+  warned that control did not fetch its drain: there was nothing to fetch.
+- Every container leaving logged `Failed to kill tailscaled: os: process
+  already finished`: tailscaled exits by itself once it is down.
 
 - A container whose endpoint recovery failed, for example because its
   routing could not be restored, could not start Tailscale on its next

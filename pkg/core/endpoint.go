@@ -40,7 +40,7 @@ type Endpoint struct {
 	Tags        []string        // ACL tags for tailscale up --advertise-tags
 	Service     string          // Service name (e.g., "svc:hello-world")
 	Endpoints   []ServeEndpoint // Serve endpoints (replaces ServePort)
-	Direct      bool            // Enable direct machine serve (default: true)
+	Direct      bool            // Serve the endpoints on the task's own name too
 	TailscaleIP string
 	VethName    string
 	StateDir    string
@@ -77,7 +77,7 @@ type ContainerInfo struct {
 	Tags      []string          // Parsed tslink.tags label (comma-separated)
 	Service   string            // Parsed tslink.service label (e.g., "svc:hello-world")
 	Endpoints []ServeEndpoint   // Parsed tslink.serve.<port> labels
-	Direct    bool              // Enable direct machine serve (default: true, set tslink.direct=false to disable)
+	Direct    bool              // tslink.direct; defaults to true without a Service
 
 	Stack        string // Container's com.docker.stack.namespace label
 	NetworkStack string // Network's com.docker.stack.namespace label

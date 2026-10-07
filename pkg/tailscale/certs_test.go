@@ -216,3 +216,14 @@ func TestServesHTTPS(t *testing.T) {
 		t.Error("servesHTTPS = false with an https endpoint")
 	}
 }
+
+func TestServesWeb(t *testing.T) {
+	if servesWeb([]ServeEndpoint{{Proto: "tcp"}}) {
+		t.Error("servesWeb = true for TCP only")
+	}
+	for _, proto := range []string{"http", "https"} {
+		if !servesWeb([]ServeEndpoint{{Proto: "tcp"}, {Proto: proto}}) {
+			t.Errorf("servesWeb = false with an %s endpoint", proto)
+		}
+	}
+}

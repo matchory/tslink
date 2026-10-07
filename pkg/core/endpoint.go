@@ -299,15 +299,7 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 		certsDir = filepath.Join(e.SharedDir, "certs")
 	}
 	network := e.Network
-	tags := info.Tags
-	if len(e.Network.Tags) > 0 {
-		// Tags set on the network win, so a container cannot choose its own
-		if len(info.Tags) > 0 && !slices.Equal(info.Tags, e.Network.Tags) {
-			logger.Warnf("Endpoint %s: ignoring tslink.tags label %v, network sets %v",
-				e.ID[:12], info.Tags, e.Network.Tags)
-		}
-		tags = e.Network.Tags
-	}
+	tags := e.tagsFor(info)
 	e.mu.Unlock()
 
 	if err := checkStackScope(info, network, tags); err != nil {
@@ -315,23 +307,10 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 	}
 	authKey := func() (string, error) { return network.Credential(dataDir) }
 
-	stateDir, err := stateDirFor(dataDir, info.Stack, info.Hostname)
+	stateDir, err := e.prepareStateDir(info, network, dataDir)
 	if err != nil {
-		return permanentError{err}
-	}
-	// Claim the directory now, so garbage collection leaves it alone. If
-	// another endpoint holds it, retry: it may be leaving, as in a start-first
-	// update of a service with a fixed hostname.
-	if err := e.ClaimStateDir(info); err != nil {
 		return err
 	}
-	if network.Ephemeral() {
-		if err := tailscale.MarkEphemeral(stateDir); err != nil {
-			logger.Warnf("Failed to mark %s as ephemeral: %v", stateDir, err)
-		}
-	}
-
-	wipeStateOnKeyChange(stateDir, network)
 
 	logger.Infof("StartTailscale: endpoint=%s hostname=%s service=%s endpoints=%d direct=%v",
 		endpointID[:12], info.Hostname, info.Service, len(info.Endpoints), info.Direct)
@@ -348,19 +327,7 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 		return err
 	}
 
-	// Convert core.ServeEndpoint to tailscale.ServeEndpoint
-	tsEndpoints := make([]tailscale.ServeEndpoint, len(info.Endpoints))
-	for i, ep := range info.Endpoints {
-		tsEndpoints[i] = tailscale.ServeEndpoint{
-			Proto:  ep.Proto,
-			Port:   ep.Port,
-			Target: ep.Target,
-			Path:   ep.Path,
-
-			ProxyProtocol: ep.ProxyProtocol,
-			AcceptAppCaps: ep.AcceptAppCaps,
-		}
-	}
+	tsEndpoints := toTailscaleEndpoints(info.Endpoints)
 
 	// Create supervisor (handles daemon lifecycle with auto-recovery)
 	supervisor := tailscale.NewDaemonSupervisor(tailscale.DaemonConfig{
@@ -380,23 +347,9 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 		LoginServer:   e.Network.LoginServer, // set once, at creation
 	})
 
-	// Start supervisor (blocks until initial daemon startup succeeds or fails - up to 90s!)
-	if err := supervisor.Start(); err != nil {
-		// The supervisor keeps retrying after a failed first start. Nothing
-		// would stop it later, since it is not stored on the endpoint.
-		if stopErr := supervisor.Stop(); stopErr != nil {
-			logger.Warnf("failed to stop supervisor after start error: %v", stopErr)
-		}
-		return fmt.Errorf("failed to start tailscale supervisor: %w", err)
-	}
-
-	// Wait for Tailscale to connect and get IP (can take up to 60s!)
-	status, err := supervisor.WaitForIP()
+	tailscaleIP, err := startSupervisor(supervisor)
 	if err != nil {
-		if stopErr := supervisor.Stop(); stopErr != nil {
-			logger.Warnf("failed to stop supervisor after WaitForIP error: %v", stopErr)
-		}
-		return fmt.Errorf("failed to get Tailscale IP: %w", err)
+		return err
 	}
 
 	// Save auth key hash for future comparisons
@@ -418,7 +371,7 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 		return nil
 	}
 	e.supervisor = supervisor
-	e.TailscaleIP = status.IP
+	e.TailscaleIP = tailscaleIP
 	e.Hostname = info.Hostname
 	e.Tags = tags
 	e.Service = info.Service
@@ -431,7 +384,7 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 	logger.Infof(
 		"Endpoint %s got Tailscale IP: %s (hostname=%s)",
 		endpointID[:12],
-		status.IP,
+		tailscaleIP,
 		info.Hostname,
 	)
 	return nil
@@ -529,11 +482,46 @@ func (e *Endpoint) ClaimStateDir(info *ContainerInfo) error {
 	return nil
 }
 
-// stateClaims maps each state directory in use to the endpoint using it.
-var (
-	stateClaimsMu sync.Mutex
-	stateClaims   = map[string]string{}
-)
+// startSupervisor starts the supervisor and waits for the node's Tailscale
+// IP, stopping the supervisor again if either fails.
+func startSupervisor(supervisor *tailscale.DaemonSupervisor) (string, error) {
+	// Start supervisor (blocks until initial daemon startup succeeds or fails - up to 90s!)
+	if err := supervisor.Start(); err != nil {
+		// The supervisor keeps retrying after a failed first start. Nothing
+		// would stop it later, since it is not stored on the endpoint.
+		if stopErr := supervisor.Stop(); stopErr != nil {
+			logger.Warnf("failed to stop supervisor after start error: %v", stopErr)
+		}
+		return "", fmt.Errorf("failed to start tailscale supervisor: %w", err)
+	}
+
+	// Wait for Tailscale to connect and get IP (can take up to 60s!)
+	status, err := supervisor.WaitForIP()
+	if err != nil {
+		if stopErr := supervisor.Stop(); stopErr != nil {
+			logger.Warnf("failed to stop supervisor after WaitForIP error: %v", stopErr)
+		}
+		return "", fmt.Errorf("failed to get Tailscale IP: %w", err)
+	}
+	return status.IP, nil
+}
+
+// toTailscaleEndpoints converts the serve endpoints for the tailscale package.
+func toTailscaleEndpoints(endpoints []ServeEndpoint) []tailscale.ServeEndpoint {
+	tsEndpoints := make([]tailscale.ServeEndpoint, len(endpoints))
+	for i, ep := range endpoints {
+		tsEndpoints[i] = tailscale.ServeEndpoint{
+			Proto:  ep.Proto,
+			Port:   ep.Port,
+			Target: ep.Target,
+			Path:   ep.Path,
+
+			ProxyProtocol: ep.ProxyProtocol,
+			AcceptAppCaps: ep.AcceptAppCaps,
+		}
+	}
+	return tsEndpoints
+}
 
 // GetStateDir returns the endpoint's state directory safely.
 func (e *Endpoint) GetStateDir() string {
@@ -548,6 +536,12 @@ func (e *Endpoint) IsTailscaleStarted() bool {
 	defer e.mu.RUnlock()
 	return e.tailscaleStarted
 }
+
+// stateClaims maps each state directory in use to the endpoint using it.
+var (
+	stateClaimsMu sync.Mutex
+	stateClaims   = map[string]string{}
+)
 
 // GetSandboxKey returns the sandbox key (container netns path) safely.
 func (e *Endpoint) GetSandboxKey() string {
@@ -662,36 +656,6 @@ func (e *Endpoint) Stop() error {
 	return nil
 }
 
-// checkStackScope keeps a task to its own stack's network: another stack
-// cannot attach to it and take its credentials and tags. A stack using the
-// cluster credential is also kept to its own tags.
-func checkStackScope(info *ContainerInfo, network *Network, tags []string) error {
-	if info.NetworkStack != "" && info.Stack != info.NetworkStack {
-		return fmt.Errorf(
-			"container stack %q does not match network stack %q",
-			info.Stack,
-			info.NetworkStack,
-		)
-	}
-	if network.UsesClusterCredential() {
-		return CheckTagScope(info.NetworkStack, tags)
-	}
-	return nil
-}
-
-// wipeStateOnKeyChange wipes the state if the network's auth key changed, for
-// a fresh registration. A replaced cluster credential is a rotation, which a
-// logged-in node survives, so its state is kept.
-func wipeStateOnKeyChange(stateDir string, network *Network) {
-	if network.UsesClusterCredential() || !tailscale.StateExists(stateDir) ||
-		tailscale.CheckAuthKeyMatch(stateDir, network.AuthKey) {
-		return
-	}
-	if err := tailscale.WipeState(stateDir); err != nil {
-		logger.Warnf("Failed to wipe state after auth key change: %v", err)
-	}
-}
-
 // ApplyHostnameChange changes the hostname of a running Tailscale instance.
 func (e *Endpoint) ApplyHostnameChange(newHostname string) error {
 	e.mu.Lock()
@@ -731,19 +695,7 @@ func (e *Endpoint) ApplyServiceConfig(info *ContainerInfo) error {
 		len(info.Endpoints),
 	)
 
-	// Convert core.ServeEndpoint to tailscale.ServeEndpoint
-	tsEndpoints := make([]tailscale.ServeEndpoint, len(info.Endpoints))
-	for i, ep := range info.Endpoints {
-		tsEndpoints[i] = tailscale.ServeEndpoint{
-			Proto:  ep.Proto,
-			Port:   ep.Port,
-			Target: ep.Target,
-			Path:   ep.Path,
-
-			ProxyProtocol: ep.ProxyProtocol,
-			AcceptAppCaps: ep.AcceptAppCaps,
-		}
-	}
+	tsEndpoints := toTailscaleEndpoints(info.Endpoints)
 
 	if err := e.supervisor.ConfigureServeEndpoints(
 		info.Service,
@@ -759,6 +711,76 @@ func (e *Endpoint) ApplyServiceConfig(info *ContainerInfo) error {
 	e.Endpoints = info.Endpoints
 	e.Direct = info.Direct
 	return nil
+}
+
+// checkStackScope keeps a task to its own stack's network: another stack
+// cannot attach to it and take its credentials and tags. A stack using the
+// cluster credential is also kept to its own tags.
+func checkStackScope(info *ContainerInfo, network *Network, tags []string) error {
+	if info.NetworkStack != "" && info.Stack != info.NetworkStack {
+		return fmt.Errorf(
+			"container stack %q does not match network stack %q",
+			info.Stack,
+			info.NetworkStack,
+		)
+	}
+	if network.UsesClusterCredential() {
+		return CheckTagScope(info.NetworkStack, tags)
+	}
+	return nil
+}
+
+// wipeStateOnKeyChange wipes the state if the network's auth key changed, for
+// a fresh registration. A replaced cluster credential is a rotation, which a
+// logged-in node survives, so its state is kept.
+func wipeStateOnKeyChange(stateDir string, network *Network) {
+	if network.UsesClusterCredential() || !tailscale.StateExists(stateDir) ||
+		tailscale.CheckAuthKeyMatch(stateDir, network.AuthKey) {
+		return
+	}
+	if err := tailscale.WipeState(stateDir); err != nil {
+		logger.Warnf("Failed to wipe state after auth key change: %v", err)
+	}
+}
+
+// prepareStateDir claims the container's state directory and readies it for
+// the network: marked if the node is ephemeral, wiped if the auth key changed.
+func (e *Endpoint) prepareStateDir(
+	info *ContainerInfo,
+	network *Network,
+	dataDir string,
+) (string, error) {
+	stateDir, err := stateDirFor(dataDir, info.Stack, info.Hostname)
+	if err != nil {
+		return "", permanentError{err}
+	}
+	// Claim the directory now, so garbage collection leaves it alone. If
+	// another endpoint holds it, retry: it may be leaving, as in a start-first
+	// update of a service with a fixed hostname.
+	if err := e.ClaimStateDir(info); err != nil {
+		return "", err
+	}
+	if network.Ephemeral() {
+		if err := tailscale.MarkEphemeral(stateDir); err != nil {
+			logger.Warnf("Failed to mark %s as ephemeral: %v", stateDir, err)
+		}
+	}
+
+	wipeStateOnKeyChange(stateDir, network)
+	return stateDir, nil
+}
+
+// tagsFor returns the tags for the container's node. Tags set on the network
+// win, so a container cannot choose its own. The caller holds e.mu.
+func (e *Endpoint) tagsFor(info *ContainerInfo) []string {
+	if len(e.Network.Tags) == 0 {
+		return info.Tags
+	}
+	if len(info.Tags) > 0 && !slices.Equal(info.Tags, e.Network.Tags) {
+		logger.Warnf("Endpoint %s: ignoring tslink.tags label %v, network sets %v",
+			e.ID[:12], info.Tags, e.Network.Tags)
+	}
+	return e.Network.Tags
 }
 
 // logoutAttempts bounds logoutWithRetry; startRetryInitial spaces the attempts.

@@ -314,41 +314,8 @@ func (s *DaemonSupervisor) supervisionLoop() {
 		}
 
 		// Apply backoff (skip on first attempt)
-		if !firstStart {
-			// Record crash and check for crash loop AFTER recording
-			s.recordCrash()
-
-			if s.isCrashLoop() {
-				s.mu.Lock()
-				s.status = StatusCrashLoop
-				s.mu.Unlock()
-				logger.Errorf(
-					"Crash loop detected for endpoint %s (5+ crashes in 30s), retrying in %v",
-					s.cfg.EndpointID[:8],
-					crashLoopCooldown,
-				)
-				s.signalStartup(errors.New("crash loop detected"))
-				s.stopDaemon()
-
-				select {
-				case <-s.ctx.Done():
-					return
-				case <-time.After(crashLoopCooldown):
-				}
-				s.mu.Lock()
-				s.crashTimes = s.crashTimes[:0]
-				s.mu.Unlock()
-				s.resetBackoff()
-			}
-
-			delay := s.nextBackoff()
-			logger.Infof("Restarting tailscaled in %v (attempt %d)", delay, s.restartCount+1)
-
-			select {
-			case <-s.ctx.Done():
-				return
-			case <-time.After(delay):
-			}
+		if !firstStart && !s.waitBeforeRestart() {
+			return
 		}
 
 		// Start daemon
@@ -397,6 +364,46 @@ func (s *DaemonSupervisor) supervisionLoop() {
 		}
 
 		logger.Warnf("tailscaled exited unexpectedly after %v: %v", uptime, exitErr)
+	}
+}
+
+// waitBeforeRestart records a crash and waits out the backoff, or the
+// crash-loop cooldown. It reports false if the supervisor stopped meanwhile.
+func (s *DaemonSupervisor) waitBeforeRestart() bool {
+	// Record crash and check for crash loop AFTER recording
+	s.recordCrash()
+
+	if s.isCrashLoop() {
+		s.mu.Lock()
+		s.status = StatusCrashLoop
+		s.mu.Unlock()
+		logger.Errorf(
+			"Crash loop detected for endpoint %s (5+ crashes in 30s), retrying in %v",
+			s.cfg.EndpointID[:8],
+			crashLoopCooldown,
+		)
+		s.signalStartup(errors.New("crash loop detected"))
+		s.stopDaemon()
+
+		select {
+		case <-s.ctx.Done():
+			return false
+		case <-time.After(crashLoopCooldown):
+		}
+		s.mu.Lock()
+		s.crashTimes = s.crashTimes[:0]
+		s.mu.Unlock()
+		s.resetBackoff()
+	}
+
+	delay := s.nextBackoff()
+	logger.Infof("Restarting tailscaled in %v (attempt %d)", delay, s.restartCount+1)
+
+	select {
+	case <-s.ctx.Done():
+		return false
+	case <-time.After(delay):
+		return true
 	}
 }
 

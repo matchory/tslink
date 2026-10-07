@@ -129,6 +129,9 @@ Config is in `.golangci.toml`. Key linters enabled:
 - `govet`, `staticcheck` - correctness
 - `modernize` - Go 1.22+ idioms
 
+Formatters are `gci`, `gofumpt` and `golines` (100 columns). `golines` counts trailing comments, so put a
+`//nolint` that would not fit on the line before. Functions stay under a cyclomatic complexity of 15.
+
 ### Error Handling
 
 **Always handle errors explicitly** - never ignore silently:

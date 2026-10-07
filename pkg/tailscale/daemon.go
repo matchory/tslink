@@ -339,72 +339,9 @@ func (d *Daemon) Start() error {
 
 	debugFile := filepath.Join(d.config.StateDir, "debug.log")
 
-	// tailscaled's output goes to its own size-capped log: it is verbose, and
-	// the plugin log is shared by every endpoint on the node
-	logPath := filepath.Join(d.config.StateDir, "tailscaled.log")
-	logFile, err := logger.OpenRotating(logPath, tailscaledLogMaxBytes)
-	if err != nil {
-		logger.Warnf("Failed to open %s, discarding tailscaled output: %v", logPath, err)
-	}
-	writeLine := func(line string) {
-		if strings.Contains(line, nodeNotFoundLog) {
-			d.nodeNotFound.Store(time.Now().Unix())
-		}
-		if logFile != nil {
-			if _, err := logFile.Write([]byte(line + "\n")); err != nil {
-				logger.Debugf("Failed to write %s: %v", logPath, err)
-			}
-		}
-	}
+	d.drainOutput(stdoutPipe, stderrPipe)
 
-	// Drain both pipes until tailscaled exits or Stop() closes them
-	var drains sync.WaitGroup
-	drains.Go(func() { drainLines(stdoutPipe, maxLogLine, writeLine) })
-	drains.Go(func() { drainLines(stderrPipe, maxLogLine, writeLine) })
-	d.wg.Go(func() {
-		drains.Wait()
-		if logFile != nil {
-			if err := logFile.Close(); err != nil {
-				logger.Debugf("Failed to close %s: %v", logPath, err)
-			}
-		}
-	})
-
-	// Write debug info to a file (cancellable via context)
-	d.wg.Go(func() {
-		select {
-		case <-d.ctx.Done():
-			return
-		case <-time.After(2 * time.Second):
-			debugInfo := fmt.Sprintf("PID: %d\nSocket: %s\nEndpoint: %s\n",
-				d.cmd.Process.Pid, d.socketPath, d.config.EndpointID)
-			if err := os.WriteFile(debugFile, []byte(debugInfo), 0o600); err != nil {
-				logger.Warnf("Failed to write debug file: %v", err)
-			}
-		}
-	})
-
-	// Monitor for process exit (cancellable via context)
-	d.wg.Go(func() {
-		done := make(chan error, 1)
-		go func() {
-			done <- d.cmd.Wait()
-		}()
-
-		select {
-		case <-d.ctx.Done():
-			return
-		case err := <-done:
-			if err != nil {
-				logger.Errorf("tailscaled exited with error: %v", err)
-				debugInfo := fmt.Sprintf("EXITED WITH ERROR\nPID: %d\nError: %v\n",
-					d.cmd.Process.Pid, err)
-				if writeErr := os.WriteFile(debugFile, []byte(debugInfo), 0o600); writeErr != nil {
-					logger.Warnf("Failed to write debug file: %v", writeErr)
-				}
-			}
-		}
-	})
+	d.watchProcess(debugFile)
 
 	if err := d.waitForSocket(); err != nil {
 		// Write timeout debug info
@@ -420,44 +357,11 @@ func (d *Daemon) Start() error {
 		return fmt.Errorf("failed waiting for tailscaled socket: %w", err)
 	}
 
-	if err := d.bringUp(); err != nil {
+	if err := d.setUp(); err != nil {
 		if stopErr := d.Stop(); stopErr != nil {
-			logger.Warnf("Failed to stop daemon after bringUp error: %v", stopErr)
+			logger.Warnf("Failed to stop daemon after setup error (%v): %v", err, stopErr)
 		}
-		return fmt.Errorf("failed to bring up tailscale: %w", err)
-	}
-
-	// Configure direct machine serve if enabled (HTTPS on machine hostname)
-	logger.Infof(
-		"Checking direct serve: Direct=%v Endpoints=%d",
-		d.config.Direct,
-		len(d.config.Endpoints),
-	)
-	if d.config.Direct && len(d.config.Endpoints) > 0 {
-		logger.Infof("Configuring direct serve...")
-		if err := d.configureDirectServe(); err != nil {
-			if stopErr := d.Stop(); stopErr != nil {
-				logger.Warnf("Failed to stop daemon after direct serve error: %v", stopErr)
-			}
-			return fmt.Errorf("failed to configure direct serve: %w", err)
-		}
-		logger.Infof("Direct serve configured successfully")
-	}
-
-	// Configure service backend if specified
-	// Services is a beta feature - add delay to let control plane fully register the node
-	logger.Infof("Checking service: Service=%q", d.config.Service)
-	if d.config.Service != "" {
-		logger.Infof("Waiting for control plane sync before configuring service backend...")
-		time.Sleep(2 * time.Second)
-		logger.Infof("Configuring service backend...")
-		if err := d.configureServiceWhenCertified(); err != nil {
-			if stopErr := d.Stop(); stopErr != nil {
-				logger.Warnf("Failed to stop daemon after service config error: %v", stopErr)
-			}
-			return fmt.Errorf("failed to configure Tailscale service: %w", err)
-		}
-		logger.Infof("Service backend configured successfully")
+		return err
 	}
 
 	return nil
@@ -517,44 +421,7 @@ func (d *Daemon) Stop() error {
 	}
 
 	if cmd != nil && cmd.Process != nil {
-		// Try graceful shutdown first
-		args := []string{
-			"--socket=" + d.socketPath,
-			"down",
-		}
-
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		downCmd := exec.CommandContext(ctx, d.config.TailscaleBin, args...)
-		_ = downCmd.Run() // Ignore errors
-
-		// Kill the process
-		if err := cmd.Process.Kill(); err != nil {
-			logger.Warnf("Failed to kill tailscaled: %v", err)
-		}
-
-		// Wait for process with timeout to avoid blocking forever
-		waitDone := make(chan struct{})
-		go func() {
-			if err := cmd.Wait(); err != nil {
-				logger.Debugf("tailscaled process exited: %v", err)
-			}
-			close(waitDone)
-		}()
-
-		select {
-		case <-waitDone:
-			// Process exited cleanly
-		case <-time.After(5 * time.Second):
-			logger.Warnf("Timeout waiting for tailscaled to exit")
-		}
-
-		// The socket outlives a killed tailscaled; sockets no longer sit in
-		// the state directory, so nothing else would clean it up
-		if err := os.Remove(d.socketPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-			logger.Warnf("Failed to remove socket %s: %v", d.socketPath, err)
-		}
+		d.killProcess(cmd)
 	}
 
 	// Close pipes to unblock reader goroutines
@@ -602,22 +469,6 @@ func (d *Daemon) Logout() error {
 		)
 	}
 	return nil
-}
-
-// isStateError checks if the error indicates stale/invalid state that should trigger a retry.
-func isStateError(err error) bool {
-	if err == nil {
-		return false
-	}
-	errStr := err.Error()
-	// Common auth/state errors that indicate we should wipe and retry
-	return strings.Contains(errStr, "not logged in") ||
-		strings.Contains(errStr, "key expired") ||
-		strings.Contains(errStr, "node not found") ||
-		strings.Contains(errStr, "node key mismatch") ||
-		strings.Contains(errStr, "unauthorized") ||
-		strings.Contains(errStr, "register request") ||
-		strings.Contains(errStr, "invalid node key")
 }
 
 // BackendState returns tailscaled's backend state, such as Running or
@@ -710,6 +561,22 @@ func (d *Daemon) Drain(service string) error {
 		)
 	}
 	return nil
+}
+
+// isStateError checks if the error indicates stale/invalid state that should trigger a retry.
+func isStateError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	// Common auth/state errors that indicate we should wipe and retry
+	return strings.Contains(errStr, "not logged in") ||
+		strings.Contains(errStr, "key expired") ||
+		strings.Contains(errStr, "node not found") ||
+		strings.Contains(errStr, "node key mismatch") ||
+		strings.Contains(errStr, "unauthorized") ||
+		strings.Contains(errStr, "register request") ||
+		strings.Contains(errStr, "invalid node key")
 }
 
 // SetHostname updates the Tailscale hostname for a running daemon. It returns
@@ -807,6 +674,160 @@ func (d *Daemon) ConfigureServeEndpoints(
 	}
 
 	return nil
+}
+
+// drainOutput writes tailscaled's output to its own size-capped log, until
+// tailscaled exits or Stop closes the pipes.
+func (d *Daemon) drainOutput(stdoutPipe, stderrPipe io.ReadCloser) {
+	// tailscaled's output goes to its own size-capped log: it is verbose, and
+	// the plugin log is shared by every endpoint on the node
+	logPath := filepath.Join(d.config.StateDir, "tailscaled.log")
+	logFile, err := logger.OpenRotating(logPath, tailscaledLogMaxBytes)
+	if err != nil {
+		logger.Warnf("Failed to open %s, discarding tailscaled output: %v", logPath, err)
+	}
+	writeLine := func(line string) {
+		if strings.Contains(line, nodeNotFoundLog) {
+			d.nodeNotFound.Store(time.Now().Unix())
+		}
+		if logFile != nil {
+			if _, err := logFile.Write([]byte(line + "\n")); err != nil {
+				logger.Debugf("Failed to write %s: %v", logPath, err)
+			}
+		}
+	}
+
+	// Drain both pipes until tailscaled exits or Stop() closes them
+	var drains sync.WaitGroup
+	drains.Go(func() { drainLines(stdoutPipe, maxLogLine, writeLine) })
+	drains.Go(func() { drainLines(stderrPipe, maxLogLine, writeLine) })
+	d.wg.Go(func() {
+		drains.Wait()
+		if logFile != nil {
+			if err := logFile.Close(); err != nil {
+				logger.Debugf("Failed to close %s: %v", logPath, err)
+			}
+		}
+	})
+}
+
+// watchProcess records tailscaled's PID, and its exit if it fails, in
+// debugFile.
+func (d *Daemon) watchProcess(debugFile string) {
+	// Write debug info to a file (cancellable via context)
+	d.wg.Go(func() {
+		select {
+		case <-d.ctx.Done():
+			return
+		case <-time.After(2 * time.Second):
+			debugInfo := fmt.Sprintf("PID: %d\nSocket: %s\nEndpoint: %s\n",
+				d.cmd.Process.Pid, d.socketPath, d.config.EndpointID)
+			if err := os.WriteFile(debugFile, []byte(debugInfo), 0o600); err != nil {
+				logger.Warnf("Failed to write debug file: %v", err)
+			}
+		}
+	})
+
+	// Monitor for process exit (cancellable via context)
+	d.wg.Go(func() {
+		done := make(chan error, 1)
+		go func() {
+			done <- d.cmd.Wait()
+		}()
+
+		select {
+		case <-d.ctx.Done():
+			return
+		case err := <-done:
+			if err != nil {
+				logger.Errorf("tailscaled exited with error: %v", err)
+				debugInfo := fmt.Sprintf("EXITED WITH ERROR\nPID: %d\nError: %v\n",
+					d.cmd.Process.Pid, err)
+				if writeErr := os.WriteFile(debugFile, []byte(debugInfo), 0o600); writeErr != nil {
+					logger.Warnf("Failed to write debug file: %v", writeErr)
+				}
+			}
+		}
+	})
+}
+
+// setUp brings the node up and configures its serve endpoints and service.
+func (d *Daemon) setUp() error {
+	if err := d.bringUp(); err != nil {
+		return fmt.Errorf("failed to bring up tailscale: %w", err)
+	}
+
+	// Configure direct machine serve if enabled (HTTPS on machine hostname)
+	logger.Infof(
+		"Checking direct serve: Direct=%v Endpoints=%d",
+		d.config.Direct,
+		len(d.config.Endpoints),
+	)
+	if d.config.Direct && len(d.config.Endpoints) > 0 {
+		logger.Infof("Configuring direct serve...")
+		if err := d.configureDirectServe(); err != nil {
+			return fmt.Errorf("failed to configure direct serve: %w", err)
+		}
+		logger.Infof("Direct serve configured successfully")
+	}
+
+	// Configure service backend if specified
+	// Services is a beta feature - add delay to let control plane fully register the node
+	logger.Infof("Checking service: Service=%q", d.config.Service)
+	if d.config.Service != "" {
+		logger.Infof("Waiting for control plane sync before configuring service backend...")
+		time.Sleep(2 * time.Second)
+		logger.Infof("Configuring service backend...")
+		if err := d.configureServiceWhenCertified(); err != nil {
+			return fmt.Errorf("failed to configure Tailscale service: %w", err)
+		}
+		logger.Infof("Service backend configured successfully")
+	}
+
+	return nil
+}
+
+// killProcess takes tailscaled down, kills it, waits for it to exit and
+// removes its socket.
+func (d *Daemon) killProcess(cmd *exec.Cmd) {
+	// Try graceful shutdown first
+	args := []string{
+		"--socket=" + d.socketPath,
+		"down",
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	downCmd := exec.CommandContext(ctx, d.config.TailscaleBin, args...)
+	_ = downCmd.Run() // Ignore errors
+
+	// Kill the process
+	if err := cmd.Process.Kill(); err != nil {
+		logger.Warnf("Failed to kill tailscaled: %v", err)
+	}
+
+	// Wait for process with timeout to avoid blocking forever
+	waitDone := make(chan struct{})
+	go func() {
+		if err := cmd.Wait(); err != nil {
+			logger.Debugf("tailscaled process exited: %v", err)
+		}
+		close(waitDone)
+	}()
+
+	select {
+	case <-waitDone:
+		// Process exited cleanly
+	case <-time.After(5 * time.Second):
+		logger.Warnf("Timeout waiting for tailscaled to exit")
+	}
+
+	// The socket outlives a killed tailscaled; sockets no longer sit in
+	// the state directory, so nothing else would clean it up
+	if err := os.Remove(d.socketPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		logger.Warnf("Failed to remove socket %s: %v", d.socketPath, err)
+	}
 }
 
 // tailscale runs the tailscale CLI with args, logging its output under prefix.

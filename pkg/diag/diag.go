@@ -300,37 +300,42 @@ func outputResult(result *Result, w io.Writer) error {
 
 	fmt.Fprintf(w, "=== Endpoints ===\n")
 	for _, ep := range result.Endpoints {
-		fmt.Fprintf(w, "\n--- %s ---\n", ep.ShortID)
-		if ep.StateDir != "" {
-			fmt.Fprintf(w, "  State dir: %s\n", ep.StateDir)
-		}
-		fmt.Fprintf(w, "  Socket:    %v\n", ep.SocketExists)
-		fmt.Fprintf(w, "  State:     %v\n", ep.StateExists)
-
-		if ep.TailscaleIP != "" {
-			fmt.Fprintf(w, "  IP:        %s\n", ep.TailscaleIP)
-		}
-		if ep.Hostname != "" {
-			fmt.Fprintf(w, "  Hostname:  %s\n", ep.Hostname)
-		}
-		if ep.BackendState != "" {
-			fmt.Fprintf(w, "  Backend:   %s\n", ep.BackendState)
-		}
-		fmt.Fprintf(w, "  Online:    %v\n", ep.Online)
-
-		if ep.Error != "" {
-			fmt.Fprintf(w, "  ERROR:     %s\n", ep.Error)
-		}
-
-		if ep.DebugLog != "" {
-			fmt.Fprintf(w, "  Debug Log:\n")
-			for line := range strings.SplitSeq(ep.DebugLog, "\n") {
-				if line != "" {
-					fmt.Fprintf(w, "    %s\n", line)
-				}
-			}
-		}
+		writeEndpoint(w, ep)
 	}
 
 	return nil
+}
+
+// writeEndpoint writes the report section for one endpoint.
+func writeEndpoint(w io.Writer, ep *EndpointStatus) {
+	fmt.Fprintf(w, "\n--- %s ---\n", ep.ShortID)
+	if ep.StateDir != "" {
+		fmt.Fprintf(w, "  State dir: %s\n", ep.StateDir)
+	}
+	fmt.Fprintf(w, "  Socket:    %v\n", ep.SocketExists)
+	fmt.Fprintf(w, "  State:     %v\n", ep.StateExists)
+
+	if ep.TailscaleIP != "" {
+		fmt.Fprintf(w, "  IP:        %s\n", ep.TailscaleIP)
+	}
+	if ep.Hostname != "" {
+		fmt.Fprintf(w, "  Hostname:  %s\n", ep.Hostname)
+	}
+	if ep.BackendState != "" {
+		fmt.Fprintf(w, "  Backend:   %s\n", ep.BackendState)
+	}
+	fmt.Fprintf(w, "  Online:    %v\n", ep.Online)
+
+	if ep.Error != "" {
+		fmt.Fprintf(w, "  ERROR:     %s\n", ep.Error)
+	}
+
+	if ep.DebugLog != "" {
+		fmt.Fprintf(w, "  Debug Log:\n")
+		for line := range strings.SplitSeq(ep.DebugLog, "\n") {
+			if line != "" {
+				fmt.Fprintf(w, "    %s\n", line)
+			}
+		}
+	}
 }

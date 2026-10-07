@@ -16,7 +16,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/aaomidi/tslink/pkg/logger"
+	"github.com/matchory/tslink/pkg/logger"
 )
 
 // Limits for tailscaled's output: a line longer than maxLogLine is cut, and

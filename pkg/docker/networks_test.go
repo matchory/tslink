@@ -6,7 +6,7 @@ import (
 
 	dockerclient "github.com/moby/moby/client"
 
-	"github.com/aaomidi/tslink/pkg/core"
+	"github.com/matchory/tslink/pkg/core"
 )
 
 const testNetworkID = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aaomidi/tslink/pkg/logger"
+	"github.com/matchory/tslink/pkg/logger"
 )
 
 // nodeNotFoundLog is what tailscaled logs while control does not know its

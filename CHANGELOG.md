@@ -83,6 +83,7 @@ three- and five-node swarms; see [docs/testing](docs/testing).
 
 ### Changed
 
+- The Go module path is `github.com/matchory/tslink`.
 - Images are published as `ghcr.io/matchory/tslink:<version>-<arch>`. The
   documentation installs the plugin under the alias `tslink`, so networks and
   stack files name the driver `tslink:latest` whatever the version and

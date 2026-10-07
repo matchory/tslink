@@ -3,7 +3,7 @@ package docker
 import (
 	"testing"
 
-	"github.com/aaomidi/tslink/pkg/core"
+	"github.com/matchory/tslink/pkg/core"
 )
 
 func TestParseContainerInfoStack(t *testing.T) {

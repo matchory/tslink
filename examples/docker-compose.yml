@@ -7,11 +7,11 @@
 #   export TS_AUTHKEY=tskey-auth-xxx
 #   docker-compose up -d
 #
-# Note: Use :main-arm64 or :main-amd64 depending on your architecture
+# Requires the plugin installed under the alias tslink (see README)
 
 networks:
   tailnet:
-    driver: ghcr.io/matchory/tslink:main-arm64
+    driver: tslink
     driver_opts:
       tslink.authkey: ${TS_AUTHKEY}
 

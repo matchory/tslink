@@ -87,6 +87,9 @@ three- and five-node swarms; see [docs/testing.md](docs/testing.md).
   hour, or once a day for the expiry, per name; the endpoint's status file
   lists them under the new `warnings` field until a certificate is issued, and
   so does `tslink diag`.
+- A `dns-upstreams` warning in the endpoint's status and `tslink diag` when
+  tailscaled falls back to resolvers neither the container nor the host
+  lists; a later start with resolvers of either clears it.
 
 ### Changed
 
@@ -140,6 +143,11 @@ three- and five-node swarms; see [docs/testing.md](docs/testing.md).
   resolver, which forwards to tailscaled in a container with
   `dns: [100.100.100.100]`, and tailscaled forwarded back to it, so public
   names did not resolve.
+- A container with `dns: [100.100.100.100, 10.0.0.53]` never reached
+  `10.0.0.53`: Docker asks the first server and accepts its "not found", and
+  tailscaled forwarded to the host's resolvers. tailscaled now forwards to
+  the container's own DNS servers other than Tailscale's and Docker's, as
+  Docker's embedded resolver does, and to the host's only without any.
 - The first replica of a Tailscale Service with HTTPS waited up to an hour for
   its certificate, since tailscaled only fetches it right away if control has
   already announced the Service's name.

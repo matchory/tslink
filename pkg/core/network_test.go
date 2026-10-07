@@ -3,6 +3,7 @@ package core
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -104,18 +105,74 @@ func TestCredential(t *testing.T) {
 }
 
 func TestEphemeral(t *testing.T) {
-	tests := map[string]bool{
-		"tskey-client-x":                 true,
-		"tskey-client-x?ephemeral=false": false,
-		"tskey-auth-x":                   false,
+	const cluster = "" // the cluster credential
+	keys := []string{
+		"tskey-client-x", "tskey-client-x?ephemeral=false", "tskey-client-x?ephemeral=true",
+		"tskey-auth-x", "hskey-auth-x", cluster,
 	}
-	for key, want := range tests {
-		if got := (&Network{AuthKey: key}).Ephemeral(); got != want {
-			t.Errorf("Ephemeral(%q) = %v, want %v", key, got, want)
+	// Ephemeral() per key, in the order of keys; "err" if NewNetwork fails
+	tests := map[string][]string{
+		"":      {"true", "false", "true", "false", "false", "true"},
+		"true":  {"true", "err", "true", "true", "true", "true"},
+		"false": {"false", "false", "err", "false", "false", "err"},
+	}
+	for option, wants := range tests {
+		for i, key := range keys {
+			t.Run("option="+option+"/key="+key, func(t *testing.T) {
+				dir := t.TempDir()
+				if key == cluster {
+					writeClusterCredential(t, dir, "tskey-client-x")
+				}
+				opts := NetworkOptions{AuthKey: key, Tags: []string{"tag:web"}, Ephemeral: option}
+				n, err := NewNetwork("net", opts, &Config{DataDir: dir})
+				if wants[i] == "err" {
+					if err == nil || !strings.Contains(err.Error(), "tslink.ephemeral") {
+						t.Fatalf("err = %v, want an error naming tslink.ephemeral", err)
+					}
+					return
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got := strconv.FormatBool(n.Ephemeral()); got != wants[i] {
+					t.Errorf("Ephemeral() = %s, want %s", got, wants[i])
+				}
+			})
 		}
 	}
-	if !(&Network{}).Ephemeral() {
-		t.Error("cluster credential network is not ephemeral")
+}
+
+func TestNewNetworkRejectsInvalidEphemeral(t *testing.T) {
+	for _, v := range []string{"yes", "1", "TRUE", " true"} {
+		_, err := NewNetwork("net", NetworkOptions{AuthKey: "tskey-auth-x", Ephemeral: v}, &Config{DataDir: t.TempDir()})
+		if err == nil || !strings.Contains(err.Error(), "tslink.ephemeral") {
+			t.Errorf("Ephemeral %q: err = %v, want an error naming tslink.ephemeral", v, err)
+		}
+	}
+}
+
+func TestCredentialAppliesEphemeralOption(t *testing.T) {
+	tests := []struct {
+		key, option, want string
+	}{
+		{key: "tskey-client-x", want: "tskey-client-x"},
+		{key: "tskey-client-x", option: "true", want: "tskey-client-x?ephemeral=true"},
+		{key: "tskey-client-x", option: "false", want: "tskey-client-x?ephemeral=false"},
+		{key: "tskey-client-x?preauthorized=true", option: "false", want: "tskey-client-x?preauthorized=true&ephemeral=false"},
+		{key: "tskey-client-x?ephemeral=false", option: "false", want: "tskey-client-x?ephemeral=false"},
+		// Auth keys take no parameters: their ephemerality is set at creation
+		{key: "tskey-auth-x", option: "true", want: "tskey-auth-x"},
+		{key: "hskey-auth-x", option: "true", want: "hskey-auth-x"},
+	}
+	for _, tt := range tests {
+		dir := t.TempDir()
+		n, err := NewNetwork("net", NetworkOptions{AuthKey: tt.key, Ephemeral: tt.option}, &Config{DataDir: dir})
+		if err != nil {
+			t.Fatalf("%s with %q: %v", tt.key, tt.option, err)
+		}
+		if got, err := n.Credential(dir); err != nil || got != tt.want {
+			t.Errorf("%s with %q: Credential() = %q, %v, want %q", tt.key, tt.option, got, err, tt.want)
+		}
 	}
 }
 

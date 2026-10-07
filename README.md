@@ -142,6 +142,7 @@ services:
 | -------- | ------------- | --------- |
 | `tslink.authkey` | Tailscale auth key | Required, unless the plugin has a [cluster credential](#cluster-credential) or `TS_AUTHKEY` |
 | `tslink.tags` | ACL tags (comma-separated) for every container on the network; overrides the `tslink.tags` label | None |
+| `tslink.ephemeral` | `true` or `false`: whether the network's nodes are ephemeral, for keys that do not say so themselves, such as auth keys and headscale's keys. With `true`, tslink logs a node out and deletes its state when the container stops, so the device and its identity are gone; set it only with a key that creates ephemeral nodes. Appended to an OAuth client secret as `?ephemeral=`; a secret whose own `ephemeral` parameter differs is refused, and so is `false` with the [cluster credential](#cluster-credential) | Taken from the key: ephemeral for OAuth client secrets and the cluster credential, otherwise not |
 | `tslink.loginserver` | URL of a control server other than Tailscale's, such as [headscale](https://github.com/juanfont/headscale); passed to `tailscale up --login-server` | Tailscale's |
 | `com.docker.network.driver.mtu` | MTU of the interface tslink adds to the container | 1500 |
 
@@ -237,7 +238,7 @@ networks:
 ```
 
 - The file is read whenever a node registers, so replacing it rotates the credential without recreating networks.
-- Nodes are ephemeral and pre-approved.
+- Nodes are ephemeral and pre-approved; such a network refuses `tslink.ephemeral=false`.
 - A stack may only use `tag:<stack>` and `tag:<stack>-*`, where `<stack>` is its stack name. The OAuth client must own
   these tags in the tailnet policy, e.g. through a tag of its own: `"tag:billing": ["tag:tslink"]`.
 - A network's own `tslink.authkey` takes precedence over the file, and the file over `TS_AUTHKEY`.
@@ -255,9 +256,10 @@ See [docs/credentials.md](docs/credentials.md) for the reasoning.
 
 For most use cases, use an ephemeral, reusable, pre-approved key.
 
-Keys from headscale do not say whether they are ephemeral, so with `tslink.loginserver` tslink keeps an ephemeral node's
-state and does not log it out when the container stops; headscale removes the node after its
-`node.ephemeral.inactivity_timeout`.
+Auth keys, including headscale's, do not say whether they are ephemeral, so tslink treats their nodes as persistent: it
+keeps their state and does not log them out when the container stops. Tailscale or headscale removes an ephemeral node
+once it has been offline for a while. With an ephemeral key, set `tslink.ephemeral=true` on the network, and tslink
+logs the node out and deletes its state when the container stops.
 
 ## Running on Swarm
 

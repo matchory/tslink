@@ -20,6 +20,13 @@ func TestParseNetworkOptionsTags(t *testing.T) {
 	}
 }
 
+func TestParseNetworkOptionsEphemeral(t *testing.T) {
+	opts := ParseNetworkOptions(map[string]any{GenericOptionsKey: map[string]any{EphemeralOption: "true"}})
+	if opts.Ephemeral != "true" {
+		t.Errorf("Ephemeral = %q, want true", opts.Ephemeral)
+	}
+}
+
 func TestParseTagsEmpty(t *testing.T) {
 	if tags := ParseTags(""); tags != nil {
 		t.Errorf("ParseTags(\"\") = %q, want nil", tags)

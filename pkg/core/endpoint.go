@@ -2,6 +2,7 @@ package core
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -419,6 +420,8 @@ func (e *Endpoint) Leave() error {
 	e.mu.Lock()
 	vethName := e.VethName
 	sandboxKey := e.SandboxKey
+	stateDir := e.StateDir
+	ephemeral := tailscale.IsEphemeralKey(e.Network.AuthKey)
 	supervisor := e.supervisor
 	e.supervisor = nil
 	e.tailscaleStarted = false
@@ -428,8 +431,22 @@ func (e *Endpoint) Leave() error {
 
 	// Stop the Tailscale supervisor first
 	if supervisor != nil {
+		// An ephemeral node would linger offline until Tailscale removes it;
+		// logging out deletes it now
+		if ephemeral {
+			if err := supervisor.Logout(); err != nil {
+				logger.Warn("Failed to log out ephemeral node during Leave: %v", err)
+			}
+		}
 		if err := supervisor.Stop(); err != nil {
 			logger.Warn("Failed to stop supervisor during Leave: %v", err)
+		}
+		// Nothing reuses an ephemeral node's state, and it holds the node key.
+		// stateDir is only this endpoint's once its supervisor has started.
+		if ephemeral {
+			if err := os.RemoveAll(stateDir); err != nil {
+				logger.Warn("Failed to remove state of ephemeral node %s: %v", stateDir, err)
+			}
 		}
 	}
 

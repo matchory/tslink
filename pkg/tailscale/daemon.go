@@ -835,6 +835,18 @@ func (d *Daemon) Stop() error {
 	return nil
 }
 
+// Logout logs the node out, which deletes an ephemeral node from the tailnet.
+func (d *Daemon) Logout() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx, d.config.TailscaleBin, "--socket="+d.socketPath, "logout").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("tailscale logout failed: %w (output: %s)", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 // SetHostname updates the Tailscale hostname for a running daemon.
 func (d *Daemon) SetHostname(hostname string) error {
 	logger.Info("Setting hostname to %s for endpoint %s", hostname, d.config.EndpointID)

@@ -55,7 +55,7 @@ kernel and NIC driver that support it; check with `ethtool -k <uplink>`.
    for instance), log in first (`docker login <registry>`).
 
 3. **Install a pinned version under the alias `tslink`.** Stack files name the
-   driver `tslink`; the image tag carries version and architecture:
+   driver `tslink:latest`; the image tag carries version and architecture:
 
    ```bash
    docker plugin install --alias tslink --grant-all-permissions \

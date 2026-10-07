@@ -38,7 +38,7 @@ remaining risks are known, bounded, and have operational mitigations.
   `svc:tslink-test-other`, an iperf3 server), `caller` (global, overlay +
   tslink, `dns: 100.100.100.100`) and `nogrant` (global, tslink only). Later
   per Matchory's convention: daemon `mtu: 1450`, network MTU 1450.
-- The scripts are in [test/cluster](../test/cluster): provisioning, plugin
+- The scripts are in [test/cluster](../../test/cluster): provisioning, plugin
   install, stacks, probes and the regression suite.
 
 VIP availability was measured with probes in each caller task: an HTTP request
@@ -50,7 +50,7 @@ to the VIP every 200 ms, 2 s timeout, logging the answering backend.
   Docker 29, Ubuntu 24.04, swarm on a private network, nodes with public
   egress. Not tested: more than three nodes, several managers, arm64,
   encrypted overlays, a NAT gateway instead of public addresses.
-- Credentials follow [credentials.md](credentials.md): one OAuth client per
+- Credentials follow [credentials.md](../credentials.md): one OAuth client per
   stack, `tslink.tags` on the network, ephemeral nodes.
 - Services reachable on the tailnet are exposed as Tailscale Services in HTTP
   mode (`tslink.serve.<port>=http:<port>`, `tslink.direct=false`).
@@ -226,7 +226,7 @@ node failure turned out to cost 21-48 s rather than 17 s.
   mode loses the caller's address. `tailscale serve --proxy-protocol` would
   carry it, but tslink does not expose it yet.
 - **Credentials are visible to Docker API holders** (`docker network inspect`,
-  the raft store), as designed in [credentials.md](credentials.md).
+  the raft store), as designed in [credentials.md](../credentials.md).
 - **Scale beyond the test**: 60 simultaneous registrations caused no rate
   limiting, but hundreds at once (mass reschedule of a large cluster) were not
   tested; each registration exchanges the OAuth secret through the API.

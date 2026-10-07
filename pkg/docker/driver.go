@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -23,7 +24,8 @@ type Driver struct {
 	networks  map[string]*core.Network
 	endpoints map[string]*core.Endpoint
 	config    *core.Config
-	cache     *ContainerCache // Pre-cached container info from Docker events
+	claims    *core.StateClaims // State directories in use by endpoints or garbage collection
+	cache     *ContainerCache   // Pre-cached container info from Docker events
 
 	// Docker client for container inspection, recovery and events
 	docker dockerAPI
@@ -35,6 +37,9 @@ type Driver struct {
 	runTailscale   func(e *core.Endpoint, info *core.ContainerInfo)
 	leaveEndpoint  func(e *core.Endpoint) error
 	stopEndpoint   func(e *core.Endpoint) error
+
+	// Serializes RecoverEndpoints
+	recoverMu sync.Mutex
 
 	// Lifecycle management
 	ctx    context.Context
@@ -86,6 +91,7 @@ func newDriver(cfg *core.Config, docker dockerAPI) *Driver {
 		networks:       make(map[string]*core.Network),
 		endpoints:      make(map[string]*core.Endpoint),
 		config:         cfg,
+		claims:         core.NewStateClaims(),
 		cache:          NewContainerCache(),
 		docker:         docker,
 		joinEndpoint:   (*core.Endpoint).Join,
@@ -195,6 +201,13 @@ func (d *Driver) onContainerInfo(endpointID string, info *core.ContainerInfo) {
 	)
 
 	// Start Tailscale in a goroutine so we don't block the event handler
+	d.startTailscale(endpoint, info)
+}
+
+// startTailscale starts Tailscale for the endpoint in the background, and
+// records that it was asked to, so recovery leaves the endpoint to this start.
+func (d *Driver) startTailscale(endpoint *core.Endpoint, info *core.ContainerInfo) {
+	endpoint.MarkStartRequested()
 	d.wg.Go(func() { d.runTailscale(endpoint, info) })
 }
 
@@ -302,7 +315,7 @@ func (d *Driver) CreateEndpoint(req *network.CreateEndpointRequest) (*network.Cr
 	// Parse endpoint options for hostname override
 	opts := core.ParseEndpointOptions(req.Options)
 
-	endpoint, err := core.NewEndpoint(req.EndpointID, net, opts, d.config)
+	endpoint, err := core.NewEndpoint(req.EndpointID, net, opts, d.config, d.claims)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create endpoint: %w", err)
 	}
@@ -386,7 +399,7 @@ func (d *Driver) Join(req *network.JoinRequest) (*network.JoinResponse, error) {
 	// cache has its own internal lock, so this is safe
 	if info, ok := d.cache.GetByEndpoint(req.EndpointID); ok {
 		logger.Info("Join: container info already cached, triggering immediate Tailscale setup")
-		d.wg.Go(func() { d.runTailscale(endpoint, info) })
+		d.startTailscale(endpoint, info)
 	} else {
 		logger.Info("Join: waiting for Docker event to trigger Tailscale setup for endpoint %s", req.EndpointID[:12])
 	}
@@ -524,7 +537,7 @@ func (d *Driver) collectGarbage(ctx context.Context) {
 		state[ep.GetStateDir()] = true
 	}
 
-	core.CollectGarbage(ctx, d.config.DataDir, state, sockets, gcMinAge)
+	core.CollectGarbage(ctx, d.config, d.claims, state, sockets, gcMinAge)
 }
 
 // runWatchdog periodically scans for orphaned endpoints and recovers them,
@@ -559,7 +572,13 @@ func (d *Driver) runWatchdog(ctx context.Context) {
 
 // RecoverEndpoints scans Docker for containers on tslink networks that are missing
 // from the driver's in-memory state. This handles host reboot and plugin restart.
+// It also starts Tailscale for endpoints that joined but missed their connect
+// event, as when the event stream was down.
 func (d *Driver) RecoverEndpoints(ctx context.Context) error {
+	// The initial recovery and the watchdog may overlap while Docker is down
+	d.recoverMu.Lock()
+	defer d.recoverMu.Unlock()
+
 	logger.Info("RecoverEndpoints: scanning for orphaned endpoints")
 
 	ownNames, err := d.ownPluginNames(ctx)
@@ -581,45 +600,12 @@ func (d *Driver) RecoverEndpoints(ctx context.Context) error {
 		}
 
 		for netName, netSettings := range container.NetworkSettings.Networks {
-			if netSettings.NetworkID == "" || netSettings.EndpointID == "" {
+			if netSettings == nil || netSettings.NetworkID == "" || netSettings.EndpointID == "" {
 				continue
 			}
-
-			// Check if this network uses our driver
-			networkResult, err := d.docker.NetworkInspect(
-				ctx,
-				netSettings.NetworkID,
-				dockerclient.NetworkInspectOptions{},
-			)
-			if err != nil {
-				logger.Debug("RecoverEndpoints: failed to inspect network %s: %v", netSettings.NetworkID[:12], err)
-				continue
+			if d.recoverAttachment(ctx, ownNames, container.ID, netName, netSettings.NetworkID, netSettings.EndpointID) {
+				recovered++
 			}
-
-			if !ownNames[networkResult.Network.Driver] {
-				continue
-			}
-
-			endpointID := netSettings.EndpointID
-
-			// Check if we already have this endpoint
-			d.mu.RLock()
-			_, exists := d.endpoints[endpointID]
-			d.mu.RUnlock()
-
-			if exists {
-				continue
-			}
-
-			// Found orphaned endpoint - recover it
-			logger.Info("RecoverEndpoints: found orphaned endpoint %s for container %s on network %s",
-				endpointID[:12], container.ID[:12], netName)
-
-			if err := d.recoverEndpoint(ctx, container.ID, netName, endpointID, networkResult); err != nil {
-				logger.Error("RecoverEndpoints: failed to recover endpoint %s: %v", endpointID[:12], err)
-				continue
-			}
-			recovered++
 		}
 	}
 
@@ -632,34 +618,93 @@ func (d *Driver) RecoverEndpoints(ctx context.Context) error {
 	return nil
 }
 
-// recoverEndpoint restores a single orphaned endpoint.
-// It recreates the network and endpoint in driver state, then triggers Tailscale setup.
-func (d *Driver) recoverEndpoint(
+// recoverAttachment recovers the container's endpoint on a network, if the
+// network is tslink's, and reports whether it recovered one the driver did not
+// know. A known endpoint that joined and was never started missed its connect
+// event: it starts Tailscale for it.
+func (d *Driver) recoverAttachment(
 	ctx context.Context,
-	containerID, netName, endpointID string,
-	networkResult dockerclient.NetworkInspectResult,
-) error {
-	// Get full container info
-	containerInfo, err := d.docker.ContainerInspect(ctx, containerID, dockerclient.ContainerInspectOptions{})
+	ownNames map[string]bool,
+	containerID, netName, networkID, endpointID string,
+) bool {
+	// Check if this network uses our driver
+	networkResult, err := d.docker.NetworkInspect(ctx, networkID, dockerclient.NetworkInspectOptions{})
 	if err != nil {
-		return fmt.Errorf("failed to inspect container: %w", err)
+		logger.Debug("RecoverEndpoints: failed to inspect network %s: %v", networkID[:12], err)
+		return false
+	}
+	if !ownNames[networkResult.Network.Driver] {
+		return false
 	}
 
+	// Check if we already have this endpoint
+	d.mu.RLock()
+	known, exists := d.endpoints[endpointID]
+	d.mu.RUnlock()
+
+	if exists {
+		if known.GetSandboxKey() != "" && !known.StartRequested() {
+			if err := d.startMissedEndpoint(ctx, containerID, netName, known, networkResult); err != nil {
+				logger.Error("RecoverEndpoints: failed to start endpoint %s: %v", endpointID[:12], err)
+			}
+		}
+		return false
+	}
+
+	// Found orphaned endpoint - recover it
+	logger.Info("RecoverEndpoints: found orphaned endpoint %s for container %s on network %s",
+		endpointID[:12], containerID[:12], netName)
+
+	if err := d.recoverEndpoint(ctx, containerID, netName, endpointID, networkResult); err != nil {
+		logger.Error("RecoverEndpoints: failed to recover endpoint %s: %v", endpointID[:12], err)
+		return false
+	}
+	return true
+}
+
+// startMissedEndpoint starts Tailscale for an endpoint that joined but never
+// saw its connect event, with the container's info from inspect.
+func (d *Driver) startMissedEndpoint(
+	ctx context.Context,
+	containerID, netName string,
+	endpoint *core.Endpoint,
+	networkResult dockerclient.NetworkInspectResult,
+) error {
+	tsInfo, _, err := d.inspectContainer(ctx, containerID, netName, networkResult)
+	if err != nil {
+		return err
+	}
+	logger.Info("RecoverEndpoints: endpoint %s joined without its connect event, starting Tailscale (hostname=%s)",
+		endpoint.ID[:12], tsInfo.Hostname)
+	d.cache.Store(endpoint.ID, tsInfo)
+	d.startTailscale(endpoint, tsInfo)
+	return nil
+}
+
+// inspectContainer returns the Tailscale configuration of a container on a
+// tslink network, from its name and labels, and its network namespace.
+func (d *Driver) inspectContainer(
+	ctx context.Context,
+	containerID, netName string,
+	networkResult dockerclient.NetworkInspectResult,
+) (*core.ContainerInfo, string, error) {
+	containerInfo, err := d.docker.ContainerInspect(ctx, containerID, dockerclient.ContainerInspectOptions{})
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to inspect container: %w", err)
+	}
+
+	settings := containerInfo.Container.NetworkSettings
+	if settings == nil {
+		return nil, "", errors.New("container has no network settings")
+	}
 	// Verify container is attached to the network
-	if _, ok := containerInfo.Container.NetworkSettings.Networks[netName]; !ok {
-		return fmt.Errorf("container not attached to network %s", netName)
+	if _, ok := settings.Networks[netName]; !ok {
+		return nil, "", fmt.Errorf("container not attached to network %s", netName)
 	}
 
 	// Sandbox key might be empty if container isn't fully running
-	sandboxKey := containerInfo.Container.NetworkSettings.SandboxKey
-	if sandboxKey == "" {
-		return fmt.Errorf("container has no sandbox key (not fully started?)")
-	}
-
-	// Ensure network exists in driver state
-	net, err := d.adoptNetwork(networkResult)
-	if err != nil {
-		return err
+	if settings.SandboxKey == "" {
+		return nil, "", errors.New("container has no sandbox key (not fully started?)")
 	}
 
 	// Parse container info for Tailscale config
@@ -672,9 +717,30 @@ func (d *Driver) recoverEndpoint(
 
 	tsInfo := parseContainerInfo(name, labels)
 	tsInfo.NetworkStack = networkResult.Network.Labels[core.StackLabel]
+	return tsInfo, settings.SandboxKey, nil
+}
+
+// recoverEndpoint restores a single orphaned endpoint.
+// It recreates the network and endpoint in driver state, then triggers Tailscale setup.
+func (d *Driver) recoverEndpoint(
+	ctx context.Context,
+	containerID, netName, endpointID string,
+	networkResult dockerclient.NetworkInspectResult,
+) error {
+	tsInfo, sandboxKey, err := d.inspectContainer(ctx, containerID, netName, networkResult)
+	if err != nil {
+		return err
+	}
+
+	// Ensure network exists in driver state
+	net, err := d.adoptNetwork(networkResult)
+	if err != nil {
+		return err
+	}
 
 	// Create endpoint
-	endpoint, err := core.NewEndpoint(endpointID, net, core.EndpointOptions{Hostname: tsInfo.Hostname}, d.config)
+	endpoint, err := core.NewEndpoint(endpointID, net, core.EndpointOptions{Hostname: tsInfo.Hostname},
+		d.config, d.claims)
 	if err != nil {
 		return fmt.Errorf("failed to create endpoint: %w", err)
 	}
@@ -701,6 +767,10 @@ func (d *Driver) recoverEndpoint(
 		d.mu.Lock()
 		delete(d.endpoints, endpointID)
 		d.mu.Unlock()
+		// Give the state directory up: the container's next endpoint needs it
+		if stopErr := endpoint.Stop(); stopErr != nil {
+			logger.Warn("recoverEndpoint: failed to stop endpoint %s: %v", endpointID[:12], stopErr)
+		}
 		return fmt.Errorf("failed to recover routing: %w", err)
 	}
 
@@ -716,7 +786,7 @@ func (d *Driver) recoverEndpoint(
 		tsInfo.Hostname,
 	)
 
-	d.wg.Go(func() { d.runTailscale(endpoint, tsInfo) })
+	d.startTailscale(endpoint, tsInfo)
 
 	return nil
 }

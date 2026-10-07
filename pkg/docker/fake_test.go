@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -39,11 +40,12 @@ type fakeDocker struct {
 	pluginErrs     []error       // returned by successive PluginList calls, then nil
 	pluginCalls    chan struct{} // receives on each PluginList call, if set
 	listErr        error
-	networkInspect int // NetworkInspect calls
+	networkInspect int  // NetworkInspect calls
+	noSettings     bool // ContainerInspect returns no network settings
 
 	events      chan events.Message
 	errs        chan error
-	eventsCalls int
+	eventsCalls []dockerclient.EventsListOptions
 	closed      bool
 }
 
@@ -138,6 +140,9 @@ func (f *fakeDocker) ContainerInspect(
 	defer f.mu.Unlock()
 	for _, c := range f.containers {
 		if c.ID == id {
+			if f.noSettings {
+				c.NetworkSettings = nil
+			}
 			return dockerclient.ContainerInspectResult{Container: c}, nil
 		}
 	}
@@ -159,10 +164,10 @@ func (f *fakeDocker) NetworkInspect(
 	return dockerclient.NetworkInspectResult{Network: n}, nil
 }
 
-func (f *fakeDocker) Events(context.Context, dockerclient.EventsListOptions) dockerclient.EventsResult {
+func (f *fakeDocker) Events(_ context.Context, options dockerclient.EventsListOptions) dockerclient.EventsResult {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.eventsCalls++
+	f.eventsCalls = append(f.eventsCalls, options)
 	return dockerclient.EventsResult{Messages: f.events, Err: f.errs}
 }
 
@@ -176,7 +181,14 @@ func (f *fakeDocker) Close() error {
 func (f *fakeDocker) eventStreams() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.eventsCalls
+	return len(f.eventsCalls)
+}
+
+// eventsOptions returns the options of each event stream opened.
+func (f *fakeDocker) eventsOptions() []dockerclient.EventsListOptions {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.eventsCalls)
 }
 
 func (f *fakeDocker) networkInspects() int {
@@ -266,13 +278,14 @@ func (td *testDriver) nextRun(t *testing.T) tsRun {
 	}
 }
 
-// noRun fails if Tailscale was started.
+// noRun fails if Tailscale is started within 50 ms: runs start in the
+// background.
 func (td *testDriver) noRun(t *testing.T) {
 	t.Helper()
 	select {
 	case r := <-td.runs:
 		t.Fatalf("Tailscale started for endpoint %s (%+v)", r.endpointID[:12], r.info)
-	default:
+	case <-time.After(50 * time.Millisecond):
 	}
 }
 

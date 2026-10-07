@@ -3,6 +3,8 @@ package docker
 import (
 	"errors"
 	"slices"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -135,12 +137,9 @@ func TestKillEvents(t *testing.T) {
 	}
 }
 
-// After an error the watcher reconnects and handles events again.
-func TestEventsReconnect(t *testing.T) {
-	s := newEventSetup(t, true)
-	fake := s.td.fake
-	fake.errs <- errors.New("connection reset")
-
+// waitReconnect waits until the watcher opened its second event stream.
+func waitReconnect(t *testing.T, fake *fakeDocker) {
+	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	for fake.eventStreams() < 2 {
 		if time.Now().After(deadline) {
@@ -148,6 +147,54 @@ func TestEventsReconnect(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+// After an error the watcher reconnects and handles events again. Without an
+// event seen, it asks for those since it started watching.
+func TestEventsReconnect(t *testing.T) {
+	before := time.Now()
+	s := newEventSetup(t, true)
+	fake := s.td.fake
+	fake.errs <- errors.New("connection reset")
+
+	waitReconnect(t, fake)
+	opts := fake.eventsOptions()
+	if opts[0].Since != "" {
+		t.Errorf("first stream since %q, want the events from now on", opts[0].Since)
+	}
+	if since := parseSince(t, opts[1].Since); since.Before(before) || since.After(time.Now()) {
+		t.Errorf("reconnected since %v, want the time watching started", since)
+	}
 	fake.send(t, connectEvent(s.netID, "billing_net", s.containerID))
 	receive(t, s.handled, "the connect event after reconnecting")
+}
+
+// Reconnecting, the watcher asks for the events after the last one it saw, so
+// none sent while the stream was down are lost.
+func TestEventsReconnectSinceLastEvent(t *testing.T) {
+	s := newEventSetup(t, true)
+	fake := s.td.fake
+	last := time.Date(2026, 10, 7, 12, 0, 0, 999_999_999, time.UTC)
+	msg := connectEvent(s.netID, "billing_net", s.containerID)
+	msg.TimeNano = last.UnixNano()
+	fake.send(t, msg)
+	receive(t, s.handled, "the connect event")
+	fake.errs <- errors.New("connection reset")
+
+	waitReconnect(t, fake)
+	if got, want := fake.eventsOptions()[1].Since, "1791374401.000000000"; got != want {
+		t.Errorf("reconnected since %q, want %q, after the last event", got, want)
+	}
+}
+
+// parseSince parses the Since option of an event stream.
+func parseSince(t *testing.T, since string) time.Time {
+	t.Helper()
+	sec, nsec, ok := strings.Cut(since, ".")
+	s, err1 := strconv.ParseInt(sec, 10, 64)
+	ns, err2 := strconv.ParseInt(nsec, 10, 64)
+	if !ok || len(nsec) != 9 || err1 != nil || err2 != nil {
+		t.Fatalf("since %q is not seconds.nanoseconds", since)
+	}
+	return time.Unix(s, ns)
 }

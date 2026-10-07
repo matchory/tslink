@@ -1,6 +1,8 @@
 #!/bin/bash
-# regress.sh [--upgrade]: cluster regression checks for tslink on the test swarm.
-# Exits non-zero if any check fails. Needs the callee, caller and nogrant stacks.
+# regress.sh [--upgrade [ref]]: cluster regression checks for tslink on the test swarm. --upgrade
+# also installs tslink from ref (default WT, the working tree) with install-plugin.sh and checks
+# that every identity survives. Exits non-zero if any check fails. Needs the callee, caller and
+# nogrant stacks.
 set -uo pipefail
 B=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=config.sh
@@ -78,7 +80,7 @@ check "drain and reactivate leave no orphans" "$([ "$o" = 0 ] && echo ok || echo
 # 6. A plugin upgrade keeps every identity
 if [ "${1:-}" = --upgrade ]; then
 	before=$(test_devices)
-	"$B/install-plugin.sh" WT >/dev/null 2>&1
+	"$B/install-plugin.sh" "${2:-WT}" >/dev/null 2>&1
 	sleep 30
 	check "plugin upgrade keeps identities" "$([ "$before" = "$(test_devices)" ] && echo ok || echo changed)"
 fi

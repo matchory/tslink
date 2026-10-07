@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -44,7 +45,7 @@ type fakeDocker struct {
 
 	events      chan events.Message
 	errs        chan error
-	eventsCalls int
+	eventsCalls []dockerclient.EventsListOptions
 	closed      bool
 }
 
@@ -163,10 +164,10 @@ func (f *fakeDocker) NetworkInspect(
 	return dockerclient.NetworkInspectResult{Network: n}, nil
 }
 
-func (f *fakeDocker) Events(context.Context, dockerclient.EventsListOptions) dockerclient.EventsResult {
+func (f *fakeDocker) Events(_ context.Context, options dockerclient.EventsListOptions) dockerclient.EventsResult {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.eventsCalls++
+	f.eventsCalls = append(f.eventsCalls, options)
 	return dockerclient.EventsResult{Messages: f.events, Err: f.errs}
 }
 
@@ -180,7 +181,14 @@ func (f *fakeDocker) Close() error {
 func (f *fakeDocker) eventStreams() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.eventsCalls
+	return len(f.eventsCalls)
+}
+
+// eventsOptions returns the options of each event stream opened.
+func (f *fakeDocker) eventsOptions() []dockerclient.EventsListOptions {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.eventsCalls)
 }
 
 func (f *fakeDocker) networkInspects() int {

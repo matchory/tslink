@@ -3,8 +3,6 @@ package tailscale
 import (
 	"bytes"
 	"context"
-	"errors"
-	"io"
 	"os/exec"
 	"strings"
 	"sync"
@@ -12,10 +10,11 @@ import (
 	"github.com/matchory/tslink/pkg/logger"
 )
 
-// streamingWriter wraps output and logs each line as it arrives.
+// streamingWriter keeps output and logs each line as it arrives.
 type streamingWriter struct {
 	prefix string
 	buf    bytes.Buffer
+	logged int // Bytes of buf logged so far
 	mu     sync.Mutex
 }
 
@@ -28,19 +27,15 @@ func (w *streamingWriter) Write(p []byte) (int, error) {
 		return n, err
 	}
 
-	// Log complete lines as they arrive
+	// Log complete lines as they arrive; the buffer keeps them for String
 	for {
-		line, readErr := w.buf.ReadString('\n')
-		if errors.Is(readErr, io.EOF) {
-			// Put back incomplete line
-			w.buf.WriteString(line)
+		rest := w.buf.Bytes()[w.logged:]
+		i := bytes.IndexByte(rest, '\n')
+		if i < 0 {
 			break
 		}
-		if readErr != nil {
-			break
-		}
-		line = strings.TrimRight(line, "\n\r")
-		if line != "" {
+		w.logged += i + 1
+		if line := strings.TrimRight(string(rest[:i]), "\r"); line != "" {
 			logger.Debugf("[%s] %s", w.prefix, line)
 		}
 	}

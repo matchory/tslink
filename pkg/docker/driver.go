@@ -16,8 +16,8 @@ import (
 	"github.com/docker/go-plugins-helpers/network"
 	dockerclient "github.com/moby/moby/client"
 
-	"github.com/aaomidi/tslink/pkg/core"
-	"github.com/aaomidi/tslink/pkg/logger"
+	"github.com/matchory/tslink/pkg/core"
+	"github.com/matchory/tslink/pkg/logger"
 )
 
 // Driver implements the Docker network plugin interface.

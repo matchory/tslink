@@ -20,7 +20,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/aaomidi/tslink/pkg/logger"
+	"github.com/matchory/tslink/pkg/logger"
 )
 
 // streamingWriter wraps output and logs each line as it arrives.

@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aaomidi/tslink/pkg/tailscale"
+	"github.com/matchory/tslink/pkg/tailscale"
 )
 
 func TestCollectGarbage(t *testing.T) {

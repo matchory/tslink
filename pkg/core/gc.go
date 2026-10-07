@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/aaomidi/tslink/pkg/logger"
-	"github.com/aaomidi/tslink/pkg/tailscale"
+	"github.com/matchory/tslink/pkg/logger"
+	"github.com/matchory/tslink/pkg/tailscale"
 )
 
 // gcClaim is the owner of a state directory garbage collection removes, so no

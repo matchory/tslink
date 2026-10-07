@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/aaomidi/tslink/pkg/tailscale"
+	"github.com/matchory/tslink/pkg/tailscale"
 )
 
 // ClusterCredentialFile holds the cluster's OAuth client secret, in the

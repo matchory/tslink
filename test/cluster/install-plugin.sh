@@ -21,7 +21,7 @@ source_tar | "$S" mgr 'rm -rf /root/src && mkdir -p /root/src && tar -x -C /root
   rm -rf /root/plugin && mkdir -p /root/plugin/rootfs && cp docker/config.json /root/plugin/
   id=$(docker create tslink:rootfs); docker export "$id" | tar -x -C /root/plugin/rootfs; docker rm "$id" >/dev/null
   tar -C /root -czf /root/plugin.tgz plugin'
-for h in w1 w2; do
+for h in $("$B/nodes" | grep -vx mgr); do
 	"$S" mgr 'cat /root/plugin.tgz' | "$S" "$h" 'rm -rf /root/plugin && tar -xz -C /root'
 done
 

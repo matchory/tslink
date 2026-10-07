@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestServeOptionArgs(t *testing.T) {
@@ -419,5 +420,33 @@ func TestServeDebugLogIsBounded(t *testing.T) {
 		if st.Size() > serveDebugLogMaxBytes {
 			t.Errorf("%s is %d bytes, want at most %d", p, st.Size(), serveDebugLogMaxBytes)
 		}
+	}
+}
+
+func TestSetHostname(t *testing.T) {
+	cli := &fakeCLI{}
+	d := newTestDaemon(t, cli, "")
+	start := time.Now()
+	if err := d.SetHostname("web-2"); err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
+		t.Errorf("SetHostname took %v, want no fixed wait", elapsed)
+	}
+	want := []string{"--socket=" + testSocket, "set", "--hostname=web-2"}
+	if len(cli.calls) != 1 || !slices.Equal(cli.calls[0], want) {
+		t.Errorf("calls = %q, want %q", cli.calls, want)
+	}
+	if d.config.Hostname != "web-2" {
+		t.Errorf("hostname = %q, want web-2", d.config.Hostname)
+	}
+
+	cli.out, cli.err = "invalid hostname\n", errors.New("exit status 1")
+	err := d.SetHostname("-bad")
+	if err == nil || err.Error() != "tailscale set --hostname failed: exit status 1 (output: invalid hostname)" {
+		t.Errorf("error = %v", err)
+	}
+	if d.config.Hostname != "web-2" {
+		t.Errorf("hostname = %q after a failure, want web-2", d.config.Hostname)
 	}
 }

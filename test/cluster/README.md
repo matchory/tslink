@@ -11,7 +11,7 @@ reaches over SSH; `provision.sh` can build a throwaway one on Hetzner Cloud. Res
 - A Docker Swarm of three or more Linux nodes with `curl` and `jq`, reached as root over SSH. An
   SSH config lists them: each `Host` entry without wildcards is a node (`mgr`, `w1`, `w2`, ...),
   and every helper loops over them. `mgr` is a manager: `install-plugin.sh` builds the plugin
-  there, and it runs stack and service commands unless `MGR` names another node. The first node
+  there, and it runs stack and service commands, unless `MGR` names another node. The first node
   other than that is the worker `regress.sh` drains.
 - On every node, Tailscale's own `tailscaled`, logged in to the same tailnet and tagged
   `tag:tslink-test-node`, so a task that leaked through its host would reach the callee as the
@@ -41,7 +41,7 @@ reaches over SSH; `provision.sh` can build a throwaway one on Hetzner Cloud. Res
 | `TSLINK_TEST_API` | `https://api.tailscale.com/api/v2` | Tailscale API |
 | `TSLINK_TEST_TAILNET` | `-` | tailnet; `-` is the API client's |
 | `TSLINK_TEST_POWER` | `hetzner-power` | power actions for `disrupt` |
-| `MGR` | `mgr` | the manager for stack and service commands |
+| `MGR` | `mgr` | the manager that builds the plugin and runs stack and service commands |
 
 `deploy` passes `TSLINK_TEST_TAG` and `TSLINK_TEST_SVC` to `docker stack deploy`, and the stacks
 default to the values above. The tests need the Tailscale API and Tailscale Services, so they do

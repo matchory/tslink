@@ -68,8 +68,9 @@ kernel and NIC driver that support it; check with `ethtool -k <uplink>`.
    To use your own registry, mirror the image and install it from there under
    the same alias.
 
-4. **Cluster credential** (optional, see the README): the OAuth client secret,
-   the same on every node, readable by root only:
+4. **Cluster credential** (optional, see
+   [Cluster Credential](../README.md#cluster-credential)): the OAuth client
+   secret, the same on every node, readable by root only:
 
    ```bash
    install -m 0600 /dev/stdin /var/lib/docker-plugins/tailscale/oauth-client.secret <<<"$SECRET"

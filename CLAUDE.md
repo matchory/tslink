@@ -49,7 +49,7 @@ docker network rm tailnet
 ```bash
 # View endpoint debug logs
 docker run --rm -v /var/lib/docker-plugins/tailscale:/data alpine \
-  sh -c 'for d in /data/*/; do echo "=== $d ==="; cat "$d/debug.log" 2>/dev/null | tail -20; done'
+  sh -c 'for d in /data/by-hostname/*/ /data/by-stack/*/*/; do echo "=== $d ==="; tail -20 "$d/debug.log" 2>/dev/null; done'
 
 # Plugin logs (Linux)
 journalctl -u docker -f | grep -i tailscale
@@ -72,7 +72,7 @@ pkg/
 
 **Key paths at runtime:**
 - State: `/data/by-hostname/<hostname>/tailscaled.state`
-- Socket: `/data/sock/<endpoint-id[:12]>.sock` (kept short: Unix socket paths are limited to 108 bytes)
+- Socket: `/data/sock/<endpoint-id[:12]>.sock` (kept short: Unix socket paths are limited to 108 bytes), linked from `<state dir>/tailscaled.sock`
 - Debug: `/data/by-hostname/<hostname>/debug.log`
 
 ## Code Style

@@ -23,25 +23,37 @@ print_header() {
     echo ""
 }
 
+# Prints "<name> <enabled>" for each installed tslink plugin. Plugins are
+# recognised by their entrypoint, since they can be installed under any name.
+tslink_plugins() {
+    for id in $(docker plugin ls -q 2>/dev/null); do
+        docker plugin inspect "$id" \
+            --format '{{.Name}} {{.Enabled}} {{join .Config.Entrypoint " "}}' 2>/dev/null
+    done | awk '$3 == "/tslink" && NF == 3 { print $1, $2 }'
+}
+
 check_plugin_status() {
     echo -e "${YELLOW}Plugin Status:${NC}"
-    if docker plugin ls 2>/dev/null | grep -q "tslink"; then
-        ENABLED=$(docker plugin ls --format '{{.Enabled}}' --filter name=tslink 2>/dev/null || echo "unknown")
-        if [ "$ENABLED" = "true" ]; then
-            echo -e "  Plugin: ${GREEN}enabled${NC}"
-        else
-            echo -e "  Plugin: ${RED}disabled${NC}"
-        fi
-    else
+    PLUGINS=$(tslink_plugins)
+    if [ -z "$PLUGINS" ]; then
         echo -e "  Plugin: ${RED}not installed${NC}"
         return 1
     fi
+    echo "$PLUGINS" | while read -r name enabled; do
+        if [ "$enabled" = "true" ]; then
+            echo -e "  $name: ${GREEN}enabled${NC}"
+        else
+            echo -e "  $name: ${RED}disabled${NC}"
+        fi
+    done
     echo ""
 }
 
 check_networks() {
     echo -e "${YELLOW}Networks using tslink:${NC}"
-    NETWORKS=$(docker network ls --filter driver=ghcr.io/aaomidi/tslink:latest --format '{{.Name}}' 2>/dev/null || true)
+    NETWORKS=$(tslink_plugins | while read -r name _; do
+        docker network ls --filter driver="$name" --format '{{.Name}}' 2>/dev/null
+    done)
     if [ -z "$NETWORKS" ]; then
         echo "  (none)"
     else
@@ -60,34 +72,36 @@ run_diag() {
         -v "$DATA_DIR:/data:ro" \
         alpine sh -c '
             echo ""
-            for dir in /data/*/; do
+            found=no
+            # State: by-hostname/<hostname>, or by-stack/<stack>/<hostname> for stack tasks
+            for dir in /data/by-hostname/*/ /data/by-stack/*/*/; do
                 [ -d "$dir" ] || continue
-                name=$(basename "$dir")
-
-                # Skip cache directories
-                [ "$name" = "tailscale-bin" ] && continue
-
-                id="${name:0:12}"
+                found=yes
                 socket_exists="no"
                 state_exists="no"
-
+                # tailscaled.sock links to the daemon socket under sock/
                 [ -S "${dir}tailscaled.sock" ] && socket_exists="yes"
                 [ -f "${dir}tailscaled.state" ] && state_exists="yes"
 
-                echo "  Endpoint: $id"
+                echo "  State dir: ${dir#/data/}"
                 echo "    Socket: $socket_exists"
                 echo "    State:  $state_exists"
 
                 if [ -f "${dir}debug.log" ]; then
                     echo "    Debug log:"
-                    cat "${dir}debug.log" | sed "s/^/      /"
+                    sed "s/^/      /" "${dir}debug.log"
                 fi
                 echo ""
             done
 
-            if [ ! -d "/data" ] || [ -z "$(ls -A /data 2>/dev/null)" ]; then
-                echo "  No endpoints found"
-            fi
+            # Running daemons: sock/<endpoint-id[:12]>.sock
+            for sock in /data/sock/*.sock; do
+                [ -S "$sock" ] || continue
+                found=yes
+                echo "  Running tailscaled: $(basename "$sock" .sock)"
+            done
+
+            [ "$found" = "yes" ] || echo "  No endpoints found"
         '
 }
 
@@ -123,12 +137,10 @@ case "${1:-}" in
             alpine sh -c '
                 echo "{"
                 echo "  \"timestamp\": \"$(date -Iseconds)\","
-                echo "  \"endpoints\": ["
+                echo "  \"state_dirs\": ["
                 first=true
-                for dir in /data/*/; do
+                for dir in /data/by-hostname/*/ /data/by-stack/*/*/; do
                     [ -d "$dir" ] || continue
-                    name=$(basename "$dir")
-                    [ "$name" = "tailscale-bin" ] && continue
 
                     [ "$first" = "false" ] && echo ","
                     first=false
@@ -138,11 +150,22 @@ case "${1:-}" in
                     [ -S "${dir}tailscaled.sock" ] && socket_exists="true"
                     [ -f "${dir}tailscaled.state" ] && state_exists="true"
 
+                    rel="${dir#/data/}"
                     echo "    {"
-                    echo "      \"id\": \"$name\","
+                    echo "      \"path\": \"${rel%/}\","
                     echo "      \"socket_exists\": $socket_exists,"
                     echo "      \"state_exists\": $state_exists"
                     echo -n "    }"
+                done
+                echo ""
+                echo "  ],"
+                echo "  \"running\": ["
+                first=true
+                for sock in /data/sock/*.sock; do
+                    [ -S "$sock" ] || continue
+                    [ "$first" = "false" ] && echo ","
+                    first=false
+                    echo -n "    \"$(basename "$sock" .sock)\""
                 done
                 echo ""
                 echo "  ]"

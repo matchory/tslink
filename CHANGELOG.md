@@ -65,6 +65,12 @@ three- and five-node swarms; see [docs/testing](docs/testing).
   directory, so stack files carry only their tags. The file is read at every
   registration, so replacing it rotates the secret. A stack using it may only
   use `tag:<stack>` and `tag:<stack>-*`.
+- `tslink.ephemeral=true|false` network option: whether the network's nodes
+  are ephemeral, for keys that do not say so, such as auth keys and
+  headscale's keys. With `true`, nodes are logged out and their state deleted
+  when the container stops. It is appended to an OAuth client secret without
+  an `ephemeral` parameter; a contradicting parameter, an invalid value, or
+  `false` with the cluster credential fails network creation.
 - Shared HTTPS certificates: tailscaled keeps its certificates in the new
   `shared` mount, which can point at a volume shared between hosts. Replicas of
   a Tailscale Service share its certificate: one replica issues it while the
@@ -120,6 +126,10 @@ three- and five-node swarms; see [docs/testing](docs/testing).
 - The first replica of a Tailscale Service with HTTPS waited up to an hour for
   its certificate, since tailscaled only fetches it right away if control has
   already announced the Service's name.
+- A hostname's state directory kept its `ephemeral` marker when a
+  persistent network used it after an ephemeral one, so garbage collection
+  could log the persistent node out and delete its state. The marker now
+  follows the network that uses the directory.
 
 ### Security
 

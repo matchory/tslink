@@ -501,7 +501,7 @@ func (e *Endpoint) cancelRun() {
 func (e *Endpoint) ClaimStateDir(info *ContainerInfo) error {
 	dir, err := stateDirFor(e.DataDir, info.Stack, info.Hostname)
 	if err != nil {
-		return nil
+		return nil //nolint:nilerr // an invalid name claims nothing: starting fails on it
 	}
 
 	if owner, ok := e.claims.claim(dir, e.ID); !ok {

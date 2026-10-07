@@ -33,14 +33,6 @@
       "options": ["rbind", "rw"]
     },
     {
-      "name": "netns",
-      "description": "Docker network namespaces",
-      "source": "/var/run/docker/netns",
-      "destination": "/var/run/docker/netns",
-      "type": "bind",
-      "options": ["rbind", "rw"]
-    },
-    {
       "name": "run",
       "description": "Host run directory for nsenter",
       "source": "/run",
@@ -79,9 +71,9 @@
     },
     {
       "name": "TS_VERSION",
-      "description": "Tailscale version to use (default: latest)",
+      "description": "Tailscale version: bundled (shipped in the plugin image), latest, or a version to download",
       "settable": ["value"],
-      "value": "latest"
+      "value": "bundled"
     },
     {
       "name": "TS_PATH",

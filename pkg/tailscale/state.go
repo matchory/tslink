@@ -98,3 +98,21 @@ func CheckAuthKeyMatch(stateDir, authKey string) bool {
 	}
 	return match
 }
+
+// ephemeralMarker marks a state directory whose node is ephemeral, so it can
+// be deleted when no endpoint uses it, as after a crash where Leave never ran.
+const ephemeralMarker = "ephemeral"
+
+// MarkEphemeral marks stateDir as holding an ephemeral node.
+func MarkEphemeral(stateDir string) error {
+	if err := os.MkdirAll(stateDir, 0700); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(stateDir, ephemeralMarker), nil, 0600)
+}
+
+// IsMarkedEphemeral reports whether stateDir was marked by MarkEphemeral.
+func IsMarkedEphemeral(stateDir string) bool {
+	_, err := os.Stat(filepath.Join(stateDir, ephemeralMarker))
+	return err == nil
+}

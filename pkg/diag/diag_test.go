@@ -75,3 +75,33 @@ func TestRunFindsStateDirsAndSockets(t *testing.T) {
 		t.Errorf("report lists a linked socket or the binary cache separately:\n%s", report)
 	}
 }
+
+func TestRunReportsEndpointsNotRunning(t *testing.T) {
+	// A task whose Tailscale never starts has no state directory or socket;
+	// only its status file shows it.
+	dataDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dataDir, "status"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for id, body := range map[string]string{
+		"aaaaaaaaaaaa": `{"endpoint":"aaaaaaaaaaaa","hostname":"web","stack":"app","state":"retrying","error":"control plane unreachable","attempts":3}`,
+		"bbbbbbbbbbbb": `{"endpoint":"bbbbbbbbbbbb","hostname":"api","state":"running"}`,
+	} {
+		if err := os.WriteFile(filepath.Join(dataDir, "status", id+".json"), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var out bytes.Buffer
+	if err := Run(dataDir, &out); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	for _, want := range []string{"Errors: 1", "app/web", "retrying", "control plane unreachable", "attempt 3"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output lacks %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "api") {
+		t.Errorf("running endpoint reported as not running:\n%s", got)
+	}
+}

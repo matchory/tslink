@@ -2,12 +2,16 @@ package docker
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"unicode"
 
+	"github.com/moby/moby/api/types/events"
 	dockerclient "github.com/moby/moby/client"
+	"golang.org/x/sys/unix"
 
 	"github.com/aaomidi/tslink/pkg/core"
 	"github.com/aaomidi/tslink/pkg/logger"
@@ -61,11 +65,22 @@ func (c *ContainerCache) Delete(endpointID string) {
 // The driver uses this to trigger Tailscale setup.
 type ContainerInfoCallback func(endpointID string, info *core.ContainerInfo)
 
+// ContainerStopCallback is called when Docker sends a container its stop
+// signal, before the container exits.
+type ContainerStopCallback func(containerID string)
+
 // WatchEvents watches Docker events and caches container info.
 // When container info is stored, the callback is invoked to trigger Tailscale setup.
 // The context controls the lifecycle - when cancelled, the watcher stops.
 // ownsNetwork reports whether a network ID belongs to this driver.
-func WatchEvents(ctx context.Context, cache *ContainerCache, ownsNetwork func(id string) bool, onInfo ContainerInfoCallback) {
+// onStop, if set, is called when a container is sent its stop signal.
+func WatchEvents(
+	ctx context.Context,
+	cache *ContainerCache,
+	ownsNetwork func(id string) bool,
+	onInfo ContainerInfoCallback,
+	onStop ContainerStopCallback,
+) {
 	logger.Info("Starting Docker event watcher")
 
 	cli, err := dockerclient.New(dockerclient.FromEnv)
@@ -77,10 +92,10 @@ func WatchEvents(ctx context.Context, cache *ContainerCache, ownsNetwork func(id
 
 	logger.Debug("Docker client created, starting event stream")
 
-	// Watch for network events
+	// Watch for network connects, and for kills to see containers stopping
 	filterArgs := dockerclient.Filters{}.
-		Add("type", "network").
-		Add("event", "connect")
+		Add("type", "network", "container").
+		Add("event", "connect", "kill")
 
 	result := cli.Events(ctx, dockerclient.EventsListOptions{
 		Filters: filterArgs,
@@ -122,6 +137,14 @@ func WatchEvents(ctx context.Context, cache *ContainerCache, ownsNetwork func(id
 			// Log all network events for debugging
 			logger.Debug("Event received: type=%s network=%s driver=%s",
 				msg.Action, msg.Actor.ID, msg.Actor.Attributes["type"])
+
+			if msg.Type == events.ContainerEventType {
+				if msg.Action == events.ActionKill && onStop != nil &&
+					isStopSignal(msg.Actor.Attributes["signal"], stopSignalOf(ctx, cli, msg.Actor.ID)) {
+					onStop(msg.Actor.ID)
+				}
+				continue
+			}
 
 			// Only process events for networks Docker created through this driver,
 			// whatever name the plugin was installed under
@@ -193,6 +216,40 @@ func WatchEvents(ctx context.Context, cache *ContainerCache, ownsNetwork func(id
 			}
 		}
 	}
+}
+
+// stopSignalOf returns the container's configured stop signal, empty for the default.
+func stopSignalOf(ctx context.Context, cli *dockerclient.Client, containerID string) string {
+	info, err := cli.ContainerInspect(ctx, containerID, dockerclient.ContainerInspectOptions{})
+	if err != nil || info.Container.Config == nil {
+		return ""
+	}
+	return info.Container.Config.StopSignal
+}
+
+// isStopSignal reports whether a kill event's signal stops the container: its
+// stop signal (SIGTERM unless configured) or SIGKILL, which docker stop sends
+// when the timeout expires. Other signals, such as SIGHUP to reload, leave the
+// container running.
+func isStopSignal(signal, stopSignal string) bool {
+	n, err := strconv.Atoi(signal)
+	if err != nil {
+		return false
+	}
+	if syscall.Signal(n) == unix.SIGKILL {
+		return true
+	}
+	if stopSignal == "" {
+		stopSignal = "SIGTERM"
+	}
+	if s, err := strconv.Atoi(stopSignal); err == nil {
+		return n == s
+	}
+	name := strings.ToUpper(stopSignal)
+	if !strings.HasPrefix(name, "SIG") {
+		name = "SIG" + name
+	}
+	return unix.SignalNum(name) == syscall.Signal(n)
 }
 
 // parseContainerInfo extracts tslink.* labels into structured ContainerInfo.

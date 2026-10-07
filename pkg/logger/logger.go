@@ -8,6 +8,9 @@ import (
 	"sync"
 )
 
+// maxLogBytes caps the plugin log; one rotated copy is kept.
+const maxLogBytes = 50 << 20
+
 var (
 	logger *slog.Logger
 	once   sync.Once
@@ -24,7 +27,7 @@ func Init(logPath string) error {
 }
 
 func initLogger(logPath string) error {
-	file, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	file, err := OpenRotating(logPath, maxLogBytes)
 	if err != nil {
 		// Fall back to stdout only
 		logger = slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{

@@ -2,7 +2,9 @@ package tailscale
 
 import (
 	"context"
+	"errors"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -223,7 +225,12 @@ func TestServeArgs(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// The builder, and the command the daemon runs with it
+			args, argsErr := serveArgs(tt.ep, tt.service)
 			got, err := serveCall(t, tt.ep, tt.service)
+			if !slices.Equal(args, got) || (argsErr == nil) != (err == nil) {
+				t.Fatalf("serveArgs = %q, %v; daemon ran %q, %v", args, argsErr, got, err)
+			}
 			if tt.wantErr != "" {
 				if err == nil || err.Error() != tt.wantErr {
 					t.Fatalf("error = %v, want %q", err, tt.wantErr)
@@ -240,5 +247,124 @@ func TestServeArgs(t *testing.T) {
 				t.Errorf("args =\n  %q\nwant\n  %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestConfigureServiceAdvertises(t *testing.T) {
+	cli := &fakeCLI{}
+	d := newTestDaemon(t, cli, "svc:web")
+	d.config.Endpoints = []ServeEndpoint{
+		{Proto: "https", Port: "443", Target: "8080"},
+		{Proto: "tcp", Port: "5432", Target: "5432"},
+	}
+	if err := d.configureService(); err != nil {
+		t.Fatal(err)
+	}
+	want := [][]string{
+		{"--socket=" + testSocket, "serve", "--service=svc:web", "--https=443", "127.0.0.1:8080"},
+		{"--socket=" + testSocket, "serve", "--service=svc:web", "--tcp=5432", "tcp://127.0.0.1:5432"},
+		{"--socket=" + testSocket, "serve", "advertise", "svc:web"},
+	}
+	if !slices.EqualFunc(cli.calls, want, slices.Equal) {
+		t.Errorf("calls =\n  %q\nwant\n  %q", cli.calls, want)
+	}
+}
+
+func TestConfigureServiceSkips(t *testing.T) {
+	cli := &fakeCLI{}
+	d := newTestDaemon(t, cli, "")
+	d.config.Endpoints = []ServeEndpoint{{Proto: "https", Port: "443", Target: "8080"}}
+	if err := d.configureService(); err != nil {
+		t.Fatal(err)
+	}
+	d = newTestDaemon(t, cli, "svc:web")
+	if err := d.configureService(); err != nil {
+		t.Fatal(err)
+	}
+	if len(cli.calls) != 0 {
+		t.Errorf("ran %q without a service or endpoints", cli.calls)
+	}
+}
+
+func TestConfigureServiceErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		out  string
+		want string
+	}{
+		{"unknown service", "error: service not found", "service svc:web not found: create it in Tailscale admin console first"},
+		{"untagged node", "service hosts must be tagged nodes", "requires tagged auth key"},
+		{"other", "boom", "tailscale serve failed: exit status 1 (output: boom)"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cli := &fakeCLI{out: tt.out, err: errors.New("exit status 1")}
+			d := newTestDaemon(t, cli, "svc:web")
+			d.config.Endpoints = []ServeEndpoint{{Proto: "https", Port: "443", Target: "8080"}}
+			err := d.configureService()
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want it to contain %q", err, tt.want)
+			}
+			if len(cli.calls) != 1 {
+				t.Errorf("ran %d commands, want only the failing one", len(cli.calls))
+			}
+		})
+	}
+}
+
+func TestConfigureServiceAdvertiseError(t *testing.T) {
+	cli := &fakeCLI{}
+	d := newTestDaemon(t, cli, "svc:web")
+	d.config.Endpoints = []ServeEndpoint{{Proto: "tcp", Port: "22", Target: "22"}}
+	d.runCLI = func(ctx context.Context, prefix string, args ...string) (string, error) {
+		if slices.Contains(args, "advertise") {
+			return " not allowed\n", errors.New("exit status 1")
+		}
+		return cli.run(ctx, prefix, args...)
+	}
+	err := d.configureService()
+	if err == nil || err.Error() != "tailscale serve advertise failed: exit status 1 (output: not allowed)" {
+		t.Errorf("error = %v", err)
+	}
+}
+
+func TestDrain(t *testing.T) {
+	cli := &fakeCLI{}
+	d := newTestDaemon(t, cli, "")
+	if err := d.Drain("svc:web"); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"--socket=" + testSocket, "serve", "drain", "svc:web"}
+	if len(cli.calls) != 1 || !slices.Equal(cli.calls[0], want) {
+		t.Errorf("calls = %q, want %q", cli.calls, want)
+	}
+
+	cli.out, cli.err = "no such service\n", errors.New("exit status 1")
+	err := d.Drain("svc:web")
+	if err == nil || err.Error() != "tailscale serve drain failed: exit status 1 (output: no such service)" {
+		t.Errorf("error = %v", err)
+	}
+}
+
+func TestConfigureServeEndpoints(t *testing.T) {
+	cli := &fakeCLI{}
+	d := newTestDaemon(t, cli, "")
+	endpoints := []ServeEndpoint{
+		{Proto: "https", Port: "443", Target: "8080"},
+		{Proto: "tun", Port: "0", Target: "0"},
+	}
+	if err := d.ConfigureServeEndpoints("svc:web", endpoints, []string{"tag:a", "tag:b"}, true); err != nil {
+		t.Fatal(err)
+	}
+	s := "--socket=" + testSocket
+	// Direct serve skips the tun endpoint
+	want := [][]string{
+		{s, "set", "--advertise-tags=tag:a,tag:b"},
+		{s, "serve", "--bg", "--https=443", "http://127.0.0.1:8080"},
+		{s, "serve", "--service=svc:web", "--https=443", "127.0.0.1:8080"},
+		{s, "serve", "--service=svc:web", "--tun"},
+	}
+	if !slices.EqualFunc(cli.calls, want, slices.Equal) {
+		t.Errorf("calls =\n  %q\nwant\n  %q", cli.calls, want)
 	}
 }

@@ -132,6 +132,20 @@ if err == io.EOF { ... }
 return fmt.Errorf("failed to create endpoint: %w", err)
 ```
 
+## CI
+
+- `ci.yml`: golangci-lint, pinned to the version `.golangci.toml` is written for, and the Go tests. The network
+  namespace tests in `pkg/netutil` skip without root, so CI runs them a second time with `sudo`.
+- `linter.yml`: super-linter for everything except Go (Markdown, YAML, shell, Dockerfile). Configs are in
+  `.github/linters/`.
+- `codeql-analysis.yml`: CodeQL for Go and the workflows.
+- `release.yml`: a push to `main` publishes `ghcr.io/matchory/tslink:main-<arch>`; a `vX.Y.Z` tag publishes
+  `vX.Y.Z-<arch>` and `latest-<arch>` and creates a GitHub release. Docker plugins have no multi-arch manifests, so
+  each architecture is built on a native runner and pushed under its own tag.
+- Dependencies are updated by Renovate, extending the organisation preset `github>matchory/coding-style`.
+
+`test/integration` runs against upstream's tailnet (`atlas-diminished.ts.net`) and is not part of CI.
+
 ## Troubleshooting
 
 ### Plugin won't enable

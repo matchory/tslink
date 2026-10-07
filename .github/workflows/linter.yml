@@ -1,0 +1,51 @@
+name: Lint Codebase
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  packages: read
+  statuses: write
+
+jobs:
+  lint:
+    name: Lint Codebase
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: "false"
+          fetch-depth: 0
+
+      - name: Lint Codebase
+        id: super-linter
+        uses: super-linter/super-linter/slim@4ce20838b8ab83717e78138c5b3a1407148e0918 # v8.7.0
+        env:
+          DEFAULT_BRANCH: main
+          FILTER_REGEX_EXCLUDE: (specs|docs/superpowers)/.*
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VALIDATE_ALL_CODEBASE: true
+          # Go is linted in ci.yml instead, with the golangci-lint version
+          # .golangci.toml is written for. Super-linter bundles its own, which
+          # drifts from that pin.
+          VALIDATE_GO: false
+          VALIDATE_GO_MODULES: false
+          VALIDATE_GO_RELEASER: false
+          VALIDATE_CHECKOV: false
+          VALIDATE_GITHUB_ACTIONS_ZIZMOR: false
+          VALIDATE_TRIVY: false
+          VALIDATE_JSCPD: false
+          VALIDATE_JSON: false
+          VALIDATE_MARKDOWN_PRETTIER: false
+          VALIDATE_JSON_PRETTIER: false
+          VALIDATE_YAML_PRETTIER: false
+          VALIDATE_GIT_COMMITLINT: false

@@ -629,12 +629,17 @@ func (d *Daemon) configureService() error {
 		}
 	}
 
-	// A drained service stays drained in the node's state, as after a
-	// plugin restart: advertise it again
+	return d.advertise(d.config.Service)
+}
+
+// advertise runs "tailscale serve advertise". A drained service stays drained
+// in the node's state, as after a plugin restart: advertise it again once its
+// endpoints are configured.
+func (d *Daemon) advertise(service string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	out, err := d.tailscale(ctx, "serve-advertise", "--socket="+d.socketPath,
-		serveCmd, "advertise", d.config.Service)
+		serveCmd, "advertise", service)
 	if err != nil {
 		return fmt.Errorf("tailscale serve advertise failed: %w (output: %s)", err, strings.TrimSpace(out))
 	}
@@ -1090,6 +1095,12 @@ func (d *Daemon) ConfigureServeEndpoints(service string, endpoints []ServeEndpoi
 			if err := d.configureServeEndpoint(ep); err != nil {
 				return fmt.Errorf("failed to configure service endpoint %d (%s:%s): %w",
 					i, ep.Proto, ep.Port, err)
+			}
+		}
+		// As configureService: no endpoints, nothing to advertise
+		if len(endpoints) > 0 {
+			if err := d.advertise(service); err != nil {
+				return err
 			}
 		}
 		logger.Info("Late service configuration completed")

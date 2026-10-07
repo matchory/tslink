@@ -363,6 +363,7 @@ func TestConfigureServeEndpoints(t *testing.T) {
 		{s, "serve", "--bg", "--https=443", "http://127.0.0.1:8080"},
 		{s, "serve", "--service=svc:web", "--https=443", "127.0.0.1:8080"},
 		{s, "serve", "--service=svc:web", "--tun"},
+		{s, "serve", "advertise", "svc:web"},
 	}
 	if !slices.EqualFunc(cli.calls, want, slices.Equal) {
 		t.Errorf("calls =\n  %q\nwant\n  %q", cli.calls, want)

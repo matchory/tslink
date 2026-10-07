@@ -35,6 +35,8 @@ type Driver struct {
 	joinEndpoint   func(e *core.Endpoint, sandboxKey string) (*network.JoinResponse, error)
 	recoverRouting func(e *core.Endpoint, sandboxKey string) error
 	runTailscale   func(e *core.Endpoint, info *core.ContainerInfo)
+	leaveEndpoint  func(e *core.Endpoint) error
+	stopEndpoint   func(e *core.Endpoint) error
 
 	// Serializes RecoverEndpoints
 	recoverMu sync.Mutex
@@ -95,6 +97,8 @@ func newDriver(cfg *core.Config, docker dockerAPI) *Driver {
 		joinEndpoint:   (*core.Endpoint).Join,
 		recoverRouting: (*core.Endpoint).Recover,
 		runTailscale:   (*core.Endpoint).RunTailscale,
+		leaveEndpoint:  (*core.Endpoint).Leave,
+		stopEndpoint:   (*core.Endpoint).Stop,
 		ctx:            ctx,
 		cancel:         cancel,
 	}
@@ -326,23 +330,22 @@ func (d *Driver) CreateEndpoint(req *network.CreateEndpointRequest) (*network.Cr
 func (d *Driver) DeleteEndpoint(req *network.DeleteEndpointRequest) error {
 	logger.Info("DeleteEndpoint: network=%s endpoint=%s", req.NetworkID, req.EndpointID)
 
+	// Forget the endpoint under the lock, and stop it after releasing it:
+	// endpoint methods take endpoint.mu, and stopping can take seconds
 	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	// Clean up cache entry
 	d.cache.Delete(req.EndpointID)
-
 	endpoint, ok := d.endpoints[req.EndpointID]
+	delete(d.endpoints, req.EndpointID)
+	d.mu.Unlock()
+
 	if !ok {
 		logger.Info("Endpoint %s not found, ignoring", req.EndpointID)
 		return nil
 	}
 
-	if err := endpoint.Stop(); err != nil {
+	if err := d.stopEndpoint(endpoint); err != nil {
 		logger.Info("Warning: failed to stop endpoint: %v", err)
 	}
-
-	delete(d.endpoints, req.EndpointID)
 	return nil
 }
 
@@ -408,16 +411,18 @@ func (d *Driver) Join(req *network.JoinRequest) (*network.JoinResponse, error) {
 func (d *Driver) Leave(req *network.LeaveRequest) error {
 	logger.Info("Leave: network=%s endpoint=%s", req.NetworkID, req.EndpointID)
 
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
+	// Leaving drains, waits for control and logs out, which takes seconds:
+	// hold no driver lock meanwhile. The endpoint stays in d.endpoints until
+	// DeleteEndpoint, so recovery does not adopt it again while it leaves.
+	d.mu.RLock()
 	endpoint, ok := d.endpoints[req.EndpointID]
+	d.mu.RUnlock()
 	if !ok {
 		logger.Info("Endpoint %s not found, ignoring", req.EndpointID)
 		return nil
 	}
 
-	if err := endpoint.Leave(); err != nil {
+	if err := d.leaveEndpoint(endpoint); err != nil {
 		logger.Info("Warning: failed to leave: %v", err)
 	}
 

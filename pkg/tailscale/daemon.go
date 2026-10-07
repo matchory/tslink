@@ -40,6 +40,8 @@ type DaemonConfig struct {
 	Endpoints     []ServeEndpoint // Serve endpoints (L3/L4/L7)
 	Direct        bool            // Enable direct machine serve (HTTPS on machine hostname)
 	LoginServer   string          // Control server URL for --login-server; empty for Tailscale's
+
+	gate *serviceGate // Shared by the daemons of one supervisor; NewDaemon creates one if nil
 }
 
 // Daemon manages a tailscaled process.
@@ -60,6 +62,12 @@ type Daemon struct {
 	// When tailscaled last reported that control does not know its node
 	// (deleted, or an expired ephemeral node), as Unix seconds
 	nodeNotFound atomic.Int64
+
+	// How often control has fetched the node's Service list, and a channel
+	// closed at the next fetch
+	fetchMu sync.Mutex
+	fetches int64
+	fetched chan struct{}
 
 	// Pipe references for cleanup (closing unblocks reader goroutines)
 	stdoutPipe io.ReadCloser
@@ -106,6 +114,9 @@ func NewDaemon(cfg DaemonConfig) (*Daemon, error) {
 		logger.Warn("Failed to remove stale socket %s: %v", socketPath, err)
 	}
 
+	if cfg.gate == nil {
+		cfg.gate = &serviceGate{}
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 
 	return &Daemon{
@@ -173,9 +184,7 @@ func (d *Daemon) Start() error {
 		logger.Warn("Failed to open %s, discarding tailscaled output: %v", logPath, err)
 	}
 	writeLine := func(line string) {
-		if strings.Contains(line, nodeNotFoundLog) {
-			d.nodeNotFound.Store(time.Now().Unix())
-		}
+		d.handleLine(line)
 		if logFile != nil {
 			if _, err := logFile.Write([]byte(line + "\n")); err != nil {
 				logger.Debug("Failed to write %s: %v", logPath, err)
@@ -283,6 +292,33 @@ func (d *Daemon) Start() error {
 	}
 
 	return nil
+}
+
+// handleLine notes what tslink acts on in a line of tailscaled's output.
+func (d *Daemon) handleLine(line string) {
+	switch {
+	case strings.Contains(line, nodeNotFoundLog):
+		d.nodeNotFound.Store(time.Now().Unix())
+	case strings.Contains(line, servicesFetchLog):
+		d.fetchMu.Lock()
+		d.fetches++
+		if d.fetched != nil {
+			close(d.fetched)
+			d.fetched = nil
+		}
+		d.fetchMu.Unlock()
+	}
+}
+
+// servicesFetches returns how often control has fetched the node's Service
+// list, and a channel closed at the next fetch.
+func (d *Daemon) servicesFetches() (int64, <-chan struct{}) {
+	d.fetchMu.Lock()
+	defer d.fetchMu.Unlock()
+	if d.fetched == nil {
+		d.fetched = make(chan struct{})
+	}
+	return d.fetches, d.fetched
 }
 
 // tailscaledCommand returns the command running tailscaled with args in the

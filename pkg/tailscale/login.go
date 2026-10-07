@@ -156,9 +156,9 @@ func (d *Daemon) Logout() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	out, err := exec.CommandContext(ctx, d.config.TailscaleBin, "--socket="+d.socketPath, "logout").CombinedOutput()
+	out, err := d.tailscale(ctx, "logout", "--socket="+d.socketPath, "logout")
 	if err != nil {
-		return fmt.Errorf("tailscale logout failed: %w (output: %s)", err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("tailscale logout failed: %w (output: %s)", err, strings.TrimSpace(out))
 	}
 	return nil
 }

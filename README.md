@@ -271,7 +271,13 @@ and [docs/testing/swarm-cluster-followup-2026-10-07.md](docs/testing/swarm-clust
   Service backend when Docker sends it the stop signal, and callers move to
   other replicas. They need a moment to learn of it, so the application
   should keep serving for a few seconds after SIGTERM; one that exits at once
-  costs its callers a second or so of errors.
+  costs its callers a second or so of errors. Give such an application time
+  with `stop_grace_period` (Docker's default is 10 seconds), and have it
+  finish its requests before it exits. A task that leaves without the stop
+  signal, because it crashed or completed, is drained when it leaves the
+  network. Either way tslink waits for control to learn of the drain, at
+  least one and at most ten seconds, before it logs the node out or stops
+  its tailscaled, so no caller is left sending to a node that is gone.
 - **Restarts and reboots:** Docker stops reporting events once it shuts
   down, so tslink cannot drain the Service backends of a node whose Docker
   stops; callers pinned to them failed for 7 to 16 seconds. Install

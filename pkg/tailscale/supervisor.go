@@ -135,6 +135,15 @@ func (s *DaemonSupervisor) Stop() error {
 	return nil
 }
 
+// Logout logs the running daemon's node out.
+func (s *DaemonSupervisor) Logout() error {
+	d := s.GetDaemon()
+	if d == nil || !d.IsRunning() {
+		return fmt.Errorf("tailscaled is not running")
+	}
+	return d.Logout()
+}
+
 // Status returns the current supervisor status and restart count.
 func (s *DaemonSupervisor) Status() (SupervisorStatus, int) {
 	s.mu.RLock()

@@ -19,7 +19,7 @@
 
 networks:
   tailnet:
-    driver: ghcr.io/aaomidi/tslink:main-arm64
+    driver: ghcr.io/matchory/tslink:main-arm64
     driver_opts:
       tslink.authkey: ${TS_AUTHKEY}
 

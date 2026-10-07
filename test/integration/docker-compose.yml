@@ -1,6 +1,6 @@
 networks:
   tailnet:
-    driver: ${PLUGIN_NAME:-ghcr.io/aaomidi/tslink}:${PLUGIN_TAG:-test}
+    driver: ${PLUGIN_NAME:-ghcr.io/matchory/tslink}:${PLUGIN_TAG:-test}
     driver_opts:
       tslink.authkey: ${TS_AUTHKEY}
 

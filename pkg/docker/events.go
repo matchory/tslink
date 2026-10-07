@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	dockerclient "github.com/moby/moby/client"
 
@@ -63,8 +64,9 @@ type ContainerInfoCallback func(endpointID string, info *core.ContainerInfo)
 // WatchEvents watches Docker events and caches container info.
 // When container info is stored, the callback is invoked to trigger Tailscale setup.
 // The context controls the lifecycle - when cancelled, the watcher stops.
-func WatchEvents(ctx context.Context, cache *ContainerCache, networkDriverName string, onInfo ContainerInfoCallback) {
-	logger.Info("Starting Docker event watcher for network driver: %s", networkDriverName)
+// ownsNetwork reports whether a network ID belongs to this driver.
+func WatchEvents(ctx context.Context, cache *ContainerCache, ownsNetwork func(id string) bool, onInfo ContainerInfoCallback) {
+	logger.Info("Starting Docker event watcher")
 
 	cli, err := dockerclient.New(dockerclient.FromEnv)
 	if err != nil {
@@ -118,11 +120,12 @@ func WatchEvents(ctx context.Context, cache *ContainerCache, networkDriverName s
 
 		case msg := <-result.Messages:
 			// Log all network events for debugging
-			networkType := msg.Actor.Attributes["type"]
-			logger.Debug("Event received: type=%s driver=%s (want prefix=%s)", msg.Action, networkType, networkDriverName)
+			logger.Debug("Event received: type=%s network=%s driver=%s",
+				msg.Action, msg.Actor.ID, msg.Actor.Attributes["type"])
 
-			// Only process events for our network driver (match by prefix to handle any tag)
-			if !strings.HasPrefix(networkType, networkDriverName) {
+			// Only process events for networks Docker created through this driver,
+			// whatever name the plugin was installed under
+			if !ownsNetwork(msg.Actor.ID) {
 				continue
 			}
 
@@ -173,6 +176,14 @@ func WatchEvents(ctx context.Context, cache *ContainerCache, networkDriverName s
 
 			containerInfo := parseContainerInfo(name, labels)
 
+			// The network's stack decides which tasks may use it
+			netInfo, err := cli.NetworkInspect(ctx, netSettings.NetworkID, dockerclient.NetworkInspectOptions{})
+			if err != nil {
+				logger.Error("Failed to inspect network %s: %v", networkName, err)
+				continue
+			}
+			containerInfo.NetworkStack = netInfo.Network.Labels[core.StackLabel]
+
 			// Store in cache
 			cache.Store(endpointID, containerInfo)
 
@@ -190,22 +201,19 @@ func parseContainerInfo(name string, labels map[string]string) *core.ContainerIn
 		Name:   name,
 		Labels: labels,
 		Direct: true, // Default: direct serve enabled
+		Stack:  labels[core.StackLabel],
 	}
 
 	// tslink.hostname - override Tailscale hostname
 	if v, ok := labels["tslink.hostname"]; ok && v != "" {
 		info.Hostname = v
 	} else {
-		info.Hostname = name
+		info.Hostname = hostnameFromName(name)
 	}
 
 	// tslink.tags - comma-separated ACL tags (e.g., "tag:web,tag:prod")
 	if v, ok := labels["tslink.tags"]; ok && v != "" {
-		tags := strings.Split(v, ",")
-		for i, t := range tags {
-			tags[i] = strings.TrimSpace(t)
-		}
-		info.Tags = tags
+		info.Tags = core.ParseTags(v)
 	}
 
 	// tslink.service - service name (e.g., "svc:hello-world")
@@ -223,6 +231,25 @@ func parseContainerInfo(name string, labels map[string]string) *core.ContainerIn
 	info.Endpoints = parseServeEndpoints(labels)
 
 	return info
+}
+
+// hostnameFromName turns a container name into a DNS label Tailscale accepts.
+// Swarm task names such as "stack_svc.1.<task-id>" contain underscores and
+// dots, which tailscale up rejects.
+func hostnameFromName(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		if r < 0x80 && (unicode.IsLetter(r) || unicode.IsDigit(r)) {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('-')
+		}
+	}
+	label := b.String()
+	if len(label) > 63 {
+		label = label[:63]
+	}
+	return strings.Trim(label, "-")
 }
 
 // parseServeEndpoints parses tslink.serve.<port> labels into ServeEndpoint structs.

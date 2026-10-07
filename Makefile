@@ -1,4 +1,4 @@
-PLUGIN_NAME = ghcr.io/aaomidi/tslink
+PLUGIN_NAME = ghcr.io/matchory/tslink
 PLUGIN_TAG ?= latest
 GOARCH ?= arm64
 

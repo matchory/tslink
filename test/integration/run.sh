@@ -6,7 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 # Configuration
-export PLUGIN_NAME="${PLUGIN_NAME:-ghcr.io/aaomidi/tslink}"
+export PLUGIN_NAME="${PLUGIN_NAME:-ghcr.io/matchory/tslink}"
 export PLUGIN_TAG="${PLUGIN_TAG:-test}"
 export LOG_DIR="${LOG_DIR:-$REPO_ROOT/test-logs}"
 

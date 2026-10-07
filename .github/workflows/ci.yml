@@ -1,46 +1,67 @@
-name: CI
+name: Continuous Integration
 
 on:
-  push:
-    branches: [main]
   pull_request:
-    branches: [main]
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
 
 jobs:
   lint:
+    name: Lint
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+        id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: "false"
 
-      - name: Set up Go
+      - name: Setup Go
+        id: setup-go
         uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c # v6
         with:
-          go-version-file: 'go.mod'
+          go-version-file: go.mod
 
-      - name: Run golangci-lint
+      # Go is linted here rather than in super-linter, with the version
+      # .golangci.toml is written for. See linter.yml.
+      - name: Lint
+        id: golangci-lint
         uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v9
         with:
-          version: latest
+          version: v2.14.0
 
   test:
+    name: Go Tests
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+        id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: "false"
 
-      - name: Set up Go
+      - name: Setup Go
+        id: setup-go
         uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c # v6
         with:
-          go-version-file: 'go.mod'
+          go-version-file: go.mod
 
-      - name: Install tparse
-        run: go install github.com/mfridman/tparse@latest
+      - name: Test
+        id: go-test
+        run: go test -race -cover ./...
 
-      - name: Run tests
+      # The network namespace tests need CAP_NET_ADMIN and skip without it.
+      # Build as the runner user, run as root.
+      - name: Test network namespaces
+        id: go-test-netns
         run: |
-          set -o pipefail
-          go test -race -cover -json ./... | tparse -all -slow 10
-
-      - name: Build check
-        run: go build ./...
+          go test -c -o "${RUNNER_TEMP}/netutil.test" ./pkg/netutil
+          sudo "${RUNNER_TEMP}/netutil.test" -test.v -test.count=1

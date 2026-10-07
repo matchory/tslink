@@ -1,0 +1,7 @@
+# See: https://github.com/hadolint/hadolint
+ignored:
+  # Pin versions in apk add. The base images are pinned by digest, which
+  # fixes the Alpine release the packages come from; pinning each package
+  # version as well would break on every Alpine package update, and Dependabot
+  # cannot track them.
+  - DL3018

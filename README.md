@@ -156,9 +156,13 @@ Set with `docker plugin set` while the plugin is disabled.
 
 | Setting | Description | Default |
 | --------- | ------------- | --------- |
-| `TS_VERSION` | `bundled` uses the Tailscale shipped in the plugin image; `latest` or a version such as `1.102.5` downloads it from pkgs.tailscale.com | `bundled` |
-| `TS_PATH` | Directory with your own `tailscale` and `tailscaled`; overrides `TS_VERSION` | None |
 | `TS_AUTHKEY` | Default auth key for networks without `tslink.authkey` | None |
+
+The plugin image ships the Tailscale it runs, so each tslink release pins
+one Tailscale version; upgrade the plugin to upgrade Tailscale. Earlier
+releases could download Tailscale or use your own binaries with
+`TS_VERSION` and `TS_PATH`; tslink now ignores these settings and logs a
+warning.
 
 ### Container Labels
 

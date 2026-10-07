@@ -1,0 +1,38 @@
+services:
+  whoami:
+    image: python:3.13-alpine
+    command: ["sh","-c","mkdir -p /w && printf 'Hostname: %s\n' $$(hostname) > /w/index.html && python -m http.server 80 -d /w >/dev/null 2>&1 & pid=$$!; trap 'sleep $${GRACE:-5}; kill $$pid' TERM; wait $$pid"]
+    stop_grace_period: 15s
+    networks: [tailnet]
+    labels:
+      tslink.service: svc:tslink-test-callee
+      tslink.serve.80: http:80
+      tslink.direct: "false"
+    deploy:
+      replicas: 3
+      update_config:
+        order: ${ORDER:-start-first}
+        parallelism: 1
+        delay: 5s
+  whoami-other:
+    image: traefik/whoami:v1.11
+    networks: [tailnet]
+    labels:
+      tslink.service: svc:tslink-test-other
+      tslink.serve.80: http:80
+      tslink.direct: "false"
+    deploy:
+      replicas: 1
+  perf:
+    image: alpine:3.23
+    command: ["sh","-c","until apk add -q iperf3; do sleep 2; done; iperf3 -s"]
+    networks: [tailnet]
+    labels: {tslink.hostname: callee-perf}
+    deploy:
+      placement: {constraints: [node.hostname==tslink-test-w1]}
+networks:
+  tailnet:
+    driver: ghcr.io/matchory/tslink:latest
+    driver_opts:
+      com.docker.network.driver.mtu: "1450"
+      tslink.tags: tag:tslink-test-callee

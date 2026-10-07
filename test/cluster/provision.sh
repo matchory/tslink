@@ -26,7 +26,7 @@ wait
 
 {
 	for n in mgr w1 w2; do printf 'Host %s\n  HostName %s\n' "$n" "$(hcloud server ip tslink-test-$n)"; done
-	printf 'Host mgr w1 w2\n  User root\n  IdentityFile ~/.ssh/id_ed25519\n  IdentitiesOnly yes\n'
+	printf 'Host *\n  User root\n  IdentityFile ~/.ssh/id_ed25519\n  IdentitiesOnly yes\n'
 	printf '  StrictHostKeyChecking accept-new\n  UserKnownHostsFile ~/.tslink-test/known_hosts\n'
 	printf '  ControlMaster auto\n  ControlPath ~/.tslink-test/cm-%%h\n  ControlPersist 30m\n'
 } >"$B/ssh_config"

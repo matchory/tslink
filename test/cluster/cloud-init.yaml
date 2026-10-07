@@ -1,7 +1,11 @@
 #cloud-config
 package_update: true
-packages: [ca-certificates, curl, jq, iperf3, conntrack, nftables]
+packages: [ca-certificates, curl, jq, iperf3, conntrack, nftables, ethtool]
+write_files:
+  - path: /etc/docker/daemon.json
+    content: '{"mtu": 1450}'
 runcmd:
+  - ethtool -K eth0 rx-udp-gro-forwarding on rx-gro-list off
   - curl -fsSL https://get.docker.com | sh
   - curl -fsSL https://tailscale.com/install.sh | sh
   - mkdir -p /var/lib/docker-plugins/tailscale

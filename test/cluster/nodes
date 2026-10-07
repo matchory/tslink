@@ -1,0 +1,3 @@
+#!/bin/bash
+# nodes: the test nodes in ssh_config (mgr, w1, w2 and any added by add-node.sh), one per line
+awk '$1 == "Host" && NF == 2 && $2 != "*" { print $2 }' "$(dirname "$0")/ssh_config"

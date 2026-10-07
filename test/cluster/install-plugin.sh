@@ -26,7 +26,7 @@ for h in w1 w2; do
 done
 
 P=ghcr.io/matchory/tslink:latest
-for h in mgr w1 w2; do
+for h in $("$B/nodes"); do
 	"$S" "$h" "set -e; mkdir -p /var/lib/docker-plugins/tailscale
     if docker plugin inspect $P >/dev/null 2>&1; then docker plugin disable -f $P >/dev/null || true; docker plugin rm -f $P >/dev/null; fi
     docker plugin create $P /root/plugin >/dev/null

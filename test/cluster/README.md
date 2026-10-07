@@ -11,7 +11,7 @@ reaches over SSH; `provision.sh` can build a throwaway one on Hetzner Cloud. Res
 - A Docker Swarm of three or more Linux nodes with `curl` and `jq`, reached as root over SSH. An
   SSH config lists them: each `Host` entry without wildcards is a node (`mgr`, `w1`, `w2`, ...),
   and every helper loops over them. `mgr` is a manager: `install-plugin.sh` builds the plugin
-  there, and it runs stack and service commands unless `MGR` names another node. The first node
+  there, and it runs stack and service commands, unless `MGR` names another node. The first node
   other than that is the worker `regress.sh` drains.
 - On every node, Tailscale's own `tailscaled`, logged in to the same tailnet and tagged
   `tag:tslink-test-node`, so a task that leaked through its host would reach the callee as the
@@ -41,21 +41,35 @@ reaches over SSH; `provision.sh` can build a throwaway one on Hetzner Cloud. Res
 | `TSLINK_TEST_API` | `https://api.tailscale.com/api/v2` | Tailscale API |
 | `TSLINK_TEST_TAILNET` | `-` | tailnet; `-` is the API client's |
 | `TSLINK_TEST_POWER` | `hetzner-power` | power actions for `disrupt` |
-| `MGR` | `mgr` | the manager for stack and service commands |
+| `MGR` | `mgr` | the manager that builds the plugin and runs stack and service commands |
 
 `deploy` passes `TSLINK_TEST_TAG` and `TSLINK_TEST_SVC` to `docker stack deploy`, and the stacks
-default to the values above. The tests need the Tailscale API and Tailscale Services, so they do
-not run against headscale. A few stacks for single experiments pin tasks to the nodes
-`tslink-test-mgr`, `-w1` or `-w2` or probe the VIP `100.93.19.42`; edit those for another Swarm.
+default to the values above. It also passes two settings of single stacks:
+
+- `TSLINK_TEST_PIN`: the node hostname the stack pins a task to: `perf` in `callee` and
+  `tslink-test-callee` (default `tslink-test-w1`), `cp` (`tslink-test-w2`) and `misc`'s `dup`
+  (`tslink-test-mgr`)
+- `TSLINK_TEST_VIP`: the address `fan` and `gap` probe; by default `deploy` looks up the VIP of
+  `$TSLINK_TEST_SVC-callee`, and the deploy fails without one
+
+The `tslink-test-*` stacks run on the cluster credential (`./deploy tslink-test-callee -`), whose
+tag scope requires a stack's tags to start with `tag:<stack>`: with another `TSLINK_TEST_TAG`,
+deploy them under the matching stack names. The tests need the Tailscale API and Tailscale
+Services, so they do not run against headscale.
 
 ## Run
 
 ```bash
-./install-plugin.sh WT             # or a git ref; replaces the plugin on every node
+./install-plugin.sh WT             # or a git ref; installs it as tslink on every node
 ./deploy callee && ./deploy caller && ./deploy nogrant
 ./regress.sh --upgrade             # exits non-zero if a check fails
 ./cleanup.sh                       # delete the test devices, Services and keys
 ```
+
+`install-plugin.sh` installs the plugin as `tslink` (`tslink:latest`), the name the documented
+`docker plugin install --alias tslink` gives it, and the stacks name the driver `tslink:latest`.
+A network keeps its driver: to move a Swarm from another plugin name, remove the stacks and that
+plugin first.
 
 ## Optional: provisioning on Hetzner Cloud
 
@@ -87,6 +101,7 @@ another provider, point `TSLINK_TEST_POWER` at a script with the same arguments.
 | `tsapi <method> <path> [json]` | Tailscale API with the test OAuth client |
 | `health` | every task tailscaled answers and is Running |
 | `probes start\|stop\|report`, `failspans` | VIP probes from the callers, five requests a second |
+| `probelog <node>` | the probe log of the node's caller, also after its task was replaced |
 | `await <service>` | wait for a service update to finish (`MGR=w1` to ask another manager) |
 | `aftercase <since>` | health, devices orphaned since `<since>`, nogrant refused everywhere |
 | `disrupt <node> <action>` | reboot, restart or kill Docker over SSH, or reset or power off through the provider API, under probes; times recovery |

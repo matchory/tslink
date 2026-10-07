@@ -8,7 +8,7 @@ services:
       replicas: 1
 networks:
   tailnet:
-    driver: ghcr.io/matchory/tslink:latest
+    driver: tslink:latest
     driver_opts:
       com.docker.network.driver.mtu: "1450"
-      tslink.tags: tag:tslink-test-callee
+      tslink.tags: ${TSLINK_TEST_TAG:-tag:tslink-test}-callee

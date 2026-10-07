@@ -1,10 +1,13 @@
-PLUGIN_NAME = ghcr.io/matchory/tslink
+# The development plugin is created under the name tslink, the alias the
+# documentation installs releases under, so networks use "--driver tslink:latest".
+PLUGIN_NAME ?= tslink
 PLUGIN_TAG ?= latest
-GOARCH ?= arm64
+GOARCH ?= $(shell go env GOARCH)
 
-.PHONY: all build clean docker-rootfs create enable disable push test
+.PHONY: all build clean docker-rootfs create enable disable test reinstall
 
-all: clean create enable
+# The default target only builds; reinstall replaces the local plugin.
+all: build
 
 build:
 	@echo "Building plugin binary for $(GOARCH)..."
@@ -31,10 +34,6 @@ enable:
 disable:
 	@echo "Disabling plugin..."
 	docker plugin disable $(PLUGIN_NAME):$(PLUGIN_TAG)
-
-push:
-	@echo "Pushing plugin..."
-	docker plugin push $(PLUGIN_NAME):$(PLUGIN_TAG)
 
 clean:
 	@echo "Cleaning up..."

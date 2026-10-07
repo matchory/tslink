@@ -1,9 +1,8 @@
 name: End-to-End Tests
 
 on:
+  # Every pull request, including ones stacked on another branch
   pull_request:
-    branches:
-      - main
   push:
     branches:
       - main

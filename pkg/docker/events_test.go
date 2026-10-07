@@ -38,3 +38,25 @@ func TestParseContainerInfoHostnameLabelKept(t *testing.T) {
 		t.Errorf("Hostname = %q, want my-api", info.Hostname)
 	}
 }
+
+func TestIsStopSignal(t *testing.T) {
+	tests := []struct {
+		signal, stopSignal string
+		want               bool
+	}{
+		{"15", "", true},         // docker stop, default SIGTERM
+		{"9", "", true},          // stop timeout reached
+		{"15", "SIGTERM", true},  // explicit stop signal
+		{"3", "SIGQUIT", true},   // custom stop signal by name
+		{"3", "QUIT", true},      // without SIG prefix
+		{"2", "2", true},         // by number
+		{"1", "", false},         // SIGHUP reload
+		{"15", "SIGQUIT", false}, // not this container's stop signal
+		{"", "", false},
+	}
+	for _, tt := range tests {
+		if got := isStopSignal(tt.signal, tt.stopSignal); got != tt.want {
+			t.Errorf("isStopSignal(%q, %q) = %v, want %v", tt.signal, tt.stopSignal, got, tt.want)
+		}
+	}
+}

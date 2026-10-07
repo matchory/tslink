@@ -10,6 +10,9 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -o /tslink ./cmd/tslink
 
+# Tailscale binaries, pinned here so every node runs the same version
+FROM tailscale/tailscale:v1.102.5@sha256:c507f3a2a6ab1cabd8d809b98edeb41edbd5c3fb6ad9632ffd098b4c7d0b4065 AS tailscale
+
 # Final stage
 FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
 
@@ -30,7 +33,7 @@ RUN ln -sf /sbin/iptables-nft /sbin/iptables && \
 # Create plugin directories
 RUN mkdir -p /run/docker/plugins /data /data/tailscale-bin
 
-# Copy plugin binary only - Tailscale binaries are downloaded at runtime
 COPY --from=builder /tslink /tslink
+COPY --from=tailscale /usr/local/bin/tailscale /usr/local/bin/tailscaled /usr/local/bin/
 
 ENTRYPOINT ["/tslink"]

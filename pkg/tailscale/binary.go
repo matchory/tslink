@@ -26,6 +26,12 @@ const (
 	binCacheDir   = "/data/tailscale-bin"
 )
 
+// BundledVersion selects the Tailscale binaries shipped in the plugin image.
+const BundledVersion = "bundled"
+
+// bundledDir holds the bundled binaries; a variable so tests can replace it.
+var bundledDir = "/usr/local/bin"
+
 var (
 	binaryMu      sync.Mutex
 	cachedBinDir  string
@@ -211,7 +217,18 @@ func EnsureBinaries(requestedVersion, customPath string) (tailscale, tailscaled 
 		return ts, tsd, nil
 	}
 
-	// 2. Resolve "latest" to actual version
+	// 2. Binaries shipped in the plugin image: every node runs the same
+	// version, and starting a task does not depend on pkgs.tailscale.com
+	if strings.EqualFold(requestedVersion, BundledVersion) {
+		ts := filepath.Join(bundledDir, "tailscale")
+		tsd := filepath.Join(bundledDir, "tailscaled")
+		if !fileExists(ts) || !fileExists(tsd) {
+			return "", "", fmt.Errorf("bundled Tailscale binaries not found in %s", bundledDir)
+		}
+		return ts, tsd, nil
+	}
+
+	// 3. Resolve "latest" to actual version
 	version := requestedVersion
 	if version == "" || strings.ToLower(version) == "latest" {
 		// Check if we already resolved latest in this session
@@ -230,7 +247,7 @@ func EnsureBinaries(requestedVersion, customPath string) (tailscale, tailscaled 
 		version = v
 	}
 
-	// 3. Download if needed (or use cache)
+	// 4. Download if needed (or use cache)
 	binDir, err := DownloadTailscale(version)
 	if err != nil {
 		return "", "", err

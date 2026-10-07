@@ -3,7 +3,6 @@ package netutil
 import (
 	"errors"
 	"fmt"
-	"net"
 	"os"
 	"os/exec"
 	"runtime"
@@ -18,9 +17,15 @@ import (
 	"github.com/aaomidi/tslink/pkg/logger"
 )
 
-// CreateVethPair creates a veth pair with the given base name.
-// Returns the host-side name and container-side name.
-func CreateVethPair(baseName string) (string, string, error) {
+// DefaultMTU is the veth MTU when the network sets none.
+const DefaultMTU = 1500
+
+// CreateVethPair creates a veth pair with the given base name and MTU (0 for
+// DefaultMTU). Returns the host-side name and container-side name.
+func CreateVethPair(baseName string, mtu int) (string, string, error) {
+	if mtu == 0 {
+		mtu = DefaultMTU
+	}
 	hostName := "veth" + baseName
 	containerName := "veth" + baseName + "c"
 
@@ -34,7 +39,7 @@ func CreateVethPair(baseName string) (string, string, error) {
 	veth := &netlink.Veth{
 		LinkAttrs: netlink.LinkAttrs{
 			Name: hostName,
-			MTU:  1500,
+			MTU:  mtu,
 		},
 		PeerName: containerName,
 	}
@@ -205,8 +210,7 @@ func DeleteVeth(name string) error {
 	link, err := netlink.LinkByName(name)
 	if err != nil {
 		// Check if interface simply doesn't exist (not found)
-		var linkNotFoundErr netlink.LinkNotFoundError
-		if errors.As(err, &linkNotFoundErr) {
+		if _, ok := errors.AsType[netlink.LinkNotFoundError](err); ok {
 			return nil // Already gone, nothing to delete
 		}
 		// Check for syscall "no such device" error
@@ -288,27 +292,11 @@ func SetupContainerRouting(nsPath string, ifName string, containerIP string, gat
 		logger.Debug("Warning: failed to add IP to container interface: %v", err)
 	}
 
-	// Add default route via gateway
-	gw := parseIP(gatewayIP)
-	if gw == nil {
-		return fmt.Errorf("failed to parse gateway IP: %s", gatewayIP)
-	}
-
-	route := &netlink.Route{
-		Gw: gw,
-	}
-
-	if err := netlink.RouteAdd(route); err != nil {
-		logger.Debug("Warning: failed to add default route: %v", err)
-	}
-
-	logger.Debug("Container routing setup: %s via %s", containerIP, gatewayIP)
+	// No default route: Docker connects the container to its gateway network
+	// like any other, and SetupBypassRoute sends tailscaled's own traffic
+	// through this veth.
+	logger.Debug("Container routing setup: %s, peer %s", containerIP, gatewayIP)
 	return nil
-}
-
-// parseIP parses an IP string and returns it as a byte slice.
-func parseIP(s string) net.IP {
-	return net.ParseIP(s)
 }
 
 // chainName is the custom iptables chain for tslink forwarding rules.

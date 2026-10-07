@@ -28,12 +28,25 @@ type EndpointStatus struct {
 	Error        string    `json:"error,omitempty"`
 }
 
+// StartStatus is an endpoint's status file, written by the plugin while the
+// endpoint exists (see core.EndpointStatusFile).
+type StartStatus struct {
+	Endpoint string    `json:"endpoint"`
+	Hostname string    `json:"hostname"`
+	Stack    string    `json:"stack,omitempty"`
+	State    string    `json:"state"`
+	Error    string    `json:"error,omitempty"`
+	Attempts int       `json:"attempts"`
+	Updated  time.Time `json:"updated"`
+}
+
 // DiagResult represents the overall diagnostic result.
 type DiagResult struct {
 	Timestamp     time.Time         `json:"timestamp"`
 	DataDir       string            `json:"data_dir"`
 	DataDirExists bool              `json:"data_dir_exists"`
 	Endpoints     []*EndpointStatus `json:"endpoints"`
+	NotRunning    []*StartStatus    `json:"not_running,omitempty"`
 	Summary       Summary           `json:"summary"`
 }
 
@@ -85,6 +98,20 @@ func Run(dataDir string, w io.Writer) error {
 		queryDaemon(status, socketPath)
 		result.Endpoints = append(result.Endpoints, status)
 	}
+
+	// Endpoints whose Tailscale is not running have no daemon to ask
+	statusFiles, _ := filepath.Glob(filepath.Join(dataDir, "status", "*.json"))
+	for _, file := range statusFiles {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			continue
+		}
+		var st StartStatus
+		if json.Unmarshal(data, &st) == nil && st.State != "running" {
+			result.NotRunning = append(result.NotRunning, &st)
+		}
+	}
+	result.Summary.Errors += len(result.NotRunning)
 
 	for _, status := range result.Endpoints {
 		result.Summary.Total++
@@ -260,7 +287,7 @@ func outputResult(result *DiagResult, w io.Writer) error {
 		return nil
 	}
 
-	if len(result.Endpoints) == 0 {
+	if len(result.Endpoints) == 0 && len(result.NotRunning) == 0 {
 		fmt.Fprintf(w, "No endpoints found.\n")
 		return nil
 	}
@@ -268,6 +295,19 @@ func outputResult(result *DiagResult, w io.Writer) error {
 	fmt.Fprintf(w, "=== Summary ===\n")
 	fmt.Fprintf(w, "Total: %d | Online: %d | Offline: %d | Errors: %d\n\n",
 		result.Summary.Total, result.Summary.Online, result.Summary.Offline, result.Summary.Errors)
+
+	if len(result.NotRunning) > 0 {
+		fmt.Fprintf(w, "=== Containers without Tailscale ===\n")
+		for _, st := range result.NotRunning {
+			name := st.Hostname
+			if st.Stack != "" {
+				name = st.Stack + "/" + st.Hostname
+			}
+			fmt.Fprintf(w, "  %s: %s, attempt %d, %s\n    %s\n",
+				name, st.State, st.Attempts, st.Updated.Format(time.RFC3339), st.Error)
+		}
+		fmt.Fprintf(w, "\n")
+	}
 
 	fmt.Fprintf(w, "=== Endpoints ===\n")
 	for _, ep := range result.Endpoints {

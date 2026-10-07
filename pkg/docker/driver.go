@@ -4,8 +4,6 @@ package docker
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"slices"
@@ -57,14 +55,11 @@ const drainGrace = 2 * time.Second
 const watchdogInterval = 60 * time.Second
 
 // redactKey returns a redacted version of a key for safe logging.
-// Shows length and a short hash to identify if the key changed.
 func redactKey(key string) string {
 	if key == "" {
 		return "(empty)"
 	}
-	hash := sha256.Sum256([]byte(key))
-	shortHash := hex.EncodeToString(hash[:4])
-	return fmt.Sprintf("(set, %d chars, hash=%s)", len(key), shortHash)
+	return fmt.Sprintf("(set, %d chars)", len(key))
 }
 
 // NewDriver creates a new Docker network driver.

@@ -1,0 +1,53 @@
+# headscale configuration for the end-to-end test. run.sh sets server_url
+# through HEADSCALE_SERVER_URL, since it depends on the host's address.
+# See config-example.yaml in headscale's repository, at the image's tag.
+server_url: http://127.0.0.1:8080
+listen_addr: 0.0.0.0:8080
+metrics_listen_addr: 127.0.0.1:9090
+grpc_listen_addr: 127.0.0.1:50443
+disable_check_updates: true
+
+noise:
+  private_key_path: /var/lib/headscale/noise_private.key
+
+prefixes:
+  v4: 100.64.0.0/10
+  v6: fd7a:115c:a1e0::/48
+  allocation: sequential
+
+# Tailscale's public DERP relays: headscale's embedded DERP needs TLS
+derp:
+  server:
+    enabled: false
+  urls:
+    - https://controlplane.tailscale.com/derpmap/default
+  paths: []
+  auto_update_enabled: false
+
+node:
+  expiry: 0
+  ephemeral:
+    # Headscale requires more than 65s
+    inactivity_timeout: 70s
+
+database:
+  type: sqlite
+  sqlite:
+    path: /var/lib/headscale/db.sqlite
+
+log:
+  level: info
+
+policy:
+  mode: file
+  path: /etc/headscale/policy.json
+
+# Leave the containers' DNS alone
+dns:
+  magic_dns: false
+  override_local_dns: false
+  nameservers:
+    global: []
+
+unix_socket: /var/run/headscale/headscale.sock
+unix_socket_permission: "0770"

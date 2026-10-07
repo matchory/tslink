@@ -15,7 +15,7 @@ func upArgs(t *testing.T, cfg DaemonConfig) []string {
 	out := filepath.Join(dir, "args")
 	bin := filepath.Join(dir, "tailscale")
 	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + out + "\n"
-	if err := os.WriteFile(bin, []byte(script), 0o700); err != nil { //nolint:gosec // test binary must be executable
+	if err := os.WriteFile(bin, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	cfg.TailscaleBin = bin
@@ -23,7 +23,7 @@ func upArgs(t *testing.T, cfg DaemonConfig) []string {
 	if err := d.tryBringUp(false); err != nil {
 		t.Fatal(err)
 	}
-	data, err := os.ReadFile(out) //nolint:gosec // path is inside t.TempDir
+	data, err := os.ReadFile(out)
 	if err != nil {
 		t.Fatal(err)
 	}

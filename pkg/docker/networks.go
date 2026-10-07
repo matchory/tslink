@@ -43,7 +43,7 @@ func (d *Driver) adoptNetwork(res dockerclient.NetworkInspectResult) (*core.Netw
 		return nil, err
 	}
 	d.networks[net.ID] = net
-	logger.Info("Recovered network %s", net.ID)
+	logger.Infof("Recovered network %s", net.ID)
 	return net, nil
 }
 

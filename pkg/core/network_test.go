@@ -9,7 +9,7 @@ import (
 
 func writeClusterCredential(t *testing.T, dir, secret string) {
 	t.Helper()
-	if err := os.WriteFile(filepath.Join(dir, ClusterCredentialFile), []byte(secret), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, ClusterCredentialFile), []byte(secret), 0o600); err != nil {
 		t.Fatal(err)
 	}
 }

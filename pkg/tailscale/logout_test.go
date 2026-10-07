@@ -144,14 +144,14 @@ func TestLogoutStateWithoutNode(t *testing.T) {
 func TestLogoutStateDir(t *testing.T) {
 	stateDir := t.TempDir()
 	socket := filepath.Join(t.TempDir(), "sock", "gc.sock")
-	if err := os.WriteFile(filepath.Join(stateDir, "tailscaled.state"), testState(t, runningPrefs()), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(stateDir, "tailscaled.state"), testState(t, runningPrefs()), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
 	var workDir string
 	saved := runLogout
 	t.Cleanup(func() { runLogout = saved })
-	runLogout = func(ctx context.Context, tailscaleBin, tailscaledBin, dir, sock string) error {
+	runLogout = func(_ context.Context, tailscaleBin, tailscaledBin, dir, sock string) error {
 		workDir = dir
 		if tailscaleBin != "ts" || tailscaledBin != "tsd" || sock != socket {
 			t.Errorf("runLogout(%q, %q, _, %q)", tailscaleBin, tailscaledBin, sock)
@@ -168,7 +168,7 @@ func TestLogoutStateDir(t *testing.T) {
 		if _, ok := state["_serve/1a2b"]; ok {
 			t.Error("serve config in the copy")
 		}
-		if st, err := os.Stat(filepath.Join(dir, "tailscaled.state")); err != nil || st.Mode().Perm() != 0600 {
+		if st, err := os.Stat(filepath.Join(dir, "tailscaled.state")); err != nil || st.Mode().Perm() != 0o600 {
 			t.Errorf("copy mode = %v (err=%v), want 0600", st.Mode().Perm(), err)
 		}
 		if _, err := os.Stat(filepath.Dir(sock)); err != nil {
@@ -207,7 +207,7 @@ func TestLogoutStateDirWithoutNode(t *testing.T) {
 	}
 
 	stateDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(stateDir, "tailscaled.state"), []byte("{}"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(stateDir, "tailscaled.state"), []byte("{}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := LogoutState(context.Background(), "ts", "tsd", stateDir, "unused.sock"); err != nil {
@@ -219,7 +219,7 @@ func TestLogoutStateDirWithoutNode(t *testing.T) {
 func writeScript(t *testing.T, dir, name, body string) string {
 	t.Helper()
 	p := filepath.Join(dir, name)
-	if err := os.WriteFile(p, []byte("#!/bin/sh\n"+body), 0700); err != nil {
+	if err := os.WriteFile(p, []byte("#!/bin/sh\n"+body), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	return p

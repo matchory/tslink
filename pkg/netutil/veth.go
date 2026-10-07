@@ -1,3 +1,5 @@
+// Package netutil sets up the Linux networking for endpoints: veth pairs,
+// routing and NAT.
 package netutil
 
 import (
@@ -32,7 +34,7 @@ func CreateVethPair(baseName string, mtu int) (string, string, error) {
 	// Delete existing interfaces if they exist
 	if link, err := netlink.LinkByName(hostName); err == nil {
 		if err := netlink.LinkDel(link); err != nil {
-			logger.Warn("failed to delete existing veth %s: %v", hostName, err)
+			logger.Warnf("failed to delete existing veth %s: %v", hostName, err)
 		}
 	}
 
@@ -57,14 +59,14 @@ func CreateVethPair(baseName string, mtu int) (string, string, error) {
 		return "", "", fmt.Errorf("failed to bring up host veth: %w", err)
 	}
 
-	logger.Debug("Created veth pair: %s <-> %s", hostName, containerName)
+	logger.Debugf("Created veth pair: %s <-> %s", hostName, containerName)
 
 	return hostName, containerName, nil
 }
 
 // MoveToNetNS moves a network interface to the specified network namespace.
 func MoveToNetNS(ifName string, nsPath string) error {
-	logger.Debug("MoveToNetNS: interface=%s nsPath=%s", ifName, nsPath)
+	logger.Debugf("MoveToNetNS: interface=%s nsPath=%s", ifName, nsPath)
 
 	// Try the given path first, then fallback to alternate path if needed
 	// (handles Alpine Linux where /var/run and /run are separate)
@@ -82,7 +84,7 @@ func MoveToNetNS(ifName string, nsPath string) error {
 	if err != nil {
 		return fmt.Errorf("interface %s not found: %w", ifName, err)
 	}
-	logger.Debug("MoveToNetNS: found interface %s (index=%d, type=%s)",
+	logger.Debugf("MoveToNetNS: found interface %s (index=%d, type=%s)",
 		ifName, link.Attrs().Index, link.Type())
 
 	var lastErr error
@@ -93,7 +95,7 @@ func MoveToNetNS(ifName string, nsPath string) error {
 			lastErr = fmt.Errorf("netns path %s: %w", tryPath, err)
 			continue
 		}
-		logger.Debug("MoveToNetNS: path %s exists, mode=%s isSymlink=%v",
+		logger.Debugf("MoveToNetNS: path %s exists, mode=%s isSymlink=%v",
 			tryPath, fi.Mode().String(), fi.Mode()&os.ModeSymlink != 0)
 
 		// If it's a symlink, resolve it
@@ -104,7 +106,7 @@ func MoveToNetNS(ifName string, nsPath string) error {
 				lastErr = fmt.Errorf("failed to resolve symlink %s: %w", tryPath, err)
 				continue
 			}
-			logger.Debug("MoveToNetNS: resolved symlink to %s", realPath)
+			logger.Debugf("MoveToNetNS: resolved symlink to %s", realPath)
 		}
 
 		// Open the network namespace
@@ -113,29 +115,31 @@ func MoveToNetNS(ifName string, nsPath string) error {
 			lastErr = fmt.Errorf("failed to get netns from %s: %w", realPath, err)
 			continue
 		}
-		logger.Debug("MoveToNetNS: opened netns fd=%d", int(ns))
+		logger.Debugf("MoveToNetNS: opened netns fd=%d", int(ns))
 
 		// Verify it's actually a network namespace by checking the fd type
 		var stat unix.Stat_t
 		if err := unix.Fstat(int(ns), &stat); err != nil {
-			logger.Warn("MoveToNetNS: fstat on netns fd failed: %v", err)
+			logger.Warnf("MoveToNetNS: fstat on netns fd failed: %v", err)
 		} else {
-			logger.Debug("MoveToNetNS: netns fd stat: mode=%o", stat.Mode)
+			logger.Debugf("MoveToNetNS: netns fd stat: mode=%o", stat.Mode)
 		}
 
 		// Move the interface to the namespace
 		if err := netlink.LinkSetNsFd(link, int(ns)); err != nil {
-			ns.Close() // Clean up fd immediately on failure
+			if closeErr := ns.Close(); closeErr != nil { // Clean up fd immediately on failure
+				logger.Debugf("MoveToNetNS: failed to close netns fd: %v", closeErr)
+			}
 
 			// Log additional debug info on failure
-			logger.Error("MoveToNetNS: LinkSetNsFd failed: interface=%s fd=%d err=%v",
+			logger.Errorf("MoveToNetNS: LinkSetNsFd failed: interface=%s fd=%d err=%v",
 				ifName, int(ns), err)
 
 			// Check if the interface is still in the current namespace
 			if _, checkErr := netlink.LinkByName(ifName); checkErr != nil {
-				logger.Debug("MoveToNetNS: interface no longer in current namespace after error")
+				logger.Debugf("MoveToNetNS: interface no longer in current namespace after error")
 			} else {
-				logger.Debug("MoveToNetNS: interface still in current namespace")
+				logger.Debugf("MoveToNetNS: interface still in current namespace")
 			}
 
 			lastErr = fmt.Errorf("failed to move %s to netns (fd=%d, path=%s): %w",
@@ -144,13 +148,15 @@ func MoveToNetNS(ifName string, nsPath string) error {
 		}
 
 		// Success! Clean up and return
-		ns.Close()
+		if err := ns.Close(); err != nil {
+			logger.Debugf("MoveToNetNS: failed to close netns fd: %v", err)
+		}
 		if i > 0 {
-			logger.Warn("MoveToNetNS: WARNING - Docker passed %s but namespace was at %s. "+
+			logger.Warnf("MoveToNetNS: WARNING - Docker passed %s but namespace was at %s. "+
 				"This may indicate /var/run is not symlinked to /run on your system. "+
 				"Consider running: ln -sf /run /var/run", nsPath, tryPath)
 		}
-		logger.Debug("Moved interface %s to netns %s", ifName, tryPath)
+		logger.Debugf("Moved interface %s to netns %s", ifName, tryPath)
 		return nil
 	}
 
@@ -182,7 +188,7 @@ func SetupInterfaceInNS(nsPath string, ifName string, newName string) error {
 	}
 	defer func() {
 		if err := netns.Set(origNS); err != nil {
-			logger.Warn("failed to restore original netns: %v", err)
+			logger.Warnf("failed to restore original netns: %v", err)
 		}
 	}()
 
@@ -224,13 +230,13 @@ func DeleteVeth(name string) error {
 		return fmt.Errorf("failed to delete veth %s: %w", name, err)
 	}
 
-	logger.Debug("Deleted veth %s", name)
+	logger.Debugf("Deleted veth %s", name)
 	return nil
 }
 
 // SetupHostRouting sets up routing on the host side for internet access.
 func SetupHostRouting(vethHost string, hostIP string) error {
-	logger.Debug("Setting up host routing for %s with IP %s", vethHost, hostIP)
+	logger.Debugf("Setting up host routing for %s with IP %s", vethHost, hostIP)
 
 	link, err := netlink.LinkByName(vethHost)
 	if err != nil {
@@ -244,7 +250,7 @@ func SetupHostRouting(vethHost string, hostIP string) error {
 
 	if err := netlink.AddrAdd(link, addr); err != nil {
 		// Ignore if already exists
-		logger.Debug("Warning: failed to add IP to host veth (may already exist): %v", err)
+		logger.Debugf("Warning: failed to add IP to host veth (may already exist): %v", err)
 	}
 
 	return nil
@@ -274,7 +280,7 @@ func SetupContainerRouting(nsPath string, ifName string, containerIP string, gat
 	}
 	defer func() {
 		if err := netns.Set(origNS); err != nil {
-			logger.Warn("failed to restore original netns: %v", err)
+			logger.Warnf("failed to restore original netns: %v", err)
 		}
 	}()
 
@@ -289,13 +295,13 @@ func SetupContainerRouting(nsPath string, ifName string, containerIP string, gat
 	}
 
 	if err := netlink.AddrAdd(link, addr); err != nil {
-		logger.Debug("Warning: failed to add IP to container interface: %v", err)
+		logger.Debugf("Warning: failed to add IP to container interface: %v", err)
 	}
 
 	// No default route: Docker connects the container to its gateway network
 	// like any other, and SetupBypassRoute sends tailscaled's own traffic
 	// through this veth.
-	logger.Debug("Container routing setup: %s, peer %s", containerIP, gatewayIP)
+	logger.Debugf("Container routing setup: %s, peer %s", containerIP, gatewayIP)
 	return nil
 }
 
@@ -317,11 +323,11 @@ var (
 // SetupNAT sets up MASQUERADE for traffic from the container.
 // Uses a custom chain (TS-CNI-FORWARD) for organized rule management.
 func SetupNAT(vethHost string) error {
-	logger.Debug("Setting up NAT for %s", vethHost)
+	logger.Debugf("Setting up NAT for %s", vethHost)
 
 	// Enable IP forwarding (idempotent)
 	if err := enableIPForward(); err != nil {
-		logger.Warn("Failed to enable IP forwarding: %v", err)
+		logger.Warnf("Failed to enable IP forwarding: %v", err)
 	}
 
 	ipt, err := iptables.New()
@@ -342,14 +348,14 @@ func SetupNAT(vethHost string) error {
 
 	// Allow forwarding for this specific veth (in our custom chain)
 	if err := ipt.AppendUnique("filter", chainName, "-i", vethHost, "-j", "ACCEPT"); err != nil {
-		logger.Warn("Failed to add FORWARD rule for %s: %v", vethHost, err)
+		logger.Warnf("Failed to add FORWARD rule for %s: %v", vethHost, err)
 	}
 
 	if err := ipt.AppendUnique("filter", chainName, "-o", vethHost, "-j", "ACCEPT"); err != nil {
-		logger.Warn("Failed to add FORWARD rule for %s: %v", vethHost, err)
+		logger.Warnf("Failed to add FORWARD rule for %s: %v", vethHost, err)
 	}
 
-	logger.Debug("NAT setup complete for %s", vethHost)
+	logger.Debugf("NAT setup complete for %s", vethHost)
 	return nil
 }
 
@@ -366,7 +372,7 @@ func initializeChain(ipt *iptables.IPTables) error {
 	// Create our custom chain unless it exists
 	if exists, err := ipt.ChainExists("filter", chainName); err != nil || !exists {
 		if err := ipt.NewChain("filter", chainName); err != nil {
-			logger.Debug("iptables chain %s may already exist: %v", chainName, err)
+			logger.Debugf("iptables chain %s may already exist: %v", chainName, err)
 		}
 	}
 
@@ -380,55 +386,55 @@ func initializeChain(ipt *iptables.IPTables) error {
 		return fmt.Errorf("failed to add MASQUERADE rule: %w", err)
 	}
 
-	logger.Info("Initialized iptables chain %s", chainName)
+	logger.Infof("Initialized iptables chain %s", chainName)
 	return nil
 }
 
 // CleanupNAT removes the FORWARD rules for a specific veth interface.
 // The global MASQUERADE rule and chain structure are intentionally left in place.
 func CleanupNAT(vethHost string) error {
-	logger.Debug("Cleaning up NAT rules for %s", vethHost)
+	logger.Debugf("Cleaning up NAT rules for %s", vethHost)
 
 	ipt, err := iptables.New()
 	if err != nil {
-		logger.Debug("Failed to initialize iptables, NAT rules for %s not cleaned: %v", vethHost, err)
+		logger.Debugf("Failed to initialize iptables, NAT rules for %s not cleaned: %v", vethHost, err)
 		return nil
 	}
 
 	// Remove FORWARD rules from our custom chain (ignore errors if rules don't exist)
 	if err := ipt.DeleteIfExists("filter", chainName, "-i", vethHost, "-j", "ACCEPT"); err != nil {
-		logger.Debug("FORWARD -i rule not found for %s (already cleaned): %v", vethHost, err)
+		logger.Debugf("FORWARD -i rule not found for %s (already cleaned): %v", vethHost, err)
 	}
 
 	if err := ipt.DeleteIfExists("filter", chainName, "-o", vethHost, "-j", "ACCEPT"); err != nil {
-		logger.Debug("FORWARD -o rule not found for %s (already cleaned): %v", vethHost, err)
+		logger.Debugf("FORWARD -o rule not found for %s (already cleaned): %v", vethHost, err)
 	}
 
-	logger.Debug("NAT cleanup complete for %s", vethHost)
+	logger.Debugf("NAT cleanup complete for %s", vethHost)
 	return nil
 }
 
 // CleanupAllNAT removes the entire custom chain and all its rules.
 // This is useful for complete plugin cleanup.
 func CleanupAllNAT() error {
-	logger.Info("Cleaning up all NAT rules")
+	logger.Infof("Cleaning up all NAT rules")
 
 	if ipt, err := iptables.New(); err != nil {
-		logger.Debug("Failed to initialize iptables, NAT rules not cleaned: %v", err)
+		logger.Debugf("Failed to initialize iptables, NAT rules not cleaned: %v", err)
 	} else {
 		// Remove jump rule from FORWARD
 		if err := ipt.DeleteIfExists("filter", "FORWARD", "-j", chainName); err != nil {
-			logger.Debug("No jump rule to %s found (may already be cleaned): %v", chainName, err)
+			logger.Debugf("No jump rule to %s found (may already be cleaned): %v", chainName, err)
 		}
 
 		// Flush and delete our custom chain
 		if err := ipt.ClearAndDeleteChain("filter", chainName); err != nil {
-			logger.Debug("Failed to delete chain %s (may not exist): %v", chainName, err)
+			logger.Debugf("Failed to delete chain %s (may not exist): %v", chainName, err)
 		}
 
 		// Remove MASQUERADE rule
 		if err := ipt.DeleteIfExists("nat", "POSTROUTING", "-s", natSource, "-j", "MASQUERADE"); err != nil {
-			logger.Debug("No MASQUERADE rule found (may already be cleaned): %v", err)
+			logger.Debugf("No MASQUERADE rule found (may already be cleaned): %v", err)
 		}
 	}
 
@@ -436,6 +442,6 @@ func CleanupAllNAT() error {
 	chainInitialized = false
 	chainMu.Unlock()
 
-	logger.Info("All NAT rules cleaned up")
+	logger.Infof("All NAT rules cleaned up")
 	return nil
 }

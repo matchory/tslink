@@ -136,7 +136,7 @@ Config is in `.golangci.toml`. Key linters enabled:
 ```go
 // GOOD - log cleanup errors
 if err := cleanup(); err != nil {
-    logger.Warn("cleanup failed: %v", err)
+    logger.Warnf("cleanup failed: %v", err)
 }
 
 // BAD - silent ignore

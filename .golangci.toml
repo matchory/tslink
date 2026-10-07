@@ -1,7 +1,7 @@
 version = "2"
 
 [formatters]
-enable = ["gci"]
+enable = ["gci", "gofumpt"]
 
 [formatters.settings.gci]
 sections = ["standard", "default", "prefix(github.com/aaomidi/tslink)"]
@@ -30,6 +30,17 @@ enable = [
   "unconvert",   # unnecessary conversions
   "unparam",     # unused params
   "wastedassign", # wasted assignments
+  "containedctx",     # contexts stored in structs
+  "goprintffuncname", # printf-like functions named ...f
+  "musttag",          # marshalled structs have field tags
+  "perfsprint",       # fmt.Sprintf where a faster call does
+  "revive",           # golint successor: docs, naming, unused params
+
+  # Security
+  "gosec",
+
+  # Tests
+  "usetesting", # t.TempDir, t.Context and friends
 
   # Modern Go (1.22+)
   "intrange",    # integer ranges
@@ -91,3 +102,10 @@ linters = ["noctx"]
 path = "pkg/tailscale/binary\\.go"
 linters = ["noctx"]
 
+
+# tslink runs the tailscale and tailscaled binaries shipped in the plugin
+# image, with arguments it builds itself.
+[[linters.exclusions.rules]]
+path = "pkg/tailscale/"
+text = "G204:"
+linters = ["gosec"]

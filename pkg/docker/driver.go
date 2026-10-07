@@ -1,9 +1,12 @@
+// Package docker implements the Docker network driver API and watches
+// Docker events for container starts and stops.
 package docker
 
 import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -29,7 +32,7 @@ type Driver struct {
 	docker *dockerclient.Client
 
 	// Lifecycle management
-	ctx    context.Context
+	ctx    context.Context //nolint:containedctx // lifecycle context, cancelled on shutdown
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 }
@@ -100,7 +103,7 @@ func NewDriver() (*Driver, error) {
 				d.collectGarbage(ctx)
 				return
 			}
-			logger.Warn("Initial endpoint recovery failed, retrying: %v", err)
+			logger.Warnf("Initial endpoint recovery failed, retrying: %v", err)
 		}
 	})
 
@@ -151,22 +154,22 @@ func (d *Driver) onContainerInfo(endpointID string, info *core.ContainerInfo) {
 	d.mu.RUnlock()
 
 	if !ok {
-		logger.Debug("onContainerInfo: endpoint %s not found (may have already left)", endpointID[:12])
+		logger.Debugf("onContainerInfo: endpoint %s not found (may have already left)", endpointID[:12])
 		return
 	}
 
 	// Call endpoint methods without holding driver.mu
 	if endpoint.IsTailscaleStarted() {
-		logger.Debug("onContainerInfo: Tailscale already started for endpoint %s", endpointID[:12])
+		logger.Debugf("onContainerInfo: Tailscale already started for endpoint %s", endpointID[:12])
 		return
 	}
 
 	if endpoint.GetSandboxKey() == "" {
-		logger.Debug("onContainerInfo: endpoint %s has no sandbox key (Join not called yet)", endpointID[:12])
+		logger.Debugf("onContainerInfo: endpoint %s has no sandbox key (Join not called yet)", endpointID[:12])
 		return
 	}
 
-	logger.Info(
+	logger.Infof(
 		"onContainerInfo: triggering Tailscale setup for endpoint %s (hostname=%s)",
 		endpointID[:12],
 		info.Hostname,
@@ -200,7 +203,7 @@ func (d *Driver) onContainerStop(containerID string) {
 
 // GetCapabilities returns the capabilities of the driver.
 func (d *Driver) GetCapabilities() (*network.CapabilitiesResponse, error) {
-	logger.Info("GetCapabilities called")
+	logger.Infof("GetCapabilities called")
 	return &network.CapabilitiesResponse{
 		Scope:             "global", // spike: so swarm carries driver options to nodes
 		ConnectivityScope: "global", // Containers can reach the tailnet
@@ -209,14 +212,14 @@ func (d *Driver) GetCapabilities() (*network.CapabilitiesResponse, error) {
 
 // CreateNetwork creates a new network.
 func (d *Driver) CreateNetwork(req *network.CreateNetworkRequest) error {
-	logger.Info("CreateNetwork: %s", req.NetworkID)
+	logger.Infof("CreateNetwork: %s", req.NetworkID)
 
 	// Log option keys only: values include the auth key
 	for k, v := range req.Options {
-		logger.Debug("  Option: %q (type: %T)", k, v)
+		logger.Debugf("  Option: %q (type: %T)", k, v)
 		if nested, ok := v.(map[string]any); ok {
 			for nk := range nested {
-				logger.Debug("    Nested: %q", nk)
+				logger.Debugf("    Nested: %q", nk)
 			}
 		}
 	}
@@ -225,32 +228,32 @@ func (d *Driver) CreateNetwork(req *network.CreateNetworkRequest) error {
 	defer d.mu.Unlock()
 
 	opts := core.ParseNetworkOptions(req.Options)
-	logger.Debug("Parsed opts: authkey=%s", redactKey(opts.AuthKey))
+	logger.Debugf("Parsed opts: authkey=%s", redactKey(opts.AuthKey))
 
 	net, err := core.NewNetwork(req.NetworkID, opts, d.config)
 	if err != nil {
 		return err
 	}
 	if net.UsesClusterCredential() {
-		logger.Debug("Network %s uses the cluster credential", req.NetworkID)
+		logger.Debugf("Network %s uses the cluster credential", req.NetworkID)
 	}
 
 	d.networks[req.NetworkID] = net
-	logger.Info("Created network %s", req.NetworkID)
+	logger.Infof("Created network %s", req.NetworkID)
 
 	return nil
 }
 
 // AllocateNetwork is called during network creation (for multi-host networks).
 func (d *Driver) AllocateNetwork(req *network.AllocateNetworkRequest) (*network.AllocateNetworkResponse, error) {
-	logger.Info("AllocateNetwork: %s", req.NetworkID)
+	logger.Infof("AllocateNetwork: %s", req.NetworkID)
 	// spike: hand the options back so swarm stores them as driver state
 	return &network.AllocateNetworkResponse{Options: req.Options}, nil
 }
 
 // DeleteNetwork deletes a network.
 func (d *Driver) DeleteNetwork(req *network.DeleteNetworkRequest) error {
-	logger.Info("DeleteNetwork: %s", req.NetworkID)
+	logger.Infof("DeleteNetwork: %s", req.NetworkID)
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -261,13 +264,13 @@ func (d *Driver) DeleteNetwork(req *network.DeleteNetworkRequest) error {
 
 // FreeNetwork is called during network deletion (for multi-host networks).
 func (d *Driver) FreeNetwork(req *network.FreeNetworkRequest) error {
-	logger.Info("FreeNetwork: %s", req.NetworkID)
+	logger.Infof("FreeNetwork: %s", req.NetworkID)
 	return nil
 }
 
 // CreateEndpoint creates a new endpoint for a container.
 func (d *Driver) CreateEndpoint(req *network.CreateEndpointRequest) (*network.CreateEndpointResponse, error) {
-	logger.Info("CreateEndpoint: network=%s endpoint=%s", req.NetworkID, req.EndpointID)
+	logger.Infof("CreateEndpoint: network=%s endpoint=%s", req.NetworkID, req.EndpointID)
 
 	net, err := d.networkFor(d.ctx, req.NetworkID)
 	if err != nil {
@@ -293,7 +296,7 @@ func (d *Driver) CreateEndpoint(req *network.CreateEndpointRequest) (*network.Cr
 
 // DeleteEndpoint deletes an endpoint.
 func (d *Driver) DeleteEndpoint(req *network.DeleteEndpointRequest) error {
-	logger.Info("DeleteEndpoint: network=%s endpoint=%s", req.NetworkID, req.EndpointID)
+	logger.Infof("DeleteEndpoint: network=%s endpoint=%s", req.NetworkID, req.EndpointID)
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -303,12 +306,12 @@ func (d *Driver) DeleteEndpoint(req *network.DeleteEndpointRequest) error {
 
 	endpoint, ok := d.endpoints[req.EndpointID]
 	if !ok {
-		logger.Info("Endpoint %s not found, ignoring", req.EndpointID)
+		logger.Infof("Endpoint %s not found, ignoring", req.EndpointID)
 		return nil
 	}
 
 	if err := endpoint.Stop(); err != nil {
-		logger.Info("Warning: failed to stop endpoint: %v", err)
+		logger.Infof("Warning: failed to stop endpoint: %v", err)
 	}
 
 	delete(d.endpoints, req.EndpointID)
@@ -317,7 +320,7 @@ func (d *Driver) DeleteEndpoint(req *network.DeleteEndpointRequest) error {
 
 // EndpointInfo returns information about an endpoint.
 func (d *Driver) EndpointInfo(req *network.InfoRequest) (*network.InfoResponse, error) {
-	logger.Info("EndpointInfo: network=%s endpoint=%s", req.NetworkID, req.EndpointID)
+	logger.Infof("EndpointInfo: network=%s endpoint=%s", req.NetworkID, req.EndpointID)
 
 	d.mu.RLock()
 	defer d.mu.RUnlock()
@@ -342,7 +345,7 @@ func (d *Driver) EndpointInfo(req *network.InfoRequest) (*network.InfoResponse, 
 // It sets up basic networking and returns quickly.
 // Tailscale setup is triggered asynchronously by the Docker event handler.
 func (d *Driver) Join(req *network.JoinRequest) (*network.JoinResponse, error) {
-	logger.Info("Join: network=%s endpoint=%s sandbox=%s", req.NetworkID, req.EndpointID, req.SandboxKey)
+	logger.Infof("Join: network=%s endpoint=%s sandbox=%s", req.NetworkID, req.EndpointID, req.SandboxKey)
 
 	// Get endpoint reference under lock, then release before calling endpoint methods
 	d.mu.RLock()
@@ -364,10 +367,10 @@ func (d *Driver) Join(req *network.JoinRequest) (*network.JoinResponse, error) {
 	// Check if container info is already in cache (rare but possible)
 	// cache has its own internal lock, so this is safe
 	if info, ok := d.cache.GetByEndpoint(req.EndpointID); ok {
-		logger.Info("Join: container info already cached, triggering immediate Tailscale setup")
+		logger.Infof("Join: container info already cached, triggering immediate Tailscale setup")
 		d.wg.Go(func() { endpoint.RunTailscale(info) })
 	} else {
-		logger.Info("Join: waiting for Docker event to trigger Tailscale setup for endpoint %s", req.EndpointID[:12])
+		logger.Infof("Join: waiting for Docker event to trigger Tailscale setup for endpoint %s", req.EndpointID[:12])
 	}
 
 	return joinResp, nil
@@ -375,19 +378,19 @@ func (d *Driver) Join(req *network.JoinRequest) (*network.JoinResponse, error) {
 
 // Leave is called when a container leaves the network.
 func (d *Driver) Leave(req *network.LeaveRequest) error {
-	logger.Info("Leave: network=%s endpoint=%s", req.NetworkID, req.EndpointID)
+	logger.Infof("Leave: network=%s endpoint=%s", req.NetworkID, req.EndpointID)
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	endpoint, ok := d.endpoints[req.EndpointID]
 	if !ok {
-		logger.Info("Endpoint %s not found, ignoring", req.EndpointID)
+		logger.Infof("Endpoint %s not found, ignoring", req.EndpointID)
 		return nil
 	}
 
 	if err := endpoint.Leave(); err != nil {
-		logger.Info("Warning: failed to leave: %v", err)
+		logger.Infof("Warning: failed to leave: %v", err)
 	}
 
 	return nil
@@ -395,25 +398,25 @@ func (d *Driver) Leave(req *network.LeaveRequest) error {
 
 // DiscoverNew is called when a new node is discovered.
 func (d *Driver) DiscoverNew(req *network.DiscoveryNotification) error {
-	logger.Info("DiscoverNew: type=%d", req.DiscoveryType)
+	logger.Infof("DiscoverNew: type=%d", req.DiscoveryType)
 	return nil
 }
 
 // DiscoverDelete is called when a node is removed.
 func (d *Driver) DiscoverDelete(req *network.DiscoveryNotification) error {
-	logger.Info("DiscoverDelete: type=%d", req.DiscoveryType)
+	logger.Infof("DiscoverDelete: type=%d", req.DiscoveryType)
 	return nil
 }
 
 // ProgramExternalConnectivity is called to program external connectivity.
 func (d *Driver) ProgramExternalConnectivity(req *network.ProgramExternalConnectivityRequest) error {
-	logger.Info("ProgramExternalConnectivity: network=%s endpoint=%s", req.NetworkID, req.EndpointID)
+	logger.Infof("ProgramExternalConnectivity: network=%s endpoint=%s", req.NetworkID, req.EndpointID)
 	return nil
 }
 
 // RevokeExternalConnectivity is called to revoke external connectivity.
 func (d *Driver) RevokeExternalConnectivity(req *network.RevokeExternalConnectivityRequest) error {
-	logger.Info("RevokeExternalConnectivity: network=%s endpoint=%s", req.NetworkID, req.EndpointID)
+	logger.Infof("RevokeExternalConnectivity: network=%s endpoint=%s", req.NetworkID, req.EndpointID)
 	return nil
 }
 
@@ -422,7 +425,7 @@ func (d *Driver) RevokeExternalConnectivity(req *network.RevokeExternalConnectiv
 // stops all endpoints, and waits for goroutines to finish.
 // The passed context controls how long to wait for graceful shutdown.
 func (d *Driver) Shutdown(ctx context.Context) error {
-	logger.Info("Driver shutdown initiated")
+	logger.Infof("Driver shutdown initiated")
 
 	// Cancel internal context to stop event watcher and pending operations
 	d.cancel()
@@ -450,9 +453,9 @@ func (d *Driver) Shutdown(ctx context.Context) error {
 	}
 
 	for _, ep := range endpoints {
-		logger.Info("Stopping endpoint %s", ep.ID[:12])
+		logger.Infof("Stopping endpoint %s", ep.ID[:12])
 		if err := ep.Stop(); err != nil {
-			logger.Warn("Failed to stop endpoint %s: %v", ep.ID[:12], err)
+			logger.Warnf("Failed to stop endpoint %s: %v", ep.ID[:12], err)
 		}
 	}
 
@@ -465,15 +468,17 @@ func (d *Driver) Shutdown(ctx context.Context) error {
 
 	select {
 	case <-done:
-		logger.Info("Driver shutdown complete")
+		logger.Infof("Driver shutdown complete")
 	case <-ctx.Done():
-		logger.Warn("Driver shutdown timed out, some goroutines may still be running")
+		logger.Warnf("Driver shutdown timed out, some goroutines may still be running")
 		return ctx.Err()
 	}
 
 	// Close Docker client
 	if d.docker != nil {
-		d.docker.Close()
+		if err := d.docker.Close(); err != nil {
+			logger.Warnf("Failed to close Docker client: %v", err)
+		}
 	}
 
 	return nil
@@ -521,11 +526,11 @@ func (d *Driver) runWatchdog(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			logger.Info("Watchdog shutting down")
+			logger.Infof("Watchdog shutting down")
 			return
 		case <-ticker.C:
 			if err := d.RecoverEndpoints(ctx); err != nil {
-				logger.Error("Watchdog recovery failed: %v", err)
+				logger.Errorf("Watchdog recovery failed: %v", err)
 				continue
 			}
 			// Again here: state younger than gcMinAge survives the first run
@@ -537,7 +542,7 @@ func (d *Driver) runWatchdog(ctx context.Context) {
 // RecoverEndpoints scans Docker for containers on tslink networks that are missing
 // from the driver's in-memory state. This handles host reboot and plugin restart.
 func (d *Driver) RecoverEndpoints(ctx context.Context) error {
-	logger.Info("RecoverEndpoints: scanning for orphaned endpoints")
+	logger.Infof("RecoverEndpoints: scanning for orphaned endpoints")
 
 	ownNames, err := d.ownPluginNames(ctx)
 	if err != nil {
@@ -569,7 +574,7 @@ func (d *Driver) RecoverEndpoints(ctx context.Context) error {
 				dockerclient.NetworkInspectOptions{},
 			)
 			if err != nil {
-				logger.Debug("RecoverEndpoints: failed to inspect network %s: %v", netSettings.NetworkID[:12], err)
+				logger.Debugf("RecoverEndpoints: failed to inspect network %s: %v", netSettings.NetworkID[:12], err)
 				continue
 			}
 
@@ -589,11 +594,11 @@ func (d *Driver) RecoverEndpoints(ctx context.Context) error {
 			}
 
 			// Found orphaned endpoint - recover it
-			logger.Info("RecoverEndpoints: found orphaned endpoint %s for container %s on network %s",
+			logger.Infof("RecoverEndpoints: found orphaned endpoint %s for container %s on network %s",
 				endpointID[:12], container.ID[:12], netName)
 
 			if err := d.recoverEndpoint(ctx, container.ID, netName, endpointID, networkResult); err != nil {
-				logger.Error("RecoverEndpoints: failed to recover endpoint %s: %v", endpointID[:12], err)
+				logger.Errorf("RecoverEndpoints: failed to recover endpoint %s: %v", endpointID[:12], err)
 				continue
 			}
 			recovered++
@@ -601,9 +606,9 @@ func (d *Driver) RecoverEndpoints(ctx context.Context) error {
 	}
 
 	if recovered > 0 {
-		logger.Info("RecoverEndpoints: recovered %d orphaned endpoint(s)", recovered)
+		logger.Infof("RecoverEndpoints: recovered %d orphaned endpoint(s)", recovered)
 	} else {
-		logger.Debug("RecoverEndpoints: no orphaned endpoints found")
+		logger.Debugf("RecoverEndpoints: no orphaned endpoints found")
 	}
 
 	return nil
@@ -630,7 +635,7 @@ func (d *Driver) recoverEndpoint(
 	// Sandbox key might be empty if container isn't fully running
 	sandboxKey := containerInfo.Container.NetworkSettings.SandboxKey
 	if sandboxKey == "" {
-		return fmt.Errorf("container has no sandbox key (not fully started?)")
+		return errors.New("container has no sandbox key (not fully started?)")
 	}
 
 	// Ensure network exists in driver state
@@ -661,7 +666,7 @@ func (d *Driver) recoverEndpoint(
 	// Double-check someone else didn't create it
 	if _, exists := d.endpoints[endpointID]; exists {
 		d.mu.Unlock()
-		logger.Debug("recoverEndpoint: endpoint %s already exists (race)", endpointID[:12])
+		logger.Debugf("recoverEndpoint: endpoint %s already exists (race)", endpointID[:12])
 		return nil
 	}
 	d.endpoints[endpointID] = endpoint
@@ -669,7 +674,7 @@ func (d *Driver) recoverEndpoint(
 
 	// Before garbage collection runs, which would take the directory for unused
 	if err := endpoint.ClaimStateDir(tsInfo); err != nil {
-		logger.Warn("recoverEndpoint: %v", err)
+		logger.Warnf("recoverEndpoint: %v", err)
 	}
 
 	// Adopt what Join set up (normally done by Join). Without its routes the
@@ -687,7 +692,7 @@ func (d *Driver) recoverEndpoint(
 	// Trigger Tailscale setup
 	// Note: We don't recreate the veth pair - if networking is broken,
 	// the container needs to be restarted anyway. We only recover Tailscale.
-	logger.Info(
+	logger.Infof(
 		"recoverEndpoint: triggering Tailscale setup for endpoint %s (hostname=%s)",
 		endpointID[:12],
 		tsInfo.Hostname,

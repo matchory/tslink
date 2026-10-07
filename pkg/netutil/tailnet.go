@@ -40,10 +40,10 @@ func SetupTailnetBlackhole(nsPath string) error {
 			if _, getErr := netlink.RouteGet(tailnetV6.IP); getErr == nil {
 				return fmt.Errorf("failed to add unreachable route %s: %w", tailnetV6, err)
 			}
-			logger.Warn("Skipping unreachable route %s, namespace has no IPv6 route: %v", tailnetV6, err)
+			logger.Warnf("Skipping unreachable route %s, namespace has no IPv6 route: %v", tailnetV6, err)
 		}
 
-		logger.Debug("Tailnet ranges blackholed in %s", nsPath)
+		logger.Debugf("Tailnet ranges blackholed in %s", nsPath)
 		return nil
 	})
 }
@@ -99,7 +99,7 @@ func inNetNS(nsPath string, fn func() error) error {
 	}
 	defer func() {
 		if err := netns.Set(origNS); err != nil {
-			logger.Warn("failed to restore original netns: %v", err)
+			logger.Warnf("failed to restore original netns: %v", err)
 		}
 	}()
 

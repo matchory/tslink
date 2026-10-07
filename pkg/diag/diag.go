@@ -1,8 +1,10 @@
+// Package diag reports the state of the plugin's endpoints for debugging.
 package diag
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -40,8 +42,8 @@ type StartStatus struct {
 	Updated  time.Time `json:"updated"`
 }
 
-// DiagResult represents the overall diagnostic result.
-type DiagResult struct {
+// Result represents the overall diagnostic result.
+type Result struct {
 	Timestamp     time.Time         `json:"timestamp"`
 	DataDir       string            `json:"data_dir"`
 	DataDirExists bool              `json:"data_dir_exists"`
@@ -60,7 +62,7 @@ type Summary struct {
 
 // Run performs diagnostics on the tslink plugin state.
 func Run(dataDir string, w io.Writer) error {
-	result := &DiagResult{
+	result := &Result{
 		Timestamp: time.Now(),
 		DataDir:   dataDir,
 		Endpoints: make([]*EndpointStatus, 0),
@@ -212,7 +214,7 @@ func getTailscaleStatus(socketPath string) (*tailscaleStatusResult, error) {
 	// Find tailscale binary - check common locations
 	tailscaleBin := findTailscaleBinary()
 	if tailscaleBin == "" {
-		return nil, fmt.Errorf("tailscale binary not found")
+		return nil, errors.New("tailscale binary not found")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), statusTimeout)
@@ -264,7 +266,7 @@ func findTailscaleBinary() string {
 	return ""
 }
 
-func outputResult(result *DiagResult, w io.Writer) error {
+func outputResult(result *Result, w io.Writer) error {
 	fmt.Fprintf(w, "=== tslink Diagnostic Report ===\n")
 	fmt.Fprintf(w, "Timestamp: %s\n", result.Timestamp.Format(time.RFC3339))
 	fmt.Fprintf(w, "Data Dir:  %s (exists: %v)\n\n", result.DataDir, result.DataDirExists)

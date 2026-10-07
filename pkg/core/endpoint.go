@@ -1,3 +1,5 @@
+// Package core holds the endpoint and network logic: the per-container
+// Tailscale lifecycle, its state directories and their garbage collection.
 package core
 
 import (
@@ -52,7 +54,7 @@ type Endpoint struct {
 	tailscaleStarted bool // Whether Tailscale setup has been completed
 
 	running bool                       // Whether RunTailscale is active
-	runCtx  context.Context            // Cancelled when the endpoint leaves
+	runCtx  context.Context            //nolint:containedctx // Cancelled when the endpoint leaves
 	stopRun context.CancelFunc         // Cancels runCtx
 	startFn func(*ContainerInfo) error // Replaces StartTailscale in tests
 }
@@ -145,11 +147,11 @@ func (e *Endpoint) Join(sandboxKey string) (*network.JoinResponse, error) {
 	// Network syscalls can block for seconds, which would block all other endpoint operations.
 	// We only lock briefly to read/write state.
 
-	logger.Info("Endpoint %s joining with sandbox %s", e.ID, sandboxKey)
+	logger.Infof("Endpoint %s joining with sandbox %s", e.ID, sandboxKey)
 
 	// Generate unique IPs for this endpoint's veth pair (uses only e.ID which is immutable)
 	hostVethIP, containerVethIP := generateVethIPs(e.ID)
-	logger.Info("Using veth IPs: host=%s container=%s", hostVethIP, containerVethIP)
+	logger.Infof("Using veth IPs: host=%s container=%s", hostVethIP, containerVethIP)
 
 	// Create veth pair (blocking network operation - no lock held)
 	vethHost, vethContainer, err := netutil.CreateVethPair(e.ID[:8], e.Network.MTU)
@@ -157,12 +159,12 @@ func (e *Endpoint) Join(sandboxKey string) (*network.JoinResponse, error) {
 		return nil, fmt.Errorf("failed to create veth pair: %w", err)
 	}
 
-	logger.Info("Created veth pair: host=%s container=%s", vethHost, vethContainer)
+	logger.Infof("Created veth pair: host=%s container=%s", vethHost, vethContainer)
 
 	// Move container end of veth into container's network namespace
 	if err := netutil.MoveToNetNS(vethContainer, sandboxKey); err != nil {
 		if cleanupErr := netutil.DeleteVeth(vethHost); cleanupErr != nil {
-			logger.Warn("failed to cleanup veth %s after error: %v", vethHost, cleanupErr)
+			logger.Warnf("failed to cleanup veth %s after error: %v", vethHost, cleanupErr)
 		}
 		return nil, fmt.Errorf("failed to move veth to container ns: %w", err)
 	}
@@ -170,7 +172,7 @@ func (e *Endpoint) Join(sandboxKey string) (*network.JoinResponse, error) {
 	// Set up host side of veth with IP
 	if err := netutil.SetupHostRouting(vethHost, hostVethIP); err != nil {
 		if cleanupErr := netutil.DeleteVeth(vethHost); cleanupErr != nil {
-			logger.Warn("failed to cleanup veth %s after error: %v", vethHost, cleanupErr)
+			logger.Warnf("failed to cleanup veth %s after error: %v", vethHost, cleanupErr)
 		}
 		return nil, fmt.Errorf("failed to set up host routing: %w", err)
 	}
@@ -178,14 +180,14 @@ func (e *Endpoint) Join(sandboxKey string) (*network.JoinResponse, error) {
 	// Set up container side with IP, bring it up, and add default route
 	if err := netutil.SetupInterfaceInNS(sandboxKey, vethContainer, ""); err != nil {
 		if cleanupErr := netutil.DeleteVeth(vethHost); cleanupErr != nil {
-			logger.Warn("failed to cleanup veth %s after error: %v", vethHost, cleanupErr)
+			logger.Warnf("failed to cleanup veth %s after error: %v", vethHost, cleanupErr)
 		}
 		return nil, fmt.Errorf("failed to set up container interface: %w", err)
 	}
 
 	if err := netutil.SetupContainerRouting(sandboxKey, vethContainer, containerVethIP, hostVethIP); err != nil {
 		if cleanupErr := netutil.DeleteVeth(vethHost); cleanupErr != nil {
-			logger.Warn("failed to cleanup veth %s after error: %v", vethHost, cleanupErr)
+			logger.Warnf("failed to cleanup veth %s after error: %v", vethHost, cleanupErr)
 		}
 		return nil, fmt.Errorf("failed to set up container routing: %w", err)
 	}
@@ -193,7 +195,7 @@ func (e *Endpoint) Join(sandboxKey string) (*network.JoinResponse, error) {
 	// tailscaled's own traffic must not depend on the container's other networks
 	if err := netutil.SetupBypassRoute(sandboxKey, vethContainer, hostVethIP); err != nil {
 		if cleanupErr := netutil.DeleteVeth(vethHost); cleanupErr != nil {
-			logger.Warn("failed to cleanup veth %s after error: %v", vethHost, cleanupErr)
+			logger.Warnf("failed to cleanup veth %s after error: %v", vethHost, cleanupErr)
 		}
 		return nil, fmt.Errorf("failed to route tailscaled via veth: %w", err)
 	}
@@ -201,14 +203,14 @@ func (e *Endpoint) Join(sandboxKey string) (*network.JoinResponse, error) {
 	// Fail closed: tailnet traffic must not fall through to the host's tailscaled
 	if err := netutil.SetupTailnetBlackhole(sandboxKey); err != nil {
 		if cleanupErr := netutil.DeleteVeth(vethHost); cleanupErr != nil {
-			logger.Warn("failed to cleanup veth %s after error: %v", vethHost, cleanupErr)
+			logger.Warnf("failed to cleanup veth %s after error: %v", vethHost, cleanupErr)
 		}
 		return nil, fmt.Errorf("failed to blackhole tailnet ranges: %w", err)
 	}
 
 	// Set up NAT/MASQUERADE for internet access
 	if err := netutil.SetupNAT(vethHost); err != nil {
-		logger.Info("Warning: failed to set up NAT: %v", err)
+		logger.Infof("Warning: failed to set up NAT: %v", err)
 		// Continue anyway - tailscaled might still work via DERP
 	}
 
@@ -218,7 +220,7 @@ func (e *Endpoint) Join(sandboxKey string) (*network.JoinResponse, error) {
 	e.VethName = vethHost
 	e.mu.Unlock()
 
-	logger.Info(
+	logger.Infof(
 		"Network setup complete for endpoint %s, Tailscale will be configured when container info arrives",
 		e.ID[:12],
 	)
@@ -270,18 +272,18 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 	e.mu.Lock()
 	if e.tailscaleStarted {
 		e.mu.Unlock()
-		logger.Debug("Tailscale already started for endpoint %s", e.ID[:12])
+		logger.Debugf("Tailscale already started for endpoint %s", e.ID[:12])
 		return nil
 	}
 	if e.supervisor != nil {
 		e.mu.Unlock()
-		logger.Debug("Tailscale startup already in progress for endpoint %s", e.ID[:12])
+		logger.Debugf("Tailscale startup already in progress for endpoint %s", e.ID[:12])
 		return nil
 	}
 	sandboxKey := e.SandboxKey
 	if sandboxKey == "" {
 		e.mu.Unlock()
-		return fmt.Errorf("no sandbox key set - Join() must be called first")
+		return errors.New("no sandbox key set - Join() must be called first")
 	}
 
 	// Copy immutable config needed for supervisor creation
@@ -296,7 +298,7 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 	if len(e.Network.Tags) > 0 {
 		// Tags set on the network win, so a container cannot choose its own
 		if len(info.Tags) > 0 && !slices.Equal(info.Tags, e.Network.Tags) {
-			logger.Warn("Endpoint %s: ignoring tslink.tags label %v, network sets %v",
+			logger.Warnf("Endpoint %s: ignoring tslink.tags label %v, network sets %v",
 				e.ID[:12], info.Tags, e.Network.Tags)
 		}
 		tags = e.Network.Tags
@@ -320,18 +322,18 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 	}
 	if network.Ephemeral() {
 		if err := tailscale.MarkEphemeral(stateDir); err != nil {
-			logger.Warn("Failed to mark %s as ephemeral: %v", stateDir, err)
+			logger.Warnf("Failed to mark %s as ephemeral: %v", stateDir, err)
 		}
 	}
 
 	wipeStateOnKeyChange(stateDir, network)
 
-	logger.Info("StartTailscale: endpoint=%s hostname=%s service=%s endpoints=%d direct=%v",
+	logger.Infof("StartTailscale: endpoint=%s hostname=%s service=%s endpoints=%d direct=%v",
 		endpointID[:12], info.Hostname, info.Service, len(info.Endpoints), info.Direct)
 
 	// Validate service configuration
 	if info.Service != "" && len(info.Endpoints) == 0 {
-		return permanentError{fmt.Errorf("tslink.service requires at least one tslink.serve.<port> endpoint")}
+		return permanentError{errors.New("tslink.service requires at least one tslink.serve.<port> endpoint")}
 	}
 
 	tailscaleBin, tailscaledBin, err := tailscale.BundledBinaries()
@@ -376,7 +378,7 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 		// The supervisor keeps retrying after a failed first start. Nothing
 		// would stop it later, since it is not stored on the endpoint.
 		if stopErr := supervisor.Stop(); stopErr != nil {
-			logger.Warn("failed to stop supervisor after start error: %v", stopErr)
+			logger.Warnf("failed to stop supervisor after start error: %v", stopErr)
 		}
 		return fmt.Errorf("failed to start tailscale supervisor: %w", err)
 	}
@@ -385,7 +387,7 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 	status, err := supervisor.WaitForIP()
 	if err != nil {
 		if stopErr := supervisor.Stop(); stopErr != nil {
-			logger.Warn("failed to stop supervisor after WaitForIP error: %v", stopErr)
+			logger.Warnf("failed to stop supervisor after WaitForIP error: %v", stopErr)
 		}
 		return fmt.Errorf("failed to get Tailscale IP: %w", err)
 	}
@@ -393,7 +395,7 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 	// Save auth key hash for future comparisons
 	if !network.UsesClusterCredential() {
 		if err := tailscale.SaveAuthKeyHash(stateDir, network.AuthKey); err != nil {
-			logger.Warn("Failed to save auth key hash: %v", err)
+			logger.Warnf("Failed to save auth key hash: %v", err)
 		}
 	}
 
@@ -403,9 +405,9 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 	if e.tailscaleStarted {
 		e.mu.Unlock()
 		if stopErr := supervisor.Stop(); stopErr != nil {
-			logger.Warn("failed to stop duplicate supervisor: %v", stopErr)
+			logger.Warnf("failed to stop duplicate supervisor: %v", stopErr)
 		}
-		logger.Warn("Tailscale was started by another goroutine for endpoint %s", endpointID[:12])
+		logger.Warnf("Tailscale was started by another goroutine for endpoint %s", endpointID[:12])
 		return nil
 	}
 	e.supervisor = supervisor
@@ -419,7 +421,7 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 	e.tailscaleStarted = true
 	e.mu.Unlock()
 
-	logger.Info("Endpoint %s got Tailscale IP: %s (hostname=%s)", endpointID[:12], status.IP, info.Hostname)
+	logger.Infof("Endpoint %s got Tailscale IP: %s (hostname=%s)", endpointID[:12], status.IP, info.Hostname)
 	return nil
 }
 
@@ -458,7 +460,7 @@ func (e *Endpoint) RunTailscale(info *ContainerInfo) {
 			e.writeStatus(info, StatusRunning, attempt-1, nil)
 			if ctx.Err() != nil {
 				// Left while starting: Leave found no supervisor to stop
-				logger.Info("Endpoint %s left while Tailscale started, stopping it", e.ID[:12])
+				logger.Infof("Endpoint %s left while Tailscale started, stopping it", e.ID[:12])
 				e.stopTailscale()
 			}
 			return
@@ -467,12 +469,12 @@ func (e *Endpoint) RunTailscale(info *ContainerInfo) {
 			return
 		}
 		if _, ok := errors.AsType[permanentError](err); ok {
-			logger.Error("Endpoint %s: cannot start Tailscale: %v", e.ID[:12], err)
+			logger.Errorf("Endpoint %s: cannot start Tailscale: %v", e.ID[:12], err)
 			e.writeStatus(info, StatusFailed, attempt, err)
 			return
 		}
 		e.writeStatus(info, StatusRetrying, attempt, err)
-		logger.Error("Endpoint %s: starting Tailscale failed (attempt %d), retrying in %v: %v",
+		logger.Errorf("Endpoint %s: starting Tailscale failed (attempt %d), retrying in %v: %v",
 			e.ID[:12], attempt, delay, err)
 		select {
 		case <-ctx.Done():
@@ -597,7 +599,7 @@ func (e *Endpoint) Leave() error {
 	sandboxKey := e.SandboxKey
 	e.mu.Unlock()
 
-	logger.Info("Endpoint %s leaving", e.ID)
+	logger.Infof("Endpoint %s leaving", e.ID)
 
 	// Stop the Tailscale supervisor first
 	e.stopTailscale()
@@ -606,20 +608,20 @@ func (e *Endpoint) Leave() error {
 	// Clean up NAT rules for this veth
 	if vethName != "" {
 		if err := netutil.CleanupNAT(vethName); err != nil {
-			logger.Info("Warning: failed to cleanup NAT for %s: %v", vethName, err)
+			logger.Infof("Warning: failed to cleanup NAT for %s: %v", vethName, err)
 		}
 	}
 
 	if sandboxKey != "" {
 		if err := netutil.CleanupTailnetBlackhole(sandboxKey); err != nil {
-			logger.Info("Warning: failed to remove tailnet blackhole routes: %v", err)
+			logger.Infof("Warning: failed to remove tailnet blackhole routes: %v", err)
 		}
 	}
 
 	// Clean up veth (this also removes the container-side interface)
 	if vethName != "" {
 		if err := netutil.DeleteVeth(vethName); err != nil {
-			logger.Info("Warning: failed to delete veth %s: %v", vethName, err)
+			logger.Infof("Warning: failed to delete veth %s: %v", vethName, err)
 		}
 	}
 
@@ -648,7 +650,7 @@ func wipeStateOnKeyChange(stateDir string, network *Network) {
 		return
 	}
 	if err := tailscale.WipeState(stateDir); err != nil {
-		logger.Warn("Failed to wipe state after auth key change: %v", err)
+		logger.Warnf("Failed to wipe state after auth key change: %v", err)
 	}
 }
 
@@ -670,7 +672,7 @@ func (e *Endpoint) stopTailscale() {
 		// directory it claimed
 		if ephemeral && tailscale.IsMarkedEphemeral(stateDir) {
 			if err := os.RemoveAll(stateDir); err != nil {
-				logger.Warn("Failed to remove state of ephemeral node %s: %v", stateDir, err)
+				logger.Warnf("Failed to remove state of ephemeral node %s: %v", stateDir, err)
 			}
 		}
 		return
@@ -679,17 +681,17 @@ func (e *Endpoint) stopTailscale() {
 	// logging out deletes it now
 	if ephemeral {
 		if err := logoutWithRetry(supervisor.Logout); err != nil {
-			logger.Warn("Failed to log out ephemeral node during Leave: %v", err)
+			logger.Warnf("Failed to log out ephemeral node during Leave: %v", err)
 		}
 	}
 	if err := supervisor.Stop(); err != nil {
-		logger.Warn("Failed to stop supervisor during Leave: %v", err)
+		logger.Warnf("Failed to stop supervisor during Leave: %v", err)
 	}
 	// Nothing reuses an ephemeral node's state, and it holds the node key.
 	// stateDir is only this endpoint's once its supervisor has started.
 	if ephemeral {
 		if err := os.RemoveAll(stateDir); err != nil {
-			logger.Warn("Failed to remove state of ephemeral node %s: %v", stateDir, err)
+			logger.Warnf("Failed to remove state of ephemeral node %s: %v", stateDir, err)
 		}
 	}
 }
@@ -704,9 +706,9 @@ func (e *Endpoint) DrainService() {
 	if supervisor == nil || service == "" {
 		return
 	}
-	logger.Info("Endpoint %s stopping, draining %s", e.ID[:12], service)
+	logger.Infof("Endpoint %s stopping, draining %s", e.ID[:12], service)
 	if err := supervisor.Drain(service); err != nil {
-		logger.Warn("Failed to drain %s for endpoint %s: %v", service, e.ID[:12], err)
+		logger.Warnf("Failed to drain %s for endpoint %s: %v", service, e.ID[:12], err)
 	}
 }
 
@@ -740,11 +742,11 @@ func (e *Endpoint) Stop() error {
 	e.tailscaleStarted = false
 	e.mu.Unlock()
 
-	logger.Info("Stopping endpoint %s", e.ID)
+	logger.Infof("Stopping endpoint %s", e.ID)
 
 	if supervisor != nil {
 		if err := supervisor.Stop(); err != nil {
-			logger.Info("Warning: failed to stop supervisor: %v", err)
+			logger.Infof("Warning: failed to stop supervisor: %v", err)
 		}
 	}
 
@@ -757,10 +759,10 @@ func (e *Endpoint) ApplyHostnameChange(newHostname string) error {
 	defer e.mu.Unlock()
 
 	if e.supervisor == nil {
-		return fmt.Errorf("no supervisor running")
+		return errors.New("no supervisor running")
 	}
 
-	logger.Info("ApplyHostnameChange: changing hostname from %s to %s", e.Hostname, newHostname)
+	logger.Infof("ApplyHostnameChange: changing hostname from %s to %s", e.Hostname, newHostname)
 
 	if err := e.supervisor.SetHostname(newHostname); err != nil {
 		return fmt.Errorf("failed to set hostname: %w", err)
@@ -777,14 +779,14 @@ func (e *Endpoint) ApplyServiceConfig(info *ContainerInfo) error {
 	defer e.mu.Unlock()
 
 	if e.supervisor == nil {
-		return fmt.Errorf("no supervisor running")
+		return errors.New("no supervisor running")
 	}
 
 	if info.Service == "" {
 		return nil // No service to configure
 	}
 
-	logger.Info("ApplyServiceConfig: configuring service %s with %d endpoints", info.Service, len(info.Endpoints))
+	logger.Infof("ApplyServiceConfig: configuring service %s with %d endpoints", info.Service, len(info.Endpoints))
 
 	// Convert core.ServeEndpoint to tailscale.ServeEndpoint
 	tsEndpoints := make([]tailscale.ServeEndpoint, len(info.Endpoints))

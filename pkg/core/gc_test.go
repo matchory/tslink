@@ -21,7 +21,7 @@ func TestCollectGarbage(t *testing.T) {
 	mkdir := func(rel string, ephemeral bool, mtime time.Time) string {
 		t.Helper()
 		dir := filepath.Join(data, rel)
-		if err := os.MkdirAll(dir, 0700); err != nil {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
 			t.Fatal(err)
 		}
 		if ephemeral {
@@ -37,10 +37,10 @@ func TestCollectGarbage(t *testing.T) {
 	sock := func(name string, mtime time.Time) string {
 		t.Helper()
 		p := filepath.Join(data, "sock", name)
-		if err := os.MkdirAll(filepath.Dir(p), 0700); err != nil {
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(p, nil, 0600); err != nil {
+		if err := os.WriteFile(p, nil, 0o600); err != nil {
 			t.Fatal(err)
 		}
 		if err := os.Chtimes(p, mtime, mtime); err != nil {
@@ -154,7 +154,7 @@ func TestCollectGarbageKeepsClaimedState(t *testing.T) {
 	}
 	defer e.releaseStateDir()
 	dir := e.GetStateDir()
-	if err := os.MkdirAll(dir, 0700); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := tailscale.MarkEphemeral(dir); err != nil {
@@ -210,7 +210,7 @@ func orphan(t *testing.T, data, rel string) string {
 	if err := tailscale.MarkEphemeral(dir); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "tailscaled.state"), []byte("{}"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "tailscaled.state"), []byte("{}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	old := time.Now().Add(-time.Hour)
@@ -296,7 +296,7 @@ func TestCollectGarbageBoundsLogouts(t *testing.T) {
 	loggedOut := stubLogout(t, func(context.Context, string) error {
 		n := running.Add(1)
 		defer running.Add(-1)
-		for m := most.Load(); n > m && !most.CompareAndSwap(m, n); m = most.Load() {
+		for m := most.Load(); n > m && !most.CompareAndSwap(m, n); m = most.Load() { //nolint:revive // CAS loop
 		}
 		time.Sleep(50 * time.Millisecond)
 		return nil
@@ -315,10 +315,10 @@ func TestCollectGarbageBoundsLogouts(t *testing.T) {
 func TestRemoveDownloadCache(t *testing.T) {
 	data := t.TempDir()
 	cache := filepath.Join(data, "tailscale-bin", "1.80.0")
-	if err := os.MkdirAll(cache, 0700); err != nil {
+	if err := os.MkdirAll(cache, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(cache, "tailscaled"), []byte("bin"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(cache, "tailscaled"), []byte("bin"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	RemoveDownloadCache(data)

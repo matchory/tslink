@@ -16,7 +16,7 @@ func TestRunFindsStateDirsAndSockets(t *testing.T) {
 	t.Cleanup(func() { statusTimeout = 5 * time.Second })
 
 	// Short path: Unix socket paths are limited to about 100 bytes.
-	dataDir, err := os.MkdirTemp("/tmp", "diag")
+	dataDir, err := os.MkdirTemp("/tmp", "diag") //nolint:usetesting // t.TempDir is too long for a socket path
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,3 +1,5 @@
+// Package logger provides the plugin's structured logging and rotating log
+// files.
 package logger
 
 import (
@@ -55,23 +57,23 @@ func Get() *slog.Logger {
 	return logger
 }
 
-// Debug logs at debug level with printf-style formatting.
-func Debug(format string, args ...any) {
+// Debugf logs at debug level with printf-style formatting.
+func Debugf(format string, args ...any) {
 	Get().Debug(fmt.Sprintf(format, args...))
 }
 
-// Info logs at info level with printf-style formatting.
-func Info(format string, args ...any) {
+// Infof logs at info level with printf-style formatting.
+func Infof(format string, args ...any) {
 	Get().Info(fmt.Sprintf(format, args...))
 }
 
-// Warn logs at warn level with printf-style formatting.
-func Warn(format string, args ...any) {
+// Warnf logs at warn level with printf-style formatting.
+func Warnf(format string, args ...any) {
 	Get().Warn(fmt.Sprintf(format, args...))
 }
 
-// Error logs at error level with printf-style formatting.
-func Error(format string, args ...any) {
+// Errorf logs at error level with printf-style formatting.
+func Errorf(format string, args ...any) {
 	Get().Error(fmt.Sprintf(format, args...))
 }
 

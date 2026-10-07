@@ -33,7 +33,7 @@ func TestBundledBinaries(t *testing.T) {
 		t.Fatal("want an error while the bundled binaries are missing")
 	}
 	for _, b := range []string{"tailscale", "tailscaled"} {
-		if err := os.WriteFile(filepath.Join(dir, b), nil, 0755); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, b), nil, 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}

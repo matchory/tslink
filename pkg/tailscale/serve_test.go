@@ -102,10 +102,14 @@ func TestServeArgs(t *testing.T) {
 		},
 		{
 			name: "direct https with path and options",
-			ep: ServeEndpoint{Proto: "https", Port: "443", Target: "8080", Path: "/api",
-				ProxyProtocol: "1", AcceptAppCaps: "example.com/cap/a,example.com/cap/b"},
-			want: []string{"serve", "--bg", "--https=443", "--set-path=/api", "--proxy-protocol=1",
-				"--accept-app-caps=example.com/cap/a,example.com/cap/b", "http://127.0.0.1:8080"},
+			ep: ServeEndpoint{
+				Proto: "https", Port: "443", Target: "8080", Path: "/api",
+				ProxyProtocol: "1", AcceptAppCaps: "example.com/cap/a,example.com/cap/b",
+			},
+			want: []string{
+				"serve", "--bg", "--https=443", "--set-path=/api", "--proxy-protocol=1",
+				"--accept-app-caps=example.com/cap/a,example.com/cap/b", "http://127.0.0.1:8080",
+			},
 		},
 		{
 			name: "direct tcp",
@@ -154,10 +158,14 @@ func TestServeArgs(t *testing.T) {
 		{
 			name:    "service https with path and options",
 			service: svc,
-			ep: ServeEndpoint{Proto: "https", Port: "443", Target: "8080", Path: "/api",
-				ProxyProtocol: "2", AcceptAppCaps: "example.com/cap/a"},
-			want: []string{"serve", "--service=svc:web", "--https=443", "--set-path=/api", "--proxy-protocol=2",
-				"--accept-app-caps=example.com/cap/a", "127.0.0.1:8080"},
+			ep: ServeEndpoint{
+				Proto: "https", Port: "443", Target: "8080", Path: "/api",
+				ProxyProtocol: "2", AcceptAppCaps: "example.com/cap/a",
+			},
+			want: []string{
+				"serve", "--service=svc:web", "--https=443", "--set-path=/api", "--proxy-protocol=2",
+				"--accept-app-caps=example.com/cap/a", "127.0.0.1:8080",
+			},
 		},
 		{
 			name:    "service tcp",
@@ -175,14 +183,18 @@ func TestServeArgs(t *testing.T) {
 			name:    "service tls-terminated-tcp",
 			service: svc,
 			ep:      ServeEndpoint{Proto: "tls-terminated-tcp", Port: "443", Target: "8080", ProxyProtocol: "2"},
-			want: []string{"serve", "--service=svc:web", "--tls-terminated-tcp=443", "--proxy-protocol=2",
-				"tcp://127.0.0.1:8080"},
+			want: []string{
+				"serve", "--service=svc:web", "--tls-terminated-tcp=443", "--proxy-protocol=2",
+				"tcp://127.0.0.1:8080",
+			},
 		},
 		{
 			name:    "service tun ignores port, path and options",
 			service: svc,
-			ep: ServeEndpoint{Proto: "tun", Port: "1", Target: "2", Path: "/api",
-				ProxyProtocol: "2", AcceptAppCaps: "example.com/cap/a"},
+			ep: ServeEndpoint{
+				Proto: "tun", Port: "1", Target: "2", Path: "/api",
+				ProxyProtocol: "2", AcceptAppCaps: "example.com/cap/a",
+			},
 			want: []string{"serve", "--service=svc:web", "--tun"},
 		},
 

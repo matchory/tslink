@@ -1,3 +1,4 @@
+// Package tailscale runs and supervises tailscaled for each endpoint.
 package tailscale
 
 import (
@@ -51,7 +52,7 @@ func (w *streamingWriter) Write(p []byte) (n int, err error) {
 		}
 		line = strings.TrimRight(line, "\n\r")
 		if line != "" {
-			logger.Debug("[%s] %s", w.prefix, line)
+			logger.Debugf("[%s] %s", w.prefix, line)
 		}
 	}
 	return n, nil
@@ -73,7 +74,7 @@ func runCommandWithStreaming(ctx context.Context, prefix string, name string, ar
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 
-	logger.Debug("[%s] Running: %s %v", prefix, name, args)
+	logger.Debugf("[%s] Running: %s %v", prefix, name, args)
 
 	err := cmd.Run()
 
@@ -213,7 +214,7 @@ type Daemon struct {
 	socketPath string
 
 	// Context for goroutine lifecycle management
-	ctx    context.Context
+	ctx    context.Context //nolint:containedctx // lifecycle context, cancelled on shutdown
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 
@@ -245,7 +246,7 @@ func (d *Daemon) tailscale(ctx context.Context, prefix string, args ...string) (
 // NewDaemon creates a new Daemon instance.
 func NewDaemon(cfg DaemonConfig) (*Daemon, error) {
 	// Create state directory
-	if err := os.MkdirAll(cfg.StateDir, 0700); err != nil {
+	if err := os.MkdirAll(cfg.StateDir, 0o700); err != nil {
 		return nil, fmt.Errorf("failed to create state dir: %w", err)
 	}
 
@@ -253,7 +254,7 @@ func NewDaemon(cfg DaemonConfig) (*Daemon, error) {
 	if socketPath == "" {
 		socketPath = filepath.Join(cfg.StateDir, "tailscaled.sock")
 	}
-	if err := os.MkdirAll(filepath.Dir(socketPath), 0700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(socketPath), 0o700); err != nil {
 		return nil, fmt.Errorf("failed to create socket dir: %w", err)
 	}
 
@@ -264,18 +265,18 @@ func NewDaemon(cfg DaemonConfig) (*Daemon, error) {
 	if cfg.SocketPath != "" {
 		link := filepath.Join(cfg.StateDir, "tailscaled.sock")
 		if err := os.Remove(link); err != nil && !errors.Is(err, os.ErrNotExist) {
-			logger.Warn("Failed to remove stale socket link %s: %v", link, err)
+			logger.Warnf("Failed to remove stale socket link %s: %v", link, err)
 		}
 		if target, err := filepath.Rel(cfg.StateDir, socketPath); err != nil {
-			logger.Warn("Failed to link socket into state dir: %v", err)
+			logger.Warnf("Failed to link socket into state dir: %v", err)
 		} else if err := os.Symlink(target, link); err != nil {
-			logger.Warn("Failed to link socket into state dir: %v", err)
+			logger.Warnf("Failed to link socket into state dir: %v", err)
 		}
 	}
 
 	// Clean stale socket from previous run (prevents "address in use" errors)
 	if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
-		logger.Warn("Failed to remove stale socket %s: %v", socketPath, err)
+		logger.Warnf("Failed to remove stale socket %s: %v", socketPath, err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -290,7 +291,7 @@ func NewDaemon(cfg DaemonConfig) (*Daemon, error) {
 
 // Start starts the tailscaled process in the target network namespace.
 func (d *Daemon) Start() error {
-	logger.Info("Starting tailscaled for endpoint %s in netns %s", d.config.EndpointID, d.config.NetNSPath)
+	logger.Infof("Starting tailscaled for endpoint %s in netns %s", d.config.EndpointID, d.config.NetNSPath)
 
 	statePath := filepath.Join(d.config.StateDir, "tailscaled.state")
 	if err := LinkCertsDir(d.config.StateDir, d.config.CertsDir); err != nil {
@@ -333,7 +334,7 @@ func (d *Daemon) Start() error {
 	d.running = true
 	d.mu.Unlock()
 
-	logger.Info("tailscaled started with PID %d", d.cmd.Process.Pid)
+	logger.Infof("tailscaled started with PID %d", d.cmd.Process.Pid)
 
 	debugFile := filepath.Join(d.config.StateDir, "debug.log")
 
@@ -342,7 +343,7 @@ func (d *Daemon) Start() error {
 	logPath := filepath.Join(d.config.StateDir, "tailscaled.log")
 	logFile, err := logger.OpenRotating(logPath, tailscaledLogMaxBytes)
 	if err != nil {
-		logger.Warn("Failed to open %s, discarding tailscaled output: %v", logPath, err)
+		logger.Warnf("Failed to open %s, discarding tailscaled output: %v", logPath, err)
 	}
 	writeLine := func(line string) {
 		if strings.Contains(line, nodeNotFoundLog) {
@@ -350,7 +351,7 @@ func (d *Daemon) Start() error {
 		}
 		if logFile != nil {
 			if _, err := logFile.Write([]byte(line + "\n")); err != nil {
-				logger.Debug("Failed to write %s: %v", logPath, err)
+				logger.Debugf("Failed to write %s: %v", logPath, err)
 			}
 		}
 	}
@@ -363,7 +364,7 @@ func (d *Daemon) Start() error {
 		drains.Wait()
 		if logFile != nil {
 			if err := logFile.Close(); err != nil {
-				logger.Debug("Failed to close %s: %v", logPath, err)
+				logger.Debugf("Failed to close %s: %v", logPath, err)
 			}
 		}
 	})
@@ -376,8 +377,8 @@ func (d *Daemon) Start() error {
 		case <-time.After(2 * time.Second):
 			debugInfo := fmt.Sprintf("PID: %d\nSocket: %s\nEndpoint: %s\n",
 				d.cmd.Process.Pid, d.socketPath, d.config.EndpointID)
-			if err := os.WriteFile(debugFile, []byte(debugInfo), 0644); err != nil {
-				logger.Warn("Failed to write debug file: %v", err)
+			if err := os.WriteFile(debugFile, []byte(debugInfo), 0o600); err != nil {
+				logger.Warnf("Failed to write debug file: %v", err)
 			}
 		}
 	})
@@ -394,11 +395,11 @@ func (d *Daemon) Start() error {
 			return
 		case err := <-done:
 			if err != nil {
-				logger.Error("tailscaled exited with error: %v", err)
+				logger.Errorf("tailscaled exited with error: %v", err)
 				debugInfo := fmt.Sprintf("EXITED WITH ERROR\nPID: %d\nError: %v\n",
 					d.cmd.Process.Pid, err)
-				if writeErr := os.WriteFile(debugFile, []byte(debugInfo), 0644); writeErr != nil {
-					logger.Warn("Failed to write debug file: %v", writeErr)
+				if writeErr := os.WriteFile(debugFile, []byte(debugInfo), 0o600); writeErr != nil {
+					logger.Warnf("Failed to write debug file: %v", writeErr)
 				}
 			}
 		}
@@ -408,50 +409,50 @@ func (d *Daemon) Start() error {
 		// Write timeout debug info
 		debugInfo := fmt.Sprintf("SOCKET TIMEOUT\nSocket: %s\nPID: %d\n",
 			d.socketPath, d.cmd.Process.Pid)
-		if writeErr := os.WriteFile(debugFile, []byte(debugInfo), 0644); writeErr != nil {
-			logger.Warn("Failed to write debug file: %v", writeErr)
+		if writeErr := os.WriteFile(debugFile, []byte(debugInfo), 0o600); writeErr != nil {
+			logger.Warnf("Failed to write debug file: %v", writeErr)
 		}
 
 		if stopErr := d.Stop(); stopErr != nil {
-			logger.Warn("Failed to stop daemon after socket timeout: %v", stopErr)
+			logger.Warnf("Failed to stop daemon after socket timeout: %v", stopErr)
 		}
 		return fmt.Errorf("failed waiting for tailscaled socket: %w", err)
 	}
 
 	if err := d.bringUp(); err != nil {
 		if stopErr := d.Stop(); stopErr != nil {
-			logger.Warn("Failed to stop daemon after bringUp error: %v", stopErr)
+			logger.Warnf("Failed to stop daemon after bringUp error: %v", stopErr)
 		}
 		return fmt.Errorf("failed to bring up tailscale: %w", err)
 	}
 
 	// Configure direct machine serve if enabled (HTTPS on machine hostname)
-	logger.Info("Checking direct serve: Direct=%v Endpoints=%d", d.config.Direct, len(d.config.Endpoints))
+	logger.Infof("Checking direct serve: Direct=%v Endpoints=%d", d.config.Direct, len(d.config.Endpoints))
 	if d.config.Direct && len(d.config.Endpoints) > 0 {
-		logger.Info("Configuring direct serve...")
+		logger.Infof("Configuring direct serve...")
 		if err := d.configureDirectServe(); err != nil {
 			if stopErr := d.Stop(); stopErr != nil {
-				logger.Warn("Failed to stop daemon after direct serve error: %v", stopErr)
+				logger.Warnf("Failed to stop daemon after direct serve error: %v", stopErr)
 			}
 			return fmt.Errorf("failed to configure direct serve: %w", err)
 		}
-		logger.Info("Direct serve configured successfully")
+		logger.Infof("Direct serve configured successfully")
 	}
 
 	// Configure service backend if specified
 	// Services is a beta feature - add delay to let control plane fully register the node
-	logger.Info("Checking service: Service=%q", d.config.Service)
+	logger.Infof("Checking service: Service=%q", d.config.Service)
 	if d.config.Service != "" {
-		logger.Info("Waiting for control plane sync before configuring service backend...")
+		logger.Infof("Waiting for control plane sync before configuring service backend...")
 		time.Sleep(2 * time.Second)
-		logger.Info("Configuring service backend...")
+		logger.Infof("Configuring service backend...")
 		if err := d.configureServiceWhenCertified(); err != nil {
 			if stopErr := d.Stop(); stopErr != nil {
-				logger.Warn("Failed to stop daemon after service config error: %v", stopErr)
+				logger.Warnf("Failed to stop daemon after service config error: %v", stopErr)
 			}
 			return fmt.Errorf("failed to configure Tailscale service: %w", err)
 		}
-		logger.Info("Service backend configured successfully")
+		logger.Infof("Service backend configured successfully")
 	}
 
 	return nil
@@ -467,8 +468,8 @@ func (d *Daemon) Start() error {
 // namespace of its own. Without it, tailscaled keeps the plugin's.
 func (d *Daemon) tailscaledCommand(args []string) *exec.Cmd {
 	resolvConf := filepath.Join(d.config.StateDir, "resolv.conf")
-	if err := os.WriteFile(resolvConf, []byte("nameserver 127.0.0.11\noptions ndots:0\n"), 0644); err != nil { // #nosec G306 -- not secret
-		logger.Warn("Failed to write %s: %v", resolvConf, err)
+	if err := os.WriteFile(resolvConf, []byte("nameserver 127.0.0.11\noptions ndots:0\n"), 0o644); err != nil { // #nosec G306 -- not secret
+		logger.Warnf("Failed to write %s: %v", resolvConf, err)
 	}
 	// unshare, sh and nsenter each exec the next, so the process is tailscaled
 	unshareArgs := []string{
@@ -478,13 +479,13 @@ netns=$1; shift; exec nsenter --net="$netns" -- "$@"`,
 		resolvConf, d.config.NetNSPath, d.config.TailscaledBin,
 	}
 	unshareArgs = append(unshareArgs, args...)
-	logger.Debug("Running: unshare %v", unshareArgs)
+	logger.Debugf("Running: unshare %v", unshareArgs)
 	return exec.CommandContext(d.ctx, "unshare", unshareArgs...)
 }
 
 // waitForSocket waits for the tailscaled socket to be ready.
 func (d *Daemon) waitForSocket() error {
-	logger.Debug("Waiting for tailscaled socket at %s", d.socketPath)
+	logger.Debugf("Waiting for tailscaled socket at %s", d.socketPath)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -492,10 +493,10 @@ func (d *Daemon) waitForSocket() error {
 	for {
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("timeout waiting for tailscaled socket")
+			return errors.New("timeout waiting for tailscaled socket")
 		default:
 			if _, err := os.Stat(d.socketPath); err == nil {
-				logger.Info("tailscaled socket is ready")
+				logger.Infof("tailscaled socket is ready")
 				// Give it a bit more time to fully initialize
 				time.Sleep(500 * time.Millisecond)
 				return nil
@@ -519,7 +520,7 @@ func (d *Daemon) bringUp() error {
 			if err == nil {
 				return nil
 			}
-			logger.Warn("tailscale up with existing login failed, using the auth key: %v", err)
+			logger.Warnf("tailscale up with existing login failed, using the auth key: %v", err)
 		}
 	}
 
@@ -531,13 +532,13 @@ func (d *Daemon) bringUp() error {
 
 	// Check if it's an auth/state error that warrants a retry
 	if isStateError(err) {
-		logger.Warn("Auth failed with existing state, wiping and retrying: %v", err)
+		logger.Warnf("Auth failed with existing state, wiping and retrying: %v", err)
 		if err := WipeState(d.config.StateDir); err != nil {
-			logger.Warn("Failed to wipe state: %v", err)
+			logger.Warnf("Failed to wipe state: %v", err)
 		}
 
 		// Second attempt with fresh state
-		logger.Info("Retrying tailscale up with fresh state...")
+		logger.Infof("Retrying tailscale up with fresh state...")
 		return d.tryBringUp(true)
 	}
 
@@ -568,7 +569,9 @@ func (d *Daemon) waitBackendState() string {
 		ctx, cancel := context.WithTimeout(d.ctx, 5*time.Second)
 		out, err := exec.CommandContext(ctx, d.config.TailscaleBin, "--socket="+d.socketPath, "status", "--json").Output()
 		cancel()
-		var st struct{ BackendState string }
+		var st struct {
+			BackendState string `json:"BackendState"`
+		}
 		if err == nil && json.Unmarshal(out, &st) == nil && st.BackendState != "NoState" {
 			return st.BackendState
 		}
@@ -582,7 +585,7 @@ func (d *Daemon) waitBackendState() string {
 // tryBringUp runs "tailscale up" to connect to the network (single attempt).
 // Without withKey, it relies on the node still being logged in.
 func (d *Daemon) tryBringUp(withKey bool, extraArgs ...string) error {
-	logger.Info("Bringing up Tailscale for endpoint %s", d.config.EndpointID)
+	logger.Infof("Bringing up Tailscale for endpoint %s", d.config.EndpointID)
 
 	// The tailscale CLI communicates with tailscaled via the socket.
 	// Since the socket is on the host filesystem, we don't need nsenter.
@@ -618,7 +621,7 @@ func (d *Daemon) tryBringUp(withKey bool, extraArgs ...string) error {
 			redactedArgs[i] = arg
 		}
 	}
-	logger.Debug("Running: %s %v", d.config.TailscaleBin, redactedArgs)
+	logger.Debugf("Running: %s %v", d.config.TailscaleBin, redactedArgs)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -633,11 +636,11 @@ func (d *Daemon) tryBringUp(withKey bool, extraArgs ...string) error {
 	}
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		logger.Error("tailscale up failed with output: %s", string(output))
+		logger.Errorf("tailscale up failed with output: %s", string(output))
 		return fmt.Errorf("tailscale up failed: %w (output: %s)", err, string(output))
 	}
 
-	logger.Info("tailscale up succeeded: %s", string(output))
+	logger.Infof("tailscale up succeeded: %s", string(output))
 	return nil
 }
 
@@ -649,11 +652,11 @@ func (d *Daemon) configureService() error {
 	}
 
 	if len(d.config.Endpoints) == 0 {
-		logger.Warn("Service %s configured but no endpoints defined", d.config.Service)
+		logger.Warnf("Service %s configured but no endpoints defined", d.config.Service)
 		return nil
 	}
 
-	logger.Info("Configuring Tailscale Service %s with %d endpoint(s) for %s",
+	logger.Infof("Configuring Tailscale Service %s with %d endpoint(s) for %s",
 		d.config.Service, len(d.config.Endpoints), d.config.EndpointID)
 
 	// Configure each endpoint
@@ -689,10 +692,10 @@ func (d *Daemon) configureDirectServe() error {
 		return nil // No endpoints to configure
 	}
 
-	logger.Info("Configuring direct machine serve with %d endpoint(s) for %s",
+	logger.Infof("Configuring direct machine serve with %d endpoint(s) for %s",
 		len(d.config.Endpoints), d.config.EndpointID)
 	if servesWeb(d.config.Endpoints) {
-		logger.Warn("Endpoint %s serves HTTP on its own name %s: tailscaled issues a certificate for it, "+
+		logger.Warnf("Endpoint %s serves HTTP on its own name %s: tailscaled issues a certificate for it, "+
 			"even for plain HTTP, and every new task's name counts against Let's Encrypt's weekly limit for the tailnet",
 			d.config.EndpointID[:12], d.config.Hostname)
 	}
@@ -710,7 +713,7 @@ func (d *Daemon) configureDirectServe() error {
 
 // configureDirectServeEndpoint configures a single direct serve endpoint (without --service).
 func (d *Daemon) configureDirectServeEndpoint(ep ServeEndpoint) error {
-	logger.Debug("configureDirectServeEndpoint: proto=%s port=%s target=%s path=%s",
+	logger.Debugf("configureDirectServeEndpoint: proto=%s port=%s target=%s path=%s",
 		ep.Proto, ep.Port, ep.Target, ep.Path)
 
 	args, err := serveArgs(ep, "")
@@ -719,7 +722,7 @@ func (d *Daemon) configureDirectServeEndpoint(ep ServeEndpoint) error {
 	}
 	if args == nil {
 		// L3: not applicable for direct serve without service
-		logger.Debug("Skipping L3 (tun) endpoint for direct serve - only supported with services")
+		logger.Debugf("Skipping L3 (tun) endpoint for direct serve - only supported with services")
 		return nil
 	}
 	args = append([]string{"--socket=" + d.socketPath}, args...)
@@ -730,20 +733,19 @@ func (d *Daemon) configureDirectServeEndpoint(ep ServeEndpoint) error {
 	// Use streaming to see output as it arrives
 	prefix := fmt.Sprintf("direct-serve:%s:%s", ep.Proto, ep.Port)
 	output, err := d.tailscale(ctx, prefix, args...)
-
 	if err != nil {
-		logger.Error("tailscale serve (direct) failed: %v", err)
+		logger.Errorf("tailscale serve (direct) failed: %v", err)
 		return fmt.Errorf("tailscale serve (direct) failed: %w (output: %s)", err, output)
 	}
 
-	logger.Info("Direct serve endpoint %s:%s configured", ep.Proto, ep.Port)
+	logger.Infof("Direct serve endpoint %s:%s configured", ep.Proto, ep.Port)
 	return nil
 }
 
 // configureServeEndpoint configures a single serve endpoint for a service backend.
 // Supports L3 (tun), L4 (tcp, tls-terminated-tcp), and L7 (http, https).
 func (d *Daemon) configureServeEndpoint(ep ServeEndpoint) error {
-	logger.Debug("configureServeEndpoint: proto=%s port=%s target=%s path=%s service=%s",
+	logger.Debugf("configureServeEndpoint: proto=%s port=%s target=%s path=%s service=%s",
 		ep.Proto, ep.Port, ep.Target, ep.Path, d.config.Service)
 
 	args, err := serveArgs(ep, d.config.Service)
@@ -751,11 +753,11 @@ func (d *Daemon) configureServeEndpoint(ep ServeEndpoint) error {
 		return err
 	}
 	if ep.Proto == "tun" {
-		logger.Warn("L3 (tun) endpoints require additional iptables configuration")
+		logger.Warnf("L3 (tun) endpoints require additional iptables configuration")
 	}
 	args = append([]string{"--socket=" + d.socketPath}, args...)
 
-	d.serveDebug("Running: %s %v\n", d.config.TailscaleBin, args)
+	d.serveDebugf("Running: %s %v\n", d.config.TailscaleBin, args)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -763,10 +765,9 @@ func (d *Daemon) configureServeEndpoint(ep ServeEndpoint) error {
 	// Use streaming to see output as it arrives
 	prefix := fmt.Sprintf("serve:%s:%s", ep.Proto, ep.Port)
 	output, err := d.tailscale(ctx, prefix, args...)
-
 	if err != nil {
-		d.serveDebug("FAILED: %v\nOutput: %s\n", err, output)
-		logger.Error("tailscale serve failed: %v", err)
+		d.serveDebugf("FAILED: %v\nOutput: %s\n", err, output)
+		logger.Errorf("tailscale serve failed: %v", err)
 
 		if strings.Contains(output, "service not found") || strings.Contains(output, "unknown service") {
 			return fmt.Errorf("service %s not found: create it in Tailscale admin console first",
@@ -781,34 +782,34 @@ func (d *Daemon) configureServeEndpoint(ep ServeEndpoint) error {
 
 	// Check for approval pending (command succeeds but backend not active yet)
 	if strings.Contains(output, "approval from an admin is required") {
-		logger.Warn("Service backend registered but pending admin approval: %s", d.config.Service)
+		logger.Warnf("Service backend registered but pending admin approval: %s", d.config.Service)
 	}
 
-	d.serveDebug("SUCCESS\nOutput: %s\n", output)
-	logger.Info("tailscale serve endpoint %s:%s configured", ep.Proto, ep.Port)
+	d.serveDebugf("SUCCESS\nOutput: %s\n", output)
+	logger.Infof("tailscale serve endpoint %s:%s configured", ep.Proto, ep.Port)
 	return nil
 }
 
-// serveDebug appends a message to serve-debug.log in the state directory,
+// serveDebugf appends a message to serve-debug.log in the state directory,
 // which keeps a record of the serve attempts for debugging.
-func (d *Daemon) serveDebug(format string, args ...any) {
+func (d *Daemon) serveDebugf(format string, args ...any) {
 	path := filepath.Join(d.config.StateDir, "serve-debug.log")
 	f, err := logger.OpenRotating(path, serveDebugLogMaxBytes)
 	if err != nil {
-		logger.Warn("Failed to open serve debug file: %v", err)
+		logger.Warnf("Failed to open serve debug file: %v", err)
 		return
 	}
 	if _, err := fmt.Fprintf(f, format, args...); err != nil {
-		logger.Warn("Failed to write serve debug file: %v", err)
+		logger.Warnf("Failed to write serve debug file: %v", err)
 	}
 	if err := f.Close(); err != nil {
-		logger.Warn("Failed to close serve debug file: %v", err)
+		logger.Warnf("Failed to close serve debug file: %v", err)
 	}
 }
 
 // WaitForIP waits for Tailscale to get an IP address.
 func (d *Daemon) WaitForIP() (*Status, error) {
-	logger.Debug("Waiting for Tailscale IP for endpoint %s", d.config.EndpointID)
+	logger.Debugf("Waiting for Tailscale IP for endpoint %s", d.config.EndpointID)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -816,7 +817,7 @@ func (d *Daemon) WaitForIP() (*Status, error) {
 	for {
 		select {
 		case <-ctx.Done():
-			return nil, fmt.Errorf("timeout waiting for Tailscale IP")
+			return nil, errors.New("timeout waiting for Tailscale IP")
 		default:
 			status, err := d.getStatus()
 			if err == nil && status.IP != "" {
@@ -883,7 +884,7 @@ func (d *Daemon) IsRunning() bool {
 
 // Stop stops the tailscaled process.
 func (d *Daemon) Stop() error {
-	logger.Info("Stopping tailscaled for endpoint %s", d.config.EndpointID)
+	logger.Infof("Stopping tailscaled for endpoint %s", d.config.EndpointID)
 
 	// Mark as not running and get current state
 	d.mu.Lock()
@@ -915,14 +916,14 @@ func (d *Daemon) Stop() error {
 
 		// Kill the process
 		if err := cmd.Process.Kill(); err != nil {
-			logger.Warn("Failed to kill tailscaled: %v", err)
+			logger.Warnf("Failed to kill tailscaled: %v", err)
 		}
 
 		// Wait for process with timeout to avoid blocking forever
 		waitDone := make(chan struct{})
 		go func() {
 			if err := cmd.Wait(); err != nil {
-				logger.Debug("tailscaled process exited: %v", err)
+				logger.Debugf("tailscaled process exited: %v", err)
 			}
 			close(waitDone)
 		}()
@@ -931,25 +932,25 @@ func (d *Daemon) Stop() error {
 		case <-waitDone:
 			// Process exited cleanly
 		case <-time.After(5 * time.Second):
-			logger.Warn("Timeout waiting for tailscaled to exit")
+			logger.Warnf("Timeout waiting for tailscaled to exit")
 		}
 
 		// The socket outlives a killed tailscaled; sockets no longer sit in
 		// the state directory, so nothing else would clean it up
 		if err := os.Remove(d.socketPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-			logger.Warn("Failed to remove socket %s: %v", d.socketPath, err)
+			logger.Warnf("Failed to remove socket %s: %v", d.socketPath, err)
 		}
 	}
 
 	// Close pipes to unblock reader goroutines
 	if stdoutPipe != nil {
 		if err := stdoutPipe.Close(); err != nil {
-			logger.Debug("Failed to close stdout pipe: %v", err)
+			logger.Debugf("Failed to close stdout pipe: %v", err)
 		}
 	}
 	if stderrPipe != nil {
 		if err := stderrPipe.Close(); err != nil {
-			logger.Debug("Failed to close stderr pipe: %v", err)
+			logger.Debugf("Failed to close stderr pipe: %v", err)
 		}
 	}
 
@@ -962,10 +963,10 @@ func (d *Daemon) Stop() error {
 
 	select {
 	case <-done:
-		logger.Debug("All daemon goroutines stopped")
+		logger.Debugf("All daemon goroutines stopped")
 	case <-time.After(5 * time.Second):
-		logger.Warn("Timeout waiting for daemon goroutines to stop")
-		return fmt.Errorf("timeout waiting for daemon goroutines")
+		logger.Warnf("Timeout waiting for daemon goroutines to stop")
+		return errors.New("timeout waiting for daemon goroutines")
 	}
 
 	return nil
@@ -1011,7 +1012,9 @@ func (d *Daemon) BackendState() (string, error) {
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("tailscaled status: %s", resp.Status)
 	}
-	var status struct{ BackendState string }
+	var status struct {
+		BackendState string `json:"BackendState"`
+	}
 	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
 		return "", fmt.Errorf("failed to parse tailscaled status: %w", err)
 	}
@@ -1066,7 +1069,7 @@ func (d *Daemon) Drain(service string) error {
 // once tailscaled has applied the new preference; the node's MagicDNS name
 // follows when control answers with a new network map.
 func (d *Daemon) SetHostname(hostname string) error {
-	logger.Info("Setting hostname to %s for endpoint %s", hostname, d.config.EndpointID)
+	logger.Infof("Setting hostname to %s for endpoint %s", hostname, d.config.EndpointID)
 
 	args := []string{
 		"--socket=" + d.socketPath,
@@ -1087,14 +1090,14 @@ func (d *Daemon) SetHostname(hostname string) error {
 	d.config.Hostname = hostname
 	d.mu.Unlock()
 
-	logger.Info("Hostname updated successfully")
+	logger.Infof("Hostname updated successfully")
 	return nil
 }
 
 // ConfigureServeEndpoints configures multiple Tailscale serve endpoints after startup.
 // This is called when container info is obtained from cache after initial Join.
 func (d *Daemon) ConfigureServeEndpoints(service string, endpoints []ServeEndpoint, tags []string, direct bool) error {
-	logger.Info("Late-configuring serve endpoints: service=%s endpoints=%d direct=%v for %s",
+	logger.Infof("Late-configuring serve endpoints: service=%s endpoints=%d direct=%v for %s",
 		service, len(endpoints), direct, d.config.EndpointID)
 
 	// Update tags if provided
@@ -1110,7 +1113,7 @@ func (d *Daemon) ConfigureServeEndpoints(service string, endpoints []ServeEndpoi
 		defer cancel()
 
 		if output, err := d.tailscale(ctx, "set-tags", args...); err != nil {
-			logger.Warn("Failed to set tags: %v (output: %s)", err, output)
+			logger.Warnf("Failed to set tags: %v (output: %s)", err, output)
 		}
 	}
 
@@ -1127,7 +1130,7 @@ func (d *Daemon) ConfigureServeEndpoints(service string, endpoints []ServeEndpoi
 					i, ep.Proto, ep.Port, err)
 			}
 		}
-		logger.Info("Late direct serve configuration completed")
+		logger.Infof("Late direct serve configuration completed")
 	}
 
 	// Configure service backend if specified
@@ -1144,7 +1147,7 @@ func (d *Daemon) ConfigureServeEndpoints(service string, endpoints []ServeEndpoi
 				return err
 			}
 		}
-		logger.Info("Late service configuration completed")
+		logger.Infof("Late service configuration completed")
 	}
 
 	return nil

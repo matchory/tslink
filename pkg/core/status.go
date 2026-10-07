@@ -51,23 +51,23 @@ func (e *Endpoint) writeStatus(info *ContainerInfo, state string, attempts int, 
 	path := StatusPath(e.DataDir, e.ID)
 	data, err := json.Marshal(st)
 	if err == nil {
-		err = os.MkdirAll(filepath.Dir(path), 0700)
+		err = os.MkdirAll(filepath.Dir(path), 0o700)
 	}
 	if err == nil {
 		// Write and rename, so readers never see a partial file
 		tmp := path + ".tmp"
-		if err = os.WriteFile(tmp, data, 0600); err == nil {
+		if err = os.WriteFile(tmp, data, 0o600); err == nil {
 			err = os.Rename(tmp, path)
 		}
 	}
 	if err != nil {
-		logger.Warn("Failed to write status of endpoint %s: %v", e.ID[:12], err)
+		logger.Warnf("Failed to write status of endpoint %s: %v", e.ID[:12], err)
 	}
 }
 
 // removeStatus deletes the endpoint's status file.
 func (e *Endpoint) removeStatus() {
 	if err := os.Remove(StatusPath(e.DataDir, e.ID)); err != nil && !errors.Is(err, os.ErrNotExist) {
-		logger.Warn("Failed to remove status of endpoint %s: %v", e.ID[:12], err)
+		logger.Warnf("Failed to remove status of endpoint %s: %v", e.ID[:12], err)
 	}
 }

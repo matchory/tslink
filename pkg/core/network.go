@@ -14,7 +14,7 @@ import (
 // ClusterCredentialFile holds the cluster's OAuth client secret, in the
 // plugin's data directory. Networks without tslink.authkey register their
 // nodes with it, so stacks need no secret of their own.
-const ClusterCredentialFile = "oauth-client.secret"
+const ClusterCredentialFile = "oauth-client.secret" //nolint:gosec // a file name, not a credential
 
 // Network represents a Docker network using Tailscale.
 type Network struct {

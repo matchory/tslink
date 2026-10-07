@@ -60,9 +60,9 @@ func CollectGarbage(ctx context.Context, dataDir string, stateInUse, socketsInUs
 		if socketsInUse[id] || !stale(file) {
 			continue
 		}
-		logger.Info("Removing file of unknown endpoint: %s", file)
+		logger.Infof("Removing file of unknown endpoint: %s", file)
 		if err := os.Remove(file); err != nil {
-			logger.Warn("Failed to remove %s: %v", file, err)
+			logger.Warnf("Failed to remove %s: %v", file, err)
 		}
 	}
 	wg.Wait()
@@ -75,13 +75,13 @@ func RemoveDownloadCache(dataDir string) {
 	cache := filepath.Join(dataDir, "tailscale-bin")
 	if _, err := os.Lstat(cache); err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
-			logger.Warn("Failed to check for the old Tailscale download cache %s: %v", cache, err)
+			logger.Warnf("Failed to check for the old Tailscale download cache %s: %v", cache, err)
 		}
 		return
 	}
-	logger.Info("Removing the old Tailscale download cache %s: tslink uses its bundled binaries", cache)
+	logger.Infof("Removing the old Tailscale download cache %s: tslink uses its bundled binaries", cache)
 	if err := os.RemoveAll(cache); err != nil {
-		logger.Warn("Failed to remove %s: %v", cache, err)
+		logger.Warnf("Failed to remove %s: %v", cache, err)
 	}
 }
 
@@ -112,18 +112,18 @@ func removeEphemeral(ctx context.Context, dataDir, dir string) {
 		}
 	}()
 
-	logger.Info("Logging out and removing ephemeral node no endpoint uses: %s", dir)
+	logger.Infof("Logging out and removing ephemeral node no endpoint uses: %s", dir)
 	logoutCtx, cancel := context.WithTimeout(ctx, gcLogoutTimeout)
 	defer cancel()
 	if err := logoutNode(logoutCtx, dataDir, dir); err != nil {
 		if ctx.Err() != nil {
-			logger.Info("Logging out ephemeral node of %s interrupted, keeping its state", dir)
+			logger.Infof("Logging out ephemeral node of %s interrupted, keeping its state", dir)
 			return
 		}
-		logger.Warn("Failed to log out ephemeral node of %s, removing its state anyway: %v", dir, err)
+		logger.Warnf("Failed to log out ephemeral node of %s, removing its state anyway: %v", dir, err)
 	}
 	if err := os.RemoveAll(dir); err != nil {
-		logger.Warn("Failed to remove %s: %v", dir, err)
+		logger.Warnf("Failed to remove %s: %v", dir, err)
 	}
 }
 

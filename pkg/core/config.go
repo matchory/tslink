@@ -58,10 +58,10 @@ func LoadConfig() (*Config, error) {
 	// installation upgraded with these settings keeps working, on the bundled
 	// version.
 	if v := os.Getenv("TS_VERSION"); v != "" && !strings.EqualFold(v, tailscale.BundledVersion) {
-		logger.Warn("Ignoring TS_VERSION=%s: tslink runs the Tailscale bundled in the plugin image", v)
+		logger.Warnf("Ignoring TS_VERSION=%s: tslink runs the Tailscale bundled in the plugin image", v)
 	}
 	if p := os.Getenv("TS_PATH"); p != "" {
-		logger.Warn("Ignoring TS_PATH=%s: tslink runs the Tailscale bundled in the plugin image", p)
+		logger.Warnf("Ignoring TS_PATH=%s: tslink runs the Tailscale bundled in the plugin image", p)
 	}
 
 	return cfg, nil

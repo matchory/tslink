@@ -50,7 +50,7 @@ func LinkCertsDir(stateDir, shared string) error {
 	if shared == "" {
 		return nil
 	}
-	if err := os.MkdirAll(shared, 0700); err != nil {
+	if err := os.MkdirAll(shared, 0o700); err != nil {
 		return fmt.Errorf("failed to create certificate directory: %w", err)
 	}
 	// Two tailscaleds would each create their own key, and certificates issued
@@ -65,7 +65,7 @@ func LinkCertsDir(stateDir, shared string) error {
 	case err != nil:
 		return fmt.Errorf("failed to check %s: %w", link, err)
 	case st.Mode()&fs.ModeSymlink == 0:
-		logger.Warn("%s is a directory, not shared: keeping it", link)
+		logger.Warnf("%s is a directory, not shared: keeping it", link)
 		return nil
 	default:
 		if target, err := os.Readlink(link); err == nil && target == shared {
@@ -98,7 +98,7 @@ func ensureAccountKey(dir string) error {
 		return fmt.Errorf("failed to encode ACME account key: %w", err)
 	}
 	pemKey := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: der})
-	if err := createExclusive(path, pemKey, 0600); err != nil && !errors.Is(err, fs.ErrExist) {
+	if err := createExclusive(path, pemKey, 0o600); err != nil && !errors.Is(err, fs.ErrExist) {
 		return fmt.Errorf("failed to write ACME account key: %w", err)
 	}
 	return nil
@@ -113,7 +113,7 @@ func createExclusive(path string, data []byte, perm os.FileMode) error {
 	}
 	defer func() {
 		if err := os.Remove(tmp.Name()); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			logger.Warn("Failed to remove %s: %v", tmp.Name(), err)
+			logger.Warnf("Failed to remove %s: %v", tmp.Name(), err)
 		}
 	}()
 	if _, err := tmp.Write(data); err != nil {
@@ -154,7 +154,7 @@ type certLease struct {
 // another replica holds it and it is not stale.
 func tryLease(dir, domain, holder string) (*certLease, error) {
 	path := filepath.Join(dir, domain+".lease")
-	err := createExclusive(path, []byte(holder+"\n"), 0600)
+	err := createExclusive(path, []byte(holder+"\n"), 0o600)
 	if errors.Is(err, fs.ErrExist) {
 		st, statErr := os.Stat(path)
 		if statErr != nil || time.Since(st.ModTime()) < certLeaseStale {
@@ -162,11 +162,11 @@ func tryLease(dir, domain, holder string) (*certLease, error) {
 		}
 		// Two replicas may both find it stale and both take it; that costs
 		// one certificate, not the limit
-		logger.Warn("Taking over stale certificate lease %s", path)
+		logger.Warnf("Taking over stale certificate lease %s", path)
 		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return nil, fmt.Errorf("failed to remove stale lease: %w", err)
 		}
-		err = createExclusive(path, []byte(holder+"\n"), 0600)
+		err = createExclusive(path, []byte(holder+"\n"), 0o600)
 		if errors.Is(err, fs.ErrExist) {
 			return nil, errLeaseHeld
 		}
@@ -190,7 +190,7 @@ func (l *certLease) refresh() {
 			return
 		case now := <-ticker.C:
 			if err := os.Chtimes(l.path, now, now); err != nil {
-				logger.Warn("Failed to refresh certificate lease %s: %v", l.path, err)
+				logger.Warnf("Failed to refresh certificate lease %s: %v", l.path, err)
 			}
 		}
 	}
@@ -201,7 +201,7 @@ func (l *certLease) release() {
 	close(l.stop)
 	<-l.done
 	if err := os.Remove(l.path); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		logger.Warn("Failed to release certificate lease %s: %v", l.path, err)
+		logger.Warnf("Failed to release certificate lease %s: %v", l.path, err)
 	}
 }
 
@@ -224,7 +224,7 @@ func (d *Daemon) requestCert(dir, domain string) error {
 				err = fmt.Errorf("%w: %s", err, strings.TrimSpace(string(exitErr.Stderr)))
 			}
 			if err.Error() != lastErr {
-				logger.Info("Certificate for %s not issued yet: %v", domain, err)
+				logger.Infof("Certificate for %s not issued yet: %v", domain, err)
 				lastErr = err.Error()
 			}
 		}
@@ -253,7 +253,7 @@ func (d *Daemon) configureServiceWhenCertified() error {
 	if validCert(dir, domain, time.Now()) {
 		return d.configureService()
 	}
-	logger.Info("No certificate for %s yet: configuring %s once there is one", domain, d.config.Service)
+	logger.Infof("No certificate for %s yet: configuring %s once there is one", domain, d.config.Service)
 	go d.configureServiceAfterCert(dir, domain)
 	return nil
 }
@@ -265,7 +265,7 @@ func (d *Daemon) configureServiceAfterCert(dir, domain string) {
 			return
 		}
 		if !errors.Is(err, errLeaseHeld) {
-			logger.Warn("Failed to configure %s, retrying: %v", d.config.Service, err)
+			logger.Warnf("Failed to configure %s, retrying: %v", d.config.Service, err)
 		}
 		select {
 		case <-d.ctx.Done():
@@ -283,7 +283,7 @@ func (d *Daemon) configureServiceWithCert(dir, domain string) error {
 		if err := d.configureService(); err != nil {
 			return err
 		}
-		logger.Info("Configured %s with the certificate for %s", d.config.Service, domain)
+		logger.Infof("Configured %s with the certificate for %s", d.config.Service, domain)
 		return nil
 	}
 
@@ -292,7 +292,7 @@ func (d *Daemon) configureServiceWithCert(dir, domain string) error {
 		return err
 	}
 	defer lease.release()
-	logger.Info("Holding the certificate lease for %s: configuring %s to issue it", domain, d.config.Service)
+	logger.Infof("Holding the certificate lease for %s: configuring %s to issue it", domain, d.config.Service)
 	if err := d.configureService(); err != nil {
 		return err
 	}
@@ -300,7 +300,7 @@ func (d *Daemon) configureServiceWithCert(dir, domain string) error {
 	if err := d.requestCert(dir, domain); err != nil {
 		return err
 	}
-	logger.Info("Certificate for %s issued", domain)
+	logger.Infof("Certificate for %s issued", domain)
 	return nil
 }
 

@@ -236,12 +236,17 @@ func (d *Driver) CreateNetwork(req *network.CreateNetworkRequest) error {
 	if authKey == "" {
 		return fmt.Errorf("no Tailscale auth key provided: set TS_AUTHKEY env var or use --opt tslink.authkey=xxx")
 	}
+	if err := core.ValidateLoginServer(opts.LoginServer); err != nil {
+		return err
+	}
 
 	net := &core.Network{
 		ID:      req.NetworkID,
 		AuthKey: authKey,
 		Tags:    opts.Tags,
 		MTU:     opts.MTU,
+
+		LoginServer: opts.LoginServer,
 	}
 
 	d.networks[req.NetworkID] = net
@@ -278,13 +283,13 @@ func (d *Driver) FreeNetwork(req *network.FreeNetworkRequest) error {
 func (d *Driver) CreateEndpoint(req *network.CreateEndpointRequest) (*network.CreateEndpointResponse, error) {
 	logger.Info("CreateEndpoint: network=%s endpoint=%s", req.NetworkID, req.EndpointID)
 
+	net, err := d.networkFor(d.ctx, req.NetworkID)
+	if err != nil {
+		return nil, err
+	}
+
 	d.mu.Lock()
 	defer d.mu.Unlock()
-
-	net, ok := d.networks[req.NetworkID]
-	if !ok {
-		return nil, fmt.Errorf("network %s not found", req.NetworkID)
-	}
 
 	// Parse endpoint options for hostname override
 	opts := core.ParseEndpointOptions(req.Options)
@@ -601,7 +606,7 @@ func (d *Driver) RecoverEndpoints(ctx context.Context) error {
 			logger.Info("RecoverEndpoints: found orphaned endpoint %s for container %s on network %s",
 				endpointID[:12], container.ID[:12], netName)
 
-			if err := d.recoverEndpoint(ctx, container.ID, netName, netSettings.NetworkID, endpointID, networkResult); err != nil {
+			if err := d.recoverEndpoint(ctx, container.ID, netName, endpointID, networkResult); err != nil {
 				logger.Error("RecoverEndpoints: failed to recover endpoint %s: %v", endpointID[:12], err)
 				continue
 			}
@@ -622,7 +627,7 @@ func (d *Driver) RecoverEndpoints(ctx context.Context) error {
 // It recreates the network and endpoint in driver state, then triggers Tailscale setup.
 func (d *Driver) recoverEndpoint(
 	ctx context.Context,
-	containerID, netName, networkID, endpointID string,
+	containerID, netName, endpointID string,
 	networkResult dockerclient.NetworkInspectResult,
 ) error {
 	// Get full container info
@@ -643,30 +648,10 @@ func (d *Driver) recoverEndpoint(
 	}
 
 	// Ensure network exists in driver state
-	d.mu.Lock()
-	net, netExists := d.networks[networkID]
-	if !netExists {
-		// Recover network from Docker info
-		authKey := d.config.AuthKey // Use default auth key
-		// Try to get auth key from network options
-		if opts, ok := networkResult.Network.Options["tslink.authkey"]; ok {
-			authKey = opts
-		}
-		if authKey == "" {
-			d.mu.Unlock()
-			return fmt.Errorf("no auth key available for network %s", networkID[:12])
-		}
-
-		net = &core.Network{
-			ID:      networkID,
-			AuthKey: authKey,
-			Tags:    core.ParseTags(networkResult.Network.Options["tslink.tags"]),
-			MTU:     core.ParseMTU(networkResult.Network.Options[core.MTUOption]),
-		}
-		d.networks[networkID] = net
-		logger.Info("recoverEndpoint: recovered network %s", networkID[:12])
+	net, err := d.adoptNetwork(networkResult)
+	if err != nil {
+		return err
 	}
-	d.mu.Unlock()
 
 	// Parse container info for Tailscale config
 	name := strings.TrimPrefix(containerInfo.Container.Name, "/")

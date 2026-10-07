@@ -167,13 +167,18 @@ return fmt.Errorf("failed to create endpoint: %w", err)
   namespace tests in `pkg/netutil` skip without root, so CI runs them a second time with `sudo`.
 - `linter.yml`: super-linter for everything except Go (Markdown, YAML, shell, Dockerfile). Configs are in
   `.github/linters/`.
+- `e2e.yml`: `test/integration/run.sh`, the end-to-end test. It builds the plugin, installs it as `tslink` and runs
+  containers against a headscale control server on the runner (`tslink.loginserver`), so it needs no Tailscale
+  account: tailnet reachability, an ACL refusal, identity across a plugin restart, and removal of an ephemeral node.
+  Tailscale Services are not covered: headscale does not support them. The headscale and Alpine images are pinned
+  by digest in `run.sh`, which Dependabot does not update. It replaces the host's `tslink` plugin; run it locally only
+  on a disposable Linux machine.
 - `codeql-analysis.yml`: CodeQL for Go and the workflows.
 - `release.yml`: a push to `main` publishes `ghcr.io/matchory/tslink:main-<arch>`; a `vX.Y.Z` tag publishes
   `vX.Y.Z-<arch>` and `latest-<arch>` and creates a GitHub release. Docker plugins have no multi-arch manifests, so
   each architecture is built on a native runner and pushed under its own tag.
 - Dependencies are updated by Dependabot (`.github/dependabot.yml`): Actions, Go modules and the Dockerfile base images.
 
-`test/integration` runs against upstream's tailnet (`atlas-diminished.ts.net`) and is not part of CI.
 `test/cluster` builds a three-node Swarm on Hetzner Cloud and runs `regress.sh` against a real tailnet; see `test/cluster/README.md`.
 
 ## Troubleshooting

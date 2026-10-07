@@ -30,7 +30,9 @@ three- and five-node swarms; see [docs/testing](docs/testing).
   running containers, and brings up nodes that are still logged in without
   the auth key, so a revoked or rotated secret does not take them down.
 - Garbage collection after recovery and after every watchdog scan removes
-  ephemeral state, sockets and status files that no endpoint uses.
+  ephemeral state, sockets and status files that no endpoint uses. It logs
+  orphaned ephemeral nodes out first, so their devices disappear at once and
+  a fixed `tslink.hostname` keeps its name after a crash.
 - Draining: Tailscale Service backends are drained when Docker sends a
   container its stop signal and when the plugin shuts down, and advertised
   again on start.
@@ -41,9 +43,10 @@ three- and five-node swarms; see [docs/testing](docs/testing).
   or `failed`) in `/var/lib/docker-plugins/tailscale/status/<endpoint>.json`.
   `tslink diag` and `scripts/tslink-diag.sh` list containers whose Tailscale
   is not running, and why.
-- The plugin image ships a pinned Tailscale, used with
-  `TS_VERSION=bundled`, the new default.
+- The plugin image ships a pinned Tailscale, updated by Dependabot.
 - `com.docker.network.driver.mtu` sets the MTU of tslink's interface.
+- `tslink.loginserver` network option: a custom control server, such as
+  headscale.
 - `tslink.serve` options: `?proxy-protocol=1|2` on `tcp` and
   `tls-terminated-tcp` endpoints sends the caller's address in a PROXY
   protocol header; `?accept-app-caps=<cap>[,<cap>]` on `http` and `https`
@@ -55,12 +58,15 @@ three- and five-node swarms; see [docs/testing](docs/testing).
   [credentials and tags on Swarm](docs/credentials.md), the Swarm test
   reports, `SECURITY.md` and `CONTRIBUTING.md`.
 - `test/cluster`: scripts that build a Swarm test bed and a regression suite.
+- `test/integration`: an end-to-end test against a local headscale, run in CI
+  on every pull request.
 
 ### Changed
 
 - Images are published as `ghcr.io/matchory/tslink:<version>-<arch>`. The
   documentation installs the plugin under the alias `tslink`, so networks and
-  stack files name the driver `tslink` whatever the version and architecture.
+  stack files name the driver `tslink:latest` whatever the version and
+  architecture.
 - The plugin recognises its networks by ID, not by the driver name, so it
   works under any alias.
 - Routing: containers keep Docker's gateway, so Docker's DNS server resolves
@@ -72,6 +78,11 @@ three- and five-node swarms; see [docs/testing](docs/testing).
   hostnames; an invalid `tslink.hostname` label is refused.
 - CI moved to GitHub Actions with golangci-lint, super-linter and CodeQL;
   dependency updates come from Dependabot instead of Renovate.
+
+### Removed
+
+- Downloading Tailscale at runtime: tslink runs only the bundled binaries.
+  `TS_VERSION` other than `bundled` and `TS_PATH` are ignored with a warning.
 
 ### Fixed
 
@@ -85,6 +96,10 @@ three- and five-node swarms; see [docs/testing](docs/testing).
 - Recovered endpoints leaked their veth and NAT rules when they stopped.
 - Two containers with the same `tslink.hostname` on one node shared a node
   key.
+- After a plugin restart, networks without running containers were
+  forgotten, and new containers on them failed with "network not found".
+- A Service whose configuration arrived after Tailscale was up was never
+  advertised again, so a backend drained in its state stayed drained.
 
 ### Security
 

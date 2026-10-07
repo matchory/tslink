@@ -208,18 +208,27 @@ For most use cases, use an ephemeral, reusable, pre-approved key.
 
 ## Running on Swarm
 
-Measured on a three-node swarm; see
-[docs/swarm-cluster-test-2026-10-07.md](docs/swarm-cluster-test-2026-10-07.md).
+Measured on three- and five-node swarms; see
+[docs/swarm-cluster-test-2026-10-07.md](docs/swarm-cluster-test-2026-10-07.md)
+and [docs/swarm-cluster-followup-2026-10-07.md](docs/swarm-cluster-followup-2026-10-07.md).
 
 - **Zero-downtime updates of a Tailscale Service.** tslink drains a task's
   Service backend when Docker sends it the stop signal, and callers move to
   other replicas. They need a moment to learn of it, so the application
   should keep serving for a few seconds after SIGTERM; one that exits at once
   costs its callers a second or so of errors.
-- **Maintenance:** drain a node (`docker node update --availability drain`)
-  before rebooting it or restarting Docker. Docker stops reporting events
-  once it shuts down, so a node that just stops drops callers pinned to its
-  backends for the length of the stop timeout.
+- **Restarts and reboots:** Docker stops reporting events once it shuts
+  down, so tslink cannot drain the Service backends of a node whose Docker
+  stops; callers pinned to them failed for 7 to 16 seconds. Install
+  [deploy/systemd](deploy/systemd): `tslink-drain` as
+  `/usr/local/sbin/tslink-drain` and `tslink-drain.conf` as
+  `/etc/systemd/system/docker.service.d/tslink-drain.conf`, then
+  `systemctl daemon-reload`. Before dockerd gets SIGTERM, it drains every
+  backend on the node and waits 3 seconds (`TSLINK_DRAIN_WAIT`); with it,
+  `systemctl restart docker` and `systemctl reboot` cost callers at most one
+  failed request. It does not cover a crash of dockerd. For planned
+  maintenance, draining the node in Swarm
+  (`docker node update --availability drain`) still moves its tasks first.
 - **Upgrading the plugin** restarts every tailscaled on the node, which keeps
   its identity; the node's tasks are off the tailnet for about three seconds.
 - **Throughput:** enable UDP GRO forwarding on the node's uplink

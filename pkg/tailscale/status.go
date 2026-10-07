@@ -1,0 +1,117 @@
+package tailscale
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net"
+	"net/http"
+	"os/exec"
+	"time"
+
+	"github.com/aaomidi/tslink/pkg/logger"
+)
+
+// Status represents the status of a Tailscale connection.
+type Status struct {
+	IP       string
+	Hostname string
+	Online   bool
+}
+
+// WaitForIP waits for Tailscale to get an IP address.
+func (d *Daemon) WaitForIP() (*Status, error) {
+	logger.Debug("Waiting for Tailscale IP for endpoint %s", d.config.EndpointID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("timeout waiting for Tailscale IP")
+		default:
+			status, err := d.getStatus()
+			if err == nil && status.IP != "" {
+				return status, nil
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+	}
+}
+
+// getStatus gets the current Tailscale status.
+func (d *Daemon) getStatus() (*Status, error) {
+	args := []string{
+		"--socket=" + d.socketPath,
+		"status",
+		"--json",
+	}
+
+	ctx, cancel := context.WithTimeout(d.ctx, 10*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, d.config.TailscaleBin, args...)
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("tailscale status failed: %w", err)
+	}
+
+	var result struct {
+		Self struct {
+			TailscaleIPs []string `json:"TailscaleIPs"`
+			HostName     string   `json:"HostName"`
+			Online       bool     `json:"Online"`
+		} `json:"Self"`
+	}
+
+	if err := json.Unmarshal(output, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse status: %w", err)
+	}
+
+	status := &Status{
+		Hostname: result.Self.HostName,
+		Online:   result.Self.Online,
+	}
+
+	if len(result.Self.TailscaleIPs) > 0 {
+		status.IP = result.Self.TailscaleIPs[0]
+	}
+
+	return status, nil
+}
+
+// BackendState returns tailscaled's backend state, such as Running or
+// NeedsLogin, from its LocalAPI: cheaper than running the CLI on every
+// health check.
+func (d *Daemon) BackendState() (string, error) {
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				var dialer net.Dialer
+				return dialer.DialContext(ctx, "unix", d.socketPath)
+			},
+		},
+	}
+	defer client.CloseIdleConnections()
+
+	req, err := http.NewRequestWithContext(d.ctx, http.MethodGet,
+		"http://local-tailscaled.sock/localapi/v0/status?peers=false", nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to build status request: %w", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to query tailscaled: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("tailscaled status: %s", resp.Status)
+	}
+	var status struct{ BackendState string }
+	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+		return "", fmt.Errorf("failed to parse tailscaled status: %w", err)
+	}
+	return status.BackendState, nil
+}

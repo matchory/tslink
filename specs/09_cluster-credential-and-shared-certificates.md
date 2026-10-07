@@ -207,7 +207,7 @@ this spec accepts it and counts on validation to show how often it happens.
 
 On the test bed ([test/cluster](../test/cluster/README.md)), against Let's Encrypt staging through
 `TS_DEBUG_ACME_DIRECTORY_URL`, with an NFS export from `mgr` mounted on all five nodes as the shared volume. Results
-from 2026-10-07 follow each item; renewal (5) is not yet tested.
+from 2026-10-07 follow each item.
 
 1. **Cluster credential:** mint a client that owns the `tag:tslink-test-*` tags and deploy `callee` and `caller` with
    only `tslink.tags`, as stacks named `tslink-test-callee` and `tslink-test-caller` to satisfy the tag scope; run
@@ -222,20 +222,42 @@ from 2026-10-07 follow each item; renewal (5) is not yet tested.
    Service with `https` on 443, three replicas. Expect exactly one issuance, and no replica advertised before its
    certificate. **Passed** after the fixes in [Tailscale behavior](#tailscale-behavior-worked-around): one certificate,
    issued 32 seconds after the holder took the lease; the two waiting replicas configured themselves a second later.
+   With a grant on `tcp:443`, HTTPS through the Service answered from callers on all five nodes, with the shared
+   certificate for the Service's name, verified against the test CA's root alone.
 4. **Rolling updates:** ten `start-first` updates; expect no new issuance. **Passed** with three updates (nine new
    replicas): no new certificate.
 5. **Renewal**, against [Pebble](https://github.com/letsencrypt/pebble) instead of staging, since staging certificates
-   live 90 days:
-   - Run Pebble on `mgr` with a certificate lifetime of minutes, so renewal windows (ARI) come round quickly, and public
-     DNS as its resolver, so it sees the challenge records Tailscale's control plane publishes.
-   - Make tailscaled trust Pebble's roots: set `SSL_CERT_FILE` to the system bundle plus Pebble's roots. It must keep
-     the system roots, which tailscaled needs for everything else.
-   - Over several windows with three replicas, count the orders, check that each one replaces a previous certificate,
-     and that overlapping renewals fail without falling back to an order that is not a renewal.
-   - Pebble has no rate limits and may treat replacement orders differently from Let's Encrypt, so this validates
-     tailscaled's and tslink's behavior, not Let's Encrypt's exemption.
-   - First check that Pebble issues for `ts.net` names at all: `ts.net` has a CAA record allowing only Let's Encrypt and
-     Amazon, which Pebble is believed not to enforce.
+   live 90 days: certificates valid for 10 minutes, three replicas, and each replica's tailscaled asked for the
+   certificate every 5 seconds, as TLS handshakes would; nothing else triggers a renewal check within the hour.
+   Pebble, version 2.10.1, needed changes to stand in for Let's Encrypt:
+   - a `Location` header on finalize responses: Pebble always finalizes asynchronously, and tailscaled's ACME client
+     polls the order named there (Boulder usually returns a valid order at once);
+   - certificates marked as replaced when the replacing order is created, as Boulder does, rather than after
+     finalization, and unmarked when that order fails;
+   - an ARI window of 5 to 7 minutes after issuance for each certificate, like Let's Encrypt's narrow windows: Pebble's
+     own is 48 hours wide, which covers the whole lifetime of a short certificate;
+   - no reuse of authorizations, and DNS lookups against `ts.net`'s authoritative servers: a public resolver caches the
+     challenge TXT set for 300 seconds and hides new values.
+
+   **Passed**, over two runs and nine windows:
+   - Every renewal order named the certificate on disk at the time, so each certificate replaced the previous one.
+     Orders without `replaces` came only from first issuance and from an expired certificate (below). No torn read was
+     seen, but over eight renewals that says little about a millisecond window.
+   - Each replica renews once per window: it keeps its renewal time until its own renewal succeeds.
+   - Overlapping renewals: while one replica's order was pending, the others were refused with `alreadyReplaced` and
+     retried on every request, always as renewals. Without the Boulder change, Pebble accepted all three overlapping
+     orders and issued three renewals.
+   - Replicas restarted during a window found the certificate and configured the Service without issuing. A replica
+     stopped while its renewal order was pending left the order open, and it blocked every other replica's renewal
+     until the certificate expired; then each replica issued a certificate without `replaces`. Let's Encrypt's orders
+     expire after 7 days, well before its certificates do, so there a stopped renewal only delays the next one.
+   - After a plugin restart, replicas whose serve configuration survived ordered at once, and Pebble issued each its
+     own certificate; Let's Encrypt gives them one order (see [First issuance](#first-issuance)).
+   - Pebble does not check CAA, so it issued for `ts.net` names.
+   - Two thirds of the DNS-01 validations failed: the TXT records Tailscale's control plane publishes reached some of
+     dnsimple's servers late. tailscaled retries them as renewals, but Let's Encrypt counts failed validations
+     against a limit per name and account.
+   - Pebble has no rate limits, so this validates tailscaled's and tslink's behavior, not Let's Encrypt's exemption.
 6. **Lease takeover:** kill the holder's tailscaled during issuance; another replica takes the stale lease. **Passed:**
    a plugin reinstall killed the holder, and another replica took the lease once it went stale.
 7. **Locking on the shared volume:** exclusive create of the lease is atomic on GlusterFS (and on NFS, if used).

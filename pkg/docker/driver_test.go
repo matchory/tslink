@@ -462,3 +462,49 @@ func TestStartCollectsGarbageAfterRecovery(t *testing.T) {
 		t.Errorf("collected the socket of the recovered endpoint: %v", err)
 	}
 }
+
+// A recovery that fails after claiming the container's state directory must
+// give the claim up: otherwise the container, restarted with a new endpoint,
+// cannot start Tailscale on its state and retries forever.
+func TestFailedRecoveryReleasesStateDir(t *testing.T) {
+	t.Skip("bug: recoverEndpoint keeps the state directory claim when restoring the routing fails")
+	fake := newFakeDocker()
+	netID := fake.addNetwork("net", pluginName, map[string]string{"tslink.authkey": "k"}, nil)
+	fake.addContainer("web", nil, attachment{"net", netID, fakeID("ep")})
+	td := newTestDriver(t, fake)
+	td.recoverErr = errors.New("no such netns")
+
+	if err := td.RecoverEndpoints(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	net, _ := td.network(netID)
+	restarted, err := core.NewEndpoint(fakeID("ep-new"), net, core.EndpointOptions{}, td.config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.ClaimStateDir(parseContainerInfo("web", nil)); err != nil {
+		t.Errorf("state directory still claimed by the endpoint whose recovery failed: %v", err)
+	}
+}
+
+// An endpoint that joined but never saw its connect event, as when the event
+// stream was down (the watcher reconnects without asking for missed events),
+// should get Tailscale from the watchdog's recovery. Recovery skips every
+// endpoint the driver knows, started or not, so it never does.
+func TestRecoveryStartsEndpointThatMissedItsEvent(t *testing.T) {
+	t.Skip("bug: an endpoint whose connect event was missed never starts Tailscale")
+	fake := newFakeDocker()
+	netID := fake.addNetwork("net", pluginName, map[string]string{"tslink.authkey": "k"}, nil)
+	epID := fakeID("ep")
+	fake.addContainer("web", nil, attachment{"net", netID, epID})
+	td := newTestDriver(t, fake)
+	td.createNetwork(t, netID, map[string]string{"tslink.authkey": "k"})
+	td.join(t, netID, epID, sandbox)
+
+	if err := td.RecoverEndpoints(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if r := td.nextRun(t); r.endpointID != epID || r.info.Hostname != "web" {
+		t.Errorf("started %+v", r)
+	}
+}

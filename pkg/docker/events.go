@@ -2,6 +2,7 @@ package docker
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
 	"sync"
@@ -89,6 +90,10 @@ func WatchEvents(
 		Add("type", "network", "container").
 		Add("event", "connect", "kill")
 
+	// The time of the first event the watcher has not seen. Reconnecting, it
+	// asks for the events since then: a connect event lost while the stream
+	// was down would leave its endpoint without Tailscale until the watchdog.
+	since := time.Now()
 	result := cli.Events(ctx, dockerclient.EventsListOptions{
 		Filters: filterArgs,
 	})
@@ -119,13 +124,18 @@ func WatchEvents(
 				case <-time.After(1 * time.Second):
 				}
 
-				// Reconnect after backoff
+				// Reconnect after backoff, with the events missed meanwhile
 				result = cli.Events(ctx, dockerclient.EventsListOptions{
+					Since:   eventsSince(since),
 					Filters: filterArgs,
 				})
 			}
 
 		case msg := <-result.Messages:
+			if msg.TimeNano != 0 {
+				since = time.Unix(0, msg.TimeNano+1)
+			}
+
 			// Log all network events for debugging
 			logger.Debug("Event received: type=%s network=%s driver=%s",
 				msg.Action, msg.Actor.ID, msg.Actor.Attributes["type"])
@@ -208,6 +218,11 @@ func WatchEvents(
 			}
 		}
 	}
+}
+
+// eventsSince formats t for the Since option of the event stream.
+func eventsSince(t time.Time) string {
+	return fmt.Sprintf("%d.%09d", t.Unix(), t.Nanosecond())
 }
 
 // stopSignalOf returns the container's configured stop signal, empty for the default.

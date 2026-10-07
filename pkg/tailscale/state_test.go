@@ -23,13 +23,13 @@ func TestIsEphemeralKey(t *testing.T) {
 	}
 }
 
-func TestEnsureBinariesBundled(t *testing.T) {
+func TestBundledBinaries(t *testing.T) {
 	dir := t.TempDir()
 	orig := bundledDir
 	bundledDir = dir
 	t.Cleanup(func() { bundledDir = orig })
 
-	if _, _, err := EnsureBinaries(BundledVersion, ""); err == nil {
+	if _, _, err := BundledBinaries(); err == nil {
 		t.Fatal("want an error while the bundled binaries are missing")
 	}
 	for _, b := range []string{"tailscale", "tailscaled"} {
@@ -37,8 +37,8 @@ func TestEnsureBinariesBundled(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	ts, tsd, err := EnsureBinaries(BundledVersion, "")
+	ts, tsd, err := BundledBinaries()
 	if err != nil || ts != filepath.Join(dir, "tailscale") || tsd != filepath.Join(dir, "tailscaled") {
-		t.Errorf("EnsureBinaries = %q, %q, %v", ts, tsd, err)
+		t.Errorf("BundledBinaries = %q, %q, %v", ts, tsd, err)
 	}
 }

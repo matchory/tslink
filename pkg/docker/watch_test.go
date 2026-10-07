@@ -11,7 +11,7 @@ import (
 
 	"github.com/docker/go-plugins-helpers/network"
 
-	"github.com/aaomidi/tslink/pkg/core"
+	"github.com/matchory/tslink/pkg/core"
 )
 
 // eventSetup is a driver watching events, with a tslink network the driver

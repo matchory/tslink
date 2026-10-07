@@ -18,7 +18,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aaomidi/tslink/pkg/logger"
+	"github.com/matchory/tslink/pkg/logger"
 )
 
 // Every tailscaled keeps its certificates in one directory, on a volume shared

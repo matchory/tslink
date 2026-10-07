@@ -361,7 +361,7 @@ func (d *Daemon) tailscaledCommand(args []string) *exec.Cmd {
 		"--mount", "--propagation", "private", "--",
 		"sh", "-c", `mount --bind "$0" /etc/resolv.conf || echo "tslink: tailscaled keeps the plugin's resolv.conf" >&2
 b=/etc/resolv.pre-tailscale-backup.conf
-{ [ -e $b ] || : >$b; } && mount --bind "$1" $b || echo "tslink: tailscaled shares the plugin's resolv.conf backup" >&2
+{ [ -e $b ] || touch $b; } && mount --bind "$1" $b || echo "tslink: tailscaled shares the plugin's resolv.conf backup" >&2
 netns=$2; shift 2; exec nsenter --net="$netns" -- "$@"`,
 		resolvConf, backup, d.config.NetNSPath, d.config.TailscaledBin,
 	}

@@ -1,0 +1,17 @@
+#!/bin/bash
+# hetzner-power reset|poweroff|poweron <node> -- Hetzner Cloud provisioner: a power action on the
+# server provision.sh created for <node> (tslink-test-<node>). disrupt runs $TSLINK_TEST_POWER, this
+# script by default, for its reset and poweroff actions; another provider needs a script with the
+# same arguments.
+set -euo pipefail
+# shellcheck source=config.sh
+. "$(dirname "$0")/config.sh"
+HCLOUD_TOKEN=$(cat "$TSLINK_TEST_DIR/hcloud.token")
+export HCLOUD_TOKEN
+case $1 in
+reset | poweroff | poweron) exec hcloud server "$1" "tslink-test-$2" ;;
+*)
+	echo "usage: $0 reset|poweroff|poweron <node>" >&2
+	exit 2
+	;;
+esac

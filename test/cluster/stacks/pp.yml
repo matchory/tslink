@@ -11,7 +11,7 @@ services:
         >/etc/nginx/conf.d/default.conf && exec nginx -g 'daemon off;'
     networks: [tailnet]
     labels:
-      tslink.service: svc:tslink-test-callee
+      tslink.service: ${TSLINK_TEST_SVC:-svc:tslink-test}-callee
       tslink.serve.80: tcp:8080?proxy-protocol=${PP:-2}
       tslink.direct: "false"
 networks:
@@ -20,4 +20,4 @@ networks:
     driver_opts:
       tslink.authkey: ${TSLINK_OAUTH_SECRET}?ephemeral=true&preauthorized=true
       com.docker.network.driver.mtu: "1450"
-      tslink.tags: tag:tslink-test-callee
+      tslink.tags: ${TSLINK_TEST_TAG:-tag:tslink-test}-callee

@@ -1,4 +1,5 @@
 #cloud-config
+# Hetzner Cloud provisioner: user data for provision.sh and add-node.sh
 package_update: true
 packages: [ca-certificates, curl, jq, iperf3, conntrack, nftables, ethtool]
 write_files:

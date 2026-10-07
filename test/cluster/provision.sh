@@ -1,11 +1,14 @@
 #!/bin/bash
-# provision.sh -- create the tslink test swarm in the Hetzner Cloud project whose token is in
-# ~/.tslink-test/hcloud.token: 3 x cpx32 in fsn1, a private network, a firewall that admits SSH
-# from this machine only, Docker and Tailscale via cloud-init. Then joins the swarm and writes
-# ssh_config. Everything is labelled purpose=tslink-test; teardown.sh deletes it.
+# provision.sh -- Hetzner Cloud provisioner: create the tslink test swarm in the Hetzner Cloud
+# project whose token is in $TSLINK_TEST_DIR/hcloud.token: 3 x cpx32 in fsn1, a private network, a
+# firewall that admits SSH from this machine only, Docker and Tailscale via cloud-init. Then joins
+# the swarm and writes $TSLINK_TEST_SSH_CONFIG. Everything is labelled purpose=tslink-test;
+# teardown.sh deletes it.
 set -euo pipefail
 B=$(cd "$(dirname "$0")" && pwd)
-HCLOUD_TOKEN=$(cat ~/.tslink-test/hcloud.token)
+# shellcheck source=config.sh
+. "$B/config.sh"
+HCLOUD_TOKEN=$(cat "$TSLINK_TEST_DIR/hcloud.token")
 export HCLOUD_TOKEN
 L=(--label purpose=tslink-test)
 ME=$(curl -s4 https://ifconfig.me)
@@ -27,9 +30,9 @@ wait
 {
 	for n in mgr w1 w2; do printf 'Host %s\n  HostName %s\n' "$n" "$(hcloud server ip tslink-test-$n)"; done
 	printf 'Host *\n  User root\n  IdentityFile ~/.ssh/id_ed25519\n  IdentitiesOnly yes\n'
-	printf '  StrictHostKeyChecking accept-new\n  UserKnownHostsFile ~/.tslink-test/known_hosts\n'
-	printf '  ControlMaster auto\n  ControlPath ~/.tslink-test/cm-%%h\n  ControlPersist 30m\n'
-} >"$B/ssh_config"
+	printf '  StrictHostKeyChecking accept-new\n  UserKnownHostsFile %s/known_hosts\n' "$TSLINK_TEST_DIR"
+	printf '  ControlMaster auto\n  ControlPath %s/cm-%%h\n  ControlPersist 30m\n' "$TSLINK_TEST_DIR"
+} >"$TSLINK_TEST_SSH_CONFIG"
 
 ready() {
 	for n in mgr w1 w2; do "$B/s" "$n" test -f /var/lib/cloud-init-done 2>/dev/null || return 1; done

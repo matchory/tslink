@@ -243,6 +243,91 @@ func TestLeaveAndDeleteEndpoint(t *testing.T) {
 	}
 }
 
+// blockingOp returns an endpoint operation that reports each call on entered
+// and returns once release is closed.
+func blockingOp(entered chan<- string, release <-chan struct{}) func(*core.Endpoint) error {
+	return func(e *core.Endpoint) error {
+		entered <- e.ID
+		<-release
+		return nil
+	}
+}
+
+// otherDriverCallsComplete fails the test unless driver calls on another
+// endpoint, which need the driver's lock, complete within a second.
+func otherDriverCallsComplete(t *testing.T, td *testDriver, netID string) {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() {
+		other := fakeID("other")
+		if _, err := td.CreateEndpoint(&network.CreateEndpointRequest{NetworkID: netID, EndpointID: other}); err != nil {
+			done <- err
+			return
+		}
+		_, err := td.EndpointInfo(&network.InfoRequest{NetworkID: netID, EndpointID: other})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("driver calls blocked while an endpoint was stopping")
+	}
+}
+
+// Leaving, which drains and waits for control, holds no driver lock: other
+// endpoints keep working meanwhile, and the leaving one stays known until
+// Docker deletes it.
+func TestLeaveDoesNotHoldDriverLock(t *testing.T) {
+	td := newTestDriver(t, newFakeDocker())
+	entered, release := make(chan string, 1), make(chan struct{})
+	td.leaveEndpoint = blockingOp(entered, release)
+	netID, epID := fakeID("net"), fakeID("ep")
+	td.createNetwork(t, netID, map[string]string{"tslink.authkey": "k"})
+	td.join(t, netID, epID, sandbox)
+
+	left := make(chan error, 1)
+	go func() { left <- td.Leave(&network.LeaveRequest{NetworkID: netID, EndpointID: epID}) }()
+	if got := receive(t, entered, "the endpoint's Leave"); got != epID {
+		t.Fatalf("left %s, want %s", got, epID)
+	}
+	otherDriverCallsComplete(t, td, netID)
+	if _, ok := td.endpoint(epID); !ok {
+		t.Error("leaving endpoint forgotten before DeleteEndpoint")
+	}
+	close(release)
+	if err := receive(t, left, "Leave to return"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// DeleteEndpoint forgets the endpoint under the lock and stops it after
+// releasing it.
+func TestDeleteEndpointDoesNotHoldDriverLock(t *testing.T) {
+	td := newTestDriver(t, newFakeDocker())
+	entered, release := make(chan string, 1), make(chan struct{})
+	td.stopEndpoint = blockingOp(entered, release)
+	netID, epID := fakeID("net"), fakeID("ep")
+	td.createNetwork(t, netID, map[string]string{"tslink.authkey": "k"})
+	td.join(t, netID, epID, sandbox)
+
+	deleted := make(chan error, 1)
+	go func() {
+		deleted <- td.DeleteEndpoint(&network.DeleteEndpointRequest{NetworkID: netID, EndpointID: epID})
+	}()
+	receive(t, entered, "the endpoint's Stop")
+	if _, ok := td.endpoint(epID); ok {
+		t.Error("endpoint still known while it is being stopped")
+	}
+	otherDriverCallsComplete(t, td, netID)
+	close(release)
+	if err := receive(t, deleted, "DeleteEndpoint to return"); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestShutdownClosesClient(t *testing.T) {
 	fake := newFakeDocker()
 	d := newDriver(&core.Config{DataDir: t.TempDir()}, fake)

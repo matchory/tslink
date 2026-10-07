@@ -168,6 +168,18 @@ type Daemon struct {
 	// Pipe references for cleanup (closing unblocks reader goroutines)
 	stdoutPipe io.ReadCloser
 	stderrPipe io.ReadCloser
+
+	// runCLI runs the tailscale CLI and returns its output; tests replace it.
+	// Nil runs config.TailscaleBin.
+	runCLI func(ctx context.Context, prefix string, args ...string) (string, error)
+}
+
+// tailscale runs the tailscale CLI with args, logging its output under prefix.
+func (d *Daemon) tailscale(ctx context.Context, prefix string, args ...string) (string, error) {
+	if d.runCLI != nil {
+		return d.runCLI(ctx, prefix, args...)
+	}
+	return runCommandWithStreaming(ctx, prefix, d.config.TailscaleBin, args...)
 }
 
 // NewDaemon creates a new Daemon instance.
@@ -571,10 +583,10 @@ func (d *Daemon) configureService() error {
 	// plugin restart: advertise it again
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, d.config.TailscaleBin, "--socket="+d.socketPath,
-		serveCmd, "advertise", d.config.Service).CombinedOutput()
+	out, err := d.tailscale(ctx, "serve-advertise", "--socket="+d.socketPath,
+		serveCmd, "advertise", d.config.Service)
 	if err != nil {
-		return fmt.Errorf("tailscale serve advertise failed: %w (output: %s)", err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("tailscale serve advertise failed: %w (output: %s)", err, strings.TrimSpace(out))
 	}
 	return nil
 }
@@ -668,7 +680,7 @@ func (d *Daemon) configureDirectServeEndpoint(ep ServeEndpoint) error {
 
 	// Use streaming to see output as it arrives
 	prefix := fmt.Sprintf("direct-serve:%s:%s", ep.Proto, ep.Port)
-	output, err := runCommandWithStreaming(ctx, prefix, d.config.TailscaleBin, args...)
+	output, err := d.tailscale(ctx, prefix, args...)
 
 	if err != nil {
 		logger.Error("tailscale serve (direct) failed: %v", err)
@@ -763,7 +775,7 @@ func (d *Daemon) configureServeEndpoint(ep ServeEndpoint) error {
 
 	// Use streaming to see output as it arrives
 	prefix := fmt.Sprintf("serve:%s:%s", ep.Proto, ep.Port)
-	output, err := runCommandWithStreaming(ctx, prefix, d.config.TailscaleBin, args...)
+	output, err := d.tailscale(ctx, prefix, args...)
 
 	if err != nil {
 		debugMsg = fmt.Sprintf("FAILED: %v\nOutput: %s\n", err, output)
@@ -1045,10 +1057,9 @@ func (d *Daemon) Drain(service string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	out, err := exec.CommandContext(ctx, d.config.TailscaleBin, "--socket="+d.socketPath, serveCmd, "drain", service).
-		CombinedOutput()
+	out, err := d.tailscale(ctx, "serve-drain", "--socket="+d.socketPath, serveCmd, "drain", service)
 	if err != nil {
-		return fmt.Errorf("tailscale serve drain failed: %w (output: %s)", err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("tailscale serve drain failed: %w (output: %s)", err, strings.TrimSpace(out))
 	}
 	return nil
 }
@@ -1103,9 +1114,8 @@ func (d *Daemon) ConfigureServeEndpoints(service string, endpoints []ServeEndpoi
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		cmd := exec.CommandContext(ctx, d.config.TailscaleBin, args...)
-		if output, err := cmd.CombinedOutput(); err != nil {
-			logger.Warn("Failed to set tags: %v (output: %s)", err, string(output))
+		if output, err := d.tailscale(ctx, "set-tags", args...); err != nil {
+			logger.Warn("Failed to set tags: %v (output: %s)", err, output)
 		}
 	}
 

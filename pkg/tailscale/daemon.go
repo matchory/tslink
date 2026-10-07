@@ -1034,7 +1034,9 @@ func (d *Daemon) Drain(service string) error {
 	return nil
 }
 
-// SetHostname updates the Tailscale hostname for a running daemon.
+// SetHostname updates the Tailscale hostname for a running daemon. It returns
+// once tailscaled has applied the new preference; the node's MagicDNS name
+// follows when control answers with a new network map.
 func (d *Daemon) SetHostname(hostname string) error {
 	logger.Info("Setting hostname to %s for endpoint %s", hostname, d.config.EndpointID)
 
@@ -1047,20 +1049,15 @@ func (d *Daemon) SetHostname(hostname string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, d.config.TailscaleBin, args...)
-	output, err := cmd.CombinedOutput()
+	output, err := d.tailscale(ctx, "set-hostname", args...)
 	if err != nil {
-		return fmt.Errorf("tailscale set --hostname failed: %w (output: %s)", err, string(output))
+		return fmt.Errorf("tailscale set --hostname failed: %w (output: %s)", err, strings.TrimSpace(output))
 	}
 
 	// Update internal config (protected by mutex)
 	d.mu.Lock()
 	d.config.Hostname = hostname
 	d.mu.Unlock()
-
-	// Brief wait for hostname change to propagate to Tailscale's internal state
-	// This ensures subsequent serve commands use the new hostname
-	time.Sleep(500 * time.Millisecond)
 
 	logger.Info("Hostname updated successfully")
 	return nil

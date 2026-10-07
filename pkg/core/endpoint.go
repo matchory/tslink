@@ -21,18 +21,6 @@ import (
 	"github.com/matchory/tslink/pkg/tailscale"
 )
 
-// ServeEndpoint represents a single Tailscale serve configuration.
-// Configured via labels like: tslink.serve.443=https:8080/api.
-type ServeEndpoint struct {
-	Proto  string // http, https, tcp, tls-terminated-tcp, tun
-	Port   string // External port Tailscale exposes
-	Target string // Container port or address to forward to
-	Path   string // L7 only - path prefix (e.g., "/api")
-
-	ProxyProtocol string // L4 only - PROXY protocol version sent to the target ("1", "2" or "")
-	AcceptAppCaps string // L7 only - comma-separated app capabilities forwarded to the target
-}
-
 // Endpoint represents a container endpoint with Tailscale connectivity.
 type Endpoint struct {
 	mu sync.RWMutex // Protects concurrent access to mutable fields
@@ -40,10 +28,10 @@ type Endpoint struct {
 	ID          string
 	Network     *Network
 	Hostname    string
-	Tags        []string        // ACL tags for tailscale up --advertise-tags
-	Service     string          // Service name (e.g., "svc:hello-world")
-	Endpoints   []ServeEndpoint // Serve endpoints (replaces ServePort)
-	Direct      bool            // Serve the endpoints on the task's own name too
+	Tags        []string                  // ACL tags for tailscale up --advertise-tags
+	Service     string                    // Service name (e.g., "svc:hello-world")
+	Endpoints   []tailscale.ServeEndpoint // Serve endpoints (replaces ServePort)
+	Direct      bool                      // Serve the endpoints on the task's own name too
 	TailscaleIP string
 	VethName    string
 	StateDir    string
@@ -80,13 +68,13 @@ func (e permanentError) Unwrap() error { return e.error }
 
 // ContainerInfo holds information extracted from Docker container inspection.
 type ContainerInfo struct {
-	Name      string            // Container name (without leading /)
-	Labels    map[string]string // All container labels
-	Hostname  string            // Parsed tslink.hostname label or container name
-	Tags      []string          // Parsed tslink.tags label (comma-separated)
-	Service   string            // Parsed tslink.service label (e.g., "svc:hello-world")
-	Endpoints []ServeEndpoint   // Parsed tslink.serve.<port> labels
-	Direct    bool              // tslink.direct; defaults to true without a Service
+	Name      string                    // Container name (without leading /)
+	Labels    map[string]string         // All container labels
+	Hostname  string                    // Parsed tslink.hostname label or container name
+	Tags      []string                  // Parsed tslink.tags label (comma-separated)
+	Service   string                    // Parsed tslink.service label (e.g., "svc:hello-world")
+	Endpoints []tailscale.ServeEndpoint // Parsed tslink.serve.<port> labels
+	Direct    bool                      // tslink.direct; defaults to true without a Service
 
 	Stack        string // Container's com.docker.stack.namespace label
 	NetworkStack string // Network's com.docker.stack.namespace label
@@ -344,8 +332,6 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 		return err
 	}
 
-	tsEndpoints := toTailscaleEndpoints(info.Endpoints)
-
 	// Create supervisor (handles daemon lifecycle with auto-recovery)
 	supervisor := tailscale.NewDaemonSupervisor(tailscale.DaemonConfig{
 		EndpointID:    endpointID,
@@ -359,7 +345,7 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 		TailscaledBin: tailscaledBin,
 		Tags:          tags,
 		Service:       info.Service,
-		Endpoints:     tsEndpoints,
+		Endpoints:     info.Endpoints,
 		Direct:        info.Direct,
 		LoginServer:   e.Network.LoginServer, // set once, at creation
 		ContainerDNS:  info.DNS,
@@ -520,15 +506,6 @@ func startSupervisor(supervisor *tailscale.DaemonSupervisor) (string, error) {
 		return "", fmt.Errorf("failed to get Tailscale IP: %w", err)
 	}
 	return status.IP, nil
-}
-
-// toTailscaleEndpoints converts the serve endpoints for the tailscale package.
-func toTailscaleEndpoints(endpoints []ServeEndpoint) []tailscale.ServeEndpoint {
-	tsEndpoints := make([]tailscale.ServeEndpoint, len(endpoints))
-	for i, ep := range endpoints {
-		tsEndpoints[i] = tailscale.ServeEndpoint(ep)
-	}
-	return tsEndpoints
 }
 
 // GetStateDir returns the endpoint's state directory safely.

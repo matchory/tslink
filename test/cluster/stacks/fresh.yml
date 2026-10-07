@@ -10,4 +10,4 @@ networks:
     driver_opts:
       tslink.authkey: ${TSLINK_OAUTH_SECRET}?ephemeral=true&preauthorized=true
       com.docker.network.driver.mtu: "1450"
-      tslink.tags: tag:tslink-test-caller
+      tslink.tags: ${TSLINK_TEST_TAG:-tag:tslink-test}-caller

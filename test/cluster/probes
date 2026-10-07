@@ -1,8 +1,13 @@
 #!/bin/bash
-# probes start [ip [args]]|stop|report -- VIP probes in the caller tasks on all nodes. $PROBE selects
-# the probe script (default probe.sh); args follow the log file on its command line.
+# probes start [ip [args]]|stop|report -- VIP probes in the caller tasks on all nodes. ip defaults
+# to the VIP of $TSLINK_TEST_SVC-callee. $PROBE selects the probe script (default probe.sh); args
+# follow the log file on its command line.
 B=$(dirname "$0")
-target=${2:-100.93.19.42}
+# shellcheck source=config.sh
+. "$B/config.sh"
+target=$2
+[ "$1" = start ] && [ -z "$target" ] &&
+	target=$("$B/tsapi" GET "/tailnet/$TSLINK_TEST_TAILNET/services/$TSLINK_TEST_SVC-callee" | jq -r '.addrs[0]')
 args=${*:3}
 probe=${PROBE:-probe.sh}
 # shellcheck disable=SC2016 # awk program, expanded in the container

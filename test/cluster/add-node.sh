@@ -1,10 +1,14 @@
 #!/bin/bash
-# add-node.sh <name>... -- add cpx32 workers (e.g. w3 w4) to the test swarm with provision.sh's
-# settings, add them to ssh_config, install the plugin last built by install-plugin.sh, and join
-# their host tailscaled with node.authkey as tag:tslink-test-node
+# add-node.sh <name>... -- Hetzner Cloud provisioner: add cpx32 workers (e.g. w3 w4) to the test
+# swarm with provision.sh's settings, add them to $TSLINK_TEST_SSH_CONFIG, install the plugin last
+# built by install-plugin.sh, and join their host tailscaled with node.authkey as
+# $TSLINK_TEST_TAG-node
 set -euo pipefail
 B=$(cd "$(dirname "$0")" && pwd)
-HCLOUD_TOKEN=$(cat ~/.tslink-test/hcloud.token)
+# shellcheck source=config.sh
+. "$B/config.sh"
+C=$TSLINK_TEST_SSH_CONFIG
+HCLOUD_TOKEN=$(cat "$TSLINK_TEST_DIR/hcloud.token")
 export HCLOUD_TOKEN
 S="$B/s"
 ready() {
@@ -18,11 +22,11 @@ for n in "$@"; do
 done
 wait
 for n in "$@"; do
-	grep -qx "Host $n" "$B/ssh_config" && continue
+	grep -qx "Host $n" "$C" && continue
 	# insert before the "Host *" block, whose settings apply to every node
 	awk -v n="$n" -v ip="$(hcloud server ip "tslink-test-$n")" \
-		'$0 == "Host *" { printf "Host %s\n  HostName %s\n", n, ip } { print }' "$B/ssh_config" >"$B/ssh_config.new"
-	mv "$B/ssh_config.new" "$B/ssh_config"
+		'$0 == "Host *" { printf "Host %s\n  HostName %s\n", n, ip } { print }' "$C" >"$C.new"
+	mv "$C.new" "$C"
 done
 until ready "$@"; do sleep 10; done
 
@@ -32,7 +36,7 @@ P=ghcr.io/matchory/tslink:latest
 for n in "$@"; do
 	"$S" mgr 'cat /root/plugin.tgz' | "$S" "$n" 'rm -rf /root/plugin && tar -xz -C /root'
 	"$S" "$n" "set -e; docker plugin create $P /root/plugin >/dev/null; docker plugin enable $P >/dev/null"
-	"$S" "$n" "tailscale up --auth-key=file:/dev/stdin --advertise-tags=tag:tslink-test-node --hostname=tslink-test-$n-host" <~/.tslink-test/node.authkey
+	"$S" "$n" "tailscale up --auth-key=file:/dev/stdin --advertise-tags=$TSLINK_TEST_TAG-node --hostname=tslink-test-$n-host" <"$TSLINK_TEST_DIR/node.authkey"
 	"$S" "$n" "docker swarm join --token $TOKEN $MGR:2377"
 done
 "$S" mgr docker node ls

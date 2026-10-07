@@ -1,5 +1,5 @@
 # The development plugin is created under the name tslink, the alias the
-# documentation installs releases under, so networks use "--driver tslink".
+# documentation installs releases under, so networks use "--driver tslink:latest".
 PLUGIN_NAME ?= tslink
 PLUGIN_TAG ?= latest
 GOARCH ?= $(shell go env GOARCH)

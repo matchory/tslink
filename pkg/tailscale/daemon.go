@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -41,6 +42,7 @@ type DaemonConfig struct {
 	Endpoints     []ServeEndpoint // Serve endpoints (L3/L4/L7)
 	Direct        bool            // Enable direct machine serve (HTTPS on machine hostname)
 	LoginServer   string          // Control server URL for --login-server; empty for Tailscale's
+	ContainerDNS  []netip.Addr    // DNS servers the container was given, as with docker run --dns
 
 	gate *serviceGate // Shared by the daemons of one supervisor; NewDaemon creates one if nil
 }
@@ -381,6 +383,115 @@ func (d *Daemon) setUp() error {
 	return nil
 }
 
+// handleLine notes what tslink acts on in a line of tailscaled's output.
+func (d *Daemon) handleLine(line string) {
+	switch {
+	case strings.Contains(line, nodeNotFoundLog):
+		d.nodeNotFound.Store(time.Now().Unix())
+	case strings.Contains(line, servicesFetchLog):
+		d.fetchMu.Lock()
+		d.fetches++
+		if d.fetched != nil {
+			close(d.fetched)
+			d.fetched = nil
+		}
+		d.fetchMu.Unlock()
+	}
+}
+
+// servicesFetches returns how often control has fetched the node's Service
+// list, and a channel closed at the next fetch.
+func (d *Daemon) servicesFetches() (int64, <-chan struct{}) {
+	d.fetchMu.Lock()
+	defer d.fetchMu.Unlock()
+	if d.fetched == nil {
+		d.fetched = make(chan struct{})
+	}
+	return d.fetches, d.fetched
+}
+
+// tailscaledCommand returns the command running tailscaled with args in the
+// container's network namespace.
+//
+// tailscaled reads /etc/resolv.conf for its own lookups, of the ACME server for
+// one, and as the upstreams of its DNS forwarder. The plugin's is the host's,
+// whose resolver may not exist in that namespace, such as systemd-resolved's
+// 127.0.0.53; and Docker's embedded resolver loops back to tailscaled when the
+// container uses Tailscale's resolver. So tailscaled gets a resolv.conf of its
+// own (see tailscaledResolvConf), in a mount namespace of its own. It gets its
+// own backup of it too: tailscaled replaces /etc/resolv.conf and then reads its
+// upstreams from the backup, which the endpoints would otherwise share. Without
+// the mounts, tailscaled keeps the plugin's files.
+func (d *Daemon) tailscaledCommand(args []string) *exec.Cmd {
+	host, err := os.ReadFile(hostResolvConfPath)
+	if err != nil {
+		logger.Warnf("Failed to read %s: %v", hostResolvConfPath, err)
+	}
+	resolved, err := os.ReadFile(resolvedResolvConfPath)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		logger.Warnf("Failed to read %s: %v", resolvedResolvConfPath, err)
+	}
+	conf, warning := tailscaledResolvConf(host, resolved, d.config.ContainerDNS)
+	if warning != "" {
+		logger.Warnf(
+			"Endpoint %s: %s",
+			d.config.EndpointID[:min(12, len(d.config.EndpointID))],
+			warning,
+		)
+	}
+	resolvConf := filepath.Join(d.config.StateDir, "resolv.conf")
+	if err := os.WriteFile(resolvConf, conf, 0o644); err != nil { // #nosec G306 -- not secret
+		logger.Warnf("Failed to write %s: %v", resolvConf, err)
+	}
+	backup := filepath.Join(d.config.StateDir, "resolv.pre-tailscale-backup.conf")
+	if err := os.WriteFile(backup, nil, 0o644); err != nil { // #nosec G306 -- not secret
+		logger.Warnf("Failed to write %s: %v", backup, err)
+	}
+	// unshare, sh and nsenter each exec the next, so the process is tailscaled
+	unshareArgs := []string{
+		"--mount",
+		"--propagation",
+		"private",
+		"--",
+		"sh",
+		"-c",
+		`mount --bind "$0" /etc/resolv.conf || echo "tslink: tailscaled keeps the plugin's resolv.conf" >&2
+b=/etc/resolv.pre-tailscale-backup.conf
+{ [ -e $b ] || touch $b; } && mount --bind "$1" $b || echo "tslink: tailscaled shares the plugin's resolv.conf backup" >&2
+netns=$2; shift 2; exec nsenter --net="$netns" -- "$@"`,
+		resolvConf,
+		backup,
+		d.config.NetNSPath,
+		d.config.TailscaledBin,
+	}
+	unshareArgs = append(unshareArgs, args...)
+	logger.Debugf("Running: unshare %v", unshareArgs)
+	return exec.CommandContext(d.ctx, "unshare", unshareArgs...)
+}
+
+// waitForSocket waits for the tailscaled socket to be ready.
+func (d *Daemon) waitForSocket() error {
+	logger.Debugf("Waiting for tailscaled socket at %s", d.socketPath)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return errors.New("timeout waiting for tailscaled socket")
+		default:
+			if _, err := os.Stat(d.socketPath); err == nil {
+				logger.Infof("tailscaled socket is ready")
+				// Give it a bit more time to fully initialize
+				time.Sleep(500 * time.Millisecond)
+				return nil
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+}
+
 // killProcess takes tailscaled down, kills it, waits for it to exit and
 // removes its socket.
 func (d *Daemon) killProcess(cmd *exec.Cmd) {
@@ -421,89 +532,5 @@ func (d *Daemon) killProcess(cmd *exec.Cmd) {
 	// the state directory, so nothing else would clean it up
 	if err := os.Remove(d.socketPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		logger.Warnf("Failed to remove socket %s: %v", d.socketPath, err)
-	}
-}
-
-// handleLine notes what tslink acts on in a line of tailscaled's output.
-func (d *Daemon) handleLine(line string) {
-	switch {
-	case strings.Contains(line, nodeNotFoundLog):
-		d.nodeNotFound.Store(time.Now().Unix())
-	case strings.Contains(line, servicesFetchLog):
-		d.fetchMu.Lock()
-		d.fetches++
-		if d.fetched != nil {
-			close(d.fetched)
-			d.fetched = nil
-		}
-		d.fetchMu.Unlock()
-	}
-}
-
-// servicesFetches returns how often control has fetched the node's Service
-// list, and a channel closed at the next fetch.
-func (d *Daemon) servicesFetches() (int64, <-chan struct{}) {
-	d.fetchMu.Lock()
-	defer d.fetchMu.Unlock()
-	if d.fetched == nil {
-		d.fetched = make(chan struct{})
-	}
-	return d.fetches, d.fetched
-}
-
-// tailscaledCommand returns the command running tailscaled with args in the
-// container's network namespace.
-//
-// The resolver in the plugin's resolv.conf, the host's, may not exist in that
-// namespace, such as systemd-resolved's 127.0.0.53, and tailscaled's own
-// lookups, of the ACME server for one, would fail. Docker's embedded resolver
-// is always there, so tailscaled gets a resolv.conf naming it, in a mount
-// namespace of its own. Without it, tailscaled keeps the plugin's.
-func (d *Daemon) tailscaledCommand(args []string) *exec.Cmd {
-	resolvConf := filepath.Join(d.config.StateDir, "resolv.conf")
-	conf := []byte("nameserver 127.0.0.11\noptions ndots:0\n")
-	//nolint:gosec // G306: resolv.conf holds no secrets
-	if err := os.WriteFile(resolvConf, conf, 0o644); err != nil {
-		logger.Warnf("Failed to write %s: %v", resolvConf, err)
-	}
-	// unshare, sh and nsenter each exec the next, so the process is tailscaled
-	unshareArgs := []string{
-		"--mount",
-		"--propagation",
-		"private",
-		"--",
-		"sh",
-		"-c",
-		`mount --bind "$0" /etc/resolv.conf || echo "tslink: tailscaled keeps the plugin's resolv.conf" >&2
-netns=$1; shift; exec nsenter --net="$netns" -- "$@"`,
-		resolvConf,
-		d.config.NetNSPath,
-		d.config.TailscaledBin,
-	}
-	unshareArgs = append(unshareArgs, args...)
-	logger.Debugf("Running: unshare %v", unshareArgs)
-	return exec.CommandContext(d.ctx, "unshare", unshareArgs...)
-}
-
-// waitForSocket waits for the tailscaled socket to be ready.
-func (d *Daemon) waitForSocket() error {
-	logger.Debugf("Waiting for tailscaled socket at %s", d.socketPath)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return errors.New("timeout waiting for tailscaled socket")
-		default:
-			if _, err := os.Stat(d.socketPath); err == nil {
-				logger.Infof("tailscaled socket is ready")
-				// Give it a bit more time to fully initialize
-				time.Sleep(500 * time.Millisecond)
-				return nil
-			}
-			time.Sleep(100 * time.Millisecond)
-		}
 	}
 }

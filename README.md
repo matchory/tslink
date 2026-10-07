@@ -261,7 +261,9 @@ and [docs/swarm-cluster-followup-2026-10-07.md](docs/swarm-cluster-followup-2026
   about 40% of the host's.
 - **Self-healing:** tslink retries a Tailscale start that failed, logs a node
   in again when its device was deleted or expired, and cleans up after
-  containers that stopped without telling it, as on power loss.
+  containers that stopped without telling it, as on power loss: it logs
+  their ephemeral nodes out, so a container with a fixed `tslink.hostname`
+  gets its name back instead of `<hostname>-1`.
 - **Monitoring:** a container whose Tailscale is not running looks healthy to
   Docker. tslink writes each endpoint's state to
   `/var/lib/docker-plugins/tailscale/status/<endpoint>.json` (`running`,

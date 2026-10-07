@@ -142,15 +142,6 @@ if retry 30 reaches e2e-outsider "$server_ip"; then
 	fail "outsider reached the server"
 fi
 
-log "A plugin restart keeps the containers' identities"
-docker plugin disable -f "$PLUGIN"
-docker plugin enable "$PLUGIN"
-retry 180 reaches e2e-client "$server_ip" || fail "client cannot reach the server after the restart"
-[ "$(tailnet_ip e2e-server)" = "$server_ip" ] || fail "server IP changed: $(tailnet_ip e2e-server)"
-[ "$(tailnet_ip e2e-client)" = "$client_ip" ] || fail "client IP changed: $(tailnet_ip e2e-client)"
-[ "$(nodes_named e2e-server)" = 1 ] || fail "server registered again"
-[ "$(nodes_named e2e-client)" = 1 ] || fail "client registered again"
-
 log "Stopping a container removes its ephemeral node"
 docker run -d --name e2e-ephemeral --network e2e-ephemeral "$ALPINE" sleep 3600
 wait_ip e2e-ephemeral
@@ -158,5 +149,16 @@ wait_ip e2e-ephemeral
 docker stop -t 1 e2e-ephemeral >/dev/null
 # headscale deletes it after node.ephemeral.inactivity_timeout (70s)
 retry 240 node_gone e2e-ephemeral || fail "ephemeral node still in headscale"
+
+log "A plugin restart keeps the containers' identities"
+# Last: tslink forgets networks without containers when it restarts, so
+# e2e-ephemeral would not take new containers after this
+docker plugin disable -f "$PLUGIN"
+docker plugin enable "$PLUGIN"
+retry 180 reaches e2e-client "$server_ip" || fail "client cannot reach the server after the restart"
+[ "$(tailnet_ip e2e-server)" = "$server_ip" ] || fail "server IP changed: $(tailnet_ip e2e-server)"
+[ "$(tailnet_ip e2e-client)" = "$client_ip" ] || fail "client IP changed: $(tailnet_ip e2e-client)"
+[ "$(nodes_named e2e-server)" = 1 ] || fail "server registered again"
+[ "$(nodes_named e2e-client)" = 1 ] || fail "client registered again"
 
 log "All end-to-end tests passed"

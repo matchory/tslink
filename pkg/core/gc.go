@@ -3,13 +3,12 @@ package core
 import (
 	"context"
 	"crypto/sha256"
-	"crypto/x509"
 	"encoding/hex"
-	"encoding/pem"
 	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -89,7 +88,11 @@ func CollectGarbage(
 
 // The shared certificate directory holds tailscaled's <domain>.crt and
 // <domain>.key and its ACME account key, and tslink's <domain>.lease and
-// .tmp-* files (see tailscale/certs.go).
+// .tmp-* files (see tailscale/certs.go). tailscaled writes its files through
+// temporary ones named <file>.tmp<random digits> (atomicfile.WriteFile, which
+// uses os.CreateTemp), left behind when it dies while writing.
+var tailscaledTmpFile = regexp.MustCompile(`\.(crt|key|pem)\.tmp[0-9]+$`)
+
 const (
 	acmeAccountKey  = "acme-account.key.pem"
 	certExpiredKeep = 7 * 24 * time.Hour // how long an expired certificate is kept
@@ -99,8 +102,8 @@ const (
 
 // collectCertificates removes what accumulates in the shared certificate
 // directory, as certificates of per-task names do: certificates expired more
-// than certExpiredKeep ago, keys without a certificate and temporary files
-// older than certOrphanAge, and leases not refreshed for certLeaseMaxAge. It
+// than certExpiredKeep ago, keys without a certificate and temporary files,
+// tslink's and tailscaled's, older than certOrphanAge, and leases not refreshed for certLeaseMaxAge. It
 // leaves the ACME account key, and files it does not know, alone. Hosts
 // sharing the directory collect it at the same time, so a file gone already
 // is no error.
@@ -117,7 +120,7 @@ func collectCertificates(dir string, now time.Time) {
 		path := filepath.Join(dir, name)
 		switch {
 		case !entry.Type().IsRegular() || name == acmeAccountKey:
-		case strings.HasPrefix(name, ".tmp-"):
+		case strings.HasPrefix(name, ".tmp-") || tailscaledTmpFile.MatchString(name):
 			removeOlder(path, now.Add(-certOrphanAge))
 		case strings.HasSuffix(name, ".lease"):
 			removeOlder(path, now.Add(-certLeaseMaxAge))
@@ -146,7 +149,7 @@ func removeExpiredCert(crt string, cutoff time.Time) {
 	if err != nil || !st.ModTime().Before(cutoff) || !olderThan(key, cutoff) {
 		return
 	}
-	notAfter, err := certNotAfter(crt)
+	notAfter, err := tailscale.CertNotAfter(crt)
 	if err != nil || !notAfter.Before(cutoff) {
 		return
 	}
@@ -157,28 +160,6 @@ func removeExpiredCert(crt string, cutoff time.Time) {
 	removeFile(crt)
 	if olderThan(key, cutoff) {
 		removeFile(key)
-	}
-}
-
-// certNotAfter returns the expiry of the first certificate in a PEM file.
-func certNotAfter(path string) (time.Time, error) {
-	data, err := os.ReadFile(path) // #nosec G304 -- a file in the certificate directory
-	if err != nil {
-		return time.Time{}, err
-	}
-	for {
-		var block *pem.Block
-		block, data = pem.Decode(data)
-		if block == nil {
-			return time.Time{}, errors.New("no certificate")
-		}
-		if block.Type == "CERTIFICATE" {
-			cert, err := x509.ParseCertificate(block.Bytes)
-			if err != nil {
-				return time.Time{}, err
-			}
-			return cert.NotAfter, nil
-		}
 	}
 }
 

@@ -21,7 +21,8 @@ func setDuration(t *testing.T, p *time.Duration, v time.Duration) {
 	t.Cleanup(func() { *p = old })
 }
 
-// newTestSupervisor returns a supervisor whose daemon runs the fake CLI.
+// newTestSupervisor returns a supervisor whose daemon runs the fake CLI and
+// has advertised svc:web.
 func newTestSupervisor(t *testing.T, cli *fakeCLI) (*DaemonSupervisor, *Daemon) {
 	t.Helper()
 	s := NewDaemonSupervisor(DaemonConfig{EndpointID: "0123456789abcdef", Service: "svc:web"})
@@ -29,6 +30,7 @@ func newTestSupervisor(t *testing.T, cli *fakeCLI) (*DaemonSupervisor, *Daemon) 
 	d := newTestDaemon(t, cli, "svc:web")
 	d.config.gate = s.cfg.gate
 	s.daemon = d
+	s.cfg.gate.advertised.Store(true)
 	return s, d
 }
 
@@ -165,6 +167,68 @@ func TestDrainAndWaitAfterStopSignalDrain(t *testing.T) {
 	}
 	if n := len(cli.snapshot()); n != 1 {
 		t.Errorf("ran %d commands, want the one drain: %q", n, cli.snapshot())
+	}
+}
+
+// A backend never advertised, as a replica drained while it waited for its
+// certificate, gives control nothing to fetch: leaving does not wait.
+func TestDrainAndWaitNeverAdvertised(t *testing.T) {
+	setDuration(t, &drainAckFloor, 10*time.Millisecond)
+	setDuration(t, &drainAckTimeout, 5*time.Second)
+	cli := &fakeCLI{}
+	s, _ := newTestSupervisor(t, cli)
+	s.cfg.gate.advertised.Store(false)
+	start := time.Now()
+	s.DrainAndWait("svc:web")
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Errorf("waited %v for a backend never advertised", elapsed)
+	}
+	if !ran(cli.snapshot(), "serve", "drain", "svc:web") {
+		t.Errorf("not drained: %q", cli.snapshot())
+	}
+}
+
+// Advertising the Service, and a node state that may advertise it from a
+// previous run, mark the backend advertised.
+func TestAdvertisedMarked(t *testing.T) {
+	cli := &fakeCLI{}
+	d := newTestDaemon(t, cli, "svc:web")
+	d.config.Endpoints = []ServeEndpoint{{Proto: "tcp", Port: "22", Target: "22"}}
+	if err := d.configureServiceBackend(false); err != nil {
+		t.Fatal(err)
+	}
+	if d.config.gate.advertised.Load() {
+		t.Error("configured unadvertised, but marked advertised")
+	}
+	if err := d.advertise("svc:web"); err != nil {
+		t.Fatal(err)
+	}
+	if !d.config.gate.advertised.Load() {
+		t.Error("advertise did not mark the backend advertised")
+	}
+
+	d = newTestDaemon(t, cli, "svc:web")
+	d.config.Endpoints = []ServeEndpoint{{Proto: "tcp", Port: "22", Target: "22"}}
+	if err := d.configureService(); err != nil {
+		t.Fatal(err)
+	}
+	if !d.config.gate.advertised.Load() {
+		t.Error("configureService did not mark the backend advertised")
+	}
+
+	d = newTestDaemon(t, cli, "svc:web")
+	d.noteSurvivingState()
+	if d.config.gate.advertised.Load() {
+		t.Error("marked advertised without node state")
+	}
+	if err := os.WriteFile(
+		filepath.Join(d.config.StateDir, "tailscaled.state"), []byte("{}"), 0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	d.noteSurvivingState()
+	if !d.config.gate.advertised.Load() {
+		t.Error("node state from a previous run not taken as advertised")
 	}
 }
 

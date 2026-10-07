@@ -290,6 +290,7 @@ func (d *Daemon) configureServiceWhenCertified() error {
 		return err
 	}
 	dir := filepath.Join(d.config.StateDir, certsDirName)
+	d.wg.Go(func() { d.watchCertExpiry(dir, domain) })
 	if validCert(dir, domain, time.Now()) {
 		return ignoreDrained(d.configureService())
 	}

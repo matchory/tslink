@@ -489,7 +489,12 @@ func TestCollectCertificates(t *testing.T) {
 	idleLease := c.write("idle.example.ts.net.lease", []byte("ep\n"), now.Add(-30*time.Minute))
 	account := c.write(acmeAccountKey, []byte("account"), now.Add(-400*day))
 	unknown := c.write("notes.txt", []byte("x"), now.Add(-400*day))
-	tailscaledTmp := c.write("web-5.example.ts.net.crt.tmp123", []byte("x"), now.Add(-400*day))
+	// tailscaled's own temporary files (atomicfile.WriteFile)
+	oldCrtTmp := c.write("web-5.example.ts.net.crt.tmp123", []byte("x"), now.Add(-2*day))
+	oldKeyTmp := c.write("web-5.example.ts.net.key.tmp456", []byte("x"), now.Add(-2*day))
+	oldAccountTmp := c.write(acmeAccountKey+".tmp789", []byte("x"), now.Add(-2*day))
+	freshCrtTmp := c.write("web-6.example.ts.net.crt.tmp123", []byte("x"), now.Add(-time.Hour))
+	notTmp := c.write("web-7.example.ts.net.crt.tmpx", []byte("x"), now.Add(-400*day))
 	garbled := c.write("bad.example.ts.net.crt", []byte("not a certificate"), issued)
 	garbledKey := c.write("bad.example.ts.net.key", []byte("key"), issued)
 
@@ -502,14 +507,17 @@ func TestCollectCertificates(t *testing.T) {
 		time.Minute,
 	)
 
-	for _, p := range []string{expiredCrt, expiredKey, oldKey, oldTmp, staleLease} {
+	for _, p := range []string{
+		expiredCrt, expiredKey, oldKey, oldTmp, staleLease, oldCrtTmp, oldKeyTmp, oldAccountTmp,
+	} {
 		if _, err := os.Stat(p); !errors.Is(err, os.ErrNotExist) {
 			t.Errorf("%s should be removed (err=%v)", filepath.Base(p), err)
 		}
 	}
 	for _, p := range []string{
 		recentCrt, recentKey, validCrt, validKey, renewingCrt, renewingKey, rewrittenCrt, rewrittenKey,
-		freshKey, freshTmp, liveLease, idleLease, account, unknown, tailscaledTmp, garbled, garbledKey,
+		freshKey, freshTmp, liveLease, idleLease, account, unknown, freshCrtTmp, notTmp, garbled,
+		garbledKey,
 	} {
 		if _, err := os.Stat(p); err != nil {
 			t.Errorf("%s should be kept: %v", filepath.Base(p), err)

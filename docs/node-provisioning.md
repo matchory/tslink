@@ -136,7 +136,9 @@ A container whose Tailscale is not running looks healthy to Docker. tslink write
 each endpoint's state to `/var/lib/docker-plugins/tailscale/status/<endpoint>.json`:
 `running`, `retrying` with the error, or `failed`. Export them, for example to
 your monitoring system, and alert when a state is not `running` for more than
-a few minutes. For example, for the Prometheus node exporter's textfile
+a few minutes. A file's `warnings` list conditions that need no immediate
+action but should be seen, such as a blocked HTTPS certificate renewal or a
+certificate close to expiry. For example, for the Prometheus node exporter's textfile
 collector:
 
 ```bash

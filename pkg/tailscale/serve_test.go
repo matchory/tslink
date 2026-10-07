@@ -33,20 +33,23 @@ func TestServeOptionArgs(t *testing.T) {
 	}
 }
 
-// fakeCLI records the tailscale CLI calls of a daemon and answers them with
-// out and err.
+// fakeCLI records the tailscale CLI calls of a daemon and their standard
+// input, and answers them with out on standard output, stderr and err.
 type fakeCLI struct {
-	mu    sync.Mutex
-	calls [][]string
-	out   string
-	err   error
+	mu     sync.Mutex
+	calls  [][]string
+	stdins []string
+	out    string
+	stderr string
+	err    error
 }
 
-func (f *fakeCLI) run(_ context.Context, _ string, args ...string) (string, error) {
+func (f *fakeCLI) run(_ context.Context, c cliCall) (cliOutput, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.calls = append(f.calls, args)
-	return f.out, f.err
+	f.calls = append(f.calls, c.args)
+	f.stdins = append(f.stdins, c.stdin)
+	return cliOutput{stdout: f.out, stderr: f.stderr}, f.err
 }
 
 // snapshot returns the calls so far, without the socket argument.
@@ -415,11 +418,11 @@ func TestConfigureServiceAdvertiseError(t *testing.T) {
 	cli := &fakeCLI{}
 	d := newTestDaemon(t, cli, "svc:web")
 	d.config.Endpoints = []ServeEndpoint{{Proto: "tcp", Port: "22", Target: "22"}}
-	d.runCLI = func(ctx context.Context, prefix string, args ...string) (string, error) {
-		if slices.Contains(args, "advertise") {
-			return " not allowed\n", errors.New("exit status 1")
+	d.runCLI = func(ctx context.Context, c cliCall) (cliOutput, error) {
+		if slices.Contains(c.args, "advertise") {
+			return cliOutput{stdout: " not allowed\n"}, errors.New("exit status 1")
 		}
-		return cli.run(ctx, prefix, args...)
+		return cli.run(ctx, c)
 	}
 	err := d.configureService()
 	if err == nil ||

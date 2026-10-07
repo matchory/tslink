@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/matchory/tslink/pkg/logger"
@@ -52,10 +52,14 @@ func (d *Daemon) getStatus() (*Status, error) {
 	ctx, cancel := context.WithTimeout(d.ctx, 10*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, d.config.TailscaleBin, args...)
-	output, err := cmd.Output()
+	// Not logged: it is polled, and lists every peer
+	out, err := d.runTailscale(ctx, cliCall{args: args})
 	if err != nil {
-		return nil, fmt.Errorf("tailscale status failed: %w", err)
+		return nil, fmt.Errorf(
+			"tailscale status failed: %w (output: %s)",
+			err,
+			strings.TrimSpace(out.combined()),
+		)
 	}
 
 	var result struct {
@@ -66,7 +70,7 @@ func (d *Daemon) getStatus() (*Status, error) {
 		} `json:"Self"`
 	}
 
-	if err := json.Unmarshal(output, &result); err != nil {
+	if err := json.Unmarshal([]byte(out.stdout), &result); err != nil {
 		return nil, fmt.Errorf("failed to parse status: %w", err)
 	}
 

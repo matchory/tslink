@@ -2,8 +2,8 @@
 
 Scripts that build a throwaway Swarm on Hetzner Cloud (three nodes, grown with `add-node.sh`),
 install tslink from a Git ref or the working tree, and test it against a real tailnet. Results:
-[docs/swarm-cluster-test-2026-10-07.md](../../docs/swarm-cluster-test-2026-10-07.md) and
-[docs/swarm-cluster-followup-2026-10-07.md](../../docs/swarm-cluster-followup-2026-10-07.md).
+[docs/testing/swarm-cluster-test-2026-10-07.md](../../docs/testing/swarm-cluster-test-2026-10-07.md) and
+[docs/testing/swarm-cluster-followup-2026-10-07.md](../../docs/testing/swarm-cluster-followup-2026-10-07.md).
 
 ## Prerequisites
 

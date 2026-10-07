@@ -233,8 +233,8 @@ For most use cases, use an ephemeral, reusable, pre-approved key.
 ## Running on Swarm
 
 Measured on three- and five-node swarms; see
-[docs/swarm-cluster-test-2026-10-07.md](docs/swarm-cluster-test-2026-10-07.md)
-and [docs/swarm-cluster-followup-2026-10-07.md](docs/swarm-cluster-followup-2026-10-07.md).
+[docs/testing/swarm-cluster-test-2026-10-07.md](docs/testing/swarm-cluster-test-2026-10-07.md)
+and [docs/testing/swarm-cluster-followup-2026-10-07.md](docs/testing/swarm-cluster-followup-2026-10-07.md).
 
 - **Zero-downtime updates of a Tailscale Service.** tslink drains a task's
   Service backend when Docker sends it the stop signal, and callers move to
@@ -341,8 +341,10 @@ docker run --rm -v /var/lib/docker-plugins/tailscale:/data alpine \
 
 ## Development
 
-See [CLAUDE.md](CLAUDE.md) for development setup.
+See [CONTRIBUTING.md](CONTRIBUTING.md). Report security issues as described in
+[SECURITY.md](SECURITY.md); changes are listed in [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
-MIT
+MIT, see [LICENSE](LICENSE). tslink is a fork of
+[aaomidi/tslink](https://github.com/aaomidi/tslink) by Amir Omidi.

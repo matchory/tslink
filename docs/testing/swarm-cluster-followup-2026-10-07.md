@@ -104,7 +104,7 @@ to `docker.service`. systemd runs it before it sends dockerd SIGTERM: the
 script drains every Tailscale Service the node backs, through each tslink
 socket and the plugin's bundled `tailscale` CLI, and waits 3 seconds. Callers
 moved within 1.3 s of a drain in every test. Installation is in the
-[readme](../README.md#running-on-swarm).
+[readme](../../README.md#running-on-swarm).
 
 A dockerd crash skips ExecStop. It turned out harmless for the VIP: the
 containers keep serving while dockerd is gone, and the restarted dockerd stops

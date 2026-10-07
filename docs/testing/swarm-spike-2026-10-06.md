@@ -2,7 +2,7 @@
 
 Can tslink give Docker Swarm tasks their own tailnet identity, as an alternative
 to a per-service Tailscale sidecar? Run on a single-node swarm (OrbStack, Docker
-29.4.0, arm64) against Matchory's production tailnet, with throwaway tags
+29.4.0, arm64) against a production tailnet, with throwaway tags
 `tag:svc-poc` (granted to the callee on port 80), `tag:svc-poc-nogrant` (no
 grants) and `tag:svc-poc-callee`. All devices deleted and keys revoked after.
 
@@ -65,7 +65,7 @@ named it `tag:svc-poc`. Each tailscaled cost about 48 MB RSS.
 - Device names come from `tslink.hostname`, otherwise the Swarm task name.
 - Stopping a task does not log the device out, and node state stays on the
   host under `/var/lib/docker-plugins/tailscale/by-hostname/`. With ephemeral
-  keys the devices eventually expire; we deleted them by API.
+  keys the devices eventually expire; they were deleted through the API.
 - The plugin's event filter matches the driver name against the upstream image
   name (`ghcr.io/aaomidi/tslink`), so a locally renamed plugin never starts
   tailscaled.

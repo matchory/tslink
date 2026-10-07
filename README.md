@@ -188,6 +188,7 @@ docker network create --driver ghcr.io/aaomidi/tslink:latest-amd64 my-tailnet
 | **Ephemeral key** | Nodes are automatically removed when the container stops |
 | **Reusable key** | Nodes persist in your tailnet after container stops |
 | **Pre-approved key** | Nodes don't require manual approval |
+| **OAuth client secret** | Nodes are ephemeral unless `?ephemeral=false` is appended; tslink logs them out and deletes their state when the container stops. Requires `tslink.tags` |
 
 For most use cases, use an ephemeral, reusable, pre-approved key.
 
@@ -253,6 +254,7 @@ docker run --rm -v /var/lib/docker-plugins/tailscale:/data alpine \
 
 - **macOS/Windows**: Only works with Docker in a Linux VM (OrbStack, Docker Desktop)
 - **MagicDNS in container**: Containers can reach tailnet by IP; MagicDNS resolution requires additional DNS config
+- **Tailscale starts after the application**: Docker gives the plugin no way to identify a container while it is starting, so tslink brings Tailscale up once the container has started, which usually takes a few seconds. Until then, connections to tailnet addresses fail immediately with "host unreachable"; they never fall back to the host's own Tailscale. Applications that need the tailnet at startup should retry.
 
 ## Development
 

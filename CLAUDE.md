@@ -170,7 +170,7 @@ return fmt.Errorf("failed to create endpoint: %w", err)
 - Dependencies are updated by Dependabot (`.github/dependabot.yml`): Actions, Go modules and the Dockerfile base images.
 
 `test/integration` runs against upstream's tailnet (`atlas-diminished.ts.net`) and is not part of CI.
-`test/cluster` builds a three-node Swarm on Hetzner Cloud and runs `regress.sh` against a real tailnet; see its README.
+`test/cluster` builds a three-node Swarm on Hetzner Cloud and runs `regress.sh` against a real tailnet; see `test/cluster/README.md`.
 
 ## Troubleshooting
 

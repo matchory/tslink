@@ -1,7 +1,7 @@
 # Cluster tests
 
 Scripts that build a throwaway Swarm on Hetzner Cloud (three nodes, grown with `add-node.sh`),
-install tslink from a git ref or the working tree, and test it against a real tailnet. Results:
+install tslink from a Git ref or the working tree, and test it against a real tailnet. Results:
 [docs/swarm-cluster-test-2026-10-07.md](../../docs/swarm-cluster-test-2026-10-07.md) and
 [docs/swarm-cluster-followup-2026-10-07.md](../../docs/swarm-cluster-followup-2026-10-07.md).
 
@@ -38,8 +38,8 @@ task that leaked through its host would reach the callee as the node instead of 
 ## Helpers
 
 | Script | Does |
-|---|---|
-| `s <node> <cmd>` | ssh to a node (`mgr`, `w1`, ...) |
+| --- | --- |
+| `s <node> <cmd>` | SSH to a node (`mgr`, `w1`, ...) |
 | `nodes` | the nodes in `ssh_config`; every helper loops over them |
 | `cx <node> <service> <cmd>` | run a command in the service's task on a node |
 | `cxs <node> <service> <script> [args]` | run a local script there |

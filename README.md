@@ -137,7 +137,7 @@ services:
 ### Network Options
 
 | Option | Description | Default |
-|--------|-------------|---------|
+| -------- | ------------- | --------- |
 | `tslink.authkey` | Tailscale auth key | Required (or set via plugin env) |
 | `tslink.tags` | ACL tags (comma-separated) for every container on the network; overrides the `tslink.tags` label | None |
 | `com.docker.network.driver.mtu` | MTU of the interface tslink adds to the container | 1500 |
@@ -153,7 +153,7 @@ identities on Swarm.
 Set with `docker plugin set` while the plugin is disabled.
 
 | Setting | Description | Default |
-|---------|-------------|---------|
+| --------- | ------------- | --------- |
 | `TS_VERSION` | `bundled` uses the Tailscale shipped in the plugin image; `latest` or a version such as `1.102.5` downloads it from pkgs.tailscale.com | `bundled` |
 | `TS_PATH` | Directory with your own `tailscale` and `tailscaled`; overrides `TS_VERSION` | None |
 | `TS_AUTHKEY` | Default auth key for networks without `tslink.authkey` | None |
@@ -163,7 +163,7 @@ Set with `docker plugin set` while the plugin is disabled.
 Configure per-container Tailscale settings using labels:
 
 | Label | Description | Example |
-|-------|-------------|---------|
+| ------- | ------------- | --------- |
 | `tslink.hostname` | Tailscale hostname. On a node, only one container at a time can use a hostname: a second replica waits without an identity until the first one leaves | `tslink.hostname=my-api` |
 | `tslink.tags` | ACL tags (comma-separated) | `tslink.tags=tag:server,tag:prod` |
 | `tslink.serve.<port>` | Expose port via Tailscale Serve: `<proto>[:<target>][/<path>][?<option>[&<option>]]`, options below | `tslink.serve.443=https:8080` |
@@ -216,7 +216,7 @@ docker network create --driver tslink my-tailnet
 ## Auth Key Types
 
 | Key Type | Behavior |
-|----------|----------|
+| ---------- | ---------- |
 | **Ephemeral key** | Nodes are automatically removed when the container stops |
 | **Reusable key** | Nodes persist in your tailnet after container stops |
 | **Pre-approved key** | Nodes don't require manual approval |

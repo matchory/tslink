@@ -62,7 +62,7 @@ func main() {
 	results["fqdn"] = testResolve(fqdn)
 
 	// Test 3a: Static service short
-	serviceShort := strings.Split(staticService, ".")[0]
+	serviceShort, _, _ := strings.Cut(staticService, ".")
 	fmt.Printf("\n=== TEST 3a: Service short (%s) ===\n", serviceShort)
 	results["service_short"] = testResolve(serviceShort)
 

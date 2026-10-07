@@ -89,6 +89,12 @@ type ServeEndpoint struct {
 	Path   string // L7 only - path prefix (e.g., "/api")
 }
 
+// Arguments of the "tailscale serve" commands the daemon runs.
+const (
+	serveCmd        = "serve"
+	serveBackground = "--bg"
+)
+
 // DaemonConfig holds configuration for a tailscaled instance.
 type DaemonConfig struct {
 	EndpointID    string
@@ -518,8 +524,8 @@ func (d *Daemon) configureDirectServeEndpoint(ep ServeEndpoint) error {
 		// L7: tailscale serve --bg --http=80 localhost:8080 OR --https=443 localhost:8080
 		args = []string{
 			"--socket=" + d.socketPath,
-			"serve",
-			"--bg", // Run in background
+			serveCmd,
+			serveBackground, // Run in background
 			"--" + ep.Proto + "=" + ep.Port,
 		}
 		if ep.Path != "" {
@@ -531,8 +537,8 @@ func (d *Daemon) configureDirectServeEndpoint(ep ServeEndpoint) error {
 		// L4: tailscale serve --bg --tcp=5432 tcp://127.0.0.1:5432
 		args = []string{
 			"--socket=" + d.socketPath,
-			"serve",
-			"--bg", // Run in background
+			serveCmd,
+			serveBackground, // Run in background
 			"--tcp=" + ep.Port,
 			fmt.Sprintf("tcp://127.0.0.1:%s", ep.Target),
 		}
@@ -541,8 +547,8 @@ func (d *Daemon) configureDirectServeEndpoint(ep ServeEndpoint) error {
 		// L4 with TLS termination: tailscale serve --bg --tls-terminated-tcp=443 tcp://127.0.0.1:8080
 		args = []string{
 			"--socket=" + d.socketPath,
-			"serve",
-			"--bg", // Run in background
+			serveCmd,
+			serveBackground, // Run in background
 			"--tls-terminated-tcp=" + ep.Port,
 			fmt.Sprintf("tcp://127.0.0.1:%s", ep.Target),
 		}
@@ -597,7 +603,7 @@ func (d *Daemon) configureServeEndpoint(ep ServeEndpoint) error {
 		// Per Tailscale docs, service mode auto-runs in background, target is just host:port
 		args = []string{
 			"--socket=" + d.socketPath,
-			"serve",
+			serveCmd,
 			"--service=" + d.config.Service,
 			"--" + ep.Proto + "=" + ep.Port,
 		}
@@ -610,7 +616,7 @@ func (d *Daemon) configureServeEndpoint(ep ServeEndpoint) error {
 		// L4: tailscale serve --service=svc:name --tcp=5432 tcp://127.0.0.1:5432
 		args = []string{
 			"--socket=" + d.socketPath,
-			"serve",
+			serveCmd,
 			"--service=" + d.config.Service,
 			"--tcp=" + ep.Port,
 			fmt.Sprintf("tcp://127.0.0.1:%s", ep.Target),
@@ -620,7 +626,7 @@ func (d *Daemon) configureServeEndpoint(ep ServeEndpoint) error {
 		// L4 with TLS termination: tailscale serve --service=svc:name --tls-terminated-tcp=443 tcp://127.0.0.1:8080
 		args = []string{
 			"--socket=" + d.socketPath,
-			"serve",
+			serveCmd,
 			"--service=" + d.config.Service,
 			"--tls-terminated-tcp=" + ep.Port,
 			fmt.Sprintf("tcp://127.0.0.1:%s", ep.Target),
@@ -631,7 +637,7 @@ func (d *Daemon) configureServeEndpoint(ep ServeEndpoint) error {
 		// Note: L3 requires additional iptables configuration
 		args = []string{
 			"--socket=" + d.socketPath,
-			"serve",
+			serveCmd,
 			"--service=" + d.config.Service,
 			"--tun",
 		}

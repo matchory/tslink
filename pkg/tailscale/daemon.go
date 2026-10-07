@@ -173,6 +173,14 @@ const (
 	tailscaledLogMaxBytes = 10 << 20
 )
 
+// untaggedServiceHostError is what "tailscale serve --service" fails with on
+// a node without tags.
+const untaggedServiceHostError = "service hosts must be tagged nodes"
+
+// serveDebugLogMaxBytes is where serve-debug.log, the record of serve
+// attempts, is rotated; a variable for tests.
+var serveDebugLogMaxBytes int64 = 1 << 20
+
 // DaemonConfig holds configuration for a tailscaled instance.
 type DaemonConfig struct {
 	EndpointID    string
@@ -709,8 +717,6 @@ func (d *Daemon) configureDirectServeEndpoint(ep ServeEndpoint) error {
 func (d *Daemon) configureServeEndpoint(ep ServeEndpoint) error {
 	logger.Debug("configureServeEndpoint: proto=%s port=%s target=%s path=%s service=%s",
 		ep.Proto, ep.Port, ep.Target, ep.Path, d.config.Service)
-	logger.Debug("Configuring serve endpoint: proto=%s port=%s target=%s path=%s",
-		ep.Proto, ep.Port, ep.Target, ep.Path)
 
 	args, err := serveArgs(ep, d.config.Service)
 	if err != nil {
@@ -721,12 +727,7 @@ func (d *Daemon) configureServeEndpoint(ep ServeEndpoint) error {
 	}
 	args = append([]string{"--socket=" + d.socketPath}, args...)
 
-	// Debug: write to file so we can trace execution
-	debugPath := filepath.Join(d.config.StateDir, "serve-debug.log")
-	debugMsg := fmt.Sprintf("Running: %s %v\n", d.config.TailscaleBin, args)
-	if err := os.WriteFile(debugPath, []byte(debugMsg), 0644); err != nil {
-		logger.Warn("Failed to write serve debug file: %v", err)
-	}
+	d.serveDebug("Running: %s %v\n", d.config.TailscaleBin, args)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -736,17 +737,14 @@ func (d *Daemon) configureServeEndpoint(ep ServeEndpoint) error {
 	output, err := d.tailscale(ctx, prefix, args...)
 
 	if err != nil {
-		debugMsg = fmt.Sprintf("FAILED: %v\nOutput: %s\n", err, output)
-		if writeErr := os.WriteFile(debugPath, []byte(debugMsg), 0644); writeErr != nil {
-			logger.Warn("Failed to write serve debug file: %v", writeErr)
-		}
+		d.serveDebug("FAILED: %v\nOutput: %s\n", err, output)
 		logger.Error("tailscale serve failed: %v", err)
 
 		if strings.Contains(output, "service not found") || strings.Contains(output, "unknown service") {
 			return fmt.Errorf("service %s not found: create it in Tailscale admin console first",
 				d.config.Service)
 		}
-		if strings.Contains(output, "tagged") || strings.Contains(output, "tag") {
+		if strings.Contains(output, untaggedServiceHostError) {
 			return fmt.Errorf("tailscale serve failed: requires tagged auth key (output: %s)", output)
 		}
 
@@ -758,12 +756,26 @@ func (d *Daemon) configureServeEndpoint(ep ServeEndpoint) error {
 		logger.Warn("Service backend registered but pending admin approval: %s", d.config.Service)
 	}
 
-	debugMsg = fmt.Sprintf("SUCCESS\nOutput: %s\n", output)
-	if err := os.WriteFile(debugPath, []byte(debugMsg), 0644); err != nil {
-		logger.Warn("Failed to write serve debug file: %v", err)
-	}
+	d.serveDebug("SUCCESS\nOutput: %s\n", output)
 	logger.Info("tailscale serve endpoint %s:%s configured", ep.Proto, ep.Port)
 	return nil
+}
+
+// serveDebug appends a message to serve-debug.log in the state directory,
+// which keeps a record of the serve attempts for debugging.
+func (d *Daemon) serveDebug(format string, args ...any) {
+	path := filepath.Join(d.config.StateDir, "serve-debug.log")
+	f, err := logger.OpenRotating(path, serveDebugLogMaxBytes)
+	if err != nil {
+		logger.Warn("Failed to open serve debug file: %v", err)
+		return
+	}
+	if _, err := fmt.Fprintf(f, format, args...); err != nil {
+		logger.Warn("Failed to write serve debug file: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		logger.Warn("Failed to close serve debug file: %v", err)
+	}
 }
 
 // WaitForIP waits for Tailscale to get an IP address.
@@ -1022,7 +1034,9 @@ func (d *Daemon) Drain(service string) error {
 	return nil
 }
 
-// SetHostname updates the Tailscale hostname for a running daemon.
+// SetHostname updates the Tailscale hostname for a running daemon. It returns
+// once tailscaled has applied the new preference; the node's MagicDNS name
+// follows when control answers with a new network map.
 func (d *Daemon) SetHostname(hostname string) error {
 	logger.Info("Setting hostname to %s for endpoint %s", hostname, d.config.EndpointID)
 
@@ -1035,20 +1049,15 @@ func (d *Daemon) SetHostname(hostname string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, d.config.TailscaleBin, args...)
-	output, err := cmd.CombinedOutput()
+	output, err := d.tailscale(ctx, "set-hostname", args...)
 	if err != nil {
-		return fmt.Errorf("tailscale set --hostname failed: %w (output: %s)", err, string(output))
+		return fmt.Errorf("tailscale set --hostname failed: %w (output: %s)", err, strings.TrimSpace(output))
 	}
 
 	// Update internal config (protected by mutex)
 	d.mu.Lock()
 	d.config.Hostname = hostname
 	d.mu.Unlock()
-
-	// Brief wait for hostname change to propagate to Tailscale's internal state
-	// This ensures subsequent serve commands use the new hostname
-	time.Sleep(500 * time.Millisecond)
 
 	logger.Info("Hostname updated successfully")
 	return nil

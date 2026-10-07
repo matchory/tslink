@@ -10,6 +10,7 @@ import (
 
 	"github.com/docker/go-plugins-helpers/network"
 
+	"github.com/aaomidi/tslink/pkg/core"
 	"github.com/aaomidi/tslink/pkg/diag"
 	"github.com/aaomidi/tslink/pkg/docker"
 	"github.com/aaomidi/tslink/pkg/logger"
@@ -42,6 +43,12 @@ func main() {
 
 func runPlugin() {
 	logger.Info("Starting Tailscale Docker network plugin")
+
+	pluginDataDir := os.Getenv("TS_DATA_DIR")
+	if pluginDataDir == "" {
+		pluginDataDir = dataDir
+	}
+	core.RemoveDownloadCache(pluginDataDir)
 
 	driver, err := docker.NewDriver()
 	if err != nil {

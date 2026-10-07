@@ -3,9 +3,12 @@ package tailscale
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestServeOptionArgs(t *testing.T) {
@@ -294,6 +297,7 @@ func TestConfigureServiceErrors(t *testing.T) {
 	}{
 		{"unknown service", "error: service not found", "service svc:web not found: create it in Tailscale admin console first"},
 		{"untagged node", "service hosts must be tagged nodes", "requires tagged auth key"},
+		{"other mentioning a tag", "invalid tag:web", "tailscale serve failed: exit status 1 (output: invalid tag:web)"},
 		{"other", "boom", "tailscale serve failed: exit status 1 (output: boom)"},
 	}
 	for _, tt := range tests {
@@ -367,5 +371,82 @@ func TestConfigureServeEndpoints(t *testing.T) {
 	}
 	if !slices.EqualFunc(cli.calls, want, slices.Equal) {
 		t.Errorf("calls =\n  %q\nwant\n  %q", cli.calls, want)
+	}
+}
+
+func TestServeDebugLogKeepsEarlierAttempts(t *testing.T) {
+	cli := &fakeCLI{}
+	d := newTestDaemon(t, cli, "svc:web")
+	ep := ServeEndpoint{Proto: "tcp", Port: "22", Target: "22"}
+	if err := d.configureServeEndpoint(ep); err != nil {
+		t.Fatal(err)
+	}
+	cli.out, cli.err = "boom", errors.New("exit status 1")
+	if err := d.configureServeEndpoint(ep); err == nil {
+		t.Fatal("second attempt succeeded, want an error")
+	}
+	log, err := os.ReadFile(filepath.Join(d.config.StateDir, "serve-debug.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"SUCCESS", "FAILED: exit status 1", "Output: boom"} {
+		if !strings.Contains(string(log), want) {
+			t.Errorf("log missing %q:\n%s", want, log)
+		}
+	}
+	if n := strings.Count(string(log), "Running: "); n != 2 {
+		t.Errorf("log has %d attempts, want 2:\n%s", n, log)
+	}
+}
+
+func TestServeDebugLogIsBounded(t *testing.T) {
+	old := serveDebugLogMaxBytes
+	serveDebugLogMaxBytes = 300
+	t.Cleanup(func() { serveDebugLogMaxBytes = old })
+
+	cli := &fakeCLI{out: strings.Repeat("x", 100)}
+	d := newTestDaemon(t, cli, "svc:web")
+	for range 10 {
+		if err := d.configureServeEndpoint(ServeEndpoint{Proto: "tcp", Port: "22", Target: "22"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	path := filepath.Join(d.config.StateDir, "serve-debug.log")
+	for _, p := range []string{path, path + ".1"} {
+		st, err := os.Stat(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if st.Size() > serveDebugLogMaxBytes {
+			t.Errorf("%s is %d bytes, want at most %d", p, st.Size(), serveDebugLogMaxBytes)
+		}
+	}
+}
+
+func TestSetHostname(t *testing.T) {
+	cli := &fakeCLI{}
+	d := newTestDaemon(t, cli, "")
+	start := time.Now()
+	if err := d.SetHostname("web-2"); err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
+		t.Errorf("SetHostname took %v, want no fixed wait", elapsed)
+	}
+	want := []string{"--socket=" + testSocket, "set", "--hostname=web-2"}
+	if len(cli.calls) != 1 || !slices.Equal(cli.calls[0], want) {
+		t.Errorf("calls = %q, want %q", cli.calls, want)
+	}
+	if d.config.Hostname != "web-2" {
+		t.Errorf("hostname = %q, want web-2", d.config.Hostname)
+	}
+
+	cli.out, cli.err = "invalid hostname\n", errors.New("exit status 1")
+	err := d.SetHostname("-bad")
+	if err == nil || err.Error() != "tailscale set --hostname failed: exit status 1 (output: invalid hostname)" {
+		t.Errorf("error = %v", err)
+	}
+	if d.config.Hostname != "web-2" {
+		t.Errorf("hostname = %q after a failure, want web-2", d.config.Hostname)
 	}
 }

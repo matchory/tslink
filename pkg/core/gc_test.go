@@ -311,3 +311,24 @@ func TestCollectGarbageBoundsLogouts(t *testing.T) {
 		t.Errorf("%d logouts at once, want 2 to %d", m, gcLogoutConcurrency)
 	}
 }
+
+func TestRemoveDownloadCache(t *testing.T) {
+	data := t.TempDir()
+	cache := filepath.Join(data, "tailscale-bin", "1.80.0")
+	if err := os.MkdirAll(cache, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cache, "tailscaled"), []byte("bin"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	RemoveDownloadCache(data)
+	if _, err := os.Stat(filepath.Join(data, "tailscale-bin")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("download cache still there: %v", err)
+	}
+	if _, err := os.Stat(data); err != nil {
+		t.Errorf("data directory gone: %v", err)
+	}
+
+	// Without a cache there is nothing to do
+	RemoveDownloadCache(data)
+}

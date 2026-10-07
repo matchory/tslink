@@ -343,6 +343,11 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 
 	// Start supervisor (blocks until initial daemon startup succeeds or fails - up to 90s!)
 	if err := supervisor.Start(); err != nil {
+		// The supervisor keeps retrying after a failed first start. Nothing
+		// would stop it later, since it is not stored on the endpoint.
+		if stopErr := supervisor.Stop(); stopErr != nil {
+			logger.Warn("failed to stop supervisor after start error: %v", stopErr)
+		}
 		return fmt.Errorf("failed to start tailscale supervisor: %w", err)
 	}
 

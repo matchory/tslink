@@ -716,6 +716,9 @@ func (d *Driver) inspectContainer(
 	}
 
 	tsInfo := parseContainerInfo(name, labels)
+	if containerInfo.Container.HostConfig != nil {
+		tsInfo.DNS = containerInfo.Container.HostConfig.DNS
+	}
 	tsInfo.NetworkStack = networkResult.Network.Labels[core.StackLabel]
 	return tsInfo, settings.SandboxKey, nil
 }

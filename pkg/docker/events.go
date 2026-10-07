@@ -200,6 +200,9 @@ func WatchEvents(
 			}
 
 			containerInfo := parseContainerInfo(name, labels)
+			if info.Container.HostConfig != nil {
+				containerInfo.DNS = info.Container.HostConfig.DNS
+			}
 
 			// The network's stack decides which tasks may use it
 			netInfo, err := cli.NetworkInspect(ctx, netSettings.NetworkID, dockerclient.NetworkInspectOptions{})

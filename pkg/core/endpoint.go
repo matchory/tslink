@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -83,6 +84,8 @@ type ContainerInfo struct {
 
 	Stack        string // Container's com.docker.stack.namespace label
 	NetworkStack string // Network's com.docker.stack.namespace label
+
+	DNS []netip.Addr // DNS servers the container was given, as with docker run --dns
 }
 
 // StackLabel is the label docker stack deploy puts on a stack's services,
@@ -369,6 +372,7 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 		Endpoints:     tsEndpoints,
 		Direct:        info.Direct,
 		LoginServer:   e.Network.LoginServer, // set once, at creation
+		ContainerDNS:  info.DNS,
 	})
 
 	// Start supervisor (blocks until initial daemon startup succeeds or fails - up to 90s!)

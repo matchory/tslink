@@ -106,6 +106,56 @@ func serveOptionArgs(ep ServeEndpoint) []string {
 	return args
 }
 
+// serveArgs returns the "tailscale serve" arguments, after --socket, that
+// configure ep as a backend of service, or for direct machine serve if service
+// is empty. Direct serve does not support L3 (tun): it returns nil args.
+func serveArgs(ep ServeEndpoint, service string) ([]string, error) {
+	// Validate port is numeric
+	if _, err := strconv.Atoi(ep.Port); err != nil {
+		return nil, fmt.Errorf("invalid external port %q: must be numeric", ep.Port)
+	}
+	if _, err := strconv.Atoi(ep.Target); err != nil {
+		return nil, fmt.Errorf("invalid target port %q: must be numeric", ep.Target)
+	}
+
+	// Direct serve runs in the background; service mode does so by itself
+	args := []string{serveCmd, serveBackground}
+	if service != "" {
+		args = []string{serveCmd, "--service=" + service}
+	}
+
+	switch ep.Proto {
+	case "http", "https":
+		// L7: --https=443 [--set-path=/api] http://127.0.0.1:8080, or
+		// 127.0.0.1:8080 for a service (per Tailscale docs, just host:port)
+		args = append(args, "--"+ep.Proto+"="+ep.Port)
+		if ep.Path != "" {
+			args = append(args, "--set-path="+ep.Path)
+		}
+		args = append(args, serveOptionArgs(ep)...)
+		if service == "" {
+			return append(args, "http://127.0.0.1:"+ep.Target), nil
+		}
+		return append(args, "127.0.0.1:"+ep.Target), nil
+
+	case "tcp", "tls-terminated-tcp":
+		// L4, optionally with TLS termination: --tcp=5432 tcp://127.0.0.1:5432
+		args = append(args, "--"+ep.Proto+"="+ep.Port)
+		args = append(args, serveOptionArgs(ep)...)
+		return append(args, "tcp://127.0.0.1:"+ep.Target), nil
+
+	case "tun":
+		// L3: --tun, for services only
+		if service == "" {
+			return nil, nil
+		}
+		return append(args, "--tun"), nil
+
+	default:
+		return nil, fmt.Errorf("unsupported protocol: %s", ep.Proto)
+	}
+}
+
 // Arguments of the "tailscale serve" commands the daemon runs.
 const (
 	serveCmd        = "serve"
@@ -618,62 +668,16 @@ func (d *Daemon) configureDirectServeEndpoint(ep ServeEndpoint) error {
 	logger.Debug("configureDirectServeEndpoint: proto=%s port=%s target=%s path=%s",
 		ep.Proto, ep.Port, ep.Target, ep.Path)
 
-	// Validate port is numeric
-	if _, err := strconv.Atoi(ep.Port); err != nil {
-		return fmt.Errorf("invalid external port %q: must be numeric", ep.Port)
+	args, err := serveArgs(ep, "")
+	if err != nil {
+		return err
 	}
-	if _, err := strconv.Atoi(ep.Target); err != nil {
-		return fmt.Errorf("invalid target port %q: must be numeric", ep.Target)
-	}
-
-	// Build tailscale serve command based on protocol (no --service flag)
-	var args []string
-
-	switch ep.Proto {
-	case "http", "https":
-		// L7: tailscale serve --bg --http=80 localhost:8080 OR --https=443 localhost:8080
-		args = []string{
-			"--socket=" + d.socketPath,
-			serveCmd,
-			serveBackground, // Run in background
-			"--" + ep.Proto + "=" + ep.Port,
-		}
-		if ep.Path != "" {
-			args = append(args, "--set-path="+ep.Path)
-		}
-		args = append(args, serveOptionArgs(ep)...)
-		args = append(args, fmt.Sprintf("http://127.0.0.1:%s", ep.Target))
-
-	case "tcp":
-		// L4: tailscale serve --bg --tcp=5432 tcp://127.0.0.1:5432
-		args = []string{
-			"--socket=" + d.socketPath,
-			serveCmd,
-			serveBackground, // Run in background
-			"--tcp=" + ep.Port,
-		}
-		args = append(args, serveOptionArgs(ep)...)
-		args = append(args, fmt.Sprintf("tcp://127.0.0.1:%s", ep.Target))
-
-	case "tls-terminated-tcp":
-		// L4 with TLS termination: tailscale serve --bg --tls-terminated-tcp=443 tcp://127.0.0.1:8080
-		args = []string{
-			"--socket=" + d.socketPath,
-			serveCmd,
-			serveBackground, // Run in background
-			"--tls-terminated-tcp=" + ep.Port,
-		}
-		args = append(args, serveOptionArgs(ep)...)
-		args = append(args, fmt.Sprintf("tcp://127.0.0.1:%s", ep.Target))
-
-	case "tun":
+	if args == nil {
 		// L3: not applicable for direct serve without service
 		logger.Debug("Skipping L3 (tun) endpoint for direct serve - only supported with services")
 		return nil
-
-	default:
-		return fmt.Errorf("unsupported protocol: %s", ep.Proto)
 	}
+	args = append([]string{"--socket=" + d.socketPath}, args...)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -699,69 +703,14 @@ func (d *Daemon) configureServeEndpoint(ep ServeEndpoint) error {
 	logger.Debug("Configuring serve endpoint: proto=%s port=%s target=%s path=%s",
 		ep.Proto, ep.Port, ep.Target, ep.Path)
 
-	// Validate port is numeric
-	if _, err := strconv.Atoi(ep.Port); err != nil {
-		return fmt.Errorf("invalid external port %q: must be numeric", ep.Port)
+	args, err := serveArgs(ep, d.config.Service)
+	if err != nil {
+		return err
 	}
-	if _, err := strconv.Atoi(ep.Target); err != nil {
-		return fmt.Errorf("invalid target port %q: must be numeric", ep.Target)
-	}
-
-	// Build tailscale serve command based on protocol
-	var args []string
-
-	switch ep.Proto {
-	case "http", "https":
-		// L7: tailscale serve --service=svc:name --https=443 127.0.0.1:8080
-		// Per Tailscale docs, service mode auto-runs in background, target is just host:port
-		args = []string{
-			"--socket=" + d.socketPath,
-			serveCmd,
-			"--service=" + d.config.Service,
-			"--" + ep.Proto + "=" + ep.Port,
-		}
-		if ep.Path != "" {
-			args = append(args, "--set-path="+ep.Path)
-		}
-		args = append(args, serveOptionArgs(ep)...)
-		args = append(args, fmt.Sprintf("127.0.0.1:%s", ep.Target))
-
-	case "tcp":
-		// L4: tailscale serve --service=svc:name --tcp=5432 tcp://127.0.0.1:5432
-		args = []string{
-			"--socket=" + d.socketPath,
-			serveCmd,
-			"--service=" + d.config.Service,
-			"--tcp=" + ep.Port,
-		}
-		args = append(args, serveOptionArgs(ep)...)
-		args = append(args, fmt.Sprintf("tcp://127.0.0.1:%s", ep.Target))
-
-	case "tls-terminated-tcp":
-		// L4 with TLS termination: tailscale serve --service=svc:name --tls-terminated-tcp=443 tcp://127.0.0.1:8080
-		args = []string{
-			"--socket=" + d.socketPath,
-			serveCmd,
-			"--service=" + d.config.Service,
-			"--tls-terminated-tcp=" + ep.Port,
-		}
-		args = append(args, serveOptionArgs(ep)...)
-		args = append(args, fmt.Sprintf("tcp://127.0.0.1:%s", ep.Target))
-
-	case "tun":
-		// L3: tailscale serve --service=svc:name --tun ...
-		// Note: L3 requires additional iptables configuration
-		args = []string{
-			"--socket=" + d.socketPath,
-			serveCmd,
-			"--service=" + d.config.Service,
-			"--tun",
-		}
+	if ep.Proto == "tun" {
 		logger.Warn("L3 (tun) endpoints require additional iptables configuration")
-
-	default:
-		return fmt.Errorf("unsupported protocol: %s", ep.Proto)
 	}
+	args = append([]string{"--socket=" + d.socketPath}, args...)
 
 	// Debug: write to file so we can trace execution
 	debugPath := filepath.Join(d.config.StateDir, "serve-debug.log")

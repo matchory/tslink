@@ -7,7 +7,7 @@ x-app: &app
       s=$$(cut -d. -f1 /proc/uptime); n=0; ok=0; first=""
       while [ $$n -lt 300 ]; do
         n=$$((n+1)); t=$$(cut -d' ' -f1 /proc/uptime)
-        if wget -q -T1 -O /dev/null http://100.93.19.42/ 2>/tmp/e; then ok=$$((ok+1)); [ -z "$$first" ] && first=$$t; else echo "$$t $$(head -c 60 /tmp/e)" >> /tmp/fails; fi
+        if wget -q -T1 -O /dev/null http://${TSLINK_TEST_VIP:?set by deploy from the API}/ 2>/tmp/e; then ok=$$((ok+1)); [ -z "$$first" ] && first=$$t; else echo "$$t $$(head -c 60 /tmp/e)" >> /tmp/fails; fi
         sleep 0.1
       done
       echo "attempts=$$n ok=$$ok first_ok_at_uptime=$$first start_uptime=$$s"; sort -u -k2 /tmp/fails | head -3; sleep 3600

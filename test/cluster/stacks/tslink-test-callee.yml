@@ -5,7 +5,7 @@ services:
     stop_grace_period: 15s
     networks: [tailnet]
     labels:
-      tslink.service: svc:tslink-test-callee
+      tslink.service: ${TSLINK_TEST_SVC:-svc:tslink-test}-callee
       tslink.serve.80: http:80
       tslink.serve.443: https:80
       tslink.direct: "false"
@@ -19,7 +19,7 @@ services:
     image: traefik/whoami:v1.11
     networks: [tailnet]
     labels:
-      tslink.service: svc:tslink-test-other
+      tslink.service: ${TSLINK_TEST_SVC:-svc:tslink-test}-other
       tslink.serve.80: http:80
       tslink.direct: "false"
     deploy:
@@ -30,10 +30,10 @@ services:
     networks: [tailnet]
     labels: {tslink.hostname: callee-perf}
     deploy:
-      placement: {constraints: [node.hostname==tslink-test-w1]}
+      placement: {constraints: ["node.hostname==${TSLINK_TEST_PIN:-tslink-test-w1}"]}
 networks:
   tailnet:
     driver: tslink:latest
     driver_opts:
       com.docker.network.driver.mtu: "1450"
-      tslink.tags: tag:tslink-test-callee
+      tslink.tags: ${TSLINK_TEST_TAG:-tag:tslink-test}-callee

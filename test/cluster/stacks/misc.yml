@@ -6,7 +6,7 @@ services:
     labels: {tslink.hostname: misc-dup}
     deploy:
       replicas: 2
-      placement: {constraints: [node.hostname==tslink-test-mgr]}
+      placement: {constraints: ["node.hostname==${TSLINK_TEST_PIN:-tslink-test-mgr}"]}
   badhost:
     image: alpine:3.23
     command: ["sh","-c","while :; do sleep 3600; done"]

@@ -29,7 +29,7 @@ services:
     networks: [tailnet]
     labels: {tslink.hostname: callee-perf}
     deploy:
-      placement: {constraints: [node.hostname==tslink-test-w1]}
+      placement: {constraints: ["node.hostname==${TSLINK_TEST_PIN:-tslink-test-w1}"]}
 networks:
   tailnet:
     driver: tslink:latest

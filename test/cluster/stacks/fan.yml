@@ -10,7 +10,7 @@ services:
         while :; do b=$$(curl -s -m2 http://$${VIP}/ | sed -n 's/^Hostname: //p');
         echo "$$(date +%s) $${b:-FAIL}"; sleep 1; done
     environment:
-      VIP: 100.93.19.42
+      VIP: ${TSLINK_TEST_VIP:?set by deploy from the API}
     networks: [tailnet]
     deploy:
       replicas: 30

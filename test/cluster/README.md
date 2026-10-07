@@ -44,9 +44,18 @@ reaches over SSH; `provision.sh` can build a throwaway one on Hetzner Cloud. Res
 | `MGR` | `mgr` | the manager that builds the plugin and runs stack and service commands |
 
 `deploy` passes `TSLINK_TEST_TAG` and `TSLINK_TEST_SVC` to `docker stack deploy`, and the stacks
-default to the values above. The tests need the Tailscale API and Tailscale Services, so they do
-not run against headscale. A few stacks for single experiments pin tasks to the nodes
-`tslink-test-mgr`, `-w1` or `-w2` or probe the VIP `100.93.19.42`; edit those for another Swarm.
+default to the values above. It also passes two settings of single stacks:
+
+- `TSLINK_TEST_PIN`: the node hostname the stack pins a task to: `perf` in `callee` and
+  `tslink-test-callee` (default `tslink-test-w1`), `cp` (`tslink-test-w2`) and `misc`'s `dup`
+  (`tslink-test-mgr`)
+- `TSLINK_TEST_VIP`: the address `fan` and `gap` probe; by default `deploy` looks up the VIP of
+  `$TSLINK_TEST_SVC-callee`, and the deploy fails without one
+
+The `tslink-test-*` stacks run on the cluster credential (`./deploy tslink-test-callee -`), whose
+tag scope requires a stack's tags to start with `tag:<stack>`: with another `TSLINK_TEST_TAG`,
+deploy them under the matching stack names. The tests need the Tailscale API and Tailscale
+Services, so they do not run against headscale.
 
 ## Run
 

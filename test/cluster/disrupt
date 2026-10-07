@@ -1,20 +1,23 @@
 #!/bin/bash
-# disrupt <node> <action>: disrupt one node under VIP probes and time its recovery. Actions:
+# disrupt <node> <action>: disrupt one node under VIP probes and time its recovery. Actions over
+# SSH, on any node:
 #   reboot           systemctl reboot
-#   reset            hard reset through the Hetzner API
-#   poweroff <secs>  power off, power on after <secs>
 #   docker-restart   systemctl restart docker
 #   docker-kill      kill -9 dockerd (systemd restarts it)
+# Actions through the provider API, with $TSLINK_TEST_POWER (default hetzner-power: Hetzner Cloud):
+#   reset            hard reset
+#   poweroff <secs>  power off, power on after <secs> (default 60)
 # Prints which node backs the VIP with which container, the recovery times, the failed probe
 # spans per caller, and the aftercase checks. Swarm queries go to $MGR (default: a manager other
 # than <node>).
 set -uo pipefail
 B=$(cd "$(dirname "$0")" && pwd)
-HCLOUD_TOKEN=$(cat ~/.tslink-test/hcloud.token)
-export HCLOUD_TOKEN
+# shellcheck source=config.sh
+. "$B/config.sh"
 node=$1
 action=$2
 ctl=${MGR:-$([ "$node" = mgr ] && echo w1 || echo mgr)}
+host=$("$B/s" "$node" hostname) # the node's name in the swarm
 ts() { date -u +%T; }
 # tsready <node>: every container on a tslink network (named *_tailnet here) has a Running tailscaled
 tsready() {
@@ -30,7 +33,7 @@ done
 X
 }
 since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-vip=$("$B/tsapi" GET '/tailnet/-/services/svc:tslink-test-callee' | jq -r '.addrs[0]')
+vip=$("$B/tsapi" GET "/tailnet/$TSLINK_TEST_TAILNET/services/$TSLINK_TEST_SVC-callee" | jq -r '.addrs[0]')
 echo "START $since node=$node action=$action ctl=$ctl"
 for n in $("$B/nodes"); do
 	echo "  backends on $n: $("$B/s" "$n" 'docker ps -q -f label=com.docker.swarm.service.name=callee_whoami | tr "\n" " "')"
@@ -46,12 +49,12 @@ echo "$(ts) [$node] $action"
 # shellcheck disable=SC2016 # docker-kill's command runs on the node
 case $action in
 reboot) "$B/s" "$node" 'systemctl reboot' ;;
-reset) hcloud server reset "tslink-test-$node" >/dev/null 2>&1 ;;
+reset) "$TSLINK_TEST_POWER" reset "$node" >/dev/null 2>&1 ;;
 poweroff)
-	hcloud server poweroff "tslink-test-$node" >/dev/null 2>&1
+	"$TSLINK_TEST_POWER" poweroff "$node" >/dev/null 2>&1
 	sleep "${3:-60}"
 	echo "$(ts) [$node] poweron"
-	hcloud server poweron "tslink-test-$node" >/dev/null 2>&1
+	"$TSLINK_TEST_POWER" poweron "$node" >/dev/null 2>&1
 	;;
 docker-restart) "$B/s" "$node" 'systemctl restart docker' ;;
 docker-kill) "$B/s" "$node" 'kill -9 $(pidof dockerd)' ;;
@@ -65,7 +68,7 @@ until "$B/s" "$node" true 2>/dev/null; do sleep 2; done
 echo "$(ts) ssh up (+$(($(date +%s) - t0))s)"
 until "$B/s" "$node" 'docker info --format "{{.Swarm.LocalNodeState}}"' 2>/dev/null | grep -q active; do sleep 1; done
 echo "$(ts) docker up, swarm active (+$(($(date +%s) - t0))s)"
-until "$B/s" "$ctl" "docker node ls --format '{{.Hostname}} {{.Status}}'" | grep -q "tslink-test-$node Ready"; do sleep 1; done
+until "$B/s" "$ctl" "docker node ls --format '{{.Hostname}} {{.Status}}'" | grep -qx "$host Ready"; do sleep 1; done
 echo "$(ts) node Ready (+$(($(date +%s) - t0))s)"
 until tsready "$node" 2>/dev/null; do sleep 1; done
 echo "$(ts) node's tasks Running on the tailnet (+$(($(date +%s) - t0))s)"

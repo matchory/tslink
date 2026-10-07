@@ -29,7 +29,7 @@ func (d *Daemon) bringUp() error {
 			if err == nil {
 				return nil
 			}
-			logger.Warn("tailscale up with existing login failed, using the auth key: %v", err)
+			logger.Warnf("tailscale up with existing login failed, using the auth key: %v", err)
 		}
 	}
 
@@ -41,13 +41,13 @@ func (d *Daemon) bringUp() error {
 
 	// Check if it's an auth/state error that warrants a retry
 	if isStateError(err) {
-		logger.Warn("Auth failed with existing state, wiping and retrying: %v", err)
+		logger.Warnf("Auth failed with existing state, wiping and retrying: %v", err)
 		if err := WipeState(d.config.StateDir); err != nil {
-			logger.Warn("Failed to wipe state: %v", err)
+			logger.Warnf("Failed to wipe state: %v", err)
 		}
 
 		// Second attempt with fresh state
-		logger.Info("Retrying tailscale up with fresh state...")
+		logger.Infof("Retrying tailscale up with fresh state...")
 		return d.tryBringUp(true)
 	}
 
@@ -76,9 +76,12 @@ func (d *Daemon) waitBackendState() string {
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		ctx, cancel := context.WithTimeout(d.ctx, 5*time.Second)
-		out, err := exec.CommandContext(ctx, d.config.TailscaleBin, "--socket="+d.socketPath, "status", "--json").Output()
+		out, err := exec.CommandContext(ctx, d.config.TailscaleBin, "--socket="+d.socketPath, "status", "--json").
+			Output()
 		cancel()
-		var st struct{ BackendState string }
+		var st struct {
+			BackendState string `json:"BackendState"`
+		}
 		if err == nil && json.Unmarshal(out, &st) == nil && st.BackendState != "NoState" {
 			return st.BackendState
 		}
@@ -92,7 +95,7 @@ func (d *Daemon) waitBackendState() string {
 // tryBringUp runs "tailscale up" to connect to the network (single attempt).
 // Without withKey, it relies on the node still being logged in.
 func (d *Daemon) tryBringUp(withKey bool, extraArgs ...string) error {
-	logger.Info("Bringing up Tailscale for endpoint %s", d.config.EndpointID)
+	logger.Infof("Bringing up Tailscale for endpoint %s", d.config.EndpointID)
 
 	// The tailscale CLI communicates with tailscaled via the socket.
 	// Since the socket is on the host filesystem, we don't need nsenter.
@@ -128,7 +131,7 @@ func (d *Daemon) tryBringUp(withKey bool, extraArgs ...string) error {
 			redactedArgs[i] = arg
 		}
 	}
-	logger.Debug("Running: %s %v", d.config.TailscaleBin, redactedArgs)
+	logger.Debugf("Running: %s %v", d.config.TailscaleBin, redactedArgs)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -143,11 +146,11 @@ func (d *Daemon) tryBringUp(withKey bool, extraArgs ...string) error {
 	}
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		logger.Error("tailscale up failed with output: %s", string(output))
+		logger.Errorf("tailscale up failed with output: %s", string(output))
 		return fmt.Errorf("tailscale up failed: %w (output: %s)", err, string(output))
 	}
 
-	logger.Info("tailscale up succeeded: %s", string(output))
+	logger.Infof("tailscale up succeeded: %s", string(output))
 	return nil
 }
 
@@ -199,7 +202,7 @@ func (d *Daemon) Reauthenticate() error {
 // once tailscaled has applied the new preference; the node's MagicDNS name
 // follows when control answers with a new network map.
 func (d *Daemon) SetHostname(hostname string) error {
-	logger.Info("Setting hostname to %s for endpoint %s", hostname, d.config.EndpointID)
+	logger.Infof("Setting hostname to %s for endpoint %s", hostname, d.config.EndpointID)
 
 	args := []string{
 		"--socket=" + d.socketPath,
@@ -212,7 +215,11 @@ func (d *Daemon) SetHostname(hostname string) error {
 
 	output, err := d.tailscale(ctx, "set-hostname", args...)
 	if err != nil {
-		return fmt.Errorf("tailscale set --hostname failed: %w (output: %s)", err, strings.TrimSpace(output))
+		return fmt.Errorf(
+			"tailscale set --hostname failed: %w (output: %s)",
+			err,
+			strings.TrimSpace(output),
+		)
 	}
 
 	// Update internal config (protected by mutex)
@@ -220,6 +227,6 @@ func (d *Daemon) SetHostname(hostname string) error {
 	d.config.Hostname = hostname
 	d.mu.Unlock()
 
-	logger.Info("Hostname updated successfully")
+	logger.Infof("Hostname updated successfully")
 	return nil
 }

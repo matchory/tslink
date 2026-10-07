@@ -13,10 +13,20 @@ import (
 )
 
 func TestServeOptionArgs(t *testing.T) {
-	if got := serveOptionArgs(ServeEndpoint{Proto: "tcp", ProxyProtocol: "2"}); !slices.Equal(got, []string{"--proxy-protocol=2"}) {
+	if got := serveOptionArgs(
+		ServeEndpoint{Proto: "tcp", ProxyProtocol: "2"},
+	); !slices.Equal(
+		got,
+		[]string{"--proxy-protocol=2"},
+	) {
 		t.Errorf("with proxy protocol: %q", got)
 	}
-	if got := serveOptionArgs(ServeEndpoint{Proto: "http", AcceptAppCaps: "example.com/cap/a,example.com/cap/b"}); !slices.Equal(got, []string{"--accept-app-caps=example.com/cap/a,example.com/cap/b"}) {
+	if got := serveOptionArgs(
+		ServeEndpoint{Proto: "http", AcceptAppCaps: "example.com/cap/a,example.com/cap/b"},
+	); !slices.Equal(
+		got,
+		[]string{"--accept-app-caps=example.com/cap/a,example.com/cap/b"},
+	) {
 		t.Errorf("with app capabilities: %q", got)
 	}
 	if got := serveOptionArgs(ServeEndpoint{Proto: "tcp"}); len(got) != 0 {
@@ -119,14 +129,24 @@ func TestServeArgs(t *testing.T) {
 		{
 			name: "direct https with path",
 			ep:   ServeEndpoint{Proto: "https", Port: "443", Target: "8080", Path: "/api"},
-			want: []string{"serve", "--bg", "--https=443", "--set-path=/api", "http://127.0.0.1:8080"},
+			want: []string{
+				"serve",
+				"--bg",
+				"--https=443",
+				"--set-path=/api",
+				"http://127.0.0.1:8080",
+			},
 		},
 		{
 			name: "direct https with path and options",
-			ep: ServeEndpoint{Proto: "https", Port: "443", Target: "8080", Path: "/api",
-				ProxyProtocol: "1", AcceptAppCaps: "example.com/cap/a,example.com/cap/b"},
-			want: []string{"serve", "--bg", "--https=443", "--set-path=/api", "--proxy-protocol=1",
-				"--accept-app-caps=example.com/cap/a,example.com/cap/b", "http://127.0.0.1:8080"},
+			ep: ServeEndpoint{
+				Proto: "https", Port: "443", Target: "8080", Path: "/api",
+				ProxyProtocol: "1", AcceptAppCaps: "example.com/cap/a,example.com/cap/b",
+			},
+			want: []string{
+				"serve", "--bg", "--https=443", "--set-path=/api", "--proxy-protocol=1",
+				"--accept-app-caps=example.com/cap/a,example.com/cap/b", "http://127.0.0.1:8080",
+			},
 		},
 		{
 			name: "direct tcp",
@@ -141,7 +161,13 @@ func TestServeArgs(t *testing.T) {
 		{
 			name: "direct tcp with proxy protocol",
 			ep:   ServeEndpoint{Proto: "tcp", Port: "5432", Target: "5432", ProxyProtocol: "2"},
-			want: []string{"serve", "--bg", "--tcp=5432", "--proxy-protocol=2", "tcp://127.0.0.1:5432"},
+			want: []string{
+				"serve",
+				"--bg",
+				"--tcp=5432",
+				"--proxy-protocol=2",
+				"tcp://127.0.0.1:5432",
+			},
 		},
 		{
 			name: "direct tls-terminated-tcp",
@@ -150,8 +176,19 @@ func TestServeArgs(t *testing.T) {
 		},
 		{
 			name: "direct tls-terminated-tcp with proxy protocol",
-			ep:   ServeEndpoint{Proto: "tls-terminated-tcp", Port: "443", Target: "8080", ProxyProtocol: "1"},
-			want: []string{"serve", "--bg", "--tls-terminated-tcp=443", "--proxy-protocol=1", "tcp://127.0.0.1:8080"},
+			ep: ServeEndpoint{
+				Proto:         "tls-terminated-tcp",
+				Port:          "443",
+				Target:        "8080",
+				ProxyProtocol: "1",
+			},
+			want: []string{
+				"serve",
+				"--bg",
+				"--tls-terminated-tcp=443",
+				"--proxy-protocol=1",
+				"tcp://127.0.0.1:8080",
+			},
 		},
 		{
 			name: "direct tun is skipped",
@@ -175,10 +212,19 @@ func TestServeArgs(t *testing.T) {
 		{
 			name:    "service https with path and options",
 			service: svc,
-			ep: ServeEndpoint{Proto: "https", Port: "443", Target: "8080", Path: "/api",
-				ProxyProtocol: "2", AcceptAppCaps: "example.com/cap/a"},
-			want: []string{"serve", "--service=svc:web", "--https=443", "--set-path=/api", "--proxy-protocol=2",
-				"--accept-app-caps=example.com/cap/a", "127.0.0.1:8080"},
+			ep: ServeEndpoint{
+				Proto: "https", Port: "443", Target: "8080", Path: "/api",
+				ProxyProtocol: "2", AcceptAppCaps: "example.com/cap/a",
+			},
+			want: []string{
+				"serve",
+				"--service=svc:web",
+				"--https=443",
+				"--set-path=/api",
+				"--proxy-protocol=2",
+				"--accept-app-caps=example.com/cap/a",
+				"127.0.0.1:8080",
+			},
 		},
 		{
 			name:    "service tcp",
@@ -190,20 +236,35 @@ func TestServeArgs(t *testing.T) {
 			name:    "service tcp with proxy protocol",
 			service: svc,
 			ep:      ServeEndpoint{Proto: "tcp", Port: "5432", Target: "5432", ProxyProtocol: "1"},
-			want:    []string{"serve", "--service=svc:web", "--tcp=5432", "--proxy-protocol=1", "tcp://127.0.0.1:5432"},
+			want: []string{
+				"serve",
+				"--service=svc:web",
+				"--tcp=5432",
+				"--proxy-protocol=1",
+				"tcp://127.0.0.1:5432",
+			},
 		},
 		{
 			name:    "service tls-terminated-tcp",
 			service: svc,
-			ep:      ServeEndpoint{Proto: "tls-terminated-tcp", Port: "443", Target: "8080", ProxyProtocol: "2"},
-			want: []string{"serve", "--service=svc:web", "--tls-terminated-tcp=443", "--proxy-protocol=2",
-				"tcp://127.0.0.1:8080"},
+			ep: ServeEndpoint{
+				Proto:         "tls-terminated-tcp",
+				Port:          "443",
+				Target:        "8080",
+				ProxyProtocol: "2",
+			},
+			want: []string{
+				"serve", "--service=svc:web", "--tls-terminated-tcp=443", "--proxy-protocol=2",
+				"tcp://127.0.0.1:8080",
+			},
 		},
 		{
 			name:    "service tun ignores port, path and options",
 			service: svc,
-			ep: ServeEndpoint{Proto: "tun", Port: "1", Target: "2", Path: "/api",
-				ProxyProtocol: "2", AcceptAppCaps: "example.com/cap/a"},
+			ep: ServeEndpoint{
+				Proto: "tun", Port: "1", Target: "2", Path: "/api",
+				ProxyProtocol: "2", AcceptAppCaps: "example.com/cap/a",
+			},
 			want: []string{"serve", "--service=svc:web", "--tun"},
 		},
 
@@ -286,7 +347,13 @@ func TestConfigureServiceAdvertises(t *testing.T) {
 	}
 	want := [][]string{
 		{"--socket=" + testSocket, "serve", "--service=svc:web", "--https=443", "127.0.0.1:8080"},
-		{"--socket=" + testSocket, "serve", "--service=svc:web", "--tcp=5432", "tcp://127.0.0.1:5432"},
+		{
+			"--socket=" + testSocket,
+			"serve",
+			"--service=svc:web",
+			"--tcp=5432",
+			"tcp://127.0.0.1:5432",
+		},
 		{"--socket=" + testSocket, "serve", "advertise", "svc:web"},
 	}
 	if !slices.EqualFunc(cli.calls, want, slices.Equal) {
@@ -316,9 +383,17 @@ func TestConfigureServiceErrors(t *testing.T) {
 		out  string
 		want string
 	}{
-		{"unknown service", "error: service not found", "service svc:web not found: create it in Tailscale admin console first"},
+		{
+			"unknown service",
+			"error: service not found",
+			"service svc:web not found: create it in Tailscale admin console first",
+		},
 		{"untagged node", "service hosts must be tagged nodes", "requires tagged auth key"},
-		{"other mentioning a tag", "invalid tag:web", "tailscale serve failed: exit status 1 (output: invalid tag:web)"},
+		{
+			"other mentioning a tag",
+			"invalid tag:web",
+			"tailscale serve failed: exit status 1 (output: invalid tag:web)",
+		},
 		{"other", "boom", "tailscale serve failed: exit status 1 (output: boom)"},
 	}
 	for _, tt := range tests {
@@ -348,7 +423,8 @@ func TestConfigureServiceAdvertiseError(t *testing.T) {
 		return cli.run(ctx, prefix, args...)
 	}
 	err := d.configureService()
-	if err == nil || err.Error() != "tailscale serve advertise failed: exit status 1 (output: not allowed)" {
+	if err == nil ||
+		err.Error() != "tailscale serve advertise failed: exit status 1 (output: not allowed)" {
 		t.Errorf("error = %v", err)
 	}
 }
@@ -372,7 +448,8 @@ func TestDrain(t *testing.T) {
 	cli = &fakeCLI{out: "no such service\n", err: errors.New("exit status 1")}
 	d = newTestDaemon(t, cli, "")
 	err := d.Drain("svc:web")
-	if err == nil || err.Error() != "tailscale serve drain failed: exit status 1 (output: no such service)" {
+	if err == nil ||
+		err.Error() != "tailscale serve drain failed: exit status 1 (output: no such service)" {
 		t.Errorf("error = %v", err)
 	}
 	if !d.isDrained() {
@@ -390,7 +467,12 @@ func TestConfigureServeEndpoints(t *testing.T) {
 		{Proto: "https", Port: "443", Target: "8080"},
 		{Proto: "tun", Port: "0", Target: "0"},
 	}
-	if err := d.ConfigureServeEndpoints("svc:web", endpoints, []string{"tag:a", "tag:b"}, true); err != nil {
+	if err := d.ConfigureServeEndpoints(
+		"svc:web",
+		endpoints,
+		[]string{"tag:a", "tag:b"},
+		true,
+	); err != nil {
 		t.Fatal(err)
 	}
 	s := "--socket=" + testSocket
@@ -440,7 +522,9 @@ func TestServeDebugLogIsBounded(t *testing.T) {
 	cli := &fakeCLI{out: strings.Repeat("x", 100)}
 	d := newTestDaemon(t, cli, "svc:web")
 	for range 10 {
-		if err := d.configureServeEndpoint(ServeEndpoint{Proto: "tcp", Port: "22", Target: "22"}); err != nil {
+		if err := d.configureServeEndpoint(
+			ServeEndpoint{Proto: "tcp", Port: "22", Target: "22"},
+		); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -476,7 +560,8 @@ func TestSetHostname(t *testing.T) {
 
 	cli.out, cli.err = "invalid hostname\n", errors.New("exit status 1")
 	err := d.SetHostname("-bad")
-	if err == nil || err.Error() != "tailscale set --hostname failed: exit status 1 (output: invalid hostname)" {
+	if err == nil ||
+		err.Error() != "tailscale set --hostname failed: exit status 1 (output: invalid hostname)" {
 		t.Errorf("error = %v", err)
 	}
 	if d.config.Hostname != "web-2" {

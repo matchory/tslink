@@ -16,6 +16,7 @@ func TestRunFindsStateDirsAndSockets(t *testing.T) {
 	t.Cleanup(func() { statusTimeout = 5 * time.Second })
 
 	// Short path: Unix socket paths are limited to about 100 bytes.
+	//nolint:usetesting // t.TempDir is too long for a socket path
 	dataDir, err := os.MkdirTemp("/tmp", "diag")
 	if err != nil {
 		t.Fatal(err)
@@ -32,7 +33,11 @@ func TestRunFindsStateDirsAndSockets(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(dataDir, "by-stack/billing/billing-api-1-abc/tailscaled.state"), []byte("{}"), 0o600); err != nil {
+	if err := os.WriteFile(
+		filepath.Join(dataDir, "by-stack/billing/billing-api-1-abc/tailscaled.state"),
+		[]byte("{}"),
+		0o600,
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -44,8 +49,15 @@ func TestRunFindsStateDirsAndSockets(t *testing.T) {
 		t.Cleanup(func() { _ = l.Close() })
 	}
 	link := func(stateDir, id string) {
-		target := filepath.Join(strings.Repeat("../", strings.Count(stateDir, "/")+1), "sock", id+".sock")
-		if err := os.Symlink(target, filepath.Join(dataDir, stateDir, "tailscaled.sock")); err != nil {
+		target := filepath.Join(
+			strings.Repeat("../", strings.Count(stateDir, "/")+1),
+			"sock",
+			id+".sock",
+		)
+		if err := os.Symlink(
+			target,
+			filepath.Join(dataDir, stateDir, "tailscaled.sock"),
+		); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -87,7 +99,11 @@ func TestRunReportsEndpointsNotRunning(t *testing.T) {
 		"aaaaaaaaaaaa": `{"endpoint":"aaaaaaaaaaaa","hostname":"web","stack":"app","state":"retrying","error":"control plane unreachable","attempts":3}`,
 		"bbbbbbbbbbbb": `{"endpoint":"bbbbbbbbbbbb","hostname":"api","state":"running"}`,
 	} {
-		if err := os.WriteFile(filepath.Join(dataDir, "status", id+".json"), []byte(body), 0o600); err != nil {
+		if err := os.WriteFile(
+			filepath.Join(dataDir, "status", id+".json"),
+			[]byte(body),
+			0o600,
+		); err != nil {
 			t.Fatal(err)
 		}
 	}

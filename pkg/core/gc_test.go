@@ -28,7 +28,7 @@ func TestCollectGarbage(t *testing.T) {
 	mkdir := func(rel string, ephemeral bool, mtime time.Time) string {
 		t.Helper()
 		dir := filepath.Join(data, rel)
-		if err := os.MkdirAll(dir, 0700); err != nil {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
 			t.Fatal(err)
 		}
 		if ephemeral {
@@ -44,10 +44,10 @@ func TestCollectGarbage(t *testing.T) {
 	sock := func(name string, mtime time.Time) string {
 		t.Helper()
 		p := filepath.Join(data, "sock", name)
-		if err := os.MkdirAll(filepath.Dir(p), 0700); err != nil {
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(p, nil, 0600); err != nil {
+		if err := os.WriteFile(p, nil, 0o600); err != nil {
 			t.Fatal(err)
 		}
 		if err := os.Chtimes(p, mtime, mtime); err != nil {
@@ -69,7 +69,14 @@ func TestCollectGarbage(t *testing.T) {
 
 	loggedOut := stubLogout(t, nil)
 
-	CollectGarbage(context.Background(), &Config{DataDir: data}, NewStateClaims(), map[string]bool{inUse: true}, map[string]bool{"bbbbbbbbbbbb": true}, time.Minute)
+	CollectGarbage(
+		context.Background(),
+		&Config{DataDir: data},
+		NewStateClaims(),
+		map[string]bool{inUse: true},
+		map[string]bool{"bbbbbbbbbbbb": true},
+		time.Minute,
+	)
 
 	// Only the nodes whose state goes are logged out
 	if got := loggedOut(); !slices.Equal(got, []string{deadHost, dead}) {
@@ -105,7 +112,14 @@ func TestCollectGarbageKeepsStateReusedByPersistentNetwork(t *testing.T) {
 	}
 
 	loggedOut := stubLogout(t, nil)
-	CollectGarbage(context.Background(), &Config{DataDir: data}, NewStateClaims(), nil, nil, time.Minute)
+	CollectGarbage(
+		context.Background(),
+		&Config{DataDir: data},
+		NewStateClaims(),
+		nil,
+		nil,
+		time.Minute,
+	)
 
 	if got := loggedOut(); len(got) != 0 {
 		t.Errorf("logged out %v, want none", got)
@@ -185,12 +199,14 @@ func TestCollectGarbageKeepsClaimedState(t *testing.T) {
 	data := t.TempDir()
 	claims := NewStateClaims()
 	e := &Endpoint{ID: "fedcba9876543210", DataDir: data, claims: claims}
-	if err := e.ClaimStateDir(&ContainerInfo{Hostname: "app_web.4.claimed", Stack: "app"}); err != nil {
+	if err := e.ClaimStateDir(
+		&ContainerInfo{Hostname: "app_web.4.claimed", Stack: "app"},
+	); err != nil {
 		t.Fatal(err)
 	}
 	defer e.releaseStateDir()
 	dir := e.GetStateDir()
-	if err := os.MkdirAll(dir, 0700); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := tailscale.MarkEphemeral(dir); err != nil {
@@ -246,7 +262,11 @@ func orphan(t *testing.T, data, rel string) string {
 	if err := tailscale.MarkEphemeral(dir); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "tailscaled.state"), []byte("{}"), 0600); err != nil {
+	if err := os.WriteFile(
+		filepath.Join(dir, "tailscaled.state"),
+		[]byte("{}"),
+		0o600,
+	); err != nil {
 		t.Fatal(err)
 	}
 	old := time.Now().Add(-time.Hour)
@@ -331,13 +351,24 @@ func TestCollectGarbageBoundsLogouts(t *testing.T) {
 	loggedOut := stubLogout(t, func(context.Context, string) error {
 		n := running.Add(1)
 		defer running.Add(-1)
-		for m := most.Load(); n > m && !most.CompareAndSwap(m, n); m = most.Load() {
+		for {
+			m := most.Load()
+			if n <= m || most.CompareAndSwap(m, n) {
+				break
+			}
 		}
 		time.Sleep(50 * time.Millisecond)
 		return nil
 	})
 
-	CollectGarbage(context.Background(), &Config{DataDir: data}, NewStateClaims(), nil, nil, time.Minute)
+	CollectGarbage(
+		context.Background(),
+		&Config{DataDir: data},
+		NewStateClaims(),
+		nil,
+		nil,
+		time.Minute,
+	)
 
 	if got := len(loggedOut()); got != 10 {
 		t.Errorf("logged out %d nodes, want 10", got)
@@ -350,10 +381,10 @@ func TestCollectGarbageBoundsLogouts(t *testing.T) {
 func TestRemoveDownloadCache(t *testing.T) {
 	data := t.TempDir()
 	cache := filepath.Join(data, "tailscale-bin", "1.80.0")
-	if err := os.MkdirAll(cache, 0700); err != nil {
+	if err := os.MkdirAll(cache, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(cache, "tailscaled"), []byte("bin"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(cache, "tailscaled"), []byte("bin"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	RemoveDownloadCache(data)
@@ -410,8 +441,16 @@ func (c certFiles) cert(domain string, notAfter, mtime time.Time) (string, strin
 	if err != nil {
 		c.t.Fatal(err)
 	}
-	keyPath := c.write(domain+".key", pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}), mtime)
-	crtPath := c.write(domain+".crt", pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), mtime)
+	keyPath := c.write(
+		domain+".key",
+		pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}),
+		mtime,
+	)
+	crtPath := c.write(
+		domain+".crt",
+		pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
+		mtime,
+	)
 	return crtPath, keyPath
 }
 
@@ -435,7 +474,11 @@ func TestCollectCertificates(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Written within the week, though expired: kept
-	rewrittenCrt, rewrittenKey := c.cert("web-4.example.ts.net", now.Add(-10*day), now.Add(-time.Hour))
+	rewrittenCrt, rewrittenKey := c.cert(
+		"web-4.example.ts.net",
+		now.Add(-10*day),
+		now.Add(-time.Hour),
+	)
 
 	oldKey := c.write("gone.example.ts.net.key", []byte("key"), now.Add(-2*day))
 	freshKey := c.write("new.example.ts.net.key", []byte("key"), now.Add(-time.Hour))
@@ -450,8 +493,14 @@ func TestCollectCertificates(t *testing.T) {
 	garbled := c.write("bad.example.ts.net.crt", []byte("not a certificate"), issued)
 	garbledKey := c.write("bad.example.ts.net.key", []byte("key"), issued)
 
-	CollectGarbage(context.Background(), &Config{DataDir: t.TempDir(), SharedDir: shared}, NewStateClaims(),
-		nil, nil, time.Minute)
+	CollectGarbage(
+		context.Background(),
+		&Config{DataDir: t.TempDir(), SharedDir: shared},
+		NewStateClaims(),
+		nil,
+		nil,
+		time.Minute,
+	)
 
 	for _, p := range []string{expiredCrt, expiredKey, oldKey, oldTmp, staleLease} {
 		if _, err := os.Stat(p); !errors.Is(err, os.ErrNotExist) {
@@ -474,7 +523,11 @@ func TestCollectCertificatesRemovedElsewhere(t *testing.T) {
 	dir := t.TempDir()
 	c := certFiles{t, dir}
 	now := time.Now()
-	crt, key := c.cert("web-1.example.ts.net", now.Add(-10*24*time.Hour), now.Add(-100*24*time.Hour))
+	crt, key := c.cert(
+		"web-1.example.ts.net",
+		now.Add(-10*24*time.Hour),
+		now.Add(-100*24*time.Hour),
+	)
 	if err := os.Remove(key); err != nil {
 		t.Fatal(err)
 	}

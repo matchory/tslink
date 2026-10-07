@@ -355,9 +355,6 @@ func TestDrainSurvivesDaemonRestart(t *testing.T) {
 	if err := d.advertise("svc:web"); !errors.Is(err, errDrained) {
 		t.Errorf("advertise = %v, want errDrained", err)
 	}
-	if err := d.ConfigureServeEndpoints("svc:web", d.config.Endpoints, nil, false); err != nil {
-		t.Errorf("ConfigureServeEndpoints = %v", err)
-	}
 	if calls := cli.snapshot(); len(calls) != 0 {
 		t.Errorf("drained backend ran %q", calls)
 	}

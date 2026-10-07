@@ -9,7 +9,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 )
 
 func TestServeOptionArgs(t *testing.T) {
@@ -460,35 +459,6 @@ func TestDrain(t *testing.T) {
 	}
 }
 
-func TestConfigureServeEndpoints(t *testing.T) {
-	cli := &fakeCLI{}
-	d := newTestDaemon(t, cli, "")
-	endpoints := []ServeEndpoint{
-		{Proto: "https", Port: "443", Target: "8080"},
-		{Proto: "tun", Port: "0", Target: "0"},
-	}
-	if err := d.ConfigureServeEndpoints(
-		"svc:web",
-		endpoints,
-		[]string{"tag:a", "tag:b"},
-		true,
-	); err != nil {
-		t.Fatal(err)
-	}
-	s := "--socket=" + testSocket
-	// Direct serve skips the tun endpoint
-	want := [][]string{
-		{s, "set", "--advertise-tags=tag:a,tag:b"},
-		{s, "serve", "--bg", "--https=443", "http://127.0.0.1:8080"},
-		{s, "serve", "--service=svc:web", "--https=443", "127.0.0.1:8080"},
-		{s, "serve", "--service=svc:web", "--tun"},
-		{s, "serve", "advertise", "svc:web"},
-	}
-	if !slices.EqualFunc(cli.calls, want, slices.Equal) {
-		t.Errorf("calls =\n  %q\nwant\n  %q", cli.calls, want)
-	}
-}
-
 func TestServeDebugLogKeepsEarlierAttempts(t *testing.T) {
 	cli := &fakeCLI{}
 	d := newTestDaemon(t, cli, "svc:web")
@@ -537,34 +507,5 @@ func TestServeDebugLogIsBounded(t *testing.T) {
 		if st.Size() > serveDebugLogMaxBytes {
 			t.Errorf("%s is %d bytes, want at most %d", p, st.Size(), serveDebugLogMaxBytes)
 		}
-	}
-}
-
-func TestSetHostname(t *testing.T) {
-	cli := &fakeCLI{}
-	d := newTestDaemon(t, cli, "")
-	start := time.Now()
-	if err := d.SetHostname("web-2"); err != nil {
-		t.Fatal(err)
-	}
-	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
-		t.Errorf("SetHostname took %v, want no fixed wait", elapsed)
-	}
-	want := []string{"--socket=" + testSocket, "set", "--hostname=web-2"}
-	if len(cli.calls) != 1 || !slices.Equal(cli.calls[0], want) {
-		t.Errorf("calls = %q, want %q", cli.calls, want)
-	}
-	if d.config.Hostname != "web-2" {
-		t.Errorf("hostname = %q, want web-2", d.config.Hostname)
-	}
-
-	cli.out, cli.err = "invalid hostname\n", errors.New("exit status 1")
-	err := d.SetHostname("-bad")
-	if err == nil ||
-		err.Error() != "tailscale set --hostname failed: exit status 1 (output: invalid hostname)" {
-		t.Errorf("error = %v", err)
-	}
-	if d.config.Hostname != "web-2" {
-		t.Errorf("hostname = %q after a failure, want web-2", d.config.Hostname)
 	}
 }

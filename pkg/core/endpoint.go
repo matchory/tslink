@@ -674,63 +674,6 @@ func (e *Endpoint) Stop() error {
 	return nil
 }
 
-// ApplyHostnameChange changes the hostname of a running Tailscale instance.
-func (e *Endpoint) ApplyHostnameChange(newHostname string) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	if e.supervisor == nil {
-		return errors.New("no supervisor running")
-	}
-
-	logger.Infof("ApplyHostnameChange: changing hostname from %s to %s", e.Hostname, newHostname)
-
-	if err := e.supervisor.SetHostname(newHostname); err != nil {
-		return fmt.Errorf("failed to set hostname: %w", err)
-	}
-
-	e.Hostname = newHostname
-	return nil
-}
-
-// ApplyServiceConfig configures Tailscale service endpoints after initial startup.
-// This is called when container info is obtained from cache after Join().
-func (e *Endpoint) ApplyServiceConfig(info *ContainerInfo) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	if e.supervisor == nil {
-		return errors.New("no supervisor running")
-	}
-
-	if info.Service == "" {
-		return nil // No service to configure
-	}
-
-	logger.Infof(
-		"ApplyServiceConfig: configuring service %s with %d endpoints",
-		info.Service,
-		len(info.Endpoints),
-	)
-
-	tsEndpoints := toTailscaleEndpoints(info.Endpoints)
-
-	if err := e.supervisor.ConfigureServeEndpoints(
-		info.Service,
-		tsEndpoints,
-		info.Tags,
-		info.Direct,
-	); err != nil {
-		return fmt.Errorf("failed to configure service: %w", err)
-	}
-
-	e.Service = info.Service
-	e.Tags = info.Tags
-	e.Endpoints = info.Endpoints
-	e.Direct = info.Direct
-	return nil
-}
-
 // checkStackScope keeps a task to its own stack's network: another stack
 // cannot attach to it and take its credentials and tags. A stack using the
 // cluster credential is also kept to its own tags.

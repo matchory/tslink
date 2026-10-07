@@ -294,7 +294,8 @@ and [docs/testing/swarm-cluster-followup-2026-10-07.md](docs/testing/swarm-clust
   their ephemeral nodes out, so a container with a fixed `tslink.hostname`
   gets its name back instead of `<hostname>-1`.
 - **HTTPS certificates:** Tailscale fetches a Let's Encrypt certificate for
-  every name it serves HTTP on, even plain HTTP (a Tailscale bug since 1.100).
+  every name it serves HTTP on, even plain HTTP (a Tailscale bug since 1.100,
+  [tailscale/tailscale#21693](https://github.com/tailscale/tailscale/issues/21693)).
   Let's Encrypt allows 50 new certificates a week per tailnet and 5 per name.
   - Serve through Tailscale Services: replicas share their Service's
     certificate, and tslink issues it once, so only a Service's first

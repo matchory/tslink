@@ -164,7 +164,8 @@ rather than issuing a second certificate (observed in validation).
   HTTPS. With per-task names, every new task would draw on the tailnet's 50 new certificates a week. tslink
   therefore no longer serves Service replicas on their own names by default (`tslink.direct` defaults to `false`
   with `tslink.service`), and warns when a task serves HTTP on its own name. HTTP-only Services still get one
-  certificate per Service name, issued once, until Tailscale fixes the loop.
+  certificate per Service name, issued once, until Tailscale fixes the loop
+  ([tailscale/tailscale#21693](https://github.com/tailscale/tailscale/issues/21693)).
 
 ### Renewal
 

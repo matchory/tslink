@@ -47,26 +47,31 @@ When you create a Docker network with this plugin and run containers on it:
 sudo mkdir -p /var/lib/docker-plugins/tailscale
 ```
 
-The images are private: log in to GHCR first with a token that can read
-packages (`docker login ghcr.io`). Docker plugins require architecture-specific
-tags:
+Docker plugins have no multi-architecture
+images, so each image tag names its architecture. Always install under the
+alias `tslink`: networks and stack files then name the driver `tslink`,
+whatever the version and architecture, and upgrades keep the name.
 
 ```bash
-# For amd64 (Intel/AMD, most cloud VMs)
-docker plugin install ghcr.io/matchory/tslink:latest-amd64
+# amd64 (Intel/AMD, most cloud VMs); use <version>-arm64 on ARM
+docker plugin install --alias tslink --grant-all-permissions \
+  ghcr.io/matchory/tslink:<version>-amd64
 
-# For arm64 (Apple Silicon, AWS Graviton, Raspberry Pi)
-docker plugin install ghcr.io/matchory/tslink:latest-arm64
-
-# Or install a specific version
-docker plugin install ghcr.io/matchory/tslink:<version>-amd64
-
-# Or follow main branch (latest development)
-docker plugin install ghcr.io/matchory/tslink:main-amd64
+# Other images: latest-<arch> (newest release), main-<arch> (main branch)
 
 # The plugin will be enabled automatically
 docker plugin ls
 ```
+
+To upgrade, keep the alias:
+
+```bash
+docker plugin disable -f tslink
+docker plugin upgrade --grant-all-permissions tslink ghcr.io/matchory/tslink:<version>-amd64
+docker plugin enable tslink
+```
+
+On production nodes, see [docs/node-provisioning.md](docs/node-provisioning.md).
 
 ## Usage
 
@@ -74,15 +79,14 @@ docker plugin ls
 
 ```bash
 # With auth key in command (ephemeral nodes by default)
-# Replace :latest-amd64 with :latest-arm64 for ARM systems
 docker network create \
-  --driver ghcr.io/matchory/tslink:latest-amd64 \
+  --driver tslink \
   --opt tslink.authkey=tskey-auth-xxxxx \
   my-tailnet
 
 # Or set the auth key globally when installing the plugin
-docker plugin set ghcr.io/matchory/tslink:latest-amd64 TS_AUTHKEY=tskey-auth-xxxxx
-docker network create --driver ghcr.io/matchory/tslink:latest-amd64 my-tailnet
+docker plugin set tslink TS_AUTHKEY=tskey-auth-xxxxx
+docker network create --driver tslink my-tailnet
 ```
 
 ### Run Containers
@@ -110,10 +114,9 @@ curl http://web.your-tailnet.ts.net
 ### Example: Docker Compose
 
 ```yaml
-# Use :latest-amd64 or :latest-arm64 depending on your system
 networks:
   tailnet:
-    driver: ghcr.io/matchory/tslink:latest-amd64
+    driver: tslink
     driver_opts:
       tslink.authkey: ${TS_AUTHKEY}
 
@@ -201,13 +204,13 @@ workload. Serve replaces the header if a caller sends its own.
 Instead of passing the auth key with each network, set it as a plugin environment variable:
 
 ```bash
-# Set default auth key (use :latest-arm64 for ARM systems)
-docker plugin disable ghcr.io/matchory/tslink:latest-amd64
-docker plugin set ghcr.io/matchory/tslink:latest-amd64 TS_AUTHKEY=tskey-auth-xxxxx
-docker plugin enable ghcr.io/matchory/tslink:latest-amd64
+# Set default auth key
+docker plugin disable tslink
+docker plugin set tslink TS_AUTHKEY=tskey-auth-xxxxx
+docker plugin enable tslink
 
 # Now create networks without specifying the auth key
-docker network create --driver ghcr.io/matchory/tslink:latest-amd64 my-tailnet
+docker network create --driver tslink my-tailnet
 ```
 
 ## Auth Key Types

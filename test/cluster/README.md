@@ -101,6 +101,7 @@ another provider, point `TSLINK_TEST_POWER` at a script with the same arguments.
 | `tsapi <method> <path> [json]` | Tailscale API with the test OAuth client |
 | `health` | every task tailscaled answers and is Running |
 | `probes start\|stop\|report`, `failspans` | VIP probes from the callers, five requests a second |
+| `probelog <node>` | the probe log of the node's caller, also after its task was replaced |
 | `await <service>` | wait for a service update to finish (`MGR=w1` to ask another manager) |
 | `aftercase <since>` | health, devices orphaned since `<since>`, nogrant refused everywhere |
 | `disrupt <node> <action>` | reboot, restart or kill Docker over SSH, or reset or power off through the provider API, under probes; times recovery |

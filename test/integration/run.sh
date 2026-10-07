@@ -95,7 +95,8 @@ id=$(docker create tslink:rootfs)
 docker export "$id" | sudo tar -x -C "$WORK/plugin/rootfs"
 docker rm "$id" >/dev/null
 sudo mkdir -p "$DATA"
-docker plugin create "$PLUGIN" "$WORK/plugin"
+# The CLI packs the rootfs, which is root's like in the image
+sudo docker plugin create "$PLUGIN" "$WORK/plugin"
 # Docker creates /var/run/docker/netns with the first container
 docker run --rm "$ALPINE" true
 docker plugin enable "$PLUGIN"

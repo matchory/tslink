@@ -10,6 +10,13 @@ on:
 permissions:
   contents: read
 
+# One run per ref. A newer push to main cancels the run it supersedes, which
+# would only push an older main-<arch>. A tag is never cancelled once started:
+# a release cut off between its version and latest tags is half published.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
 env:
   PLUGIN: ghcr.io/${{ github.repository }}
 

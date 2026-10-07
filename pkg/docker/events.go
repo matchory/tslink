@@ -257,7 +257,6 @@ func parseContainerInfo(name string, labels map[string]string) *core.ContainerIn
 	info := &core.ContainerInfo{
 		Name:   name,
 		Labels: labels,
-		Direct: true, // Default: direct serve enabled
 		Stack:  labels[core.StackLabel],
 	}
 
@@ -278,10 +277,14 @@ func parseContainerInfo(name string, labels map[string]string) *core.ContainerIn
 		info.Service = v
 	}
 
-	// tslink.direct - enable/disable direct machine serve (default: true)
-	// Set tslink.direct=false to disable direct serve (only use service backend)
+	// tslink.direct - serve the endpoints on the task's own name too. Defaults
+	// to true without a Service only: with one, it would double what is
+	// served, and every task would get a certificate of its own, even for
+	// plain HTTP (https://github.com/tailscale/tailscale/issues/21693)
 	if v, ok := labels["tslink.direct"]; ok {
 		info.Direct = v != "false" && v != "0" && v != "no"
+	} else {
+		info.Direct = info.Service == ""
 	}
 
 	// Parse serve endpoints from tslink.serve.<port> labels

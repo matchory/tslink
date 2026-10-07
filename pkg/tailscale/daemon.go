@@ -187,7 +187,8 @@ type DaemonConfig struct {
 	StateDir      string
 	SocketPath    string // tailscaled socket; defaults to <StateDir>/tailscaled.sock
 	Hostname      string
-	AuthKey       string
+	AuthKey       func() (string, error) // Read at each login, so a replaced credential takes effect
+	CertsDir      string                 // Shared certificate directory; empty for tailscaled's own
 	NetNSPath     string
 	TailscaleBin  string          // Path to tailscale CLI binary
 	TailscaledBin string          // Path to tailscaled daemon binary
@@ -292,6 +293,9 @@ func (d *Daemon) Start() error {
 	logger.Info("Starting tailscaled for endpoint %s in netns %s", d.config.EndpointID, d.config.NetNSPath)
 
 	statePath := filepath.Join(d.config.StateDir, "tailscaled.state")
+	if err := LinkCertsDir(d.config.StateDir, d.config.CertsDir); err != nil {
+		return err
+	}
 
 	// Build tailscaled arguments
 	// Use a real tun device (tailscale0) so containers can use Tailscale networking directly
@@ -302,18 +306,8 @@ func (d *Daemon) Start() error {
 		"--statedir=" + d.config.StateDir,
 	}
 
-	// Use nsenter to run tailscaled in the container's network namespace
-	nsenterArgs := []string{
-		"--net=" + d.config.NetNSPath,
-		"--",
-		d.config.TailscaledBin,
-	}
-	nsenterArgs = append(nsenterArgs, tailscaledArgs...)
-
-	logger.Debug("Running: nsenter %v", nsenterArgs)
-
-	d.cmd = exec.CommandContext(d.ctx, "nsenter", nsenterArgs...)
-	d.cmd.Env = append(os.Environ(), "TS_AUTHKEY="+d.config.AuthKey)
+	d.cmd = d.tailscaledCommand(tailscaledArgs)
+	d.cmd.Env = os.Environ()
 
 	// Set up streaming output - logs each line as it arrives
 	stdoutPipe, err := d.cmd.StdoutPipe()
@@ -451,7 +445,7 @@ func (d *Daemon) Start() error {
 		logger.Info("Waiting for control plane sync before configuring service backend...")
 		time.Sleep(2 * time.Second)
 		logger.Info("Configuring service backend...")
-		if err := d.configureService(); err != nil {
+		if err := d.configureServiceWhenCertified(); err != nil {
 			if stopErr := d.Stop(); stopErr != nil {
 				logger.Warn("Failed to stop daemon after service config error: %v", stopErr)
 			}
@@ -461,6 +455,31 @@ func (d *Daemon) Start() error {
 	}
 
 	return nil
+}
+
+// tailscaledCommand returns the command running tailscaled with args in the
+// container's network namespace.
+//
+// The resolver in the plugin's resolv.conf, the host's, may not exist in that
+// namespace, such as systemd-resolved's 127.0.0.53, and tailscaled's own
+// lookups, of the ACME server for one, would fail. Docker's embedded resolver
+// is always there, so tailscaled gets a resolv.conf naming it, in a mount
+// namespace of its own. Without it, tailscaled keeps the plugin's.
+func (d *Daemon) tailscaledCommand(args []string) *exec.Cmd {
+	resolvConf := filepath.Join(d.config.StateDir, "resolv.conf")
+	if err := os.WriteFile(resolvConf, []byte("nameserver 127.0.0.11\noptions ndots:0\n"), 0644); err != nil { // #nosec G306 -- not secret
+		logger.Warn("Failed to write %s: %v", resolvConf, err)
+	}
+	// unshare, sh and nsenter each exec the next, so the process is tailscaled
+	unshareArgs := []string{
+		"--mount", "--propagation", "private", "--",
+		"sh", "-c", `mount --bind "$0" /etc/resolv.conf || echo "tslink: tailscaled keeps the plugin's resolv.conf" >&2
+netns=$1; shift; exec nsenter --net="$netns" -- "$@"`,
+		resolvConf, d.config.NetNSPath, d.config.TailscaledBin,
+	}
+	unshareArgs = append(unshareArgs, args...)
+	logger.Debug("Running: unshare %v", unshareArgs)
+	return exec.CommandContext(d.ctx, "unshare", unshareArgs...)
 }
 
 // waitForSocket waits for the tailscaled socket to be ready.
@@ -606,7 +625,11 @@ func (d *Daemon) tryBringUp(withKey bool, extraArgs ...string) error {
 
 	cmd := exec.CommandContext(ctx, d.config.TailscaleBin, args...)
 	if withKey {
-		cmd.Stdin = strings.NewReader(d.config.AuthKey)
+		key, err := d.config.AuthKey()
+		if err != nil {
+			return err
+		}
+		cmd.Stdin = strings.NewReader(key)
 	}
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -668,6 +691,11 @@ func (d *Daemon) configureDirectServe() error {
 
 	logger.Info("Configuring direct machine serve with %d endpoint(s) for %s",
 		len(d.config.Endpoints), d.config.EndpointID)
+	if servesWeb(d.config.Endpoints) {
+		logger.Warn("Endpoint %s serves HTTP on its own name %s: tailscaled issues a certificate for it, "+
+			"even for plain HTTP, and every new task's name counts against Let's Encrypt's weekly limit for the tailnet",
+			d.config.EndpointID[:12], d.config.Hostname)
+	}
 
 	// Configure each endpoint for direct serve
 	for i, ep := range d.config.Endpoints {
@@ -1015,7 +1043,7 @@ func (d *Daemon) Reauthenticate() error {
 		}
 	}
 	if d.config.Service != "" {
-		if err := d.configureService(); err != nil {
+		if err := d.configureServiceWhenCertified(); err != nil {
 			return fmt.Errorf("failed to configure Tailscale service: %w", err)
 		}
 	}

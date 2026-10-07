@@ -140,7 +140,7 @@ services:
 
 | Option | Description | Default |
 | -------- | ------------- | --------- |
-| `tslink.authkey` | Tailscale auth key | Required (or set via plugin env) |
+| `tslink.authkey` | Tailscale auth key | Required, unless the plugin has a [cluster credential](#cluster-credential) or `TS_AUTHKEY` |
 | `tslink.tags` | ACL tags (comma-separated) for every container on the network; overrides the `tslink.tags` label | None |
 | `tslink.loginserver` | URL of a control server other than Tailscale's, such as [headscale](https://github.com/juanfont/headscale); passed to `tailscale up --login-server` | Tailscale's |
 | `com.docker.network.driver.mtu` | MTU of the interface tslink adds to the container | 1500 |
@@ -158,6 +158,8 @@ Set with `docker plugin set` while the plugin is disabled.
 | Setting | Description | Default |
 | --------- | ------------- | --------- |
 | `TS_AUTHKEY` | Default auth key for networks without `tslink.authkey` | None |
+| `shared.source` | Directory holding HTTPS certificates, in `certs/`; point it at a volume shared between hosts so a Tailscale Service's certificate is issued once for the cluster | The data directory |
+| `TS_DEBUG_ACME_DIRECTORY_URL`, `SSL_CERT_FILE` | For tests: another ACME directory, such as Let's Encrypt's staging environment, and a root certificate bundle that trusts it | None |
 
 The plugin image ships the Tailscale it runs, so each tslink release pins
 one Tailscale version; upgrade the plugin to upgrade Tailscale. Earlier
@@ -175,7 +177,7 @@ Configure per-container Tailscale settings using labels:
 | `tslink.tags` | ACL tags (comma-separated) | `tslink.tags=tag:server,tag:prod` |
 | `tslink.serve.<port>` | Expose port via Tailscale Serve: `<proto>[:<target>][/<path>][?<option>[&<option>]]`, options below | `tslink.serve.443=https:8080` |
 | `tslink.service` | Register as Tailscale Service backend | `tslink.service=svc:my-api` |
-| `tslink.direct` | Enable direct machine serve | `tslink.direct=true` (default) |
+| `tslink.direct` | Also serve the endpoints on the container's own name. Defaults to `true` without `tslink.service`, `false` with it | `tslink.direct=true` |
 
 ```bash
 # Example: Container with custom hostname and tags
@@ -219,6 +221,28 @@ docker plugin enable tslink
 # Now create networks without specifying the auth key
 docker network create --driver tslink:latest my-tailnet
 ```
+
+### Cluster Credential
+
+On Swarm, give the plugin one OAuth client for the whole cluster instead of a secret per stack: put its secret
+(`tskey-client-…`, nothing appended) in `/var/lib/docker-plugins/tailscale/oauth-client.secret` on every node. Stack
+networks then carry only their tags:
+
+```yaml
+networks:
+  tailnet:
+    driver: tslink:latest
+    driver_opts:
+      tslink.tags: tag:billing
+```
+
+- The file is read whenever a node registers, so replacing it rotates the credential without recreating networks.
+- Nodes are ephemeral and pre-approved.
+- A stack may only use `tag:<stack>` and `tag:<stack>-*`, where `<stack>` is its stack name. The OAuth client must own
+  these tags in the tailnet policy, e.g. through a tag of its own: `"tag:billing": ["tag:tslink"]`.
+- A network's own `tslink.authkey` takes precedence over the file, and the file over `TS_AUTHKEY`.
+
+See [docs/credentials.md](docs/credentials.md) for the reasoning.
 
 ## Auth Key Types
 
@@ -269,6 +293,18 @@ and [docs/testing/swarm-cluster-followup-2026-10-07.md](docs/testing/swarm-clust
   containers that stopped without telling it, as on power loss: it logs
   their ephemeral nodes out, so a container with a fixed `tslink.hostname`
   gets its name back instead of `<hostname>-1`.
+- **HTTPS certificates:** Tailscale fetches a Let's Encrypt certificate for
+  every name it serves HTTP on, even plain HTTP (a Tailscale bug since 1.100,
+  [tailscale/tailscale#21693](https://github.com/tailscale/tailscale/issues/21693)).
+  Let's Encrypt allows 50 new certificates a week per tailnet and 5 per name.
+  - Serve through Tailscale Services: replicas share their Service's
+    certificate, and tslink issues it once, so only a Service's first
+    deployment counts. Set the plugin's `shared.source` to a volume shared
+    between the nodes (GlusterFS, NFS); otherwise each node issues it once.
+  - Names of their own (`tslink.direct`) get a new certificate for every new
+    task, so avoid them for replicated services.
+  - Introduce new Services at a pace that stays well below 50 a week, together
+    with anything else in the tailnet that uses Tailscale's HTTPS certificates.
 - **Monitoring:** a container whose Tailscale is not running looks healthy to
   Docker. tslink writes each endpoint's state to
   `/var/lib/docker-plugins/tailscale/status/<endpoint>.json` (`running`,

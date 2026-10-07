@@ -227,26 +227,12 @@ func (d *Driver) CreateNetwork(req *network.CreateNetworkRequest) error {
 	opts := core.ParseNetworkOptions(req.Options)
 	logger.Debug("Parsed opts: authkey=%s", redactKey(opts.AuthKey))
 
-	// Merge auth key from options or use default from config
-	authKey := opts.AuthKey
-	if authKey == "" {
-		authKey = d.config.AuthKey
-		logger.Debug("Using default authkey from config: %s", redactKey(authKey))
-	}
-	if authKey == "" {
-		return fmt.Errorf("no Tailscale auth key provided: set TS_AUTHKEY env var or use --opt tslink.authkey=xxx")
-	}
-	if err := core.ValidateLoginServer(opts.LoginServer); err != nil {
+	net, err := core.NewNetwork(req.NetworkID, opts, d.config)
+	if err != nil {
 		return err
 	}
-
-	net := &core.Network{
-		ID:      req.NetworkID,
-		AuthKey: authKey,
-		Tags:    opts.Tags,
-		MTU:     opts.MTU,
-
-		LoginServer: opts.LoginServer,
+	if net.UsesClusterCredential() {
+		logger.Debug("Network %s uses the cluster credential", req.NetworkID)
 	}
 
 	d.networks[req.NetworkID] = net

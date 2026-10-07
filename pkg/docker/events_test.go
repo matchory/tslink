@@ -103,3 +103,21 @@ func TestParseServeValueAcceptAppCaps(t *testing.T) {
 		}
 	}
 }
+
+func TestParseContainerInfoDirect(t *testing.T) {
+	tests := []struct {
+		name   string
+		labels map[string]string
+		want   bool
+	}{
+		{"default without a Service", map[string]string{}, true},
+		{"default with a Service", map[string]string{"tslink.service": "svc:web"}, false},
+		{"explicit with a Service", map[string]string{"tslink.service": "svc:web", "tslink.direct": "true"}, true},
+		{"explicit off", map[string]string{"tslink.direct": "false"}, false},
+	}
+	for _, tt := range tests {
+		if got := parseContainerInfo("web", tt.labels).Direct; got != tt.want {
+			t.Errorf("%s: Direct = %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}

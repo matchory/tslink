@@ -33,6 +33,15 @@
 			"options": ["rbind", "rw"]
 		},
 		{
+			"name": "shared",
+			"description": "Directory shared between hosts, holding HTTPS certificates; set its source to a shared volume to share them across the cluster",
+			"source": "/var/lib/docker-plugins/tailscale",
+			"destination": "/shared",
+			"type": "bind",
+			"settable": ["source"],
+			"options": ["rbind", "rw"]
+		},
+		{
 			"name": "run",
 			"description": "Host run directory for nsenter",
 			"source": "/run",
@@ -68,6 +77,23 @@
 			"name": "TS_DATA_DIR",
 			"description": "Directory for Tailscale state",
 			"value": "/data"
+		},
+		{
+			"name": "TS_SHARED_DIR",
+			"description": "Where the shared mount is",
+			"value": "/shared"
+		},
+		{
+			"name": "TS_DEBUG_ACME_DIRECTORY_URL",
+			"description": "ACME directory for HTTPS certificates, for tests (default: Let's Encrypt)",
+			"settable": ["value"],
+			"value": ""
+		},
+		{
+			"name": "SSL_CERT_FILE",
+			"description": "Trusted root certificates, for tests against a test ACME directory (default: the system's)",
+			"settable": ["value"],
+			"value": ""
 		},
 		{
 			"name": "TS_VERSION",

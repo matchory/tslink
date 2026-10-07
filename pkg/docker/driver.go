@@ -23,7 +23,8 @@ type Driver struct {
 	networks  map[string]*core.Network
 	endpoints map[string]*core.Endpoint
 	config    *core.Config
-	cache     *ContainerCache // Pre-cached container info from Docker events
+	claims    *core.StateClaims // State directories in use by endpoints or garbage collection
+	cache     *ContainerCache   // Pre-cached container info from Docker events
 
 	// Docker client for container inspection, recovery and events
 	docker dockerAPI
@@ -84,6 +85,7 @@ func newDriver(cfg *core.Config, docker dockerAPI) *Driver {
 		networks:       make(map[string]*core.Network),
 		endpoints:      make(map[string]*core.Endpoint),
 		config:         cfg,
+		claims:         core.NewStateClaims(),
 		cache:          NewContainerCache(),
 		docker:         docker,
 		joinEndpoint:   (*core.Endpoint).Join,
@@ -298,7 +300,7 @@ func (d *Driver) CreateEndpoint(req *network.CreateEndpointRequest) (*network.Cr
 	// Parse endpoint options for hostname override
 	opts := core.ParseEndpointOptions(req.Options)
 
-	endpoint, err := core.NewEndpoint(req.EndpointID, net, opts, d.config)
+	endpoint, err := core.NewEndpoint(req.EndpointID, net, opts, d.config, d.claims)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create endpoint: %w", err)
 	}
@@ -519,7 +521,7 @@ func (d *Driver) collectGarbage(ctx context.Context) {
 		state[ep.GetStateDir()] = true
 	}
 
-	core.CollectGarbage(ctx, d.config.DataDir, state, sockets, gcMinAge)
+	core.CollectGarbage(ctx, d.config, d.claims, state, sockets, gcMinAge)
 }
 
 // runWatchdog periodically scans for orphaned endpoints and recovers them,
@@ -669,7 +671,8 @@ func (d *Driver) recoverEndpoint(
 	tsInfo.NetworkStack = networkResult.Network.Labels[core.StackLabel]
 
 	// Create endpoint
-	endpoint, err := core.NewEndpoint(endpointID, net, core.EndpointOptions{Hostname: tsInfo.Hostname}, d.config)
+	endpoint, err := core.NewEndpoint(endpointID, net, core.EndpointOptions{Hostname: tsInfo.Hostname},
+		d.config, d.claims)
 	if err != nil {
 		return fmt.Errorf("failed to create endpoint: %w", err)
 	}

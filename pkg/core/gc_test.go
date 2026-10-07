@@ -62,7 +62,7 @@ func TestCollectGarbage(t *testing.T) {
 
 	loggedOut := stubLogout(t, nil)
 
-	CollectGarbage(context.Background(), data, map[string]bool{inUse: true}, map[string]bool{"bbbbbbbbbbbb": true}, time.Minute)
+	CollectGarbage(context.Background(), &Config{DataDir: data}, NewStateClaims(), map[string]bool{inUse: true}, map[string]bool{"bbbbbbbbbbbb": true}, time.Minute)
 
 	// Only the nodes whose state goes are logged out
 	if got := loggedOut(); !slices.Equal(got, []string{deadHost, dead}) {
@@ -98,7 +98,7 @@ func TestCollectGarbageKeepsStateReusedByPersistentNetwork(t *testing.T) {
 	}
 
 	loggedOut := stubLogout(t, nil)
-	CollectGarbage(context.Background(), data, nil, nil, time.Minute)
+	CollectGarbage(context.Background(), &Config{DataDir: data}, NewStateClaims(), nil, nil, time.Minute)
 
 	if got := loggedOut(); len(got) != 0 {
 		t.Errorf("logged out %v, want none", got)
@@ -111,7 +111,7 @@ func TestCollectGarbageKeepsStateReusedByPersistentNetwork(t *testing.T) {
 func TestClaimStateDir(t *testing.T) {
 	// Recovery must claim the directory before garbage collection runs; the
 	// start that would claim it otherwise runs in the background.
-	e := &Endpoint{ID: "0123456789abcdef", DataDir: "/data"}
+	e := &Endpoint{ID: "0123456789abcdef", DataDir: "/data", claims: NewStateClaims()}
 	e.ClaimStateDir(&ContainerInfo{Hostname: "app_web.1.abc", Stack: "app"})
 	if got := e.GetStateDir(); got != "/data/by-stack/app/app_web.1.abc" {
 		t.Errorf("StateDir = %q", got)
@@ -130,6 +130,7 @@ func TestLeaveRemovesStateOfFailedStart(t *testing.T) {
 		ID:      "0123456789abcdef",
 		DataDir: data,
 		Network: &Network{AuthKey: "tskey-client-x?ephemeral=true"},
+		claims:  NewStateClaims(),
 	}
 	e.ClaimStateDir(&ContainerInfo{Hostname: "app_web.1.abc", Stack: "app"})
 	dir := e.GetStateDir()
@@ -147,10 +148,10 @@ func TestLeaveRemovesStateOfFailedStart(t *testing.T) {
 func TestStateDirClaimedOnce(t *testing.T) {
 	// Two replicas with the same tslink.hostname on one node would share a
 	// tailscaled.state, and with it a node key.
-	data := t.TempDir()
+	claims := NewStateClaims()
 	info := &ContainerInfo{Hostname: "dup", Stack: "app"}
-	a := &Endpoint{ID: "aaaaaaaaaaaaaaaa", DataDir: data, Network: &Network{}}
-	b := &Endpoint{ID: "bbbbbbbbbbbbbbbb", DataDir: data, Network: &Network{}}
+	a := &Endpoint{ID: "aaaaaaaaaaaaaaaa", DataDir: "/data", Network: &Network{}, claims: claims}
+	b := &Endpoint{ID: "bbbbbbbbbbbbbbbb", DataDir: "/data", Network: &Network{}, claims: claims}
 	if err := a.ClaimStateDir(info); err != nil {
 		t.Fatalf("first claim: %v", err)
 	}
@@ -175,7 +176,8 @@ func TestCollectGarbageKeepsClaimedState(t *testing.T) {
 	// Collection runs periodically, so an endpoint may claim a directory
 	// after the caller listed the endpoints in use.
 	data := t.TempDir()
-	e := &Endpoint{ID: "fedcba9876543210", DataDir: data}
+	claims := NewStateClaims()
+	e := &Endpoint{ID: "fedcba9876543210", DataDir: data, claims: claims}
 	if err := e.ClaimStateDir(&ContainerInfo{Hostname: "app_web.4.claimed", Stack: "app"}); err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +196,7 @@ func TestCollectGarbageKeepsClaimedState(t *testing.T) {
 
 	loggedOut := stubLogout(t, nil)
 
-	CollectGarbage(context.Background(), data, nil, nil, time.Minute)
+	CollectGarbage(context.Background(), &Config{DataDir: data}, claims, nil, nil, time.Minute)
 
 	if _, err := os.Stat(dir); err != nil {
 		t.Errorf("claimed %s should be kept: %v", dir, err)
@@ -253,7 +255,8 @@ func TestCollectGarbageLogsOutBeforeRemoving(t *testing.T) {
 	data := t.TempDir()
 	dir := orphan(t, data, "by-stack/app/web")
 	info := &ContainerInfo{Hostname: "web", Stack: "app"}
-	e := &Endpoint{ID: "0123456789abcdef", DataDir: data, Network: &Network{}}
+	claims := NewStateClaims()
+	e := &Endpoint{ID: "0123456789abcdef", DataDir: data, Network: &Network{}, claims: claims}
 
 	stubLogout(t, func(ctx context.Context, got string) error {
 		if !tailscale.StateExists(got) {
@@ -271,7 +274,7 @@ func TestCollectGarbageLogsOutBeforeRemoving(t *testing.T) {
 		return errors.New("404 node not found")
 	})
 
-	CollectGarbage(context.Background(), data, nil, nil, time.Minute)
+	CollectGarbage(context.Background(), &Config{DataDir: data}, claims, nil, nil, time.Minute)
 
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
 		t.Errorf("%s should be removed although the logout failed (err=%v)", dir, err)
@@ -293,17 +296,15 @@ func TestCollectGarbageKeepsStateOnShutdown(t *testing.T) {
 		return ctx.Err()
 	})
 
-	CollectGarbage(ctx, data, nil, nil, time.Minute)
+	claims := NewStateClaims()
+	CollectGarbage(ctx, &Config{DataDir: data}, claims, nil, nil, time.Minute)
 
 	if !tailscale.StateExists(dir) {
 		t.Errorf("state of %s removed without a logout", dir)
 	}
-	if !claimUnclaimed(dir) {
+	if !claims.claimFree(dir, "0123456789abcdef") {
 		t.Error("claim of garbage collection not released")
 	}
-	stateClaimsMu.Lock()
-	delete(stateClaims, dir)
-	stateClaimsMu.Unlock()
 }
 
 func TestLogoutNodeWithoutState(t *testing.T) {
@@ -329,7 +330,7 @@ func TestCollectGarbageBoundsLogouts(t *testing.T) {
 		return nil
 	})
 
-	CollectGarbage(context.Background(), data, nil, nil, time.Minute)
+	CollectGarbage(context.Background(), &Config{DataDir: data}, NewStateClaims(), nil, nil, time.Minute)
 
 	if got := len(loggedOut()); got != 10 {
 		t.Errorf("logged out %d nodes, want 10", got)

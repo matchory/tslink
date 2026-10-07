@@ -30,8 +30,16 @@ const (
 // uses, and sockets and status files of unknown endpoints. It runs after
 // recovery and then periodically. Non-ephemeral state is kept, since
 // a container with the same hostname reuses its identity. Anything modified
-// within minAge is kept too, as it may belong to an endpoint still starting.
-func CollectGarbage(ctx context.Context, dataDir string, stateInUse, socketsInUse map[string]bool, minAge time.Duration) {
+// within minAge is kept too, as it may belong to an endpoint still starting,
+// and so is state claimed in claims. Collection claims the state it removes.
+func CollectGarbage(
+	ctx context.Context,
+	cfg *Config,
+	claims *StateClaims,
+	stateInUse, socketsInUse map[string]bool,
+	minAge time.Duration,
+) {
+	dataDir := cfg.DataDir
 	cutoff := time.Now().Add(-minAge)
 	stale := func(path string) bool {
 		st, err := os.Stat(path)
@@ -43,13 +51,15 @@ func CollectGarbage(ctx context.Context, dataDir string, stateInUse, socketsInUs
 	dirs, _ := filepath.Glob(filepath.Join(dataDir, "by-stack", "*", "*"))
 	hostDirs, _ := filepath.Glob(filepath.Join(dataDir, "by-hostname", "*"))
 	for _, dir := range append(dirs, hostDirs...) {
-		if stateInUse[dir] || !tailscale.IsMarkedEphemeral(dir) || !stale(dir) || !claimUnclaimed(dir) {
+		if stateInUse[dir] || !tailscale.IsMarkedEphemeral(dir) || !stale(dir) ||
+			// An endpoint may have claimed it since the caller listed those in use
+			!claims.claimFree(dir, gcClaim) {
 			continue
 		}
 		wg.Go(func() {
 			slots <- struct{}{}
 			defer func() { <-slots }()
-			removeEphemeral(ctx, dataDir, dir)
+			removeEphemeral(ctx, claims, dataDir, dir)
 		})
 	}
 
@@ -85,32 +95,14 @@ func RemoveDownloadCache(dataDir string) {
 	}
 }
 
-// claimUnclaimed claims a state directory for garbage collection unless an
-// endpoint has claimed it since the caller listed the endpoints in use.
-func claimUnclaimed(dir string) bool {
-	stateClaimsMu.Lock()
-	defer stateClaimsMu.Unlock()
-	if _, ok := stateClaims[dir]; ok {
-		return false
-	}
-	stateClaims[dir] = gcClaim
-	return true
-}
-
 // removeEphemeral logs the ephemeral node whose state is in dir out, then
 // removes the state. Without the logout the node would stay in the tailnet,
 // offline, until Tailscale deletes it, and a container with the same
 // tslink.hostname would come back under a new name. If the logout fails, as
 // when the node is deleted already, the state goes anyway; when the plugin
 // stops, it stays for the next collection.
-func removeEphemeral(ctx context.Context, dataDir, dir string) {
-	defer func() {
-		stateClaimsMu.Lock()
-		defer stateClaimsMu.Unlock()
-		if stateClaims[dir] == gcClaim {
-			delete(stateClaims, dir)
-		}
-	}()
+func removeEphemeral(ctx context.Context, claims *StateClaims, dataDir, dir string) {
+	defer claims.release(dir, gcClaim)
 
 	logger.Info("Logging out and removing ephemeral node no endpoint uses: %s", dir)
 	logoutCtx, cancel := context.WithTimeout(ctx, gcLogoutTimeout)

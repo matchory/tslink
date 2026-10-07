@@ -478,7 +478,7 @@ func TestFailedRecoveryReleasesStateDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	net, _ := td.network(netID)
-	restarted, err := core.NewEndpoint(fakeID("ep-new"), net, core.EndpointOptions{}, td.config)
+	restarted, err := core.NewEndpoint(fakeID("ep-new"), net, core.EndpointOptions{}, td.config, td.claims)
 	if err != nil {
 		t.Fatal(err)
 	}

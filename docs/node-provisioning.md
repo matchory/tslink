@@ -18,6 +18,14 @@ work if they meet the requirements below, but have not been tested.
   networks of cloud providers and for VPN or VXLAN underlays), set the same
   value as `"mtu"` in `/etc/docker/daemon.json` and as
   `com.docker.network.driver.mtu` on every tslink network.
+- **DNS**: a resolver that containers can reach. Each task's tailscaled
+  resolves names, and forwards the container's queries for names outside the
+  tailnet, through the host's resolvers from `/etc/resolv.conf`, without those
+  on the host's loopback. When that leaves none, it uses systemd-resolved's
+  upstreams from `/run/systemd/resolve/resolv.conf`, as Docker does. With
+  neither, it falls back to Docker's embedded resolver, or, for a container
+  whose DNS server is `100.100.100.100`, to Google's public resolvers (Docker's
+  default), and logs a warning. tailscaled reads them when it starts.
 - **Clock**: synchronised (NTP); Tailscale rejects badly skewed clocks.
 - **Firewall**: no inbound rule. Each task's tailscaled needs outbound TCP 443
   (control plane, DERP) and outbound UDP (STUN on 3478, direct connections on

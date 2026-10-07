@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"net/netip"
 	"slices"
 	"sync"
 	"testing"
@@ -94,6 +95,17 @@ func (f *fakeDocker) addContainer(name string, labels map[string]string, nets ..
 	c.NetworkSettings = &container.NetworkSettings{SandboxKey: sandbox, Networks: settings}
 	f.containers = append(f.containers, c)
 	return id
+}
+
+// setDNS sets the DNS servers the container was given.
+func (f *fakeDocker) setDNS(containerID string, dns ...netip.Addr) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range f.containers {
+		if f.containers[i].ID == containerID {
+			f.containers[i].HostConfig = &container.HostConfig{DNS: dns}
+		}
+	}
 }
 
 func (f *fakeDocker) PluginList(context.Context, dockerclient.PluginListOptions) (dockerclient.PluginListResult, error) {

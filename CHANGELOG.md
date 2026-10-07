@@ -126,8 +126,12 @@ three- and five-node swarms; see [docs/testing](docs/testing).
   advertised again, so a backend drained in its state stayed drained.
 - HTTPS serving never got a certificate on hosts whose resolver is on the
   host's loopback, such as systemd-resolved: tailscaled used the host's
-  `resolv.conf` inside the container's network namespace. It now uses Docker's
-  embedded resolver.
+  `resolv.conf` inside the container's network namespace. It now uses the
+  host's upstream resolvers as Docker picks them for containers:
+  systemd-resolved's upstreams instead of `127.0.0.53`. Not Docker's embedded
+  resolver, which forwards to tailscaled in a container with
+  `dns: [100.100.100.100]`, and tailscaled forwarded back to it, so public
+  names did not resolve.
 - The first replica of a Tailscale Service with HTTPS waited up to an hour for
   its certificate, since tailscaled only fetches it right away if control has
   already announced the Service's name.

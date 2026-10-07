@@ -3,9 +3,7 @@ package core
 import (
 	"context"
 	"crypto/sha256"
-	"crypto/x509"
 	"encoding/hex"
-	"encoding/pem"
 	"errors"
 	"io/fs"
 	"os"
@@ -151,7 +149,7 @@ func removeExpiredCert(crt string, cutoff time.Time) {
 	if err != nil || !st.ModTime().Before(cutoff) || !olderThan(key, cutoff) {
 		return
 	}
-	notAfter, err := certNotAfter(crt)
+	notAfter, err := tailscale.CertNotAfter(crt)
 	if err != nil || !notAfter.Before(cutoff) {
 		return
 	}
@@ -162,28 +160,6 @@ func removeExpiredCert(crt string, cutoff time.Time) {
 	removeFile(crt)
 	if olderThan(key, cutoff) {
 		removeFile(key)
-	}
-}
-
-// certNotAfter returns the expiry of the first certificate in a PEM file.
-func certNotAfter(path string) (time.Time, error) {
-	data, err := os.ReadFile(path) // #nosec G304 -- a file in the certificate directory
-	if err != nil {
-		return time.Time{}, err
-	}
-	for {
-		var block *pem.Block
-		block, data = pem.Decode(data)
-		if block == nil {
-			return time.Time{}, errors.New("no certificate")
-		}
-		if block.Type == "CERTIFICATE" {
-			cert, err := x509.ParseCertificate(block.Bytes)
-			if err != nil {
-				return time.Time{}, err
-			}
-			return cert.NotAfter, nil
-		}
 	}
 }
 

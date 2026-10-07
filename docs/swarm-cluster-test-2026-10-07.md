@@ -208,6 +208,11 @@ and macOS) pass.
 
 ## Open risks
 
+The [follow-up](swarm-cluster-followup-2026-10-07.md) tested manager failover
+and measured or closed these risks: Docker restarts and reboots are drained by
+a systemd drop-in, TCP backends can receive the caller's address, and hard
+node failure turned out to cost 21-48 s rather than 17 s.
+
 - **Unplanned Docker stops** (daemon restart, reboot without drain): Docker
   sends no events once it shuts down, so tslink cannot drain; callers pinned to
   that node's backends fail for the stop timeout (6–11 s measured). Mitigation:

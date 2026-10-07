@@ -25,6 +25,8 @@ type ServeEndpoint struct {
 	Port   string // External port Tailscale exposes
 	Target string // Container port or address to forward to
 	Path   string // L7 only - path prefix (e.g., "/api")
+
+	ProxyProtocol string // L4 only - PROXY protocol version sent to the target ("1", "2" or "")
 }
 
 // Endpoint represents a container endpoint with Tailscale connectivity.
@@ -361,6 +363,8 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 			Port:   ep.Port,
 			Target: ep.Target,
 			Path:   ep.Path,
+
+			ProxyProtocol: ep.ProxyProtocol,
 		}
 	}
 
@@ -772,6 +776,8 @@ func (e *Endpoint) ApplyServiceConfig(info *ContainerInfo) error {
 			Port:   ep.Port,
 			Target: ep.Target,
 			Path:   ep.Path,
+
+			ProxyProtocol: ep.ProxyProtocol,
 		}
 	}
 

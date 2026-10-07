@@ -60,3 +60,25 @@ func TestIsStopSignal(t *testing.T) {
 		}
 	}
 }
+
+func TestParseServeValueProxyProtocol(t *testing.T) {
+	tests := []struct {
+		port, value string
+		want        *core.ServeEndpoint
+	}{
+		{"5432", "tcp:5432?proxy-protocol=2", &core.ServeEndpoint{Proto: "tcp", Port: "5432", Target: "5432", ProxyProtocol: "2"}},
+		{"5432", "tcp?proxy-protocol=1", &core.ServeEndpoint{Proto: "tcp", Port: "5432", Target: "5432", ProxyProtocol: "1"}},
+		{"443", "tls-terminated-tcp:8443?proxy-protocol=2", &core.ServeEndpoint{Proto: "tls-terminated-tcp", Port: "443", Target: "8443", ProxyProtocol: "2"}},
+		{"5432", "tcp:5432", &core.ServeEndpoint{Proto: "tcp", Port: "5432", Target: "5432"}},
+		{"5432", "tcp:5432?proxy-protocol=3", nil},
+		{"5432", "tcp:5432?proxy-protocol=", nil},
+		{"5432", "tcp:5432?bogus=1", nil},
+		{"80", "http:80?proxy-protocol=2", nil}, // TCP forwarding only
+	}
+	for _, tt := range tests {
+		got := parseServeValue(tt.port, tt.value)
+		if (got == nil) != (tt.want == nil) || (got != nil && *got != *tt.want) {
+			t.Errorf("parseServeValue(%q, %q) = %+v, want %+v", tt.port, tt.value, got, tt.want)
+		}
+	}
+}

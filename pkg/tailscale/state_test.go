@@ -38,7 +38,8 @@ func TestBundledBinaries(t *testing.T) {
 		}
 	}
 	ts, tsd, err := BundledBinaries()
-	if err != nil || ts != filepath.Join(dir, "tailscale") || tsd != filepath.Join(dir, "tailscaled") {
+	if err != nil || ts != filepath.Join(dir, "tailscale") ||
+		tsd != filepath.Join(dir, "tailscaled") {
 		t.Errorf("BundledBinaries = %q, %q, %v", ts, tsd, err)
 	}
 }

@@ -213,6 +213,53 @@ func (s *DaemonSupervisor) GetDaemon() *Daemon {
 	return s.daemon
 }
 
+// WaitForIP waits for the daemon to get a Tailscale IP.
+// Delegates to the underlying daemon.
+func (s *DaemonSupervisor) WaitForIP() (*Status, error) {
+	s.mu.RLock()
+	daemon := s.daemon
+	s.mu.RUnlock()
+
+	if daemon == nil {
+		return nil, errors.New("no daemon running")
+	}
+
+	return daemon.WaitForIP()
+}
+
+// SetHostname updates the Tailscale hostname.
+// Delegates to the underlying daemon.
+func (s *DaemonSupervisor) SetHostname(hostname string) error {
+	s.mu.RLock()
+	daemon := s.daemon
+	s.mu.RUnlock()
+
+	if daemon == nil {
+		return errors.New("no daemon running")
+	}
+
+	return daemon.SetHostname(hostname)
+}
+
+// ConfigureServeEndpoints configures serve endpoints.
+// Delegates to the underlying daemon.
+func (s *DaemonSupervisor) ConfigureServeEndpoints(
+	service string,
+	endpoints []ServeEndpoint,
+	tags []string,
+	direct bool,
+) error {
+	s.mu.RLock()
+	daemon := s.daemon
+	s.mu.RUnlock()
+
+	if daemon == nil {
+		return errors.New("no daemon running")
+	}
+
+	return daemon.ConfigureServeEndpoints(service, endpoints, tags, direct)
+}
+
 // signalStartup safely sends the startup result exactly once.
 func (s *DaemonSupervisor) signalStartup(err error) {
 	s.startupDoneOnce.Do(func() {
@@ -222,7 +269,8 @@ func (s *DaemonSupervisor) signalStartup(err error) {
 
 // applyStartupJitter adds random delay to prevent thundering herd on mass restart.
 func (s *DaemonSupervisor) applyStartupJitter() {
-	jitter := time.Duration(rand.Int64N(int64(maxStartupJitter))) //nolint:gosec // jitter needs no crypto randomness
+	//nolint:gosec // jitter needs no crypto randomness
+	jitter := time.Duration(rand.Int64N(int64(maxStartupJitter)))
 	if jitter > 0 {
 		logger.Debugf("Applying startup jitter: %v", jitter)
 		time.Sleep(jitter)
@@ -254,7 +302,10 @@ func (s *DaemonSupervisor) supervisionLoop() {
 
 		// Check if network namespace still exists (container might be gone)
 		if !s.netnsExists() {
-			logger.Errorf("Network namespace %s no longer exists, stopping supervisor", s.cfg.NetNSPath)
+			logger.Errorf(
+				"Network namespace %s no longer exists, stopping supervisor",
+				s.cfg.NetNSPath,
+			)
 			s.mu.Lock()
 			s.status = StatusFailed
 			s.mu.Unlock()
@@ -271,8 +322,11 @@ func (s *DaemonSupervisor) supervisionLoop() {
 				s.mu.Lock()
 				s.status = StatusCrashLoop
 				s.mu.Unlock()
-				logger.Errorf("Crash loop detected for endpoint %s (5+ crashes in 30s), retrying in %v",
-					s.cfg.EndpointID[:8], crashLoopCooldown)
+				logger.Errorf(
+					"Crash loop detected for endpoint %s (5+ crashes in 30s), retrying in %v",
+					s.cfg.EndpointID[:8],
+					crashLoopCooldown,
+				)
 				s.signalStartup(errors.New("crash loop detected"))
 				s.stopDaemon()
 
@@ -407,9 +461,16 @@ func (s *DaemonSupervisor) waitForExit() error {
 
 			// tailscaled keeps running when its node is deleted, logged out
 			if login.observe(daemon.LoggedOut()) {
-				logger.Warnf("Endpoint %s: node is logged out, logging in again", s.cfg.EndpointID[:8])
+				logger.Warnf(
+					"Endpoint %s: node is logged out, logging in again",
+					s.cfg.EndpointID[:8],
+				)
 				if err := daemon.Reauthenticate(); err != nil {
-					logger.Errorf("Endpoint %s: logging in again failed: %v", s.cfg.EndpointID[:8], err)
+					logger.Errorf(
+						"Endpoint %s: logging in again failed: %v",
+						s.cfg.EndpointID[:8],
+						err,
+					)
 					login.failed()
 				}
 			}
@@ -467,51 +528,4 @@ func (s *DaemonSupervisor) resetBackoff() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.backoffAttempt = 0
-}
-
-// WaitForIP waits for the daemon to get a Tailscale IP.
-// Delegates to the underlying daemon.
-func (s *DaemonSupervisor) WaitForIP() (*Status, error) {
-	s.mu.RLock()
-	daemon := s.daemon
-	s.mu.RUnlock()
-
-	if daemon == nil {
-		return nil, errors.New("no daemon running")
-	}
-
-	return daemon.WaitForIP()
-}
-
-// SetHostname updates the Tailscale hostname.
-// Delegates to the underlying daemon.
-func (s *DaemonSupervisor) SetHostname(hostname string) error {
-	s.mu.RLock()
-	daemon := s.daemon
-	s.mu.RUnlock()
-
-	if daemon == nil {
-		return errors.New("no daemon running")
-	}
-
-	return daemon.SetHostname(hostname)
-}
-
-// ConfigureServeEndpoints configures serve endpoints.
-// Delegates to the underlying daemon.
-func (s *DaemonSupervisor) ConfigureServeEndpoints(
-	service string,
-	endpoints []ServeEndpoint,
-	tags []string,
-	direct bool,
-) error {
-	s.mu.RLock()
-	daemon := s.daemon
-	s.mu.RUnlock()
-
-	if daemon == nil {
-		return errors.New("no daemon running")
-	}
-
-	return daemon.ConfigureServeEndpoints(service, endpoints, tags, direct)
 }

@@ -9,7 +9,11 @@ import (
 
 func writeClusterCredential(t *testing.T, dir, secret string) {
 	t.Helper()
-	if err := os.WriteFile(filepath.Join(dir, ClusterCredentialFile), []byte(secret), 0o600); err != nil {
+	if err := os.WriteFile(
+		filepath.Join(dir, ClusterCredentialFile),
+		[]byte(secret),
+		0o600,
+	); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -24,7 +28,13 @@ func TestNewNetworkPrecedence(t *testing.T) {
 		wantKey     string // "" means the cluster credential
 		wantErr     bool
 	}{
-		{name: "option wins over cluster file", option: "tskey-auth-opt", env: "tskey-auth-env", clusterFile: true, wantKey: "tskey-auth-opt"},
+		{
+			name:        "option wins over cluster file",
+			option:      "tskey-auth-opt",
+			env:         "tskey-auth-env",
+			clusterFile: true,
+			wantKey:     "tskey-auth-opt",
+		},
 		{name: "cluster file wins over env", env: "tskey-auth-env", clusterFile: true, wantKey: ""},
 		{name: "env as last resort", env: "tskey-auth-env", wantKey: "tskey-auth-env"},
 		{name: "no credential", wantErr: true},
@@ -74,11 +84,17 @@ func TestCredential(t *testing.T) {
 		dir := t.TempDir()
 		n := &Network{}
 		writeClusterCredential(t, dir, "tskey-client-old\n")
-		if got, err := n.Credential(dir); err != nil || got != "tskey-client-old?ephemeral=true&preauthorized=true" {
+		if got, err := n.Credential(
+			dir,
+		); err != nil ||
+			got != "tskey-client-old?ephemeral=true&preauthorized=true" {
 			t.Errorf("Credential() = %q, %v", got, err)
 		}
 		writeClusterCredential(t, dir, "tskey-client-new")
-		if got, err := n.Credential(dir); err != nil || got != "tskey-client-new?ephemeral=true&preauthorized=true" {
+		if got, err := n.Credential(
+			dir,
+		); err != nil ||
+			got != "tskey-client-new?ephemeral=true&preauthorized=true" {
 			t.Errorf("after rotation, Credential() = %q, %v", got, err)
 		}
 	})

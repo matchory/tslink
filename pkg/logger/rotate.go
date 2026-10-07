@@ -26,22 +26,6 @@ func OpenRotating(path string, maxBytes int64) (*RotatingFile, error) {
 	return r, nil
 }
 
-func (r *RotatingFile) open() error {
-	f, err := os.OpenFile(r.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
-	if err != nil {
-		return fmt.Errorf("failed to open %s: %w", r.path, err)
-	}
-	st, err := f.Stat()
-	if err != nil {
-		if closeErr := f.Close(); closeErr != nil {
-			err = errors.Join(err, closeErr)
-		}
-		return fmt.Errorf("failed to stat %s: %w", r.path, err)
-	}
-	r.file, r.size = f, st.Size()
-	return nil
-}
-
 // Write appends p, rotating first if p would take the file past its limit.
 func (r *RotatingFile) Write(p []byte) (int, error) {
 	r.mu.Lock()
@@ -68,4 +52,20 @@ func (r *RotatingFile) Close() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.file.Close()
+}
+
+func (r *RotatingFile) open() error {
+	f, err := os.OpenFile(r.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("failed to open %s: %w", r.path, err)
+	}
+	st, err := f.Stat()
+	if err != nil {
+		if closeErr := f.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+		return fmt.Errorf("failed to stat %s: %w", r.path, err)
+	}
+	r.file, r.size = f, st.Size()
+	return nil
 }

@@ -1,7 +1,7 @@
 version = "2"
 
 [formatters]
-enable = ["gci", "gofumpt"]
+enable = ["gci", "gofumpt", "golines"]
 
 [formatters.settings.gci]
 sections = ["standard", "default", "prefix(github.com/aaomidi/tslink)"]
@@ -30,6 +30,8 @@ enable = [
   "unconvert",   # unnecessary conversions
   "unparam",     # unused params
   "wastedassign", # wasted assignments
+  "funcorder",      # constructors after types, exported methods first
+  "nonamedreturns", # no named results
   "containedctx",     # contexts stored in structs
   "goprintffuncname", # printf-like functions named ...f
   "musttag",          # marshalled structs have field tags
@@ -82,6 +84,7 @@ linters = ["godot"]
 path = "_test\\.go"
 linters = [
   "bodyclose",
+  "cyclop",
   "dupl",
   "errcheck",
   "goconst",

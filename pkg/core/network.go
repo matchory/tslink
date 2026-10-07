@@ -33,7 +33,13 @@ func NewNetwork(id string, opts NetworkOptions, cfg *Config) (*Network, error) {
 	if err := ValidateLoginServer(opts.LoginServer); err != nil {
 		return nil, err
 	}
-	n := &Network{ID: id, AuthKey: opts.AuthKey, Tags: opts.Tags, MTU: opts.MTU, LoginServer: opts.LoginServer}
+	n := &Network{
+		ID:          id,
+		AuthKey:     opts.AuthKey,
+		Tags:        opts.Tags,
+		MTU:         opts.MTU,
+		LoginServer: opts.LoginServer,
+	}
 	if n.AuthKey != "" {
 		return n, nil
 	}
@@ -53,8 +59,10 @@ func NewNetwork(id string, opts NetworkOptions, cfg *Config) (*Network, error) {
 
 	n.AuthKey = cfg.AuthKey
 	if n.AuthKey == "" {
-		return nil, fmt.Errorf("no Tailscale credential: provide %s, set TS_AUTHKEY, or use --opt tslink.authkey=xxx",
-			ClusterCredentialFile)
+		return nil, fmt.Errorf(
+			"no Tailscale credential: provide %s, set TS_AUTHKEY, or use --opt tslink.authkey=xxx",
+			ClusterCredentialFile,
+		)
 	}
 	return n, nil
 }
@@ -85,7 +93,10 @@ func (n *Network) Credential(dataDir string) (string, error) {
 	}
 	secret := strings.TrimSpace(string(b))
 	if !strings.HasPrefix(secret, "tskey-client-") || strings.Contains(secret, "?") {
-		return "", fmt.Errorf("%s must hold an OAuth client secret (tskey-client-...) with nothing appended", path)
+		return "", fmt.Errorf(
+			"%s must hold an OAuth client secret (tskey-client-...) with nothing appended",
+			path,
+		)
 	}
 	return secret + "?ephemeral=true&preauthorized=true", nil
 }
@@ -95,13 +106,20 @@ func (n *Network) Credential(dataDir string) (string, error) {
 // stack is confined to tag:<stack> and tag:<stack>-*.
 func CheckTagScope(stack string, tags []string) error {
 	if stack == "" {
-		return errors.New("the cluster credential is only available to networks of a stack: use tslink.authkey")
+		return errors.New(
+			"the cluster credential is only available to networks of a stack: use tslink.authkey",
+		)
 	}
 	prefix := "tag:" + stack
 	for _, tag := range tags {
 		if tag != prefix && !strings.HasPrefix(tag, prefix+"-") {
-			return fmt.Errorf("tag %q is outside stack %q's scope (%s or %s-*): use tslink.authkey for other tags",
-				tag, stack, prefix, prefix)
+			return fmt.Errorf(
+				"tag %q is outside stack %q's scope (%s or %s-*): use tslink.authkey for other tags",
+				tag,
+				stack,
+				prefix,
+				prefix,
+			)
 		}
 	}
 	return nil

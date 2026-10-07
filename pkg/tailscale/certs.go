@@ -134,7 +134,10 @@ func createExclusive(path string, data []byte, perm os.FileMode) error {
 // with its key, in tailscaled's file names. Whether it chains to a trusted
 // root is left to tailscaled, which issues a new one if not.
 func validCert(dir, domain string, now time.Time) bool {
-	pair, err := tls.LoadX509KeyPair(filepath.Join(dir, domain+".crt"), filepath.Join(dir, domain+".key"))
+	pair, err := tls.LoadX509KeyPair(
+		filepath.Join(dir, domain+".crt"),
+		filepath.Join(dir, domain+".key"),
+	)
 	if err != nil || pair.Leaf == nil {
 		return false
 	}
@@ -253,7 +256,11 @@ func (d *Daemon) configureServiceWhenCertified() error {
 	if validCert(dir, domain, time.Now()) {
 		return d.configureService()
 	}
-	logger.Infof("No certificate for %s yet: configuring %s once there is one", domain, d.config.Service)
+	logger.Infof(
+		"No certificate for %s yet: configuring %s once there is one",
+		domain,
+		d.config.Service,
+	)
 	go d.configureServiceAfterCert(dir, domain)
 	return nil
 }
@@ -292,7 +299,11 @@ func (d *Daemon) configureServiceWithCert(dir, domain string) error {
 		return err
 	}
 	defer lease.release()
-	logger.Infof("Holding the certificate lease for %s: configuring %s to issue it", domain, d.config.Service)
+	logger.Infof(
+		"Holding the certificate lease for %s: configuring %s to issue it",
+		domain,
+		d.config.Service,
+	)
 	if err := d.configureService(); err != nil {
 		return err
 	}
@@ -329,7 +340,8 @@ func servesWeb(endpoints []ServeEndpoint) bool {
 func (d *Daemon) serviceDomain() (string, error) {
 	ctx, cancel := context.WithTimeout(d.ctx, 10*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, d.config.TailscaleBin, "--socket="+d.socketPath, "status", "--json").Output()
+	out, err := exec.CommandContext(ctx, d.config.TailscaleBin, "--socket="+d.socketPath, "status", "--json").
+		Output()
 	if err != nil {
 		return "", fmt.Errorf("tailscale status failed: %w", err)
 	}

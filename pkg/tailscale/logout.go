@@ -82,7 +82,8 @@ func logoutState(raw []byte) ([]byte, error) {
 	}
 	prefsKey := string(state[stateCurrentProfile])
 	prefsRaw := state[prefsKey]
-	if prefsKey == "" || prefsRaw == nil || state[stateMachineKey] == nil || state[stateProfiles] == nil {
+	if prefsKey == "" || prefsRaw == nil || state[stateMachineKey] == nil ||
+		state[stateProfiles] == nil {
 		return nil, nil
 	}
 
@@ -149,7 +150,8 @@ var runLogout = func(ctx context.Context, tailscaleBin, tailscaledBin, workDir, 
 	}()
 
 	cli := func(args ...string) ([]byte, error) {
-		return exec.CommandContext(ctx, tailscaleBin, append([]string{"--socket=" + socket}, args...)...).CombinedOutput()
+		return exec.CommandContext(ctx, tailscaleBin, append([]string{"--socket=" + socket}, args...)...).
+			CombinedOutput()
 	}
 	// The local API answers once the backend has started
 	for {
@@ -165,7 +167,11 @@ var runLogout = func(ctx context.Context, tailscaleBin, tailscaledBin, workDir, 
 		}
 	}
 	if out, err := cli("logout"); err != nil {
-		return fmt.Errorf("tailscale logout failed: %w (output: %s)", err, strings.TrimSpace(string(out)))
+		return fmt.Errorf(
+			"tailscale logout failed: %w (output: %s)",
+			err,
+			strings.TrimSpace(string(out)),
+		)
 	}
 	return nil
 }

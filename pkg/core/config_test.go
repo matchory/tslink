@@ -29,7 +29,9 @@ func TestParseTagsEmpty(t *testing.T) {
 func TestParseNetworkOptionsMTU(t *testing.T) {
 	tests := map[string]int{"1450": 1450, "": 0, "abc": 0, "100": 0, "70000": 0}
 	for in, want := range tests {
-		opts := ParseNetworkOptions(map[string]any{GenericOptionsKey: map[string]any{MTUOption: in}})
+		opts := ParseNetworkOptions(
+			map[string]any{GenericOptionsKey: map[string]any{MTUOption: in}},
+		)
 		if opts.MTU != want {
 			t.Errorf("MTU %q parsed as %d, want %d", in, opts.MTU, want)
 		}

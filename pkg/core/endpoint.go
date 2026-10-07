@@ -185,7 +185,12 @@ func (e *Endpoint) Join(sandboxKey string) (*network.JoinResponse, error) {
 		return nil, fmt.Errorf("failed to set up container interface: %w", err)
 	}
 
-	if err := netutil.SetupContainerRouting(sandboxKey, vethContainer, containerVethIP, hostVethIP); err != nil {
+	if err := netutil.SetupContainerRouting(
+		sandboxKey,
+		vethContainer,
+		containerVethIP,
+		hostVethIP,
+	); err != nil {
 		if cleanupErr := netutil.DeleteVeth(vethHost); cleanupErr != nil {
 			logger.Warnf("failed to cleanup veth %s after error: %v", vethHost, cleanupErr)
 		}
@@ -333,7 +338,9 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 
 	// Validate service configuration
 	if info.Service != "" && len(info.Endpoints) == 0 {
-		return permanentError{errors.New("tslink.service requires at least one tslink.serve.<port> endpoint")}
+		return permanentError{
+			errors.New("tslink.service requires at least one tslink.serve.<port> endpoint"),
+		}
 	}
 
 	tailscaleBin, tailscaledBin, err := tailscale.BundledBinaries()
@@ -421,7 +428,12 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 	e.tailscaleStarted = true
 	e.mu.Unlock()
 
-	logger.Infof("Endpoint %s got Tailscale IP: %s (hostname=%s)", endpointID[:12], status.IP, info.Hostname)
+	logger.Infof(
+		"Endpoint %s got Tailscale IP: %s (hostname=%s)",
+		endpointID[:12],
+		status.IP,
+		info.Hostname,
+	)
 	return nil
 }
 
@@ -485,22 +497,6 @@ func (e *Endpoint) RunTailscale(info *ContainerInfo) {
 	}
 }
 
-// cancelRun stops a RunTailscale retry loop, and lets a later Join start a new one.
-func (e *Endpoint) cancelRun() {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if e.stopRun != nil {
-		e.stopRun()
-	}
-	e.runCtx, e.stopRun = nil, nil
-}
-
-// stateClaims maps each state directory in use to the endpoint using it.
-var (
-	stateClaimsMu sync.Mutex
-	stateClaims   = map[string]string{}
-)
-
 // ClaimStateDir records the state directory the container's tailscaled
 // uses, so garbage collection leaves it alone. A directory serves one
 // endpoint at a time: two replicas with the same tslink.hostname on a node
@@ -518,8 +514,12 @@ func (e *Endpoint) ClaimStateDir(info *ContainerInfo) error {
 		if owner == gcClaim {
 			return fmt.Errorf("state directory %s is being garbage collected", dir)
 		}
-		return fmt.Errorf("state directory %s is in use by endpoint %s: is tslink.hostname %q set on a replicated service?",
-			dir, owner[:12], info.Hostname)
+		return fmt.Errorf(
+			"state directory %s is in use by endpoint %s: is tslink.hostname %q set on a replicated service?",
+			dir,
+			owner[:12],
+			info.Hostname,
+		)
 	}
 	stateClaims[dir] = e.ID
 
@@ -529,15 +529,11 @@ func (e *Endpoint) ClaimStateDir(info *ContainerInfo) error {
 	return nil
 }
 
-// releaseStateDir gives up the endpoint's claim on its state directory.
-func (e *Endpoint) releaseStateDir() {
-	dir := e.GetStateDir()
-	stateClaimsMu.Lock()
-	defer stateClaimsMu.Unlock()
-	if stateClaims[dir] == e.ID {
-		delete(stateClaims, dir)
-	}
-}
+// stateClaims maps each state directory in use to the endpoint using it.
+var (
+	stateClaimsMu sync.Mutex
+	stateClaims   = map[string]string{}
+)
 
 // GetStateDir returns the endpoint's state directory safely.
 func (e *Endpoint) GetStateDir() string {
@@ -583,7 +579,7 @@ func (e *Endpoint) Recover(sandboxKey string) error {
 }
 
 // GetInfo returns TailscaleIP and Hostname safely for status queries.
-func (e *Endpoint) GetInfo() (tailscaleIP, hostname string) {
+func (e *Endpoint) GetInfo() (string, string) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return e.TailscaleIP, e.Hostname
@@ -628,12 +624,54 @@ func (e *Endpoint) Leave() error {
 	return nil
 }
 
+// DrainService stops new connections to the endpoint's Tailscale Service
+// backend, if it has one; existing connections continue.
+func (e *Endpoint) DrainService() {
+	e.mu.RLock()
+	supervisor, service := e.supervisor, e.Service
+	e.mu.RUnlock()
+
+	if supervisor == nil || service == "" {
+		return
+	}
+	logger.Infof("Endpoint %s stopping, draining %s", e.ID[:12], service)
+	if err := supervisor.Drain(service); err != nil {
+		logger.Warnf("Failed to drain %s for endpoint %s: %v", service, e.ID[:12], err)
+	}
+}
+
+// Stop stops the endpoint and cleans up resources.
+func (e *Endpoint) Stop() error {
+	e.cancelRun()
+	defer e.releaseStateDir()
+
+	e.mu.Lock()
+	supervisor := e.supervisor
+	e.supervisor = nil
+	e.tailscaleStarted = false
+	e.mu.Unlock()
+
+	logger.Infof("Stopping endpoint %s", e.ID)
+
+	if supervisor != nil {
+		if err := supervisor.Stop(); err != nil {
+			logger.Infof("Warning: failed to stop supervisor: %v", err)
+		}
+	}
+
+	return nil
+}
+
 // checkStackScope keeps a task to its own stack's network: another stack
 // cannot attach to it and take its credentials and tags. A stack using the
 // cluster credential is also kept to its own tags.
 func checkStackScope(info *ContainerInfo, network *Network, tags []string) error {
 	if info.NetworkStack != "" && info.Stack != info.NetworkStack {
-		return fmt.Errorf("container stack %q does not match network stack %q", info.Stack, info.NetworkStack)
+		return fmt.Errorf(
+			"container stack %q does not match network stack %q",
+			info.Stack,
+			info.NetworkStack,
+		)
 	}
 	if network.UsesClusterCredential() {
 		return CheckTagScope(info.NetworkStack, tags)
@@ -651,6 +689,114 @@ func wipeStateOnKeyChange(stateDir string, network *Network) {
 	}
 	if err := tailscale.WipeState(stateDir); err != nil {
 		logger.Warnf("Failed to wipe state after auth key change: %v", err)
+	}
+}
+
+// ApplyHostnameChange changes the hostname of a running Tailscale instance.
+func (e *Endpoint) ApplyHostnameChange(newHostname string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if e.supervisor == nil {
+		return errors.New("no supervisor running")
+	}
+
+	logger.Infof("ApplyHostnameChange: changing hostname from %s to %s", e.Hostname, newHostname)
+
+	if err := e.supervisor.SetHostname(newHostname); err != nil {
+		return fmt.Errorf("failed to set hostname: %w", err)
+	}
+
+	e.Hostname = newHostname
+	return nil
+}
+
+// ApplyServiceConfig configures Tailscale service endpoints after initial startup.
+// This is called when container info is obtained from cache after Join().
+func (e *Endpoint) ApplyServiceConfig(info *ContainerInfo) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if e.supervisor == nil {
+		return errors.New("no supervisor running")
+	}
+
+	if info.Service == "" {
+		return nil // No service to configure
+	}
+
+	logger.Infof(
+		"ApplyServiceConfig: configuring service %s with %d endpoints",
+		info.Service,
+		len(info.Endpoints),
+	)
+
+	// Convert core.ServeEndpoint to tailscale.ServeEndpoint
+	tsEndpoints := make([]tailscale.ServeEndpoint, len(info.Endpoints))
+	for i, ep := range info.Endpoints {
+		tsEndpoints[i] = tailscale.ServeEndpoint{
+			Proto:  ep.Proto,
+			Port:   ep.Port,
+			Target: ep.Target,
+			Path:   ep.Path,
+
+			ProxyProtocol: ep.ProxyProtocol,
+			AcceptAppCaps: ep.AcceptAppCaps,
+		}
+	}
+
+	if err := e.supervisor.ConfigureServeEndpoints(
+		info.Service,
+		tsEndpoints,
+		info.Tags,
+		info.Direct,
+	); err != nil {
+		return fmt.Errorf("failed to configure service: %w", err)
+	}
+
+	e.Service = info.Service
+	e.Tags = info.Tags
+	e.Endpoints = info.Endpoints
+	e.Direct = info.Direct
+	return nil
+}
+
+// logoutAttempts bounds logoutWithRetry; startRetryInitial spaces the attempts.
+const logoutAttempts = 3
+
+// logoutWithRetry retries a logout that failed: detaching the container's
+// other networks is a link change, and tailscaled drops its control
+// connection, and with it an in-flight logout, in response.
+func logoutWithRetry(logout func() error) error {
+	var err error
+	for attempt := 1; attempt <= logoutAttempts; attempt++ {
+		if err = logout(); err == nil {
+			return nil
+		}
+		if attempt < logoutAttempts {
+			time.Sleep(min(startRetryInitial, time.Second))
+		}
+	}
+	return err
+}
+
+// cancelRun stops a RunTailscale retry loop, and lets a later Join start a new one.
+func (e *Endpoint) cancelRun() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.stopRun != nil {
+		e.stopRun()
+	}
+	e.runCtx, e.stopRun = nil, nil
+}
+
+// releaseStateDir gives up the endpoint's claim on its state directory.
+func (e *Endpoint) releaseStateDir() {
+	dir := e.GetStateDir()
+	stateClaimsMu.Lock()
+	defer stateClaimsMu.Unlock()
+	if stateClaims[dir] == e.ID {
+		delete(stateClaims, dir)
 	}
 }
 
@@ -694,121 +840,4 @@ func (e *Endpoint) stopTailscale() {
 			logger.Warnf("Failed to remove state of ephemeral node %s: %v", stateDir, err)
 		}
 	}
-}
-
-// DrainService stops new connections to the endpoint's Tailscale Service
-// backend, if it has one; existing connections continue.
-func (e *Endpoint) DrainService() {
-	e.mu.RLock()
-	supervisor, service := e.supervisor, e.Service
-	e.mu.RUnlock()
-
-	if supervisor == nil || service == "" {
-		return
-	}
-	logger.Infof("Endpoint %s stopping, draining %s", e.ID[:12], service)
-	if err := supervisor.Drain(service); err != nil {
-		logger.Warnf("Failed to drain %s for endpoint %s: %v", service, e.ID[:12], err)
-	}
-}
-
-// logoutAttempts bounds logoutWithRetry; startRetryInitial spaces the attempts.
-const logoutAttempts = 3
-
-// logoutWithRetry retries a logout that failed: detaching the container's
-// other networks is a link change, and tailscaled drops its control
-// connection, and with it an in-flight logout, in response.
-func logoutWithRetry(logout func() error) error {
-	var err error
-	for attempt := 1; attempt <= logoutAttempts; attempt++ {
-		if err = logout(); err == nil {
-			return nil
-		}
-		if attempt < logoutAttempts {
-			time.Sleep(min(startRetryInitial, time.Second))
-		}
-	}
-	return err
-}
-
-// Stop stops the endpoint and cleans up resources.
-func (e *Endpoint) Stop() error {
-	e.cancelRun()
-	defer e.releaseStateDir()
-
-	e.mu.Lock()
-	supervisor := e.supervisor
-	e.supervisor = nil
-	e.tailscaleStarted = false
-	e.mu.Unlock()
-
-	logger.Infof("Stopping endpoint %s", e.ID)
-
-	if supervisor != nil {
-		if err := supervisor.Stop(); err != nil {
-			logger.Infof("Warning: failed to stop supervisor: %v", err)
-		}
-	}
-
-	return nil
-}
-
-// ApplyHostnameChange changes the hostname of a running Tailscale instance.
-func (e *Endpoint) ApplyHostnameChange(newHostname string) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	if e.supervisor == nil {
-		return errors.New("no supervisor running")
-	}
-
-	logger.Infof("ApplyHostnameChange: changing hostname from %s to %s", e.Hostname, newHostname)
-
-	if err := e.supervisor.SetHostname(newHostname); err != nil {
-		return fmt.Errorf("failed to set hostname: %w", err)
-	}
-
-	e.Hostname = newHostname
-	return nil
-}
-
-// ApplyServiceConfig configures Tailscale service endpoints after initial startup.
-// This is called when container info is obtained from cache after Join().
-func (e *Endpoint) ApplyServiceConfig(info *ContainerInfo) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	if e.supervisor == nil {
-		return errors.New("no supervisor running")
-	}
-
-	if info.Service == "" {
-		return nil // No service to configure
-	}
-
-	logger.Infof("ApplyServiceConfig: configuring service %s with %d endpoints", info.Service, len(info.Endpoints))
-
-	// Convert core.ServeEndpoint to tailscale.ServeEndpoint
-	tsEndpoints := make([]tailscale.ServeEndpoint, len(info.Endpoints))
-	for i, ep := range info.Endpoints {
-		tsEndpoints[i] = tailscale.ServeEndpoint{
-			Proto:  ep.Proto,
-			Port:   ep.Port,
-			Target: ep.Target,
-			Path:   ep.Path,
-
-			ProxyProtocol: ep.ProxyProtocol,
-			AcceptAppCaps: ep.AcceptAppCaps,
-		}
-	}
-
-	if err := e.supervisor.ConfigureServeEndpoints(info.Service, tsEndpoints, info.Tags, info.Direct); err != nil {
-		return fmt.Errorf("failed to configure service: %w", err)
-	}
-
-	e.Service = info.Service
-	e.Tags = info.Tags
-	e.Endpoints = info.Endpoints
-	e.Direct = info.Direct
-	return nil
 }

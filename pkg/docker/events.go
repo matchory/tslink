@@ -140,7 +140,10 @@ func WatchEvents(
 
 			if msg.Type == events.ContainerEventType {
 				if msg.Action == events.ActionKill && onStop != nil &&
-					isStopSignal(msg.Actor.Attributes["signal"], stopSignalOf(ctx, cli, msg.Actor.ID)) {
+					isStopSignal(
+						msg.Actor.Attributes["signal"],
+						stopSignalOf(ctx, cli, msg.Actor.ID),
+					) {
 					onStop(msg.Actor.ID)
 				}
 				continue
@@ -159,18 +162,27 @@ func WatchEvents(
 				continue
 			}
 
-			logger.Infof("Event: network connect - container=%s network=%s", containerID[:12], networkName)
+			logger.Infof(
+				"Event: network connect - container=%s network=%s",
+				containerID[:12],
+				networkName,
+			)
 
 			// Inspect container to get labels and endpoint ID
 			// This is safe - we're not in a callback
-			info, err := cli.ContainerInspect(ctx, containerID, dockerclient.ContainerInspectOptions{})
+			info, err := cli.ContainerInspect(
+				ctx,
+				containerID,
+				dockerclient.ContainerInspectOptions{},
+			)
 			if err != nil {
 				logger.Errorf("Failed to inspect container %s: %v", containerID[:12], err)
 				continue
 			}
 
 			// Find the endpoint ID for this network
-			if info.Container.NetworkSettings == nil || info.Container.NetworkSettings.Networks == nil {
+			if info.Container.NetworkSettings == nil ||
+				info.Container.NetworkSettings.Networks == nil {
 				logger.Warnf("Container %s has no network settings", containerID[:12])
 				continue
 			}
@@ -183,7 +195,11 @@ func WatchEvents(
 
 			endpointID := netSettings.EndpointID
 			if endpointID == "" {
-				logger.Warnf("Container %s has no endpoint ID for network %s", containerID[:12], networkName)
+				logger.Warnf(
+					"Container %s has no endpoint ID for network %s",
+					containerID[:12],
+					networkName,
+				)
 				continue
 			}
 
@@ -200,7 +216,11 @@ func WatchEvents(
 			containerInfo := parseContainerInfo(name, labels)
 
 			// The network's stack decides which tasks may use it
-			netInfo, err := cli.NetworkInspect(ctx, netSettings.NetworkID, dockerclient.NetworkInspectOptions{})
+			netInfo, err := cli.NetworkInspect(
+				ctx,
+				netSettings.NetworkID,
+				dockerclient.NetworkInspectOptions{},
+			)
 			if err != nil {
 				logger.Errorf("Failed to inspect network %s: %v", networkName, err)
 				continue
@@ -390,7 +410,11 @@ func parseServeValue(externalPort, value string) *core.ServeEndpoint {
 	case "http", "https", "tcp", "tls-terminated-tcp", "tun":
 		// Valid
 	default:
-		logger.Debugf("parseServeValue: unknown protocol %q for port %s", endpoint.Proto, externalPort)
+		logger.Debugf(
+			"parseServeValue: unknown protocol %q for port %s",
+			endpoint.Proto,
+			externalPort,
+		)
 		return nil
 	}
 
@@ -406,12 +430,21 @@ func parseServeValue(externalPort, value string) *core.ServeEndpoint {
 		}
 	}
 
-	if endpoint.ProxyProtocol != "" && endpoint.Proto != "tcp" && endpoint.Proto != "tls-terminated-tcp" {
-		logger.Warnf("tslink.serve.%s: ignoring endpoint: proxy-protocol needs tcp or tls-terminated-tcp, not %s", externalPort, endpoint.Proto)
+	if endpoint.ProxyProtocol != "" && endpoint.Proto != "tcp" &&
+		endpoint.Proto != "tls-terminated-tcp" {
+		logger.Warnf(
+			"tslink.serve.%s: ignoring endpoint: proxy-protocol needs tcp or tls-terminated-tcp, not %s",
+			externalPort,
+			endpoint.Proto,
+		)
 		return nil
 	}
 	if endpoint.AcceptAppCaps != "" && endpoint.Proto != "http" && endpoint.Proto != "https" {
-		logger.Warnf("tslink.serve.%s: ignoring endpoint: accept-app-caps needs http or https, not %s", externalPort, endpoint.Proto)
+		logger.Warnf(
+			"tslink.serve.%s: ignoring endpoint: accept-app-caps needs http or https, not %s",
+			externalPort,
+			endpoint.Proto,
+		)
 		return nil
 	}
 

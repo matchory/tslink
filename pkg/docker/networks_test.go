@@ -46,7 +46,10 @@ func TestNetworkFromInspectAuthKey(t *testing.T) {
 
 func TestAdoptNetworkKeepsExisting(t *testing.T) {
 	existing := &core.Network{ID: testNetworkID, AuthKey: "kept"}
-	d := &Driver{networks: map[string]*core.Network{testNetworkID: existing}, config: &core.Config{}}
+	d := &Driver{
+		networks: map[string]*core.Network{testNetworkID: existing},
+		config:   &core.Config{},
+	}
 	net, err := d.adoptNetwork(inspectResult(map[string]string{"tslink.authkey": "other"}))
 	if err != nil || net != existing {
 		t.Errorf("adoptNetwork = %+v, %v; want the network the driver has", net, err)

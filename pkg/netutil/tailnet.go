@@ -40,7 +40,11 @@ func SetupTailnetBlackhole(nsPath string) error {
 			if _, getErr := netlink.RouteGet(tailnetV6.IP); getErr == nil {
 				return fmt.Errorf("failed to add unreachable route %s: %w", tailnetV6, err)
 			}
-			logger.Warnf("Skipping unreachable route %s, namespace has no IPv6 route: %v", tailnetV6, err)
+			logger.Warnf(
+				"Skipping unreachable route %s, namespace has no IPv6 route: %v",
+				tailnetV6,
+				err,
+			)
 		}
 
 		logger.Debugf("Tailnet ranges blackholed in %s", nsPath)
@@ -57,8 +61,14 @@ func CleanupTailnetBlackhole(nsPath string) error {
 	err := inNetNS(nsPath, func() error {
 		var errs []error
 		for _, dst := range []*net.IPNet{tailnetV4, tailnetV6} {
-			if err := netlink.RouteDel(unreachableRoute(dst)); err != nil && !errors.Is(err, syscall.ESRCH) {
-				errs = append(errs, fmt.Errorf("failed to delete unreachable route %s: %w", dst, err))
+			if err := netlink.RouteDel(
+				unreachableRoute(dst),
+			); err != nil &&
+				!errors.Is(err, syscall.ESRCH) {
+				errs = append(
+					errs,
+					fmt.Errorf("failed to delete unreachable route %s: %w", dst, err),
+				)
 			}
 		}
 		return errors.Join(errs...)

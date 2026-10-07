@@ -42,7 +42,12 @@ func TestLinkCertsDir(t *testing.T) {
 	if err := LinkCertsDir(stateDir, shared); err != nil {
 		t.Fatal(err)
 	}
-	if again, _ := os.ReadFile(filepath.Join(shared, acmeAccountKeyFile)); !bytes.Equal(again, key) {
+	if again, _ := os.ReadFile(
+		filepath.Join(shared, acmeAccountKeyFile),
+	); !bytes.Equal(
+		again,
+		key,
+	) {
 		t.Error("account key was replaced")
 	}
 }

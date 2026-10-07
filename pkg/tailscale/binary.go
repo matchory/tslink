@@ -15,7 +15,7 @@ var bundledDir = "/usr/local/bin"
 
 // BundledBinaries returns the paths of the tailscale and tailscaled binaries
 // shipped in the plugin image, so every node runs the same version.
-func BundledBinaries() (tailscale, tailscaled string, err error) {
+func BundledBinaries() (string, string, error) {
 	ts := filepath.Join(bundledDir, "tailscale")
 	tsd := filepath.Join(bundledDir, "tailscaled")
 	if !fileExists(ts) || !fileExists(tsd) {

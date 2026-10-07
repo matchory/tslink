@@ -16,7 +16,10 @@ const networkInspectTimeout = 10 * time.Second
 
 // networkFromInspect rebuilds a network from the options Docker stored when
 // it was created. It is the only place that builds one from inspect data.
-func networkFromInspect(res dockerclient.NetworkInspectResult, cfg *core.Config) (*core.Network, error) {
+func networkFromInspect(
+	res dockerclient.NetworkInspectResult,
+	cfg *core.Config,
+) (*core.Network, error) {
 	// As in CreateNetwork
 	opts := make(map[string]any, len(res.Network.Options))
 	for k, v := range res.Network.Options {

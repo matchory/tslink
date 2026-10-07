@@ -31,7 +31,12 @@ const (
 // recovery and then periodically. Non-ephemeral state is kept, since
 // a container with the same hostname reuses its identity. Anything modified
 // within minAge is kept too, as it may belong to an endpoint still starting.
-func CollectGarbage(ctx context.Context, dataDir string, stateInUse, socketsInUse map[string]bool, minAge time.Duration) {
+func CollectGarbage(
+	ctx context.Context,
+	dataDir string,
+	stateInUse, socketsInUse map[string]bool,
+	minAge time.Duration,
+) {
 	cutoff := time.Now().Add(-minAge)
 	stale := func(path string) bool {
 		st, err := os.Stat(path)
@@ -43,7 +48,8 @@ func CollectGarbage(ctx context.Context, dataDir string, stateInUse, socketsInUs
 	dirs, _ := filepath.Glob(filepath.Join(dataDir, "by-stack", "*", "*"))
 	hostDirs, _ := filepath.Glob(filepath.Join(dataDir, "by-hostname", "*"))
 	for _, dir := range append(dirs, hostDirs...) {
-		if stateInUse[dir] || !tailscale.IsMarkedEphemeral(dir) || !stale(dir) || !claimUnclaimed(dir) {
+		if stateInUse[dir] || !tailscale.IsMarkedEphemeral(dir) || !stale(dir) ||
+			!claimUnclaimed(dir) {
 			continue
 		}
 		wg.Go(func() {
@@ -79,7 +85,10 @@ func RemoveDownloadCache(dataDir string) {
 		}
 		return
 	}
-	logger.Infof("Removing the old Tailscale download cache %s: tslink uses its bundled binaries", cache)
+	logger.Infof(
+		"Removing the old Tailscale download cache %s: tslink uses its bundled binaries",
+		cache,
+	)
 	if err := os.RemoveAll(cache); err != nil {
 		logger.Warnf("Failed to remove %s: %v", cache, err)
 	}
@@ -120,7 +129,11 @@ func removeEphemeral(ctx context.Context, dataDir, dir string) {
 			logger.Infof("Logging out ephemeral node of %s interrupted, keeping its state", dir)
 			return
 		}
-		logger.Warnf("Failed to log out ephemeral node of %s, removing its state anyway: %v", dir, err)
+		logger.Warnf(
+			"Failed to log out ephemeral node of %s, removing its state anyway: %v",
+			dir,
+			err,
+		)
 	}
 	if err := os.RemoveAll(dir); err != nil {
 		logger.Warnf("Failed to remove %s: %v", dir, err)

@@ -30,11 +30,11 @@ type streamingWriter struct {
 	mu     sync.Mutex
 }
 
-func (w *streamingWriter) Write(p []byte) (n int, err error) {
+func (w *streamingWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	n, err = w.buf.Write(p)
+	n, err := w.buf.Write(p)
 	if err != nil {
 		return n, err
 	}
@@ -65,7 +65,12 @@ func (w *streamingWriter) String() string {
 }
 
 // runCommandWithStreaming runs a command and streams its output to the logger.
-func runCommandWithStreaming(ctx context.Context, prefix string, name string, args ...string) (string, error) {
+func runCommandWithStreaming(
+	ctx context.Context,
+	prefix string,
+	name string,
+	args ...string,
+) (string, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 
 	stdout := &streamingWriter{prefix: prefix + ":stdout"}
@@ -235,14 +240,6 @@ type Daemon struct {
 	runCLI func(ctx context.Context, prefix string, args ...string) (string, error)
 }
 
-// tailscale runs the tailscale CLI with args, logging its output under prefix.
-func (d *Daemon) tailscale(ctx context.Context, prefix string, args ...string) (string, error) {
-	if d.runCLI != nil {
-		return d.runCLI(ctx, prefix, args...)
-	}
-	return runCommandWithStreaming(ctx, prefix, d.config.TailscaleBin, args...)
-}
-
 // NewDaemon creates a new Daemon instance.
 func NewDaemon(cfg DaemonConfig) (*Daemon, error) {
 	// Create state directory
@@ -291,7 +288,11 @@ func NewDaemon(cfg DaemonConfig) (*Daemon, error) {
 
 // Start starts the tailscaled process in the target network namespace.
 func (d *Daemon) Start() error {
-	logger.Infof("Starting tailscaled for endpoint %s in netns %s", d.config.EndpointID, d.config.NetNSPath)
+	logger.Infof(
+		"Starting tailscaled for endpoint %s in netns %s",
+		d.config.EndpointID,
+		d.config.NetNSPath,
+	)
 
 	statePath := filepath.Join(d.config.StateDir, "tailscaled.state")
 	if err := LinkCertsDir(d.config.StateDir, d.config.CertsDir); err != nil {
@@ -427,7 +428,11 @@ func (d *Daemon) Start() error {
 	}
 
 	// Configure direct machine serve if enabled (HTTPS on machine hostname)
-	logger.Infof("Checking direct serve: Direct=%v Endpoints=%d", d.config.Direct, len(d.config.Endpoints))
+	logger.Infof(
+		"Checking direct serve: Direct=%v Endpoints=%d",
+		d.config.Direct,
+		len(d.config.Endpoints),
+	)
 	if d.config.Direct && len(d.config.Endpoints) > 0 {
 		logger.Infof("Configuring direct serve...")
 		if err := d.configureDirectServe(); err != nil {
@@ -458,6 +463,360 @@ func (d *Daemon) Start() error {
 	return nil
 }
 
+// WaitForIP waits for Tailscale to get an IP address.
+func (d *Daemon) WaitForIP() (*Status, error) {
+	logger.Debugf("Waiting for Tailscale IP for endpoint %s", d.config.EndpointID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, errors.New("timeout waiting for Tailscale IP")
+		default:
+			status, err := d.getStatus()
+			if err == nil && status.IP != "" {
+				return status, nil
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+	}
+}
+
+// IsRunning checks if the tailscaled process is still running.
+func (d *Daemon) IsRunning() bool {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	if !d.running || d.cmd == nil || d.cmd.Process == nil {
+		return false
+	}
+	// Signal 0 checks if process exists without killing it
+	err := d.cmd.Process.Signal(syscall.Signal(0))
+	return err == nil
+}
+
+// Stop stops the tailscaled process.
+func (d *Daemon) Stop() error {
+	logger.Infof("Stopping tailscaled for endpoint %s", d.config.EndpointID)
+
+	// Mark as not running and get current state
+	d.mu.Lock()
+	d.running = false
+	cmd := d.cmd
+	stdoutPipe := d.stdoutPipe
+	stderrPipe := d.stderrPipe
+	d.stdoutPipe = nil
+	d.stderrPipe = nil
+	d.mu.Unlock()
+
+	// Cancel context to signal all goroutines to stop
+	if d.cancel != nil {
+		d.cancel()
+	}
+
+	if cmd != nil && cmd.Process != nil {
+		// Try graceful shutdown first
+		args := []string{
+			"--socket=" + d.socketPath,
+			"down",
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		downCmd := exec.CommandContext(ctx, d.config.TailscaleBin, args...)
+		_ = downCmd.Run() // Ignore errors
+
+		// Kill the process
+		if err := cmd.Process.Kill(); err != nil {
+			logger.Warnf("Failed to kill tailscaled: %v", err)
+		}
+
+		// Wait for process with timeout to avoid blocking forever
+		waitDone := make(chan struct{})
+		go func() {
+			if err := cmd.Wait(); err != nil {
+				logger.Debugf("tailscaled process exited: %v", err)
+			}
+			close(waitDone)
+		}()
+
+		select {
+		case <-waitDone:
+			// Process exited cleanly
+		case <-time.After(5 * time.Second):
+			logger.Warnf("Timeout waiting for tailscaled to exit")
+		}
+
+		// The socket outlives a killed tailscaled; sockets no longer sit in
+		// the state directory, so nothing else would clean it up
+		if err := os.Remove(d.socketPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			logger.Warnf("Failed to remove socket %s: %v", d.socketPath, err)
+		}
+	}
+
+	// Close pipes to unblock reader goroutines
+	if stdoutPipe != nil {
+		if err := stdoutPipe.Close(); err != nil {
+			logger.Debugf("Failed to close stdout pipe: %v", err)
+		}
+	}
+	if stderrPipe != nil {
+		if err := stderrPipe.Close(); err != nil {
+			logger.Debugf("Failed to close stderr pipe: %v", err)
+		}
+	}
+
+	// Wait for all goroutines to finish (with timeout)
+	done := make(chan struct{})
+	go func() {
+		d.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		logger.Debugf("All daemon goroutines stopped")
+	case <-time.After(5 * time.Second):
+		logger.Warnf("Timeout waiting for daemon goroutines to stop")
+		return errors.New("timeout waiting for daemon goroutines")
+	}
+
+	return nil
+}
+
+// Logout logs the node out, which deletes an ephemeral node from the tailnet.
+func (d *Daemon) Logout() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx, d.config.TailscaleBin, "--socket="+d.socketPath, "logout").
+		CombinedOutput()
+	if err != nil {
+		return fmt.Errorf(
+			"tailscale logout failed: %w (output: %s)",
+			err,
+			strings.TrimSpace(string(out)),
+		)
+	}
+	return nil
+}
+
+// isStateError checks if the error indicates stale/invalid state that should trigger a retry.
+func isStateError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	// Common auth/state errors that indicate we should wipe and retry
+	return strings.Contains(errStr, "not logged in") ||
+		strings.Contains(errStr, "key expired") ||
+		strings.Contains(errStr, "node not found") ||
+		strings.Contains(errStr, "node key mismatch") ||
+		strings.Contains(errStr, "unauthorized") ||
+		strings.Contains(errStr, "register request") ||
+		strings.Contains(errStr, "invalid node key")
+}
+
+// BackendState returns tailscaled's backend state, such as Running or
+// NeedsLogin, from its LocalAPI: cheaper than running the CLI on every
+// health check.
+func (d *Daemon) BackendState() (string, error) {
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				var dialer net.Dialer
+				return dialer.DialContext(ctx, "unix", d.socketPath)
+			},
+		},
+	}
+	defer client.CloseIdleConnections()
+
+	req, err := http.NewRequestWithContext(d.ctx, http.MethodGet,
+		"http://local-tailscaled.sock/localapi/v0/status?peers=false", nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to build status request: %w", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to query tailscaled: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("tailscaled status: %s", resp.Status)
+	}
+	var status struct {
+		BackendState string `json:"BackendState"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+		return "", fmt.Errorf("failed to parse tailscaled status: %w", err)
+	}
+	return status.BackendState, nil
+}
+
+// LoggedOut reports whether the node has lost its login: tailscaled needs a
+// login, or control recently said it does not know the node. Being offline
+// is not enough: the control plane may just be unreachable, and the node key
+// still valid.
+func (d *Daemon) LoggedOut() bool {
+	if time.Since(time.Unix(d.nodeNotFound.Load(), 0)) < 30*time.Second {
+		return true
+	}
+	state, err := d.BackendState()
+	return err == nil && state == "NeedsLogin"
+}
+
+// Reauthenticate logs a node in again with the auth key, as a new device, and
+// restores what it serves.
+func (d *Daemon) Reauthenticate() error {
+	if err := d.tryBringUp(true, "--force-reauth"); err != nil {
+		return err
+	}
+	d.nodeNotFound.Store(0)
+	if d.config.Direct && len(d.config.Endpoints) > 0 {
+		if err := d.configureDirectServe(); err != nil {
+			return fmt.Errorf("failed to configure direct serve: %w", err)
+		}
+	}
+	if d.config.Service != "" {
+		if err := d.configureServiceWhenCertified(); err != nil {
+			return fmt.Errorf("failed to configure Tailscale service: %w", err)
+		}
+	}
+	return nil
+}
+
+// Drain stops new connections to the node's backend for a Tailscale Service.
+func (d *Daemon) Drain(service string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	out, err := d.tailscale(
+		ctx,
+		"serve-drain",
+		"--socket="+d.socketPath,
+		serveCmd,
+		"drain",
+		service,
+	)
+	if err != nil {
+		return fmt.Errorf(
+			"tailscale serve drain failed: %w (output: %s)",
+			err,
+			strings.TrimSpace(out),
+		)
+	}
+	return nil
+}
+
+// SetHostname updates the Tailscale hostname for a running daemon. It returns
+// once tailscaled has applied the new preference; the node's MagicDNS name
+// follows when control answers with a new network map.
+func (d *Daemon) SetHostname(hostname string) error {
+	logger.Infof("Setting hostname to %s for endpoint %s", hostname, d.config.EndpointID)
+
+	args := []string{
+		"--socket=" + d.socketPath,
+		"set",
+		"--hostname=" + hostname,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	output, err := d.tailscale(ctx, "set-hostname", args...)
+	if err != nil {
+		return fmt.Errorf(
+			"tailscale set --hostname failed: %w (output: %s)",
+			err,
+			strings.TrimSpace(output),
+		)
+	}
+
+	// Update internal config (protected by mutex)
+	d.mu.Lock()
+	d.config.Hostname = hostname
+	d.mu.Unlock()
+
+	logger.Infof("Hostname updated successfully")
+	return nil
+}
+
+// ConfigureServeEndpoints configures multiple Tailscale serve endpoints after startup.
+// This is called when container info is obtained from cache after initial Join.
+func (d *Daemon) ConfigureServeEndpoints(
+	service string,
+	endpoints []ServeEndpoint,
+	tags []string,
+	direct bool,
+) error {
+	logger.Infof("Late-configuring serve endpoints: service=%s endpoints=%d direct=%v for %s",
+		service, len(endpoints), direct, d.config.EndpointID)
+
+	// Update tags if provided
+	if len(tags) > 0 {
+		tagsArg := strings.Join(tags, ",")
+		args := []string{
+			"--socket=" + d.socketPath,
+			"set",
+			"--advertise-tags=" + tagsArg,
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		if output, err := d.tailscale(ctx, "set-tags", args...); err != nil {
+			logger.Warnf("Failed to set tags: %v (output: %s)", err, output)
+		}
+	}
+
+	// Store config for endpoint configuration
+	d.config.Service = service
+	d.config.Endpoints = endpoints
+	d.config.Direct = direct
+
+	// Configure direct serve first (fast access via machine hostname)
+	if direct && len(endpoints) > 0 {
+		for i, ep := range endpoints {
+			if err := d.configureDirectServeEndpoint(ep); err != nil {
+				return fmt.Errorf("failed to configure direct endpoint %d (%s:%s): %w",
+					i, ep.Proto, ep.Port, err)
+			}
+		}
+		logger.Infof("Late direct serve configuration completed")
+	}
+
+	// Configure service backend if specified
+	if service != "" {
+		for i, ep := range endpoints {
+			if err := d.configureServeEndpoint(ep); err != nil {
+				return fmt.Errorf("failed to configure service endpoint %d (%s:%s): %w",
+					i, ep.Proto, ep.Port, err)
+			}
+		}
+		// As configureService: no endpoints, nothing to advertise
+		if len(endpoints) > 0 {
+			if err := d.advertise(service); err != nil {
+				return err
+			}
+		}
+		logger.Infof("Late service configuration completed")
+	}
+
+	return nil
+}
+
+// tailscale runs the tailscale CLI with args, logging its output under prefix.
+func (d *Daemon) tailscale(ctx context.Context, prefix string, args ...string) (string, error) {
+	if d.runCLI != nil {
+		return d.runCLI(ctx, prefix, args...)
+	}
+	return runCommandWithStreaming(ctx, prefix, d.config.TailscaleBin, args...)
+}
+
 // tailscaledCommand returns the command running tailscaled with args in the
 // container's network namespace.
 //
@@ -468,15 +827,24 @@ func (d *Daemon) Start() error {
 // namespace of its own. Without it, tailscaled keeps the plugin's.
 func (d *Daemon) tailscaledCommand(args []string) *exec.Cmd {
 	resolvConf := filepath.Join(d.config.StateDir, "resolv.conf")
-	if err := os.WriteFile(resolvConf, []byte("nameserver 127.0.0.11\noptions ndots:0\n"), 0o644); err != nil { // #nosec G306 -- not secret
+	conf := []byte("nameserver 127.0.0.11\noptions ndots:0\n")
+	//nolint:gosec // G306: resolv.conf holds no secrets
+	if err := os.WriteFile(resolvConf, conf, 0o644); err != nil {
 		logger.Warnf("Failed to write %s: %v", resolvConf, err)
 	}
 	// unshare, sh and nsenter each exec the next, so the process is tailscaled
 	unshareArgs := []string{
-		"--mount", "--propagation", "private", "--",
-		"sh", "-c", `mount --bind "$0" /etc/resolv.conf || echo "tslink: tailscaled keeps the plugin's resolv.conf" >&2
+		"--mount",
+		"--propagation",
+		"private",
+		"--",
+		"sh",
+		"-c",
+		`mount --bind "$0" /etc/resolv.conf || echo "tslink: tailscaled keeps the plugin's resolv.conf" >&2
 netns=$1; shift; exec nsenter --net="$netns" -- "$@"`,
-		resolvConf, d.config.NetNSPath, d.config.TailscaledBin,
+		resolvConf,
+		d.config.NetNSPath,
+		d.config.TailscaledBin,
 	}
 	unshareArgs = append(unshareArgs, args...)
 	logger.Debugf("Running: unshare %v", unshareArgs)
@@ -545,29 +913,14 @@ func (d *Daemon) bringUp() error {
 	return err
 }
 
-// isStateError checks if the error indicates stale/invalid state that should trigger a retry.
-func isStateError(err error) bool {
-	if err == nil {
-		return false
-	}
-	errStr := err.Error()
-	// Common auth/state errors that indicate we should wipe and retry
-	return strings.Contains(errStr, "not logged in") ||
-		strings.Contains(errStr, "key expired") ||
-		strings.Contains(errStr, "node not found") ||
-		strings.Contains(errStr, "node key mismatch") ||
-		strings.Contains(errStr, "unauthorized") ||
-		strings.Contains(errStr, "register request") ||
-		strings.Contains(errStr, "invalid node key")
-}
-
 // waitBackendState returns tailscaled's backend state once it has loaded its
 // state, or "" if it cannot tell within a few seconds.
 func (d *Daemon) waitBackendState() string {
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		ctx, cancel := context.WithTimeout(d.ctx, 5*time.Second)
-		out, err := exec.CommandContext(ctx, d.config.TailscaleBin, "--socket="+d.socketPath, "status", "--json").Output()
+		out, err := exec.CommandContext(ctx, d.config.TailscaleBin, "--socket="+d.socketPath, "status", "--json").
+			Output()
 		cancel()
 		var st struct {
 			BackendState string `json:"BackendState"`
@@ -679,7 +1032,11 @@ func (d *Daemon) advertise(service string) error {
 	out, err := d.tailscale(ctx, "serve-advertise", "--socket="+d.socketPath,
 		serveCmd, "advertise", service)
 	if err != nil {
-		return fmt.Errorf("tailscale serve advertise failed: %w (output: %s)", err, strings.TrimSpace(out))
+		return fmt.Errorf(
+			"tailscale serve advertise failed: %w (output: %s)",
+			err,
+			strings.TrimSpace(out),
+		)
 	}
 	return nil
 }
@@ -695,9 +1052,12 @@ func (d *Daemon) configureDirectServe() error {
 	logger.Infof("Configuring direct machine serve with %d endpoint(s) for %s",
 		len(d.config.Endpoints), d.config.EndpointID)
 	if servesWeb(d.config.Endpoints) {
-		logger.Warnf("Endpoint %s serves HTTP on its own name %s: tailscaled issues a certificate for it, "+
-			"even for plain HTTP, and every new task's name counts against Let's Encrypt's weekly limit for the tailnet",
-			d.config.EndpointID[:12], d.config.Hostname)
+		logger.Warnf(
+			"Endpoint %s serves HTTP on its own name %s: tailscaled issues a certificate for it, "+
+				"even for plain HTTP, and every new task's name counts against Let's Encrypt's weekly limit for the tailnet",
+			d.config.EndpointID[:12],
+			d.config.Hostname,
+		)
 	}
 
 	// Configure each endpoint for direct serve
@@ -769,12 +1129,16 @@ func (d *Daemon) configureServeEndpoint(ep ServeEndpoint) error {
 		d.serveDebugf("FAILED: %v\nOutput: %s\n", err, output)
 		logger.Errorf("tailscale serve failed: %v", err)
 
-		if strings.Contains(output, "service not found") || strings.Contains(output, "unknown service") {
+		if strings.Contains(output, "service not found") ||
+			strings.Contains(output, "unknown service") {
 			return fmt.Errorf("service %s not found: create it in Tailscale admin console first",
 				d.config.Service)
 		}
 		if strings.Contains(output, untaggedServiceHostError) {
-			return fmt.Errorf("tailscale serve failed: requires tagged auth key (output: %s)", output)
+			return fmt.Errorf(
+				"tailscale serve failed: requires tagged auth key (output: %s)",
+				output,
+			)
 		}
 
 		return fmt.Errorf("tailscale serve failed: %w (output: %s)", err, output)
@@ -804,27 +1168,6 @@ func (d *Daemon) serveDebugf(format string, args ...any) {
 	}
 	if err := f.Close(); err != nil {
 		logger.Warnf("Failed to close serve debug file: %v", err)
-	}
-}
-
-// WaitForIP waits for Tailscale to get an IP address.
-func (d *Daemon) WaitForIP() (*Status, error) {
-	logger.Debugf("Waiting for Tailscale IP for endpoint %s", d.config.EndpointID)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return nil, errors.New("timeout waiting for Tailscale IP")
-		default:
-			status, err := d.getStatus()
-			if err == nil && status.IP != "" {
-				return status, nil
-			}
-			time.Sleep(500 * time.Millisecond)
-		}
 	}
 }
 
@@ -867,288 +1210,4 @@ func (d *Daemon) getStatus() (*Status, error) {
 	}
 
 	return status, nil
-}
-
-// IsRunning checks if the tailscaled process is still running.
-func (d *Daemon) IsRunning() bool {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-
-	if !d.running || d.cmd == nil || d.cmd.Process == nil {
-		return false
-	}
-	// Signal 0 checks if process exists without killing it
-	err := d.cmd.Process.Signal(syscall.Signal(0))
-	return err == nil
-}
-
-// Stop stops the tailscaled process.
-func (d *Daemon) Stop() error {
-	logger.Infof("Stopping tailscaled for endpoint %s", d.config.EndpointID)
-
-	// Mark as not running and get current state
-	d.mu.Lock()
-	d.running = false
-	cmd := d.cmd
-	stdoutPipe := d.stdoutPipe
-	stderrPipe := d.stderrPipe
-	d.stdoutPipe = nil
-	d.stderrPipe = nil
-	d.mu.Unlock()
-
-	// Cancel context to signal all goroutines to stop
-	if d.cancel != nil {
-		d.cancel()
-	}
-
-	if cmd != nil && cmd.Process != nil {
-		// Try graceful shutdown first
-		args := []string{
-			"--socket=" + d.socketPath,
-			"down",
-		}
-
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		downCmd := exec.CommandContext(ctx, d.config.TailscaleBin, args...)
-		_ = downCmd.Run() // Ignore errors
-
-		// Kill the process
-		if err := cmd.Process.Kill(); err != nil {
-			logger.Warnf("Failed to kill tailscaled: %v", err)
-		}
-
-		// Wait for process with timeout to avoid blocking forever
-		waitDone := make(chan struct{})
-		go func() {
-			if err := cmd.Wait(); err != nil {
-				logger.Debugf("tailscaled process exited: %v", err)
-			}
-			close(waitDone)
-		}()
-
-		select {
-		case <-waitDone:
-			// Process exited cleanly
-		case <-time.After(5 * time.Second):
-			logger.Warnf("Timeout waiting for tailscaled to exit")
-		}
-
-		// The socket outlives a killed tailscaled; sockets no longer sit in
-		// the state directory, so nothing else would clean it up
-		if err := os.Remove(d.socketPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-			logger.Warnf("Failed to remove socket %s: %v", d.socketPath, err)
-		}
-	}
-
-	// Close pipes to unblock reader goroutines
-	if stdoutPipe != nil {
-		if err := stdoutPipe.Close(); err != nil {
-			logger.Debugf("Failed to close stdout pipe: %v", err)
-		}
-	}
-	if stderrPipe != nil {
-		if err := stderrPipe.Close(); err != nil {
-			logger.Debugf("Failed to close stderr pipe: %v", err)
-		}
-	}
-
-	// Wait for all goroutines to finish (with timeout)
-	done := make(chan struct{})
-	go func() {
-		d.wg.Wait()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		logger.Debugf("All daemon goroutines stopped")
-	case <-time.After(5 * time.Second):
-		logger.Warnf("Timeout waiting for daemon goroutines to stop")
-		return errors.New("timeout waiting for daemon goroutines")
-	}
-
-	return nil
-}
-
-// Logout logs the node out, which deletes an ephemeral node from the tailnet.
-func (d *Daemon) Logout() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	out, err := exec.CommandContext(ctx, d.config.TailscaleBin, "--socket="+d.socketPath, "logout").CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("tailscale logout failed: %w (output: %s)", err, strings.TrimSpace(string(out)))
-	}
-	return nil
-}
-
-// BackendState returns tailscaled's backend state, such as Running or
-// NeedsLogin, from its LocalAPI: cheaper than running the CLI on every
-// health check.
-func (d *Daemon) BackendState() (string, error) {
-	client := &http.Client{
-		Timeout: 5 * time.Second,
-		Transport: &http.Transport{
-			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				var dialer net.Dialer
-				return dialer.DialContext(ctx, "unix", d.socketPath)
-			},
-		},
-	}
-	defer client.CloseIdleConnections()
-
-	req, err := http.NewRequestWithContext(d.ctx, http.MethodGet,
-		"http://local-tailscaled.sock/localapi/v0/status?peers=false", nil)
-	if err != nil {
-		return "", fmt.Errorf("failed to build status request: %w", err)
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("failed to query tailscaled: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("tailscaled status: %s", resp.Status)
-	}
-	var status struct {
-		BackendState string `json:"BackendState"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
-		return "", fmt.Errorf("failed to parse tailscaled status: %w", err)
-	}
-	return status.BackendState, nil
-}
-
-// LoggedOut reports whether the node has lost its login: tailscaled needs a
-// login, or control recently said it does not know the node. Being offline
-// is not enough: the control plane may just be unreachable, and the node key
-// still valid.
-func (d *Daemon) LoggedOut() bool {
-	if time.Since(time.Unix(d.nodeNotFound.Load(), 0)) < 30*time.Second {
-		return true
-	}
-	state, err := d.BackendState()
-	return err == nil && state == "NeedsLogin"
-}
-
-// Reauthenticate logs a node in again with the auth key, as a new device, and
-// restores what it serves.
-func (d *Daemon) Reauthenticate() error {
-	if err := d.tryBringUp(true, "--force-reauth"); err != nil {
-		return err
-	}
-	d.nodeNotFound.Store(0)
-	if d.config.Direct && len(d.config.Endpoints) > 0 {
-		if err := d.configureDirectServe(); err != nil {
-			return fmt.Errorf("failed to configure direct serve: %w", err)
-		}
-	}
-	if d.config.Service != "" {
-		if err := d.configureServiceWhenCertified(); err != nil {
-			return fmt.Errorf("failed to configure Tailscale service: %w", err)
-		}
-	}
-	return nil
-}
-
-// Drain stops new connections to the node's backend for a Tailscale Service.
-func (d *Daemon) Drain(service string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	out, err := d.tailscale(ctx, "serve-drain", "--socket="+d.socketPath, serveCmd, "drain", service)
-	if err != nil {
-		return fmt.Errorf("tailscale serve drain failed: %w (output: %s)", err, strings.TrimSpace(out))
-	}
-	return nil
-}
-
-// SetHostname updates the Tailscale hostname for a running daemon. It returns
-// once tailscaled has applied the new preference; the node's MagicDNS name
-// follows when control answers with a new network map.
-func (d *Daemon) SetHostname(hostname string) error {
-	logger.Infof("Setting hostname to %s for endpoint %s", hostname, d.config.EndpointID)
-
-	args := []string{
-		"--socket=" + d.socketPath,
-		"set",
-		"--hostname=" + hostname,
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	output, err := d.tailscale(ctx, "set-hostname", args...)
-	if err != nil {
-		return fmt.Errorf("tailscale set --hostname failed: %w (output: %s)", err, strings.TrimSpace(output))
-	}
-
-	// Update internal config (protected by mutex)
-	d.mu.Lock()
-	d.config.Hostname = hostname
-	d.mu.Unlock()
-
-	logger.Infof("Hostname updated successfully")
-	return nil
-}
-
-// ConfigureServeEndpoints configures multiple Tailscale serve endpoints after startup.
-// This is called when container info is obtained from cache after initial Join.
-func (d *Daemon) ConfigureServeEndpoints(service string, endpoints []ServeEndpoint, tags []string, direct bool) error {
-	logger.Infof("Late-configuring serve endpoints: service=%s endpoints=%d direct=%v for %s",
-		service, len(endpoints), direct, d.config.EndpointID)
-
-	// Update tags if provided
-	if len(tags) > 0 {
-		tagsArg := strings.Join(tags, ",")
-		args := []string{
-			"--socket=" + d.socketPath,
-			"set",
-			"--advertise-tags=" + tagsArg,
-		}
-
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-
-		if output, err := d.tailscale(ctx, "set-tags", args...); err != nil {
-			logger.Warnf("Failed to set tags: %v (output: %s)", err, output)
-		}
-	}
-
-	// Store config for endpoint configuration
-	d.config.Service = service
-	d.config.Endpoints = endpoints
-	d.config.Direct = direct
-
-	// Configure direct serve first (fast access via machine hostname)
-	if direct && len(endpoints) > 0 {
-		for i, ep := range endpoints {
-			if err := d.configureDirectServeEndpoint(ep); err != nil {
-				return fmt.Errorf("failed to configure direct endpoint %d (%s:%s): %w",
-					i, ep.Proto, ep.Port, err)
-			}
-		}
-		logger.Infof("Late direct serve configuration completed")
-	}
-
-	// Configure service backend if specified
-	if service != "" {
-		for i, ep := range endpoints {
-			if err := d.configureServeEndpoint(ep); err != nil {
-				return fmt.Errorf("failed to configure service endpoint %d (%s:%s): %w",
-					i, ep.Proto, ep.Port, err)
-			}
-		}
-		// As configureService: no endpoints, nothing to advertise
-		if len(endpoints) > 0 {
-			if err := d.advertise(service); err != nil {
-				return err
-			}
-		}
-		logger.Infof("Late service configuration completed")
-	}
-
-	return nil
 }

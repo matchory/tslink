@@ -62,7 +62,13 @@ func TestCollectGarbage(t *testing.T) {
 
 	loggedOut := stubLogout(t, nil)
 
-	CollectGarbage(context.Background(), data, map[string]bool{inUse: true}, map[string]bool{"bbbbbbbbbbbb": true}, time.Minute)
+	CollectGarbage(
+		context.Background(),
+		data,
+		map[string]bool{inUse: true},
+		map[string]bool{"bbbbbbbbbbbb": true},
+		time.Minute,
+	)
 
 	// Only the nodes whose state goes are logged out
 	if got := loggedOut(); !slices.Equal(got, []string{deadHost, dead}) {
@@ -149,7 +155,9 @@ func TestCollectGarbageKeepsClaimedState(t *testing.T) {
 	// after the caller listed the endpoints in use.
 	data := t.TempDir()
 	e := &Endpoint{ID: "fedcba9876543210", DataDir: data}
-	if err := e.ClaimStateDir(&ContainerInfo{Hostname: "app_web.4.claimed", Stack: "app"}); err != nil {
+	if err := e.ClaimStateDir(
+		&ContainerInfo{Hostname: "app_web.4.claimed", Stack: "app"},
+	); err != nil {
 		t.Fatal(err)
 	}
 	defer e.releaseStateDir()
@@ -210,7 +218,11 @@ func orphan(t *testing.T, data, rel string) string {
 	if err := tailscale.MarkEphemeral(dir); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "tailscaled.state"), []byte("{}"), 0o600); err != nil {
+	if err := os.WriteFile(
+		filepath.Join(dir, "tailscaled.state"),
+		[]byte("{}"),
+		0o600,
+	); err != nil {
 		t.Fatal(err)
 	}
 	old := time.Now().Add(-time.Hour)

@@ -257,7 +257,12 @@ func SetupHostRouting(vethHost string, hostIP string) error {
 }
 
 // SetupContainerRouting sets up routing inside the container namespace.
-func SetupContainerRouting(nsPath string, ifName string, containerIP string, gatewayIP string) error {
+func SetupContainerRouting(
+	nsPath string,
+	ifName string,
+	containerIP string,
+	gatewayIP string,
+) error {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
@@ -382,7 +387,14 @@ func initializeChain(ipt *iptables.IPTables) error {
 	}
 
 	// Add global MASQUERADE rule for the 10.200.0.0/16 range, unless it exists
-	if err := ipt.AppendUnique("nat", "POSTROUTING", "-s", natSource, "-j", "MASQUERADE"); err != nil {
+	if err := ipt.AppendUnique(
+		"nat",
+		"POSTROUTING",
+		"-s",
+		natSource,
+		"-j",
+		"MASQUERADE",
+	); err != nil {
 		return fmt.Errorf("failed to add MASQUERADE rule: %w", err)
 	}
 
@@ -397,7 +409,11 @@ func CleanupNAT(vethHost string) error {
 
 	ipt, err := iptables.New()
 	if err != nil {
-		logger.Debugf("Failed to initialize iptables, NAT rules for %s not cleaned: %v", vethHost, err)
+		logger.Debugf(
+			"Failed to initialize iptables, NAT rules for %s not cleaned: %v",
+			vethHost,
+			err,
+		)
 		return nil
 	}
 
@@ -433,7 +449,14 @@ func CleanupAllNAT() error {
 		}
 
 		// Remove MASQUERADE rule
-		if err := ipt.DeleteIfExists("nat", "POSTROUTING", "-s", natSource, "-j", "MASQUERADE"); err != nil {
+		if err := ipt.DeleteIfExists(
+			"nat",
+			"POSTROUTING",
+			"-s",
+			natSource,
+			"-j",
+			"MASQUERADE",
+		); err != nil {
 			logger.Debugf("No MASQUERADE rule found (may already be cleaned): %v", err)
 		}
 	}

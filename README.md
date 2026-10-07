@@ -142,6 +142,7 @@ services:
 | -------- | ------------- | --------- |
 | `tslink.authkey` | Tailscale auth key | Required (or set via plugin env) |
 | `tslink.tags` | ACL tags (comma-separated) for every container on the network; overrides the `tslink.tags` label | None |
+| `tslink.loginserver` | URL of a control server other than Tailscale's, such as [headscale](https://github.com/juanfont/headscale); passed to `tailscale up --login-server` | Tailscale's |
 | `com.docker.network.driver.mtu` | MTU of the interface tslink adds to the container | 1500 |
 
 A network created by `docker stack deploy` serves only that stack's tasks:
@@ -229,6 +230,10 @@ docker network create --driver tslink:latest my-tailnet
 | **OAuth client secret** | Nodes are ephemeral unless `?ephemeral=false` is appended; tslink logs them out and deletes their state when the container stops. Requires `tslink.tags` |
 
 For most use cases, use an ephemeral, reusable, pre-approved key.
+
+Keys from headscale do not say whether they are ephemeral, so with `tslink.loginserver` tslink keeps an ephemeral node's
+state and does not log it out when the container stops; headscale removes the node after its
+`node.ephemeral.inactivity_timeout`.
 
 ## Running on Swarm
 
@@ -341,8 +346,10 @@ docker run --rm -v /var/lib/docker-plugins/tailscale:/data alpine \
 
 ## Development
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Report security issues as described in
-[SECURITY.md](SECURITY.md); changes are listed in [CHANGELOG.md](CHANGELOG.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md). The end-to-end test, `test/integration/run.sh`, runs
+containers against a local headscale and needs no Tailscale account; CI runs it on every pull request.
+Report security issues as described in [SECURITY.md](SECURITY.md); changes are listed in
+[CHANGELOG.md](CHANGELOG.md).
 
 ## License
 

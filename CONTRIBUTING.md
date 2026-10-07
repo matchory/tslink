@@ -51,8 +51,11 @@ go test -c -o /tmp/netutil.test ./pkg/netutil
 sudo /tmp/netutil.test -test.v -test.count=1
 ```
 
-End-to-end tests run against a real tailnet and are not part of CI:
-`test/integration` and `test/cluster`, which builds a Swarm in the cloud (see
+`test/integration/run.sh` is the end-to-end test: it builds the plugin,
+installs it as `tslink`, and runs containers against a local headscale, so it
+needs no Tailscale account. CI runs it on every pull request; locally it needs
+Linux, Docker and `sudo`. `test/cluster` builds a Swarm in the cloud and runs
+a regression suite against a real tailnet, including Tailscale Services (see
 [test/cluster/README.md](test/cluster/README.md)).
 
 ## Linters

@@ -367,6 +367,7 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 		Service:       info.Service,
 		Endpoints:     tsEndpoints,
 		Direct:        info.Direct,
+		LoginServer:   e.Network.LoginServer, // set once, at creation
 	})
 
 	// Start supervisor (blocks until initial daemon startup succeeds or fails - up to 90s!)

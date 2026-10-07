@@ -20,6 +20,8 @@ type NetworkOptions struct {
 	AuthKey string
 	Tags    []string
 	MTU     int // 0 if unset or invalid
+
+	LoginServer string // control server URL; empty for Tailscale's
 }
 
 // MTUOption is Docker's standard network option for the interface MTU.
@@ -87,6 +89,12 @@ func ParseNetworkOptions(opts map[string]any) NetworkOptions {
 	if v, ok := genericOpts[MTUOption]; ok {
 		if s, ok := v.(string); ok {
 			options.MTU = ParseMTU(s)
+		}
+	}
+
+	if v, ok := genericOpts[LoginServerOption]; ok {
+		if s, ok := v.(string); ok {
+			options.LoginServer = s
 		}
 	}
 

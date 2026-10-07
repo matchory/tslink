@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aaomidi/tslink/pkg/logger"
+	"github.com/matchory/tslink/pkg/logger"
 )
 
 // Keys of tailscaled's state file (tailscale.com/ipn), a JSON object whose

@@ -4,7 +4,7 @@ version = "2"
 enable = ["gci", "gofumpt", "golines"]
 
 [formatters.settings.gci]
-sections = ["standard", "default", "prefix(github.com/aaomidi/tslink)"]
+sections = ["standard", "default", "prefix(github.com/matchory/tslink)"]
 custom-order = true
 
 [linters]

@@ -1,4 +1,4 @@
-module github.com/aaomidi/tslink
+module github.com/matchory/tslink
 
 go 1.26.0
 

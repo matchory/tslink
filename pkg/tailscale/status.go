@@ -10,7 +10,7 @@ import (
 	"os/exec"
 	"time"
 
-	"github.com/aaomidi/tslink/pkg/logger"
+	"github.com/matchory/tslink/pkg/logger"
 )
 
 // Status represents the status of a Tailscale connection.

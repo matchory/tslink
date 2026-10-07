@@ -31,7 +31,7 @@ RUN ln -sf /sbin/iptables-nft /sbin/iptables && \
     ln -sf /sbin/ip6tables-nft /sbin/ip6tables
 
 # Create plugin directories
-RUN mkdir -p /run/docker/plugins /data /data/tailscale-bin
+RUN mkdir -p /run/docker/plugins /data
 
 COPY --from=builder /tslink /tslink
 COPY --from=tailscale /usr/local/bin/tailscale /usr/local/bin/tailscaled /usr/local/bin/

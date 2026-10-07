@@ -390,8 +390,11 @@ docker run --rm -v /var/lib/docker-plugins/tailscale:/data alpine \
 
 - **macOS/Windows**: Only works with Docker in a Linux VM (OrbStack, Docker Desktop)
 - **MagicDNS in container**: Containers can reach tailnet by IP; for MagicDNS names, set `dns: [100.100.100.100]`.
-  The container's tailscaled then forwards other names to the host's resolvers, not to resolvers set in the container
-  (see [node provisioning](docs/node-provisioning.md#host))
+  The container's tailscaled then forwards other names to the container's other DNS servers, as in
+  `dns: [100.100.100.100, 10.0.0.53]`, or, if it has none, to the host's (see
+  [node provisioning](docs/node-provisioning.md#host)). Docker asks the first server and accepts its answer, so list
+  the others after `100.100.100.100`. tailscaled picks its upstreams when it starts, as Docker does when the container
+  starts. tslink sees only the container's or service's own `dns:`, not a `dns` setting in `daemon.json`
 - **Tailscale starts after the application**: Docker gives the plugin no way to identify a container while it is
   starting, so tslink brings Tailscale up once the container has started, which usually takes a few seconds. Until
   then, connections to tailnet addresses fail immediately with "host unreachable"; they never fall back to the host's

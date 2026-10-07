@@ -17,7 +17,7 @@ MARK=tslink-e2e
 # host, so it must listen on an address other than loopback
 HOST_IP=${HOST_IP:-$(ip -4 route get 1.1.1.1 | awk '{for (i = 1; i < NF; i++) if ($i == "src") print $(i + 1)}')}
 URL=http://$HOST_IP:8080
-CONTAINERS=(e2e-server e2e-client e2e-outsider e2e-ephemeral)
+CONTAINERS=(e2e-server e2e-client e2e-outsider e2e-ephemeral e2e-late)
 NETWORKS=(e2e-alice e2e-bob e2e-ephemeral)
 WORK=$(mktemp -d)
 
@@ -151,8 +151,6 @@ docker stop -t 1 e2e-ephemeral >/dev/null
 retry 240 node_gone e2e-ephemeral || fail "ephemeral node still in headscale"
 
 log "A plugin restart keeps the containers' identities"
-# Last: tslink forgets networks without containers when it restarts, so
-# e2e-ephemeral would not take new containers after this
 docker plugin disable -f "$PLUGIN"
 docker plugin enable "$PLUGIN"
 retry 180 reaches e2e-client "$server_ip" || fail "client cannot reach the server after the restart"
@@ -160,5 +158,10 @@ retry 180 reaches e2e-client "$server_ip" || fail "client cannot reach the serve
 [ "$(tailnet_ip e2e-client)" = "$client_ip" ] || fail "client IP changed: $(tailnet_ip e2e-client)"
 [ "$(nodes_named e2e-server)" = 1 ] || fail "server registered again"
 [ "$(nodes_named e2e-client)" = 1 ] || fail "client registered again"
+
+log "A network without containers during the restart takes new ones"
+docker run -d --name e2e-late --network e2e-ephemeral "$ALPINE" sleep 3600
+wait_ip e2e-late
+retry 120 reaches e2e-late "$server_ip" || fail "late container cannot reach the server"
 
 log "All end-to-end tests passed"

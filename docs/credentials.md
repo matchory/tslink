@@ -2,7 +2,7 @@
 
 How a Swarm task gets its tailnet identity without letting a task choose
 someone else's. Decided 2026-10-07, after the
-[Swarm spike](swarm-spike-2026-10-06.md).
+[Swarm spike](testing/swarm-spike-2026-10-06.md).
 
 ## Decision
 
@@ -39,7 +39,7 @@ networks:
 
 Rotating the secret means recreating the network, which takes the stack down
 briefly: 14 seconds from `docker stack rm` until the redeployed stack answered
-on its Service VIP, in the [cluster test](swarm-cluster-test-2026-10-07.md).
+on its Service VIP, in the [cluster test](testing/swarm-cluster-test-2026-10-07.md).
 OAuth client secrets do not expire, so this should be rare. A stack that
 cannot afford the gap can be deployed under a new stack name with the new
 client first, and the old one removed once the new one serves.

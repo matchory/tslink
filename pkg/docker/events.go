@@ -14,8 +14,8 @@ import (
 	dockerclient "github.com/moby/moby/client"
 	"golang.org/x/sys/unix"
 
-	"github.com/aaomidi/tslink/pkg/core"
-	"github.com/aaomidi/tslink/pkg/logger"
+	"github.com/matchory/tslink/pkg/core"
+	"github.com/matchory/tslink/pkg/logger"
 )
 
 // ContainerCache caches container info for quick lookup during Join().

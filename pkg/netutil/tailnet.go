@@ -11,7 +11,7 @@ import (
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
 
-	"github.com/aaomidi/tslink/pkg/logger"
+	"github.com/matchory/tslink/pkg/logger"
 )
 
 // Tailscale's address ranges. Traffic to these must leave through the

@@ -12,10 +12,10 @@ import (
 
 	"github.com/docker/go-plugins-helpers/network"
 
-	"github.com/aaomidi/tslink/pkg/core"
-	"github.com/aaomidi/tslink/pkg/diag"
-	"github.com/aaomidi/tslink/pkg/docker"
-	"github.com/aaomidi/tslink/pkg/logger"
+	"github.com/matchory/tslink/pkg/core"
+	"github.com/matchory/tslink/pkg/diag"
+	"github.com/matchory/tslink/pkg/docker"
+	"github.com/matchory/tslink/pkg/logger"
 )
 
 const (

@@ -5,8 +5,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/aaomidi/tslink/pkg/logger"
-	"github.com/aaomidi/tslink/pkg/tailscale"
+	"github.com/matchory/tslink/pkg/logger"
+	"github.com/matchory/tslink/pkg/tailscale"
 )
 
 // Config holds the plugin configuration.

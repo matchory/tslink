@@ -16,9 +16,9 @@ import (
 
 	"github.com/docker/go-plugins-helpers/network"
 
-	"github.com/aaomidi/tslink/pkg/logger"
-	"github.com/aaomidi/tslink/pkg/netutil"
-	"github.com/aaomidi/tslink/pkg/tailscale"
+	"github.com/matchory/tslink/pkg/logger"
+	"github.com/matchory/tslink/pkg/netutil"
+	"github.com/matchory/tslink/pkg/tailscale"
 )
 
 // ServeEndpoint represents a single Tailscale serve configuration.

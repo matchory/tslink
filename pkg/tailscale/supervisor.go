@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/aaomidi/tslink/pkg/logger"
+	"github.com/matchory/tslink/pkg/logger"
 )
 
 // SupervisorStatus represents the current state of the supervisor.

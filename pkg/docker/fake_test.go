@@ -18,7 +18,7 @@ import (
 	"github.com/moby/moby/api/types/plugin"
 	dockerclient "github.com/moby/moby/client"
 
-	"github.com/aaomidi/tslink/pkg/core"
+	"github.com/matchory/tslink/pkg/core"
 )
 
 // pluginName is the name tslink is installed under in the fake Docker.

@@ -11,7 +11,7 @@ import (
 
 	"github.com/docker/go-plugins-helpers/network"
 
-	"github.com/aaomidi/tslink/pkg/core"
+	"github.com/matchory/tslink/pkg/core"
 )
 
 const sandbox = "/var/run/docker/netns/test"

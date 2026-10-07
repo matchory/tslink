@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aaomidi/tslink/pkg/logger"
+	"github.com/matchory/tslink/pkg/logger"
 )
 
 // ServeEndpoint represents a single Tailscale serve configuration.

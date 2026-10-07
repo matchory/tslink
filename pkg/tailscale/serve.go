@@ -268,11 +268,6 @@ func (d *Daemon) configureServeEndpoint(ep ServeEndpoint) error {
 		d.serveDebugf("FAILED: %v\nOutput: %s\n", err, output)
 		logger.Errorf("tailscale serve failed: %v", err)
 
-		if strings.Contains(output, "service not found") ||
-			strings.Contains(output, "unknown service") {
-			return fmt.Errorf("service %s not found: create it in Tailscale admin console first",
-				d.config.Service)
-		}
 		if strings.Contains(output, untaggedServiceHostError) {
 			return fmt.Errorf(
 				"tailscale serve failed: requires tagged auth key (output: %s)",
@@ -283,9 +278,15 @@ func (d *Daemon) configureServeEndpoint(ep ServeEndpoint) error {
 		return fmt.Errorf("tailscale serve failed: %w (output: %s)", err, output)
 	}
 
-	// Check for approval pending (command succeeds but backend not active yet)
+	// Check for approval pending (command succeeds but backend not active
+	// yet). The CLI says so too for a Service that does not exist: control
+	// has given the node no addresses for it
 	if strings.Contains(output, "approval from an admin is required") {
-		logger.Warnf("Service backend registered but pending admin approval: %s", d.config.Service)
+		logger.Warnf(
+			"Service backend registered but pending admin approval, "+
+				"or the Service is not defined in the admin console: %s",
+			d.config.Service,
+		)
 	}
 
 	d.serveDebugf("SUCCESS\nOutput: %s\n", output)

@@ -386,9 +386,11 @@ func TestConfigureServiceErrors(t *testing.T) {
 		want string
 	}{
 		{
-			"unknown service",
+			// The CLI does not check that the Service exists: it configures
+			// it, and reports that it awaits approval
+			"no special case for missing services",
 			"error: service not found",
-			"service svc:web not found: create it in Tailscale admin console first",
+			"tailscale serve failed: exit status 1 (output: error: service not found)",
 		},
 		{"untagged node", "service hosts must be tagged nodes", "requires tagged auth key"},
 		{

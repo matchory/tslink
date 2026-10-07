@@ -40,7 +40,7 @@ directory that outlives the node, optionally shared between all hosts, and seria
 Plugin settings, set once per node by provisioning, and the same for every stack:
 
 | Setting | Default | Description |
-|---------|---------|-------------|
+| --- | --- | --- |
 | file `/var/lib/docker-plugins/tailscale/oauth-client.secret` | absent | The cluster's OAuth client secret (`tskey-client-…`, nothing appended), in the plugin's existing data mount |
 | mount `shared` source | `/var/lib/docker-plugins/tailscale` | Holds `certs/`. Defaults to the data directory, so certificates are kept per host; point it at a shared volume (GlusterFS, NFS) to share them across hosts: `docker plugin set tslink shared.source=/mnt/shared/tslink` |
 | `TS_DEBUG_ACME_DIRECTORY_URL` | empty | Passed through to tailscaled. Test hook: point it at Let's Encrypt staging |
@@ -181,16 +181,33 @@ tailscaled writes the new key before the new certificate. A replica on another h
 mismatched pair, treats it as expired, and issues a new certificate that is not a renewal. The window is milliseconds;
 this spec accepts it and counts on validation to show how often it happens.
 
+While one replica's renewal order is pending, Let's Encrypt refuses the other replicas' orders for the same certificate
+with `alreadyReplaced`, until that order completes or expires: up to 7 days. tailscaled retries on every request that
+needs the certificate and keeps serving the current one. Refused orders count against no rate limit, and Let's Encrypt
+renews 90-day certificates about 30 days before expiry, so the block is benign: an order abandoned by a stopped replica
+expires with at least 23 days to spare. tslink does not intervene, but makes it visible:
+
+- tailscaled's output is scanned for a refused renewal, a line with `cert("<domain>"):` and
+  `urn:ietf:params:acme:error:alreadyReplaced` (`async renewal failed: getCertPem: 409 …`). The plugin log warns once
+  an hour per domain, and the endpoint's status file lists it under `warnings` until tailscaled logs `got cert` for
+  the domain.
+- Every replica with an HTTPS Service checks its certificate hourly. With less than 14 days left, the plugin log warns
+  once a day per domain, and the status file lists it until the certificate is renewed.
+
+`tslink diag` lists the warnings of every endpoint on the node.
+
 ## Error Handling
 
 | Condition | User Sees | Recovery |
-|-----------|-----------|----------|
+| --- | --- | --- |
 | Cluster credential, `tslink.tags` missing | Network creation fails: `tslink.tags is required with the cluster credential` | Add `tslink.tags` |
 | Cluster credential, tag outside the stack's prefix | Task's tailscaled does not start; the status names the tag and the allowed prefix | Rename the tag, or use a per-stack secret |
 | Cluster credential, network not in a stack | Task's tailscaled does not start | Deploy as a stack, or set `tslink.authkey` |
 | Credential file unreadable or malformed at registration | Registration retries with backoff; the plugin log and status show the error | Fix the file; the next retry picks it up |
 | Issuance fails (e.g. rate limited) | Holder logs the ACME error; all replicas stay unadvertised and keep waiting | Wait for the limit to refill, or remove the HTTPS endpoint |
 | Certificate directory unwritable | Endpoint start fails with the path | Fix the mount |
+| Renewal refused with `alreadyReplaced` | Plugin log warns hourly per domain; `warnings` in the status file, `tslink diag` | None needed: renewals resume once the pending order completes or expires (at most 7 days) |
+| Certificate has less than 14 days left | Plugin log warns daily per domain; `warnings` in the status file, `tslink diag` | Look in the replicas' `tailscaled.log` for why renewals fail |
 
 ## Security Considerations
 
@@ -282,6 +299,9 @@ Key files:
 - `pkg/tailscale/certs.go` — certs link, ACME account key, lease, requesting the certificate, and configuring the
   Service once certified
 - `pkg/tailscale/daemon.go` — tailscaled's own mount namespace and `resolv.conf`
+- `pkg/tailscale/warnings.go` — blocked renewals and certificates close to expiry; `pkg/core/status.go` writes them
+  to the status file, `pkg/diag` lists them
+- `pkg/core/gc.go` — collects the certificate directory, including tailscaled's `<file>.tmp<digits>` files
 - `pkg/docker/events.go` — `tslink.direct` defaults to `false` with `tslink.service`
 - `docker/config.json` — `shared` mount, `TS_SHARED_DIR`, `TS_DEBUG_ACME_DIRECTORY_URL`
 - `docs/credentials.md` — record the cluster credential as the default and the per-stack model as the alternative

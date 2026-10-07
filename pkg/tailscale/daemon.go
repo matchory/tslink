@@ -147,6 +147,22 @@ func NewDaemon(cfg DaemonConfig) (*Daemon, error) {
 		return nil, fmt.Errorf("failed to create socket dir: %w", err)
 	}
 
+	// Link <StateDir>/tailscaled.sock to the socket, so tools find a daemon
+	// from its state directory. The link is relative, so it resolves wherever
+	// the data directory is mounted. Connect through the target: the link's
+	// own path may exceed the socket path limit.
+	if cfg.SocketPath != "" {
+		link := filepath.Join(cfg.StateDir, "tailscaled.sock")
+		if err := os.Remove(link); err != nil && !errors.Is(err, os.ErrNotExist) {
+			logger.Warn("Failed to remove stale socket link %s: %v", link, err)
+		}
+		if target, err := filepath.Rel(cfg.StateDir, socketPath); err != nil {
+			logger.Warn("Failed to link socket into state dir: %v", err)
+		} else if err := os.Symlink(target, link); err != nil {
+			logger.Warn("Failed to link socket into state dir: %v", err)
+		}
+	}
+
 	// Clean stale socket from previous run (prevents "address in use" errors)
 	if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
 		logger.Warn("Failed to remove stale socket %s: %v", socketPath, err)

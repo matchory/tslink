@@ -2,9 +2,8 @@
 
 Scripts that install tslink on a Docker Swarm from a Git ref or the working tree and test it against
 a real tailnet, including Tailscale Services. They work on any Swarm whose nodes this machine
-reaches over SSH; `provision.sh` can build a throwaway one on Hetzner Cloud. Results:
-[docs/testing/swarm-cluster-test-2026-10-07.md](../../docs/testing/swarm-cluster-test-2026-10-07.md) and
-[docs/testing/swarm-cluster-followup-2026-10-07.md](../../docs/testing/swarm-cluster-followup-2026-10-07.md).
+reaches over SSH; `provision.sh` can build a throwaway one on Hetzner Cloud. How they fit with
+the other tests: [docs/testing.md](../../docs/testing.md).
 
 ## Prerequisites
 

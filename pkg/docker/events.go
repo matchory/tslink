@@ -2,6 +2,7 @@ package docker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -107,30 +108,23 @@ func WatchEvents(
 			logger.Infof("Event watcher shutting down")
 			return
 
-		case err := <-result.Err:
-			if err != nil {
-				// Check if context is cancelled before reconnecting
-				if ctx.Err() != nil {
-					logger.Infof("Event watcher context cancelled, stopping")
-					return
-				}
-
-				logger.Warnf("Event stream error: %v, reconnecting in 1s...", err)
-
-				// Backoff before reconnecting to avoid tight loop
-				select {
-				case <-ctx.Done():
-					logger.Infof("Event watcher context cancelled during backoff")
-					return
-				case <-time.After(1 * time.Second):
-				}
-
-				// Reconnect after backoff, with the events missed meanwhile
-				result = cli.Events(ctx, dockerclient.EventsListOptions{
-					Since:   eventsSince(since),
-					Filters: filterArgs,
-				})
+		case err, ok := <-result.Err:
+			if !ok {
+				// The stream ended: a closed channel would yield nil errors
+				// in a busy loop
+				err = errors.New("event stream closed")
 			}
+			if err == nil {
+				continue
+			}
+			if !backOff(ctx, err) {
+				return
+			}
+			// Reconnect, with the events missed meanwhile
+			result = cli.Events(ctx, dockerclient.EventsListOptions{
+				Since:   eventsSince(since),
+				Filters: filterArgs,
+			})
 
 		case msg := <-result.Messages:
 			if msg.TimeNano != 0 {
@@ -159,6 +153,23 @@ func WatchEvents(
 
 			handleConnect(ctx, cli, msg, cache, onInfo)
 		}
+	}
+}
+
+// backOff logs the error that ended the event stream and waits a second
+// before the watcher reconnects. It reports false if ctx is done.
+func backOff(ctx context.Context, err error) bool {
+	if ctx.Err() != nil {
+		logger.Infof("Event watcher context cancelled, stopping")
+		return false
+	}
+	logger.Warnf("Event stream error: %v, reconnecting in 1s...", err)
+	select {
+	case <-ctx.Done():
+		logger.Infof("Event watcher context cancelled during backoff")
+		return false
+	case <-time.After(1 * time.Second):
+		return true
 	}
 }
 

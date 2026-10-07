@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Changes since upstream [aaomidi/tslink](https://github.com/aaomidi/tslink)
 v0.1.0, of which this project is a fork. The Swarm features were tested on
-three- and five-node swarms; see [docs/testing](docs/testing).
+three- and five-node swarms; see [docs/testing.md](docs/testing.md).
 
 ### Added
 
@@ -173,6 +173,9 @@ three- and five-node swarms; see [docs/testing](docs/testing).
   reconnects, and the watchdog starts joined endpoints that never got a start.
 - Recovery no longer crashes on containers whose network settings Docker
   leaves out.
+- A connect event or watchdog start that arrived while a container was
+  leaving could start its tailscaled again, which then ran until Docker
+  deleted the endpoint. Once a container begins to leave, nothing starts it.
 - Errors from `tailscale serve`, `advertise`, `drain` and `logout` include
   the CLI's output again, and the hints for untagged Service hosts and
   pending approval appear: tslink dropped the output of every completed

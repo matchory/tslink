@@ -80,7 +80,7 @@ On production nodes, see [docs/node-provisioning.md](docs/node-provisioning.md).
 ### Create a Network
 
 ```bash
-# With auth key in command (ephemeral nodes by default)
+# With auth key in command; nodes are ephemeral if the key was created ephemeral
 docker network create \
   --driver tslink:latest \
   --opt tslink.authkey=tskey-auth-xxxxx \
@@ -252,7 +252,7 @@ See [docs/credentials.md](docs/credentials.md) for the reasoning.
 | **Ephemeral key** | Nodes are automatically removed when the container stops |
 | **Reusable key** | Nodes persist in your tailnet after container stops |
 | **Pre-approved key** | Nodes don't require manual approval |
-| **OAuth client secret** | Nodes are ephemeral unless `?ephemeral=false` is appended; tslink logs them out and deletes their state when the container stops. Requires `tslink.tags` |
+| **OAuth client secret** | Nodes are ephemeral unless `?ephemeral=false` is appended; tslink logs them out and deletes their state when the container stops. Requires `tslink.tags`. Parameters such as `?ephemeral=` work only on OAuth client secrets: `tailscale up` passes an auth key on unchanged |
 
 For most use cases, use an ephemeral, reusable, pre-approved key.
 
@@ -263,9 +263,7 @@ logs the node out and deletes its state when the container stops.
 
 ## Running on Swarm
 
-Measured on three- and five-node swarms; see
-[docs/testing/swarm-cluster-test-2026-10-07.md](docs/testing/swarm-cluster-test-2026-10-07.md)
-and [docs/testing/swarm-cluster-followup-2026-10-07.md](docs/testing/swarm-cluster-followup-2026-10-07.md).
+Measured on three- and five-node swarms; see [docs/testing.md](docs/testing.md).
 
 - **Zero-downtime updates of a Tailscale Service.** tslink drains a task's
   Service backend when Docker sends it the stop signal, and callers move to

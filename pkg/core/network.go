@@ -160,7 +160,8 @@ func (n *Network) resolveCredential(cfg *Config) error {
 
 // checkEphemeral refuses a tslink.ephemeral option the credential contradicts:
 // the cluster credential registers ephemeral nodes only, and an OAuth client
-// secret may say otherwise in its own ephemeral parameter.
+// secret may say otherwise in its own ephemeral parameter. A parameter appended
+// to any other key is not read by tailscale up, so it contradicts nothing.
 func (n *Network) checkEphemeral() error {
 	if n.ephemeral == nil {
 		return nil
@@ -174,6 +175,9 @@ func (n *Network) checkEphemeral() error {
 			)
 		}
 		return nil
+	}
+	if !strings.HasPrefix(n.AuthKey, "tskey-client-") {
+		return nil // only OAuth client secrets take parameters
 	}
 	if v, ok := keyEphemeralParam(n.AuthKey); ok && v != *n.ephemeral {
 		return fmt.Errorf("%s=%t contradicts ephemeral=%t in tslink.authkey: remove one of them",

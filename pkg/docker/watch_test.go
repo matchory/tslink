@@ -185,6 +185,18 @@ func TestEventsReconnect(t *testing.T) {
 	receive(t, s.handled, "the connect event after reconnecting")
 }
 
+// A closed error channel ends the stream too: the watcher reconnects, instead
+// of receiving nil errors from it in a busy loop.
+func TestEventsReconnectAfterClosedStream(t *testing.T) {
+	s := newEventSetup(t, true)
+	fake := s.td.fake
+	fake.mu.Lock()
+	close(fake.errs)
+	fake.mu.Unlock()
+
+	waitReconnect(t, fake)
+}
+
 // Reconnecting, the watcher asks for the events after the last one it saw, so
 // none sent while the stream was down are lost.
 func TestEventsReconnectSinceLastEvent(t *testing.T) {

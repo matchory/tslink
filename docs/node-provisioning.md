@@ -3,9 +3,8 @@
 What a Docker host needs before it runs tslink containers, in the order a
 configuration management tool would apply it. Most of it applies to plain
 Docker hosts as well as Swarm nodes. The requirements were measured on
-amd64 cloud VMs with Ubuntu 24.04 (kernel 6.8) and Docker 29.8 in Swarm mode;
-see the [cluster test](testing/swarm-cluster-test-2026-10-07.md) and its
-[follow-up](testing/swarm-cluster-followup-2026-10-07.md). Other distributions should
+amd64 cloud VMs with Ubuntu 24.04 (kernel 6.8) and Docker 29.8 in Swarm mode
+with the [cluster tests](testing.md#cluster-tests). Other distributions should
 work if they meet the requirements below, but have not been tested.
 
 ## Host

@@ -57,7 +57,7 @@ type Endpoint struct {
 	startRequested   bool // Whether the driver has asked to start Tailscale
 
 	running bool                       // Whether RunTailscale is active
-	leaving bool                       // Leave has begun: RunTailscale starts nothing until a Join
+	leaving bool                       // Leave or Stop began: RunTailscale starts nothing until a Join
 	runCtx  context.Context            //nolint:containedctx // Cancelled when the endpoint leaves
 	stopRun context.CancelFunc         // Cancels runCtx
 	startFn func(*ContainerInfo) error // Replaces StartTailscale in tests
@@ -660,6 +660,11 @@ func (e *Endpoint) DrainService() {
 
 // Stop stops the endpoint and cleans up resources.
 func (e *Endpoint) Stop() error {
+	// A start queued before the endpoint was deleted must start nothing:
+	// nothing would stop it again
+	e.mu.Lock()
+	e.leaving = true
+	e.mu.Unlock()
 	e.cancelRun()
 	defer e.releaseStateDir()
 

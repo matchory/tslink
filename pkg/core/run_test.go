@@ -92,6 +92,25 @@ func TestRunTailscaleRefusesAfterLeave(t *testing.T) {
 	}
 }
 
+// A start queued before DeleteEndpoint runs after Stop: it must start
+// nothing, since nothing would stop it again.
+func TestRunTailscaleRefusesAfterStop(t *testing.T) {
+	shortRetries(t)
+	var calls atomic.Int32
+	e := &Endpoint{ID: "0123456789abcdef", DataDir: t.TempDir()}
+	e.startFn = func(*ContainerInfo) error {
+		calls.Add(1)
+		return nil
+	}
+	if err := e.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	e.RunTailscale(&ContainerInfo{Hostname: "web"})
+	if got := calls.Load(); got != 0 {
+		t.Errorf("start called %d times after Stop, want 0", got)
+	}
+}
+
 func TestRunTailscaleRunsOnce(t *testing.T) {
 	shortRetries(t)
 	var calls atomic.Int32

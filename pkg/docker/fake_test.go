@@ -39,7 +39,8 @@ type fakeDocker struct {
 	pluginErrs     []error       // returned by successive PluginList calls, then nil
 	pluginCalls    chan struct{} // receives on each PluginList call, if set
 	listErr        error
-	networkInspect int // NetworkInspect calls
+	networkInspect int  // NetworkInspect calls
+	noSettings     bool // ContainerInspect returns no network settings
 
 	events      chan events.Message
 	errs        chan error
@@ -138,6 +139,9 @@ func (f *fakeDocker) ContainerInspect(
 	defer f.mu.Unlock()
 	for _, c := range f.containers {
 		if c.ID == id {
+			if f.noSettings {
+				c.NetworkSettings = nil
+			}
 			return dockerclient.ContainerInspectResult{Container: c}, nil
 		}
 	}
@@ -266,13 +270,14 @@ func (td *testDriver) nextRun(t *testing.T) tsRun {
 	}
 }
 
-// noRun fails if Tailscale was started.
+// noRun fails if Tailscale is started within 50 ms: runs start in the
+// background.
 func (td *testDriver) noRun(t *testing.T) {
 	t.Helper()
 	select {
 	case r := <-td.runs:
 		t.Fatalf("Tailscale started for endpoint %s (%+v)", r.endpointID[:12], r.info)
-	default:
+	case <-time.After(50 * time.Millisecond):
 	}
 }
 

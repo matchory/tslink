@@ -334,7 +334,19 @@ func TestRecoverEndpointsSkips(t *testing.T) {
 		{
 			name: "endpoint known",
 			setup: func(t *testing.T, td *testDriver, _ *fakeDocker, netID, epID string) {
+				// Join finds the container's info cached and starts Tailscale
+				td.cache.Store(epID, parseContainerInfo("web", nil))
 				td.join(t, netID, epID, sandbox)
+				td.nextRun(t)
+			},
+		},
+		{
+			name: "endpoint without sandbox",
+			setup: func(t *testing.T, td *testDriver, _ *fakeDocker, netID, epID string) {
+				// Created, not yet joined: Join starts it
+				if _, err := td.CreateEndpoint(&network.CreateEndpointRequest{NetworkID: netID, EndpointID: epID}); err != nil {
+					t.Fatal(err)
+				}
 			},
 		},
 		{
@@ -366,7 +378,7 @@ func TestRecoverEndpointsSkips(t *testing.T) {
 			epID := fakeID("ep")
 			fake.addContainer("web", nil, attachment{"net", netID, epID})
 			td := newTestDriver(t, fake)
-			known := tt.name == "endpoint known"
+			known := tt.name == "endpoint known" || tt.name == "endpoint without sandbox"
 			tt.setup(t, td, fake, netID, epID)
 
 			if err := td.RecoverEndpoints(t.Context()); err != nil {
@@ -486,12 +498,10 @@ func TestFailedRecoveryReleasesStateDir(t *testing.T) {
 	}
 }
 
-// An endpoint that joined but never saw its connect event, as when the event
-// stream was down (the watcher reconnects without asking for missed events),
-// should get Tailscale from the watchdog's recovery. Recovery skips every
-// endpoint the driver knows, started or not, so it never does.
+// An endpoint that joined but never saw its connect event, as when events
+// were lost while the event stream was down, gets Tailscale from the
+// watchdog's recovery, with the container's info from inspect.
 func TestRecoveryStartsEndpointThatMissedItsEvent(t *testing.T) {
-	t.Skip("bug: an endpoint whose connect event was missed never starts Tailscale")
 	fake := newFakeDocker()
 	netID := fake.addNetwork("net", pluginName, map[string]string{"tslink.authkey": "k"}, nil)
 	epID := fakeID("ep")
@@ -503,7 +513,40 @@ func TestRecoveryStartsEndpointThatMissedItsEvent(t *testing.T) {
 	if err := td.RecoverEndpoints(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if r := td.nextRun(t); r.endpointID != epID || r.info.Hostname != "web" {
+	r := td.nextRun(t)
+	if r.endpointID != epID || r.info.Hostname != "web" {
 		t.Errorf("started %+v", r)
 	}
+	if info, ok := td.cache.GetByEndpoint(epID); !ok || info != r.info {
+		t.Error("container info not cached")
+	}
+
+	// Started now: the next recovery leaves it alone
+	if err := td.RecoverEndpoints(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	td.noRun(t)
+}
+
+// Recovery skips network settings Docker leaves out, rather than crashing on
+// them.
+func TestRecoverEndpointsWithoutNetworkSettings(t *testing.T) {
+	fake := newFakeDocker()
+	netID := fake.addNetwork("net", pluginName, map[string]string{"tslink.authkey": "k"}, nil)
+	epID, joinedID := fakeID("ep"), fakeID("joined")
+	fake.addContainer("web", nil, attachment{"net", netID, epID})
+	fake.addContainer("api", nil, attachment{"net", netID, joinedID})
+	fake.containers[0].NetworkSettings.Networks["other"] = nil
+	fake.noSettings = true
+	td := newTestDriver(t, fake)
+	td.createNetwork(t, netID, map[string]string{"tslink.authkey": "k"})
+	td.join(t, netID, joinedID, sandbox) // missed its connect event
+
+	if err := td.RecoverEndpoints(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := td.endpoint(epID); ok {
+		t.Error("recovered an endpoint of a container without network settings")
+	}
+	td.noRun(t)
 }

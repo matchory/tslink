@@ -446,6 +446,9 @@ func (d *Daemon) tailscaledCommand(args []string) *exec.Cmd {
 			warning,
 		)
 	}
+	if d.config.Warn != nil {
+		d.config.Warn(dnsUpstreamsWarning, warning)
+	}
 	resolvConf := filepath.Join(d.config.StateDir, "resolv.conf")
 	if err := os.WriteFile(resolvConf, conf, 0o644); err != nil { // #nosec G306 -- not secret
 		logger.Warnf("Failed to write %s: %v", resolvConf, err)

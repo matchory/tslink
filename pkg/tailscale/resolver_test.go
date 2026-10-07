@@ -229,3 +229,31 @@ func TestTailscaledCommandWritesResolvConf(t *testing.T) {
 		t.Errorf("output %q does not end with %q", out, want)
 	}
 }
+
+// Falling back to other resolvers than the host's is reported in the
+// endpoint's status, and a later start with the host's resolvers clears it.
+func TestTailscaledCommandWarnsAboutFallback(t *testing.T) {
+	dir := t.TempDir()
+	host := filepath.Join(dir, "host-resolv.conf")
+	if err := os.WriteFile(host, []byte("nameserver 127.0.0.53\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	oldHost, oldResolved := hostResolvConfPath, resolvedResolvConfPath
+	hostResolvConfPath, resolvedResolvConfPath = host, filepath.Join(dir, "absent")
+	t.Cleanup(func() { hostResolvConfPath, resolvedResolvConfPath = oldHost, oldResolved })
+
+	d, rec := newWarningDaemon(t)
+	d.config.ContainerDNS = []netip.Addr{netip.MustParseAddr("100.100.100.100")}
+	d.tailscaledCommand(nil)
+	if got := rec.get("dns-upstreams"); !strings.Contains(got, "8.8.8.8") {
+		t.Errorf("warning = %q, want one naming 8.8.8.8", got)
+	}
+
+	if err := os.WriteFile(host, []byte("nameserver 1.1.1.1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d.tailscaledCommand(nil)
+	if got := rec.get("dns-upstreams"); got != "" {
+		t.Errorf("warning kept after a start with the host's resolvers: %q", got)
+	}
+}

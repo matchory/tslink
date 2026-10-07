@@ -42,9 +42,12 @@ policy:
   mode: file
   path: /etc/headscale/policy.json
 
-# Leave the containers' DNS alone
+# MagicDNS, so that a container can use Tailscale's resolver,
+# 100.100.100.100; without nameservers, tailscaled forwards other names to
+# the upstreams tslink gives it
 dns:
-  magic_dns: false
+  magic_dns: true
+  base_domain: tailnet.e2e.test
   override_local_dns: false
   nameservers:
     global: []

@@ -306,17 +306,7 @@ func (d *Daemon) Start() error {
 		"--statedir=" + d.config.StateDir,
 	}
 
-	// Use nsenter to run tailscaled in the container's network namespace
-	nsenterArgs := []string{
-		"--net=" + d.config.NetNSPath,
-		"--",
-		d.config.TailscaledBin,
-	}
-	nsenterArgs = append(nsenterArgs, tailscaledArgs...)
-
-	logger.Debug("Running: nsenter %v", nsenterArgs)
-
-	d.cmd = exec.CommandContext(d.ctx, "nsenter", nsenterArgs...)
+	d.cmd = d.tailscaledCommand(tailscaledArgs)
 	d.cmd.Env = os.Environ()
 
 	// Set up streaming output - logs each line as it arrives
@@ -465,6 +455,31 @@ func (d *Daemon) Start() error {
 	}
 
 	return nil
+}
+
+// tailscaledCommand returns the command running tailscaled with args in the
+// container's network namespace.
+//
+// The resolver in the plugin's resolv.conf, the host's, may not exist in that
+// namespace, such as systemd-resolved's 127.0.0.53, and tailscaled's own
+// lookups, of the ACME server for one, would fail. Docker's embedded resolver
+// is always there, so tailscaled gets a resolv.conf naming it, in a mount
+// namespace of its own. Without it, tailscaled keeps the plugin's.
+func (d *Daemon) tailscaledCommand(args []string) *exec.Cmd {
+	resolvConf := filepath.Join(d.config.StateDir, "resolv.conf")
+	if err := os.WriteFile(resolvConf, []byte("nameserver 127.0.0.11\noptions ndots:0\n"), 0644); err != nil { // #nosec G306 -- not secret
+		logger.Warn("Failed to write %s: %v", resolvConf, err)
+	}
+	// unshare, sh and nsenter each exec the next, so the process is tailscaled
+	unshareArgs := []string{
+		"--mount", "--propagation", "private", "--",
+		"sh", "-c", `mount --bind "$0" /etc/resolv.conf || echo "tslink: tailscaled keeps the plugin's resolv.conf" >&2
+netns=$1; shift; exec nsenter --net="$netns" -- "$@"`,
+		resolvConf, d.config.NetNSPath, d.config.TailscaledBin,
+	}
+	unshareArgs = append(unshareArgs, args...)
+	logger.Debug("Running: unshare %v", unshareArgs)
+	return exec.CommandContext(d.ctx, "unshare", unshareArgs...)
 }
 
 // waitForSocket waits for the tailscaled socket to be ready.

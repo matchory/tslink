@@ -35,3 +35,13 @@ func TestParseNetworkOptionsMTU(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadConfigIgnoresDownloadSettings(t *testing.T) {
+	// Settings of the removed runtime download must not keep the plugin
+	// from starting after an upgrade; it runs the bundled binaries.
+	t.Setenv("TS_VERSION", "1.76.6")
+	t.Setenv("TS_PATH", "/opt/tailscale/bin")
+	if _, err := LoadConfig(); err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+}

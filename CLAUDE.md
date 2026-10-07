@@ -59,8 +59,9 @@ an `ephemeral` file), sockets and status files no endpoint uses.
 the container exits; plugin shutdown drains all of them. `Leave` logs ephemeral nodes out, with retries, and deletes
 their state. Each state directory serves one endpoint at a time (`ClaimStateDir`).
 
-**Binaries**: the plugin image ships a pinned Tailscale (`TS_VERSION=bundled`, from the `tailscale/tailscale` stage of
-the Dockerfile, which Dependabot updates). tailscaled's output goes to a rotated `tailscaled.log`, read by
+**Binaries**: the plugin image ships a pinned Tailscale (from the `tailscale/tailscale` stage of the Dockerfile, which
+Dependabot updates), and tslink runs only these binaries: it downloads nothing at runtime and ignores the old
+`TS_VERSION`/`TS_PATH` settings with a warning. tailscaled's output goes to a rotated `tailscaled.log`, read by
 `drainLines`, which never stops reading: tailscaled blocks on a full pipe.
 
 ## Concurrency Notes
@@ -68,7 +69,7 @@ the Dockerfile, which Dependabot updates). tailscaled's output goes to a rotated
 **Lock ordering**: Never hold `driver.mu` when calling endpoint methods (they acquire `endpoint.mu`). Always:
 driver.mu → endpoint.mu, never reversed.
 
-**Long operations outside locks**: Network syscalls, Tailscale binary downloads, and `tailscale up` can block for
+**Long operations outside locks**: Network syscalls and `tailscale up` can block for
 seconds. Don't hold locks during these.
 
 ## Debugging

@@ -285,7 +285,7 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 	// Copy immutable config needed for supervisor creation
 	endpointID := e.ID
 	dataDir := e.DataDir
-	authKey := e.Network.AuthKey
+	network := e.Network
 	tags := info.Tags
 	if len(e.Network.Tags) > 0 {
 		// Tags set on the network win, so a container cannot choose its own
@@ -297,11 +297,10 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 	}
 	e.mu.Unlock()
 
-	// A stack's network serves only that stack's tasks, so another stack
-	// cannot attach to it and take its credentials and tags.
-	if info.NetworkStack != "" && info.Stack != info.NetworkStack {
-		return permanentError{fmt.Errorf("container stack %q does not match network stack %q", info.Stack, info.NetworkStack)}
+	if err := checkStackScope(info, network, tags); err != nil {
+		return permanentError{err}
 	}
+	authKey := func() (string, error) { return network.Credential(dataDir) }
 
 	stateDir, err := stateDirFor(dataDir, info.Stack, info.Hostname)
 	if err != nil {
@@ -313,18 +312,13 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 	if err := e.ClaimStateDir(info); err != nil {
 		return err
 	}
-	if tailscale.IsEphemeralKey(authKey) {
+	if network.Ephemeral() {
 		if err := tailscale.MarkEphemeral(stateDir); err != nil {
 			logger.Warn("Failed to mark %s as ephemeral: %v", stateDir, err)
 		}
 	}
 
-	// Check if auth key changed - if so, wipe state for fresh registration
-	if tailscale.StateExists(stateDir) && !tailscale.CheckAuthKeyMatch(stateDir, authKey) {
-		if err := tailscale.WipeState(stateDir); err != nil {
-			logger.Warn("Failed to wipe state after auth key change: %v", err)
-		}
-	}
+	wipeStateOnKeyChange(stateDir, network)
 
 	logger.Info("StartTailscale: endpoint=%s hostname=%s service=%s endpoints=%d direct=%v",
 		endpointID[:12], info.Hostname, info.Service, len(info.Endpoints), info.Direct)
@@ -390,8 +384,10 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 	}
 
 	// Save auth key hash for future comparisons
-	if err := tailscale.SaveAuthKeyHash(stateDir, authKey); err != nil {
-		logger.Warn("Failed to save auth key hash: %v", err)
+	if !network.UsesClusterCredential() {
+		if err := tailscale.SaveAuthKeyHash(stateDir, network.AuthKey); err != nil {
+			logger.Warn("Failed to save auth key hash: %v", err)
+		}
 	}
 
 	// Now lock briefly to store results
@@ -623,6 +619,32 @@ func (e *Endpoint) Leave() error {
 	return nil
 }
 
+// checkStackScope keeps a task to its own stack's network: another stack
+// cannot attach to it and take its credentials and tags. A stack using the
+// cluster credential is also kept to its own tags.
+func checkStackScope(info *ContainerInfo, network *Network, tags []string) error {
+	if info.NetworkStack != "" && info.Stack != info.NetworkStack {
+		return fmt.Errorf("container stack %q does not match network stack %q", info.Stack, info.NetworkStack)
+	}
+	if network.UsesClusterCredential() {
+		return CheckTagScope(info.NetworkStack, tags)
+	}
+	return nil
+}
+
+// wipeStateOnKeyChange wipes the state if the network's auth key changed, for
+// a fresh registration. A replaced cluster credential is a rotation, which a
+// logged-in node survives, so its state is kept.
+func wipeStateOnKeyChange(stateDir string, network *Network) {
+	if network.UsesClusterCredential() || !tailscale.StateExists(stateDir) ||
+		tailscale.CheckAuthKeyMatch(stateDir, network.AuthKey) {
+		return
+	}
+	if err := tailscale.WipeState(stateDir); err != nil {
+		logger.Warn("Failed to wipe state after auth key change: %v", err)
+	}
+}
+
 // stopTailscale stops the endpoint's tailscaled, if it runs. An ephemeral node
 // is logged out and its state deleted, since nothing will reuse it.
 func (e *Endpoint) stopTailscale() {
@@ -630,7 +652,7 @@ func (e *Endpoint) stopTailscale() {
 
 	e.mu.Lock()
 	stateDir := e.StateDir
-	ephemeral := e.Network != nil && tailscale.IsEphemeralKey(e.Network.AuthKey)
+	ephemeral := e.Network != nil && e.Network.Ephemeral()
 	supervisor := e.supervisor
 	e.supervisor = nil
 	e.tailscaleStarted = false

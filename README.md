@@ -220,6 +220,28 @@ docker plugin enable tslink
 docker network create --driver tslink:latest my-tailnet
 ```
 
+### Cluster Credential
+
+On Swarm, give the plugin one OAuth client for the whole cluster instead of a secret per stack: put its secret
+(`tskey-client-…`, nothing appended) in `/var/lib/docker-plugins/tailscale/oauth-client.secret` on every node. Stack
+networks then carry only their tags:
+
+```yaml
+networks:
+  tailnet:
+    driver: ghcr.io/matchory/tslink:latest
+    driver_opts:
+      tslink.tags: tag:billing
+```
+
+- The file is read whenever a node registers, so replacing it rotates the credential without recreating networks.
+- Nodes are ephemeral and pre-approved.
+- A stack may only use `tag:<stack>` and `tag:<stack>-*`, where `<stack>` is its stack name. The OAuth client must own
+  these tags in the tailnet policy, e.g. through a tag of its own: `"tag:billing": ["tag:tslink"]`.
+- A network's own `tslink.authkey` takes precedence over the file, and the file over `TS_AUTHKEY`.
+
+See [docs/credentials.md](docs/credentials.md) for the reasoning.
+
 ## Auth Key Types
 
 | Key Type | Behavior |

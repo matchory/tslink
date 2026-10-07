@@ -113,7 +113,9 @@ alice=$(hs users create alice -o json | jq -r .id)
 bob=$(hs users create bob -o json | jq -r .id)
 key() { hs preauthkeys create --user "$1" --reusable --expiration 1h "${@:2}" | tail -n 1; }
 network() {
-	docker network create --driver "$PLUGIN" --opt tslink.loginserver="$URL" --opt tslink.authkey="$2" "$1" >/dev/null
+	# A plain "tslink" does not resolve: the driver is registered under the
+	# plugin's full name
+	docker network create --driver "$PLUGIN:latest" --opt tslink.loginserver="$URL" --opt tslink.authkey="$2" "$1" >/dev/null
 }
 network e2e-alice "$(key "$alice")"
 network e2e-bob "$(key "$bob")"

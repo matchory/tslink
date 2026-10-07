@@ -76,21 +76,13 @@ type ContainerStopCallback func(containerID string)
 // onStop, if set, is called when a container is sent its stop signal.
 func WatchEvents(
 	ctx context.Context,
+	cli dockerAPI,
 	cache *ContainerCache,
 	ownsNetwork func(id string) bool,
 	onInfo ContainerInfoCallback,
 	onStop ContainerStopCallback,
 ) {
 	logger.Info("Starting Docker event watcher")
-
-	cli, err := dockerclient.New(dockerclient.FromEnv)
-	if err != nil {
-		logger.Error("Failed to create Docker client for event watching: %v", err)
-		return
-	}
-	defer cli.Close()
-
-	logger.Debug("Docker client created, starting event stream")
 
 	// Watch for network connects, and for kills to see containers stopping
 	filterArgs := dockerclient.Filters{}.
@@ -219,7 +211,7 @@ func WatchEvents(
 }
 
 // stopSignalOf returns the container's configured stop signal, empty for the default.
-func stopSignalOf(ctx context.Context, cli *dockerclient.Client, containerID string) string {
+func stopSignalOf(ctx context.Context, cli dockerAPI, containerID string) string {
 	info, err := cli.ContainerInspect(ctx, containerID, dockerclient.ContainerInspectOptions{})
 	if err != nil || info.Container.Config == nil {
 		return ""

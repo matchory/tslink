@@ -25,8 +25,14 @@ type Driver struct {
 	config    *core.Config
 	cache     *ContainerCache // Pre-cached container info from Docker events
 
-	// Docker client for container inspection (used for recovery)
-	docker *dockerclient.Client
+	// Docker client for container inspection, recovery and events
+	docker dockerAPI
+
+	// Endpoint operations that need root, netlink or tailscaled; tests
+	// replace them. newDriver sets them to the core.Endpoint methods.
+	joinEndpoint   func(e *core.Endpoint, sandboxKey string) (*network.JoinResponse, error)
+	recoverRouting func(e *core.Endpoint, sandboxKey string) error
+	runTailscale   func(e *core.Endpoint, info *core.ContainerInfo)
 
 	// Lifecycle management
 	ctx    context.Context
@@ -65,23 +71,37 @@ func NewDriver() (*Driver, error) {
 		return nil, fmt.Errorf("failed to create Docker client: %w", err)
 	}
 
-	cache := NewContainerCache()
-	ctx, cancel := context.WithCancel(context.Background())
+	d := newDriver(cfg, docker)
+	d.start()
+	return d, nil
+}
 
-	d := &Driver{
-		networks:  make(map[string]*core.Network),
-		endpoints: make(map[string]*core.Endpoint),
-		config:    cfg,
-		cache:     cache,
-		docker:    docker,
-		ctx:       ctx,
-		cancel:    cancel,
+// newDriver returns a driver using the given configuration and Docker client,
+// without starting its background work.
+func newDriver(cfg *core.Config, docker dockerAPI) *Driver {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &Driver{
+		networks:       make(map[string]*core.Network),
+		endpoints:      make(map[string]*core.Endpoint),
+		config:         cfg,
+		cache:          NewContainerCache(),
+		docker:         docker,
+		joinEndpoint:   (*core.Endpoint).Join,
+		recoverRouting: (*core.Endpoint).Recover,
+		runTailscale:   (*core.Endpoint).RunTailscale,
+		ctx:            ctx,
+		cancel:         cancel,
 	}
+}
+
+// start starts the event watcher, the initial recovery and the watchdog.
+func (d *Driver) start() {
+	ctx := d.ctx
 
 	// Start event watcher in background (tracked by waitgroup)
 	// Pass callback to trigger Tailscale setup when container info arrives
 	d.wg.Go(func() {
-		WatchEvents(ctx, cache, d.ownsNetwork, d.onContainerInfo, d.onContainerStop)
+		WatchEvents(ctx, d.docker, d.cache, d.ownsNetwork, d.onContainerInfo, d.onContainerStop)
 	})
 
 	// Recover orphaned endpoints from previous plugin instance (host reboot, plugin restart)
@@ -108,8 +128,6 @@ func NewDriver() (*Driver, error) {
 	d.wg.Go(func() {
 		d.runWatchdog(ctx)
 	})
-
-	return d, nil
 }
 
 // ownsNetwork reports whether Docker created the network through this driver.
@@ -173,7 +191,7 @@ func (d *Driver) onContainerInfo(endpointID string, info *core.ContainerInfo) {
 	)
 
 	// Start Tailscale in a goroutine so we don't block the event handler
-	d.wg.Go(func() { endpoint.RunTailscale(info) })
+	d.wg.Go(func() { d.runTailscale(endpoint, info) })
 }
 
 // onContainerStop drains the Tailscale Service backends of a stopping
@@ -356,7 +374,7 @@ func (d *Driver) Join(req *network.JoinRequest) (*network.JoinResponse, error) {
 	// Set up basic networking (veth, IPs, routing, NAT)
 	// This returns quickly - Tailscale setup is deferred until container info arrives via event
 	// NOTE: driver.mu is NOT held here to avoid lock ordering issues with endpoint.mu
-	joinResp, err := endpoint.Join(req.SandboxKey)
+	joinResp, err := d.joinEndpoint(endpoint, req.SandboxKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to join: %w", err)
 	}
@@ -365,7 +383,7 @@ func (d *Driver) Join(req *network.JoinRequest) (*network.JoinResponse, error) {
 	// cache has its own internal lock, so this is safe
 	if info, ok := d.cache.GetByEndpoint(req.EndpointID); ok {
 		logger.Info("Join: container info already cached, triggering immediate Tailscale setup")
-		d.wg.Go(func() { endpoint.RunTailscale(info) })
+		d.wg.Go(func() { d.runTailscale(endpoint, info) })
 	} else {
 		logger.Info("Join: waiting for Docker event to trigger Tailscale setup for endpoint %s", req.EndpointID[:12])
 	}
@@ -674,7 +692,7 @@ func (d *Driver) recoverEndpoint(
 
 	// Adopt what Join set up (normally done by Join). Without its routes the
 	// task could reach the tailnet through the host, so do not start it.
-	if err := endpoint.Recover(sandboxKey); err != nil {
+	if err := d.recoverRouting(endpoint, sandboxKey); err != nil {
 		d.mu.Lock()
 		delete(d.endpoints, endpointID)
 		d.mu.Unlock()
@@ -693,7 +711,7 @@ func (d *Driver) recoverEndpoint(
 		tsInfo.Hostname,
 	)
 
-	d.wg.Go(func() { endpoint.RunTailscale(tsInfo) })
+	d.wg.Go(func() { d.runTailscale(endpoint, tsInfo) })
 
 	return nil
 }

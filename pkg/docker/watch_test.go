@@ -2,6 +2,7 @@ package docker
 
 import (
 	"errors"
+	"net/netip"
 	"slices"
 	"strconv"
 	"strings"
@@ -49,6 +50,8 @@ func newEventSetup(t *testing.T, join bool) *eventSetup {
 // it starts Tailscale with the hostname derived from it.
 func TestEventStartsTailscaleWithContainerName(t *testing.T) {
 	s := newEventSetup(t, true)
+	dns := netip.MustParseAddr("100.100.100.100")
+	s.td.fake.setDNS(s.containerID, dns)
 	s.td.noRun(t)
 
 	s.td.fake.send(t, connectEvent(s.netID, "billing_net", s.containerID))
@@ -60,7 +63,8 @@ func TestEventStartsTailscaleWithContainerName(t *testing.T) {
 		r.info.Hostname != "billing-web-1-xyz" ||
 		r.info.Stack != "billing" ||
 		r.info.NetworkStack != "billing" ||
-		!slices.Equal(r.info.Tags, []string{"tag:web"}) {
+		!slices.Equal(r.info.Tags, []string{"tag:web"}) ||
+		!slices.Equal(r.info.DNS, []netip.Addr{dns}) {
 		t.Errorf("started Tailscale with %+v", r.info)
 	}
 	if info, ok := s.td.cache.GetByEndpoint(s.epID); !ok || info != r.info {

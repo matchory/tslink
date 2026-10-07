@@ -1,0 +1,197 @@
+package tailscale
+
+import (
+	"net/netip"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"slices"
+	"strings"
+	"testing"
+)
+
+func TestTailscaledResolvConf(t *testing.T) {
+	quad100 := []netip.Addr{netip.MustParseAddr("100.100.100.100")}
+	const resolvedStub = "# This is /run/systemd/resolve/stub-resolv.conf managed by man:systemd-resolved(8).\n" +
+		"nameserver 127.0.0.53\noptions edns0 trust-ad\nsearch corp.example\n"
+	const resolvedUpstreams = "# This is /run/systemd/resolve/resolv.conf managed by man:systemd-resolved(8).\n" +
+		"nameserver 10.0.0.2\nnameserver 2001:db8::53\nsearch corp.example\n"
+
+	tests := []struct {
+		name      string
+		host      string
+		resolved  string
+		container []netip.Addr
+		want      string
+		warns     bool
+	}{
+		{
+			name: "host with public resolvers",
+			host: "nameserver 1.1.1.1\nnameserver 9.9.9.9\n",
+			want: "nameserver 1.1.1.1\nnameserver 9.9.9.9\n",
+		},
+		{
+			name:      "host resolvers win over the container's",
+			host:      "nameserver 1.1.1.1\n",
+			container: quad100,
+			want:      "nameserver 1.1.1.1\n",
+		},
+		{
+			name:     "systemd-resolved stub uses its upstreams",
+			host:     resolvedStub,
+			resolved: resolvedUpstreams,
+			want:     "nameserver 10.0.0.2\nnameserver 2001:db8::53\nsearch corp.example\n",
+		},
+		{
+			name:     "upstreams on the host are kept over systemd-resolved's",
+			host:     "nameserver 127.0.0.1\nnameserver 192.168.1.1\n",
+			resolved: resolvedUpstreams,
+			want:     "nameserver 192.168.1.1\n",
+		},
+		{
+			name:  "stub without systemd-resolved's file falls back to Docker's resolver",
+			host:  resolvedStub,
+			want:  "nameserver 127.0.0.11\nsearch corp.example\noptions edns0 trust-ad\n",
+			warns: true,
+		},
+		{
+			name:     "systemd-resolved without upstreams falls back to Docker's resolver",
+			host:     resolvedStub,
+			resolved: "# no upstreams\n",
+			want:     "nameserver 127.0.0.11\nsearch corp.example\noptions edns0 trust-ad\n",
+			warns:    true,
+		},
+		{
+			name: "Docker's resolver would loop through a container using 100.100.100.100",
+			host: resolvedStub,
+			container: []netip.Addr{
+				netip.MustParseAddr("100.100.100.100"),
+				netip.MustParseAddr("10.0.0.2"),
+			},
+			want:  "nameserver 8.8.8.8\nnameserver 8.8.4.4\nsearch corp.example\noptions edns0 trust-ad\n",
+			warns: true,
+		},
+		{
+			name:      "Docker's resolver would loop through a container using Tailscale's IPv6 resolver",
+			host:      "nameserver ::1\n",
+			container: []netip.Addr{netip.MustParseAddr("fd7a:115c:a1e0::53")},
+			want:      "nameserver 8.8.8.8\nnameserver 8.8.4.4\n",
+			warns:     true,
+		},
+		{
+			name: "IPv6 resolvers are kept, loopback and link-local dropped",
+			host: "nameserver ::1\nnameserver fe80::1%eth0\nnameserver 2001:db8::1\nnameserver 169.254.169.253\n",
+			want: "nameserver 2001:db8::1\nnameserver 169.254.169.253\n",
+		},
+		{
+			name: "Tailscale's own resolver is dropped",
+			host: "nameserver 100.100.100.100\nnameserver 1.1.1.1\nsearch tail1234.ts.net\n",
+			want: "nameserver 1.1.1.1\nsearch tail1234.ts.net\n",
+		},
+		{
+			name: "last search line wins, domain counts as search, options accumulate, the rest is dropped",
+			host: "# comment\n; comment\ndomain old.example\nnameserver 1.1.1.1\nnameserver bogus\n" +
+				"search a.example b.example\noptions ndots:2\noptions timeout:1\nsortlist 10.0.0.0\n",
+			want: "nameserver 1.1.1.1\nsearch a.example b.example\noptions ndots:2 timeout:1\n",
+		},
+		{
+			name:  "no host resolv.conf falls back to Docker's resolver",
+			want:  "nameserver 127.0.0.11\n",
+			warns: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var resolved []byte
+			if tt.resolved != "" {
+				resolved = []byte(tt.resolved)
+			}
+			got, warning := tailscaledResolvConf([]byte(tt.host), resolved, tt.container)
+			if string(got) != tt.want {
+				t.Errorf("resolv.conf:\n%s\nwant:\n%s", got, tt.want)
+			}
+			if (warning != "") != tt.warns {
+				t.Errorf("warning = %q, want a warning: %v", warning, tt.warns)
+			}
+		})
+	}
+}
+
+func TestTailscaledCommandWritesResolvConf(t *testing.T) {
+	dir := t.TempDir()
+	host := filepath.Join(dir, "host-resolv.conf")
+	if err := os.WriteFile(host, []byte("nameserver 127.0.0.53\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	resolved := filepath.Join(dir, "resolved-resolv.conf")
+	if err := os.WriteFile(resolved, []byte("nameserver 10.0.0.2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	oldHost, oldResolved := hostResolvConfPath, resolvedResolvConfPath
+	hostResolvConfPath, resolvedResolvConfPath = host, resolved
+	t.Cleanup(func() { hostResolvConfPath, resolvedResolvConfPath = oldHost, oldResolved })
+
+	stateDir := filepath.Join(dir, "state")
+	if err := os.Mkdir(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	d := &Daemon{
+		config: DaemonConfig{
+			StateDir:      stateDir,
+			NetNSPath:     "/run/netns/x",
+			TailscaledBin: "/tailscaled",
+		},
+	}
+	d.ctx = t.Context()
+	cmd := d.tailscaledCommand([]string{"--tun=tailscale0"})
+
+	got, err := os.ReadFile(filepath.Join(stateDir, "resolv.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "nameserver 10.0.0.2\n" {
+		t.Errorf("resolv.conf = %q", got)
+	}
+	backup := filepath.Join(stateDir, "resolv.pre-tailscale-backup.conf")
+	if _, err := os.Stat(backup); err != nil {
+		t.Errorf("backup file: %v", err)
+	}
+
+	// Run the shell part with mount and nsenter replaced by scripts that
+	// print their arguments. As root it would create the backup in /etc.
+	if os.Geteuid() == 0 {
+		t.Skip("running as root")
+	}
+	sh := slices.Index(cmd.Args, "sh")
+	if sh < 0 {
+		t.Fatalf("no sh in %q", cmd.Args)
+	}
+	bin := filepath.Join(dir, "bin")
+	if err := os.Mkdir(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"mount", "nsenter"} {
+		script := "#!/bin/sh\necho " + name + ` "$@"` + "\n"
+		if err := os.WriteFile(
+			filepath.Join(bin, name),
+			[]byte(script),
+			0o700,
+		); err != nil { // #nosec G306 -- test script
+			t.Fatal(err)
+		}
+	}
+	run := exec.Command(cmd.Args[sh], cmd.Args[sh+1:]...) // #nosec G204 -- the command under test
+	run.Env = []string{"PATH=" + bin + ":/usr/bin:/bin"}
+	out, err := run.Output()
+	if err != nil {
+		t.Fatalf("%v: %s", err, out)
+	}
+	want := "mount --bind " + filepath.Join(stateDir, "resolv.conf") + " /etc/resolv.conf\n"
+	if !strings.HasPrefix(string(out), want) {
+		t.Errorf("output %q does not start with %q", out, want)
+	}
+	want = "nsenter --net=/run/netns/x -- /tailscaled --tun=tailscale0\n"
+	if !strings.HasSuffix(string(out), want) {
+		t.Errorf("output %q does not end with %q", out, want)
+	}
+}

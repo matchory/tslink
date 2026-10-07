@@ -2,6 +2,7 @@ package docker
 
 import (
 	"errors"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
@@ -386,6 +387,8 @@ func TestRecoverEndpoints(t *testing.T) {
 		"tslink.serve.443": "https:8080",
 	},
 		attachment{"billing_net", netID, epID}, attachment{"bridge", bridgeID, fakeID("bridge-ep")})
+	dns := netip.MustParseAddr("100.100.100.100")
+	fake.setDNS(fakeID("container/billing_api.1.abc"), dns)
 	td := newTestDriver(t, fake)
 
 	if err := td.RecoverEndpoints(t.Context()); err != nil {
@@ -425,7 +428,8 @@ func TestRecoverEndpoints(t *testing.T) {
 		r.info.Stack != "billing" ||
 		r.info.NetworkStack != "billing" ||
 		r.info.Service != "svc:api" ||
-		len(r.info.Endpoints) != 1 {
+		len(r.info.Endpoints) != 1 ||
+		!slices.Equal(r.info.DNS, []netip.Addr{dns}) {
 		t.Errorf("started Tailscale with %+v", r.info)
 	}
 	if info, ok := td.cache.GetByEndpoint(epID); !ok || info != r.info {

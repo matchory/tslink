@@ -40,6 +40,15 @@ type StartStatus struct {
 	Error    string    `json:"error,omitempty"`
 	Attempts int       `json:"attempts"`
 	Updated  time.Time `json:"updated"`
+	Warnings []Warning `json:"warnings,omitempty"`
+}
+
+// Warning is a condition of an endpoint that needs attention, from its status
+// file (see core.StatusWarning).
+type Warning struct {
+	Key     string    `json:"key"`
+	Message string    `json:"message"`
+	Since   time.Time `json:"since"`
 }
 
 // Result represents the overall diagnostic result.
@@ -49,15 +58,17 @@ type Result struct {
 	DataDirExists bool              `json:"data_dir_exists"`
 	Endpoints     []*EndpointStatus `json:"endpoints"`
 	NotRunning    []*StartStatus    `json:"not_running,omitempty"`
+	Warned        []*StartStatus    `json:"warned,omitempty"`
 	Summary       Summary           `json:"summary"`
 }
 
 // Summary provides a quick overview of endpoint health.
 type Summary struct {
-	Total   int `json:"total"`
-	Online  int `json:"online"`
-	Offline int `json:"offline"`
-	Errors  int `json:"errors"`
+	Total    int `json:"total"`
+	Online   int `json:"online"`
+	Offline  int `json:"offline"`
+	Errors   int `json:"errors"`
+	Warnings int `json:"warnings"`
 }
 
 // Run performs diagnostics on the tslink plugin state.
@@ -101,18 +112,7 @@ func Run(dataDir string, w io.Writer) error {
 		result.Endpoints = append(result.Endpoints, status)
 	}
 
-	// Endpoints whose Tailscale is not running have no daemon to ask
-	statusFiles, _ := filepath.Glob(filepath.Join(dataDir, "status", "*.json"))
-	for _, file := range statusFiles {
-		data, err := os.ReadFile(file)
-		if err != nil {
-			continue
-		}
-		var st StartStatus
-		if json.Unmarshal(data, &st) == nil && st.State != "running" {
-			result.NotRunning = append(result.NotRunning, &st)
-		}
-	}
+	readStatusFiles(dataDir, result)
 	result.Summary.Errors += len(result.NotRunning)
 
 	for _, status := range result.Endpoints {
@@ -128,6 +128,29 @@ func Run(dataDir string, w io.Writer) error {
 	}
 
 	return outputResult(result, w)
+}
+
+// readStatusFiles adds the endpoints whose Tailscale is not running, which
+// have no daemon to ask, and those with warnings, from their status files.
+func readStatusFiles(dataDir string, result *Result) {
+	statusFiles, _ := filepath.Glob(filepath.Join(dataDir, "status", "*.json"))
+	for _, file := range statusFiles {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			continue
+		}
+		var st StartStatus
+		if json.Unmarshal(data, &st) != nil {
+			continue
+		}
+		if st.State != "running" {
+			result.NotRunning = append(result.NotRunning, &st)
+		}
+		if len(st.Warnings) > 0 {
+			result.Warned = append(result.Warned, &st)
+			result.Summary.Warnings += len(st.Warnings)
+		}
+	}
 }
 
 // stateDirs returns the tailscaled state directories: by-hostname/<hostname>
@@ -276,24 +299,32 @@ func outputResult(result *Result, w io.Writer) error {
 		return nil
 	}
 
-	if len(result.Endpoints) == 0 && len(result.NotRunning) == 0 {
+	if len(result.Endpoints) == 0 && len(result.NotRunning) == 0 && len(result.Warned) == 0 {
 		fmt.Fprintf(w, "No endpoints found.\n")
 		return nil
 	}
 
 	fmt.Fprintf(w, "=== Summary ===\n")
-	fmt.Fprintf(w, "Total: %d | Online: %d | Offline: %d | Errors: %d\n\n",
-		result.Summary.Total, result.Summary.Online, result.Summary.Offline, result.Summary.Errors)
+	fmt.Fprintf(w, "Total: %d | Online: %d | Offline: %d | Errors: %d | Warnings: %d\n\n",
+		result.Summary.Total, result.Summary.Online, result.Summary.Offline, result.Summary.Errors,
+		result.Summary.Warnings)
 
 	if len(result.NotRunning) > 0 {
 		fmt.Fprintf(w, "=== Containers without Tailscale ===\n")
 		for _, st := range result.NotRunning {
-			name := st.Hostname
-			if st.Stack != "" {
-				name = st.Stack + "/" + st.Hostname
-			}
 			fmt.Fprintf(w, "  %s: %s, attempt %d, %s\n    %s\n",
-				name, st.State, st.Attempts, st.Updated.Format(time.RFC3339), st.Error)
+				st.name(), st.State, st.Attempts, st.Updated.Format(time.RFC3339), st.Error)
+		}
+		fmt.Fprintf(w, "\n")
+	}
+
+	if len(result.Warned) > 0 {
+		fmt.Fprintf(w, "=== Warnings ===\n")
+		for _, st := range result.Warned {
+			for _, warning := range st.Warnings {
+				fmt.Fprintf(w, "  %s: %s (since %s)\n",
+					st.name(), warning.Message, warning.Since.Format(time.RFC3339))
+			}
 		}
 		fmt.Fprintf(w, "\n")
 	}
@@ -304,6 +335,14 @@ func outputResult(result *Result, w io.Writer) error {
 	}
 
 	return nil
+}
+
+// name returns the endpoint's hostname, after its stack if it has one.
+func (st *StartStatus) name() string {
+	if st.Stack != "" {
+		return st.Stack + "/" + st.Hostname
+	}
+	return st.Hostname
 }
 
 // writeEndpoint writes the report section for one endpoint.

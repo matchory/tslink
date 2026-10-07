@@ -508,7 +508,7 @@ func (d *Daemon) killProcess(cmd *exec.Cmd) {
 	_ = downCmd.Run() // Ignore errors
 
 	// Kill the process
-	if err := cmd.Process.Kill(); err != nil {
+	if err := killError(cmd.Process.Kill()); err != nil {
 		logger.Warnf("Failed to kill tailscaled: %v", err)
 	}
 
@@ -533,4 +533,13 @@ func (d *Daemon) killProcess(cmd *exec.Cmd) {
 	if err := os.Remove(d.socketPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		logger.Warnf("Failed to remove socket %s: %v", d.socketPath, err)
 	}
+}
+
+// killError returns the error of killing tailscaled, or nil if it had exited
+// already, as it does by itself after "tailscale down" or a logout.
+func killError(err error) error {
+	if errors.Is(err, os.ErrProcessDone) {
+		return nil
+	}
+	return err
 }

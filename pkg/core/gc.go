@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -65,6 +66,23 @@ func CollectGarbage(ctx context.Context, dataDir string, stateInUse, socketsInUs
 		}
 	}
 	wg.Wait()
+}
+
+// RemoveDownloadCache removes tailscale-bin, where versions before the
+// bundled binaries cached the Tailscale releases they downloaded. Hosts
+// upgraded from them keep it otherwise. It runs once at startup.
+func RemoveDownloadCache(dataDir string) {
+	cache := filepath.Join(dataDir, "tailscale-bin")
+	if _, err := os.Lstat(cache); err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			logger.Warn("Failed to check for the old Tailscale download cache %s: %v", cache, err)
+		}
+		return
+	}
+	logger.Info("Removing the old Tailscale download cache %s: tslink uses its bundled binaries", cache)
+	if err := os.RemoveAll(cache); err != nil {
+		logger.Warn("Failed to remove %s: %v", cache, err)
+	}
 }
 
 // claimUnclaimed claims a state directory for garbage collection unless an

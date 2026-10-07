@@ -46,6 +46,7 @@ type Endpoint struct {
 	StateDir    string
 	SandboxKey  string // Container's network namespace path, stored during Join
 	DataDir     string // Base data directory for state
+	SharedDir   string // Directory shared between hosts; empty for none
 
 	supervisor       *tailscale.DaemonSupervisor
 	tailscaleStarted bool // Whether Tailscale setup has been completed
@@ -99,12 +100,13 @@ func NewEndpoint(id string, net *Network, opts EndpointOptions, cfg *Config) (*E
 	stateDir := filepath.Join(cfg.DataDir, "by-hostname", hostname)
 
 	return &Endpoint{
-		ID:       id,
-		Network:  net,
-		Hostname: hostname,
-		Direct:   true, // Default to direct serve enabled
-		StateDir: stateDir,
-		DataDir:  cfg.DataDir,
+		ID:        id,
+		Network:   net,
+		Hostname:  hostname,
+		Direct:    true, // Default to direct serve enabled
+		StateDir:  stateDir,
+		DataDir:   cfg.DataDir,
+		SharedDir: cfg.SharedDir,
 	}, nil
 }
 
@@ -285,6 +287,10 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 	// Copy immutable config needed for supervisor creation
 	endpointID := e.ID
 	dataDir := e.DataDir
+	certsDir := ""
+	if e.SharedDir != "" {
+		certsDir = filepath.Join(e.SharedDir, "certs")
+	}
 	network := e.Network
 	tags := info.Tags
 	if len(e.Network.Tags) > 0 {
@@ -354,6 +360,7 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 		SocketPath:    socketPathFor(dataDir, endpointID),
 		Hostname:      info.Hostname,
 		AuthKey:       authKey,
+		CertsDir:      certsDir,
 		NetNSPath:     sandboxKey,
 		TailscaleBin:  tailscaleBin,
 		TailscaledBin: tailscaledBin,

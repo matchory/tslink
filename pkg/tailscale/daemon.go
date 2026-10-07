@@ -188,6 +188,7 @@ type DaemonConfig struct {
 	SocketPath    string // tailscaled socket; defaults to <StateDir>/tailscaled.sock
 	Hostname      string
 	AuthKey       func() (string, error) // Read at each login, so a replaced credential takes effect
+	CertsDir      string                 // Shared certificate directory; empty for tailscaled's own
 	NetNSPath     string
 	TailscaleBin  string          // Path to tailscale CLI binary
 	TailscaledBin string          // Path to tailscaled daemon binary
@@ -292,6 +293,9 @@ func (d *Daemon) Start() error {
 	logger.Info("Starting tailscaled for endpoint %s in netns %s", d.config.EndpointID, d.config.NetNSPath)
 
 	statePath := filepath.Join(d.config.StateDir, "tailscaled.state")
+	if err := LinkCertsDir(d.config.StateDir, d.config.CertsDir); err != nil {
+		return err
+	}
 
 	// Build tailscaled arguments
 	// Use a real tun device (tailscale0) so containers can use Tailscale networking directly
@@ -451,7 +455,7 @@ func (d *Daemon) Start() error {
 		logger.Info("Waiting for control plane sync before configuring service backend...")
 		time.Sleep(2 * time.Second)
 		logger.Info("Configuring service backend...")
-		if err := d.configureService(); err != nil {
+		if err := d.configureServiceWhenCertified(); err != nil {
 			if stopErr := d.Stop(); stopErr != nil {
 				logger.Warn("Failed to stop daemon after service config error: %v", stopErr)
 			}
@@ -1019,7 +1023,7 @@ func (d *Daemon) Reauthenticate() error {
 		}
 	}
 	if d.config.Service != "" {
-		if err := d.configureService(); err != nil {
+		if err := d.configureServiceWhenCertified(); err != nil {
 			return fmt.Errorf("failed to configure Tailscale service: %w", err)
 		}
 	}

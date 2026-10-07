@@ -41,7 +41,7 @@ Plugin settings, set once per node by provisioning, and the same for every stack
 | Setting | Default | Description |
 |---------|---------|-------------|
 | file `/var/lib/docker-plugins/tailscale/oauth-client.secret` | absent | The cluster's OAuth client secret (`tskey-client-…`, nothing appended), in the plugin's existing data mount |
-| mount `certs` source | `/var/lib/docker-plugins/tailscale-certs` | Certificate directory. Node-local by default; point it at a shared volume (GlusterFS) to share certificates across hosts |
+| mount `shared` source | `/var/lib/docker-plugins/tailscale` | Holds `certs/`. Defaults to the data directory, so certificates are kept per host; point it at a shared volume (GlusterFS) to share them across hosts: `docker plugin set <plugin> shared.source=/mnt/gluster/tslink` |
 | `TS_DEBUG_ACME_DIRECTORY_URL` | empty | Passed through to tailscaled. Test hook: point it at Let's Encrypt staging |
 
 Network options, per stack, with the cluster credential:
@@ -110,8 +110,8 @@ Rejected:
 
 ### Certificate directory
 
-Every tailscaled keeps its certificates in `<state dir>/certs`; tslink links that to the plugin's `certs` mount,
-`/certs`, before tailscaled starts. Certificates are files named after their domain, so all services and all hosts share
+Every tailscaled keeps its certificates in `<state dir>/certs`; tslink links that to `certs/` in the plugin's `shared`
+mount before tailscaled starts. A non-ephemeral node's existing `certs` directory is left alone. Certificates are files named after their domain, so all services and all hosts share
 one directory.
 
 tailscaled creates an ACME account key on first use. Two tailscaleds starting at once would each create one, and only
@@ -122,12 +122,13 @@ not claim to replace the previous certificate, so they would lose their rate-lim
 ### First issuance
 
 tslink applies a replica's serve configuration after tailscaled is up. For a replica with an `https` endpoint for a
-Service:
+Service, whose certificate is for `<service name>.<MagicDNS suffix>`:
 
-1. If `/certs` holds a valid, unexpired certificate for the Service's name, tslink applies the serve configuration.
-   tailscaled finds the certificate and issues nothing.
-2. Otherwise the replica tries to take the lease `/certs/.lease/<domain>`, created exclusively, holding the endpoint and
-   node, and touched every 15 seconds while held.
+1. If the certificate directory holds a valid, unexpired certificate for that name, tslink applies the serve
+   configuration. tailscaled finds the certificate and issues nothing.
+2. Otherwise tailscaled's start completes without the Service, and the replica configures it in the background. It
+   tries to take the lease `<domain>.lease` in the certificate directory, created exclusively, naming the endpoint,
+   and touched every 15 seconds while held.
    - The holder applies its serve configuration, which starts issuance, and releases the lease once the certificate is
      valid.
    - Every other replica waits, checking every 5 seconds for a valid certificate, then applies its configuration.
@@ -163,7 +164,7 @@ this spec accepts it and counts on validation to show how often it happens.
 | Cluster credential, network not in a stack | Task's tailscaled does not start | Deploy as a stack, or set `tslink.authkey` |
 | Credential file unreadable or malformed at registration | Registration retries with backoff; the plugin log and status show the error | Fix the file; the next retry picks it up |
 | Issuance fails (e.g. rate limited) | Holder logs the ACME error; all replicas stay unadvertised and keep waiting | Wait for the limit to refill, or remove the HTTPS endpoint |
-| `/certs` unwritable | Endpoint start fails with the path | Fix the mount |
+| Certificate directory unwritable | Endpoint start fails with the path | Fix the mount |
 
 ## Security Considerations
 
@@ -173,7 +174,7 @@ this spec accepts it and counts on validation to show how often it happens.
 - **The secret never enters a stack file, CI, network options or an application container.** It is not shown by
   `docker plugin inspect` either, since it is a file rather than a setting.
 - **Tag scope** is limited to the stack's prefix (see [Tag scope](#tag-scope)).
-- **`/certs` holds the private keys of every Service's certificate and the ACME account key.** Anything that mounts
+- **The certificate directory holds the private keys of every Service's certificate and the ACME account key.** Anything that mounts
   the shared volume can read them: restrict the volume to the plugin's nodes.
 
 ## Validation
@@ -185,7 +186,7 @@ On the test bed (`docs/testbed-2026-10-07.md`), against Let's Encrypt staging th
    only `tslink.tags`, as stacks named `tslink-test-callee` and `tslink-test-caller` to satisfy the tag scope; run
    `regress.sh`. Rotate the file and check that the next registrations use the new secret.
 2. **Tag scope:** a stack declaring another stack's tag fails at network creation.
-3. **First issuance:** shared `/certs` on all three nodes (NFS from `mgr` if GlusterFS is not available), Service with
+3. **First issuance:** a shared certificate directory on all nodes (NFS from `mgr` if GlusterFS is not available), Service with
    `https` on 443, three replicas. Expect exactly one issuance, and no replica advertised before its certificate.
 4. **Rolling updates:** ten `start-first` updates; expect no new issuance.
 5. **Renewal**, against [Pebble](https://github.com/letsencrypt/pebble) instead of staging, since staging
@@ -217,8 +218,8 @@ Key files:
 
 - `pkg/core/network.go` — credential precedence (`NewNetwork`), reading the file (`Credential`), `CheckTagScope`
 - `pkg/docker/driver.go` — `CreateNetwork` and endpoint recovery use `NewNetwork`
-- `pkg/core/endpoint.go` — tag scope check at task start; certs link, account key, lease and the wait before
-  `ApplyServiceConfig`
+- `pkg/core/endpoint.go` — tag scope check at task start; passes the certificate directory to tailscaled
 - `pkg/tailscale/daemon.go` — `DaemonConfig.AuthKey` is a function, so a re-login reads the current file
-- `docker/config.json` — `certs` mount, `TS_DEBUG_ACME_DIRECTORY_URL`
+- `pkg/tailscale/certs.go` — certs link, ACME account key, lease, and configuring the Service once certified
+- `docker/config.json` — `shared` mount, `TS_SHARED_DIR`, `TS_DEBUG_ACME_DIRECTORY_URL`
 - `docs/credentials.md` — record the cluster credential as the default and the per-stack model as the alternative

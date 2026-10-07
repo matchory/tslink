@@ -53,3 +53,18 @@ func TestStartTailscaleRejectsForeignStack(t *testing.T) {
 		}
 	}
 }
+
+func TestSocketPathForFitsSunPath(t *testing.T) {
+	// Longest valid stack and hostname must not push the socket past the
+	// 108-byte sun_path limit, inside the plugin or as seen from the host.
+	id := strings.Repeat("a", 64)
+	for _, dataDir := range []string{"/data", "/var/lib/docker-plugins/tailscale"} {
+		p := socketPathFor(dataDir, id)
+		if len(p) >= 108 {
+			t.Errorf("socket path %q is %d bytes, want < 108", p, len(p))
+		}
+	}
+	if got := socketPathFor("/data", id); got != "/data/sock/aaaaaaaaaaaa.sock" {
+		t.Errorf("socketPathFor = %q", got)
+	}
+}

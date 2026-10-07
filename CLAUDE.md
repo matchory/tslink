@@ -72,7 +72,7 @@ pkg/
 
 **Key paths at runtime:**
 - State: `/data/by-hostname/<hostname>/tailscaled.state`
-- Socket: `/data/by-hostname/<hostname>/tailscaled.sock`
+- Socket: `/data/sock/<endpoint-id[:12]>.sock` (kept short: Unix socket paths are limited to 108 bytes)
 - Debug: `/data/by-hostname/<hostname>/debug.log`
 
 ## Code Style

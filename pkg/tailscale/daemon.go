@@ -93,6 +93,7 @@ type ServeEndpoint struct {
 type DaemonConfig struct {
 	EndpointID    string
 	StateDir      string
+	SocketPath    string // tailscaled socket; defaults to <StateDir>/tailscaled.sock
 	Hostname      string
 	AuthKey       string
 	NetNSPath     string
@@ -138,7 +139,13 @@ func NewDaemon(cfg DaemonConfig) (*Daemon, error) {
 		return nil, fmt.Errorf("failed to create state dir: %w", err)
 	}
 
-	socketPath := filepath.Join(cfg.StateDir, "tailscaled.sock")
+	socketPath := cfg.SocketPath
+	if socketPath == "" {
+		socketPath = filepath.Join(cfg.StateDir, "tailscaled.sock")
+	}
+	if err := os.MkdirAll(filepath.Dir(socketPath), 0700); err != nil {
+		return nil, fmt.Errorf("failed to create socket dir: %w", err)
+	}
 
 	// Clean stale socket from previous run (prevents "address in use" errors)
 	if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {

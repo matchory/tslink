@@ -221,6 +221,13 @@ func stateDirFor(dataDir, stack, hostname string) (string, error) {
 	return filepath.Join(dataDir, "by-stack", stack, hostname), nil
 }
 
+// socketPathFor returns the tailscaled socket path for an endpoint. It is kept
+// out of the state directory because Unix socket paths are limited to 108
+// bytes, and stack and hostname can make the state directory longer than that.
+func socketPathFor(dataDir, endpointID string) string {
+	return filepath.Join(dataDir, "sock", endpointID[:12]+".sock")
+}
+
 // StartTailscale starts the Tailscale daemon with the provided container info.
 // This is called by the event handler when container info becomes available.
 // It uses the correct hostname and state directory for identity reuse.
@@ -321,6 +328,7 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 	supervisor := tailscale.NewDaemonSupervisor(tailscale.DaemonConfig{
 		EndpointID:    endpointID,
 		StateDir:      stateDir,
+		SocketPath:    socketPathFor(dataDir, endpointID),
 		Hostname:      info.Hostname,
 		AuthKey:       authKey,
 		NetNSPath:     sandboxKey,

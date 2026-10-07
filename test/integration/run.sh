@@ -66,7 +66,7 @@ state_gone() { ! sudo test -e "$DATA/by-hostname/$1"; }
 
 # resolves CONTAINER [SERVER]: whether CONTAINER resolves $PROBE_NAME to $PROBE_IP
 resolves() {
-	docker exec "$1" nslookup "$PROBE_NAME" ${2:+"$2"} 2>/dev/null | grep -qF "$PROBE_IP"
+	docker exec "$1" nslookup -type=a "$PROBE_NAME" ${2:+"$2"} 2>/dev/null | grep -qF "$PROBE_IP"
 }
 
 dump_logs() {

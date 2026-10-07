@@ -73,6 +73,25 @@ func TestRunTailscaleStopsRetryingAfterLeave(t *testing.T) {
 	}
 }
 
+// Once Leave has begun, a late trigger (a connect event, the watchdog) must
+// not start Tailscale again: nothing would stop it before DeleteEndpoint.
+func TestRunTailscaleRefusesAfterLeave(t *testing.T) {
+	shortRetries(t)
+	var calls atomic.Int32
+	e := &Endpoint{ID: "0123456789abcdef", DataDir: t.TempDir()}
+	e.startFn = func(*ContainerInfo) error {
+		calls.Add(1)
+		return nil
+	}
+	if err := e.Leave(); err != nil {
+		t.Fatalf("Leave: %v", err)
+	}
+	e.RunTailscale(&ContainerInfo{Hostname: "web"})
+	if got := calls.Load(); got != 0 {
+		t.Errorf("start called %d times after Leave, want 0", got)
+	}
+}
+
 func TestRunTailscaleRunsOnce(t *testing.T) {
 	shortRetries(t)
 	var calls atomic.Int32
@@ -164,6 +183,8 @@ func TestRunTailscaleWritesStatus(t *testing.T) {
 		t.Errorf("status should be removed on Leave (err=%v)", err)
 	}
 
+	// A new endpoint: one that left starts nothing
+	e = &Endpoint{ID: e.ID, DataDir: data}
 	e.startFn = func(*ContainerInfo) error { return permanentError{errors.New("invalid hostname")} }
 	e.RunTailscale(&ContainerInfo{Hostname: "../x"})
 	if st := read(); st.State != StatusFailed {

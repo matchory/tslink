@@ -173,6 +173,9 @@ three- and five-node swarms; see [docs/testing](docs/testing).
   reconnects, and the watchdog starts joined endpoints that never got a start.
 - Recovery no longer crashes on containers whose network settings Docker
   leaves out.
+- A connect event or watchdog start that arrived while a container was
+  leaving could start its tailscaled again, which then ran until Docker
+  deleted the endpoint. Once a container begins to leave, nothing starts it.
 
 ### Security
 

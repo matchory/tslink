@@ -4,12 +4,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"runtime"
 	"strings"
 	"sync"
 	"syscall"
 
+	"github.com/coreos/go-iptables/iptables"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
 	"golang.org/x/sys/unix"
@@ -302,6 +302,12 @@ func SetupContainerRouting(nsPath string, ifName string, containerIP string, gat
 // chainName is the custom iptables chain for tslink forwarding rules.
 const chainName = "TSLINK-FORWARD"
 
+// natSource is the veth range tslink masquerades.
+const natSource = "10.200.0.0/16"
+
+// ipForwardPath is the IPv4 forwarding sysctl.
+const ipForwardPath = "/proc/sys/net/ipv4/ip_forward"
+
 // chainInitialized tracks if we've already set up the custom chain.
 var (
 	chainMu          sync.Mutex
@@ -314,14 +320,19 @@ func SetupNAT(vethHost string) error {
 	logger.Debug("Setting up NAT for %s", vethHost)
 
 	// Enable IP forwarding (idempotent)
-	if err := exec.Command("sysctl", "-w", "net.ipv4.ip_forward=1").Run(); err != nil {
+	if err := enableIPForward(); err != nil {
 		logger.Warn("Failed to enable IP forwarding: %v", err)
+	}
+
+	ipt, err := iptables.New()
+	if err != nil {
+		return fmt.Errorf("failed to initialize iptables: %w", err)
 	}
 
 	// Initialize our custom chain and global rules (only once, with mutex protection)
 	chainMu.Lock()
 	if !chainInitialized {
-		if err := initializeChain(); err != nil {
+		if err := initializeChain(ipt); err != nil {
 			chainMu.Unlock()
 			return err
 		}
@@ -330,49 +341,43 @@ func SetupNAT(vethHost string) error {
 	chainMu.Unlock()
 
 	// Allow forwarding for this specific veth (in our custom chain)
-	cmd := exec.Command("iptables", "-A", chainName, "-i", vethHost, "-j", "ACCEPT")
-	if output, err := cmd.CombinedOutput(); err != nil {
-		logger.Warn("Failed to add FORWARD rule for %s: %v (%s)", vethHost, err, string(output))
+	if err := ipt.AppendUnique("filter", chainName, "-i", vethHost, "-j", "ACCEPT"); err != nil {
+		logger.Warn("Failed to add FORWARD rule for %s: %v", vethHost, err)
 	}
 
-	cmd = exec.Command("iptables", "-A", chainName, "-o", vethHost, "-j", "ACCEPT")
-	if output, err := cmd.CombinedOutput(); err != nil {
-		logger.Warn("Failed to add FORWARD rule for %s: %v (%s)", vethHost, err, string(output))
+	if err := ipt.AppendUnique("filter", chainName, "-o", vethHost, "-j", "ACCEPT"); err != nil {
+		logger.Warn("Failed to add FORWARD rule for %s: %v", vethHost, err)
 	}
 
 	logger.Debug("NAT setup complete for %s", vethHost)
 	return nil
 }
 
+// enableIPForward turns on IPv4 forwarding unless it is on already.
+func enableIPForward() error {
+	if b, err := os.ReadFile(ipForwardPath); err == nil && strings.TrimSpace(string(b)) == "1" {
+		return nil
+	}
+	return os.WriteFile(ipForwardPath, []byte("1"), 0o600)
+}
+
 // initializeChain creates the custom chain and sets up global rules.
-func initializeChain() error {
-	// Create our custom chain (ignore error if already exists)
-	cmd := exec.Command("iptables", "-N", chainName)
-	if err := cmd.Run(); err != nil {
-		logger.Debug("iptables chain %s may already exist: %v", chainName, err)
-	}
-
-	// Add jump rule from FORWARD to our chain (check first to avoid duplicates)
-	cmd = exec.Command("iptables", "-C", "FORWARD", "-j", chainName)
-	if cmd.Run() != nil {
-		// Rule doesn't exist, add it at the beginning
-		cmd = exec.Command("iptables", "-I", "FORWARD", "1", "-j", chainName)
-		if output, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("failed to add jump to %s: %w (output: %s)", chainName, err, string(output))
+func initializeChain(ipt *iptables.IPTables) error {
+	// Create our custom chain unless it exists
+	if exists, err := ipt.ChainExists("filter", chainName); err != nil || !exists {
+		if err := ipt.NewChain("filter", chainName); err != nil {
+			logger.Debug("iptables chain %s may already exist: %v", chainName, err)
 		}
 	}
 
-	// Add global MASQUERADE rule for the 10.200.0.0/16 range
-	cmd = exec.Command("iptables", "-t", "nat", "-C", "POSTROUTING",
-		"-s", "10.200.0.0/16", "-j", "MASQUERADE")
-	if cmd.Run() != nil {
-		// Rule doesn't exist, add it
-		cmd = exec.Command("iptables", "-t", "nat", "-A", "POSTROUTING",
-			"-s", "10.200.0.0/16", "-j", "MASQUERADE")
-		output, err := cmd.CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("failed to add MASQUERADE rule: %w (output: %s)", err, string(output))
-		}
+	// Add jump rule from FORWARD to our chain at the beginning, unless it exists
+	if err := ipt.InsertUnique("filter", "FORWARD", 1, "-j", chainName); err != nil {
+		return fmt.Errorf("failed to add jump to %s: %w", chainName, err)
+	}
+
+	// Add global MASQUERADE rule for the 10.200.0.0/16 range, unless it exists
+	if err := ipt.AppendUnique("nat", "POSTROUTING", "-s", natSource, "-j", "MASQUERADE"); err != nil {
+		return fmt.Errorf("failed to add MASQUERADE rule: %w", err)
 	}
 
 	logger.Info("Initialized iptables chain %s", chainName)
@@ -384,15 +389,19 @@ func initializeChain() error {
 func CleanupNAT(vethHost string) error {
 	logger.Debug("Cleaning up NAT rules for %s", vethHost)
 
-	// Remove FORWARD rules from our custom chain (ignore errors if rules don't exist)
-	cmd := exec.Command("iptables", "-D", chainName, "-i", vethHost, "-j", "ACCEPT")
-	if output, err := cmd.CombinedOutput(); err != nil {
-		logger.Debug("FORWARD -i rule not found for %s (already cleaned): %v (%s)", vethHost, err, string(output))
+	ipt, err := iptables.New()
+	if err != nil {
+		logger.Debug("Failed to initialize iptables, NAT rules for %s not cleaned: %v", vethHost, err)
+		return nil
 	}
 
-	cmd = exec.Command("iptables", "-D", chainName, "-o", vethHost, "-j", "ACCEPT")
-	if output, err := cmd.CombinedOutput(); err != nil {
-		logger.Debug("FORWARD -o rule not found for %s (already cleaned): %v (%s)", vethHost, err, string(output))
+	// Remove FORWARD rules from our custom chain (ignore errors if rules don't exist)
+	if err := ipt.DeleteIfExists("filter", chainName, "-i", vethHost, "-j", "ACCEPT"); err != nil {
+		logger.Debug("FORWARD -i rule not found for %s (already cleaned): %v", vethHost, err)
+	}
+
+	if err := ipt.DeleteIfExists("filter", chainName, "-o", vethHost, "-j", "ACCEPT"); err != nil {
+		logger.Debug("FORWARD -o rule not found for %s (already cleaned): %v", vethHost, err)
 	}
 
 	logger.Debug("NAT cleanup complete for %s", vethHost)
@@ -404,28 +413,23 @@ func CleanupNAT(vethHost string) error {
 func CleanupAllNAT() error {
 	logger.Info("Cleaning up all NAT rules")
 
-	// Remove jump rule from FORWARD
-	cmd := exec.Command("iptables", "-D", "FORWARD", "-j", chainName)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		logger.Debug("No jump rule to %s found (may already be cleaned): %v (%s)", chainName, err, string(output))
-	}
+	if ipt, err := iptables.New(); err != nil {
+		logger.Debug("Failed to initialize iptables, NAT rules not cleaned: %v", err)
+	} else {
+		// Remove jump rule from FORWARD
+		if err := ipt.DeleteIfExists("filter", "FORWARD", "-j", chainName); err != nil {
+			logger.Debug("No jump rule to %s found (may already be cleaned): %v", chainName, err)
+		}
 
-	// Flush and delete our custom chain
-	cmd = exec.Command("iptables", "-F", chainName)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		logger.Debug("Failed to flush chain %s (may not exist): %v (%s)", chainName, err, string(output))
-	}
+		// Flush and delete our custom chain
+		if err := ipt.ClearAndDeleteChain("filter", chainName); err != nil {
+			logger.Debug("Failed to delete chain %s (may not exist): %v", chainName, err)
+		}
 
-	cmd = exec.Command("iptables", "-X", chainName)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		logger.Debug("Failed to delete chain %s (may not exist): %v (%s)", chainName, err, string(output))
-	}
-
-	// Remove MASQUERADE rule
-	cmd = exec.Command("iptables", "-t", "nat", "-D", "POSTROUTING",
-		"-s", "10.200.0.0/16", "-j", "MASQUERADE")
-	if output, err := cmd.CombinedOutput(); err != nil {
-		logger.Debug("No MASQUERADE rule found (may already be cleaned): %v (%s)", err, string(output))
+		// Remove MASQUERADE rule
+		if err := ipt.DeleteIfExists("nat", "POSTROUTING", "-s", natSource, "-j", "MASQUERADE"); err != nil {
+			logger.Debug("No MASQUERADE rule found (may already be cleaned): %v", err)
+		}
 	}
 
 	chainMu.Lock()

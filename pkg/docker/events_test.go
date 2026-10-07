@@ -22,7 +22,7 @@ func TestHostnameFromName(t *testing.T) {
 		"my-app-1": "my-app-1",
 		"billing_api.1.rhqn99qc3kawxeu8hgljewtff": "billing-api-1-rhqn99qc3kawxeu8hgljewtff",
 		"_lead.trail_": "lead-trail",
-		"café":         "caf",
+		"zürich":       "z-rich",
 		"a_very_long_stack_name_for_billing_api.1.rhqn99qc3kawxeu8hgljewtff": "a-very-long-stack-name-for-billing-api-1-rhqn99qc3kawxeu8hgljew",
 	}
 	for in, want := range tests {

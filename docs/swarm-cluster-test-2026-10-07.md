@@ -62,7 +62,7 @@ to the VIP every 200 ms, 2 s timeout, logging the answering backend.
 ## Results
 
 | Case | Result | Evidence |
-|---|---|---|
+| --- | --- | --- |
 | Caller and callee on different nodes | Pass | Callee sees the caller's own tailnet IP from every node |
 | Ungranted traffic refused | Pass | nogrant refused on every callee and the VIP, from every node, while each host's tailscaled (node tag) got 200 from the same addresses |
 | Ungranted Service VIP refused | Pass | Caller refused on `svc:tslink-test-other`; its name does not resolve |
@@ -99,7 +99,7 @@ to the VIP every 200 ms, 2 s timeout, logging the answering backend.
 ## Measurements
 
 | What | tslink | Baseline |
-|---|---|---|
+| --- | --- | --- |
 | Latency, task to task across nodes, direct | 1.1 ms | 0.7–2.2 ms host tailscaled |
 | Latency over DERP (fra/nue) | 16.6 ms | |
 | Throughput, 1 / 4 streams, default | 1.16 / 1.18 Gbit/s | 2.78 / 2.80 Gbit/s host tailscaled |
@@ -114,7 +114,7 @@ to the VIP every 200 ms, 2 s timeout, logging the answering backend.
 | Orphaned ephemeral device after power loss | removed by Tailscale within about an hour | |
 
 | Disruption | Duration |
-|---|---|
+| --- | --- |
 | Rolling update, app keeps serving 5 s after SIGTERM | 0–1 failed requests per update |
 | Rolling update, app exits on SIGTERM | 1–8 failed requests (0.2–1.5 s) per caller |
 | Plugin upgrade, egress of the node's tasks | 3.5 s (7.5 s before the fixes) |

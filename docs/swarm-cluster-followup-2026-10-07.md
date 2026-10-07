@@ -49,7 +49,7 @@ disrupted node: callers stick to one backend, so only they can see failures.
 ## Results
 
 | Case | Result | Evidence |
-|---|---|---|
+| --- | --- | --- |
 | Leader powered off during a rolling update | Pass | w1 leader within ~20 s; the update completed on the new leader; callers not pinned to the dead node 0 failed requests |
 | Old leader powered on again | Pass | Ready and Reachable 47 s after poweron, new global tasks on the tailnet |
 | New stack deployed after failover | Pass | New leader created the network; the task had its identity in ~4 s and reached the VIP |
@@ -70,7 +70,7 @@ disrupted node: callers stick to one backend, so only they can see failures.
 ## Measurements
 
 | What | Value |
-|---|---|
+| --- | --- |
 | Leader election after the leader lost power | ≤ 21 s |
 | Manager Ready again after poweron | 47-48 s |
 | Node's tasks back on the tailnet after a graceful reboot | 32-53 s |
@@ -81,7 +81,7 @@ disrupted node: callers stick to one backend, so only they can see failures.
 | Tailscale deletes an offline ephemeral device | ~60-75 min after `lastSeen` |
 
 | Disruption, pinned callers | Before | After |
-|---|---|---|
+| --- | --- | --- |
 | Docker restart | 0.2-15.2 s | 0 failed requests (drain drop-in) |
 | Graceful reboot | 6.9-16 s | 0-1 failed requests (drain drop-in) |
 | dockerd crash | 0 failed requests | not changed |
@@ -104,7 +104,7 @@ to `docker.service`. systemd runs it before it sends dockerd SIGTERM: the
 script drains every Tailscale Service the node backs, through each tslink
 socket and the plugin's bundled `tailscale` CLI, and waits 3 seconds. Callers
 moved within 1.3 s of a drain in every test. Installation is in the
-[README](../README.md#running-on-swarm).
+[readme](../README.md#running-on-swarm).
 
 A dockerd crash skips ExecStop. It turned out harmless for the VIP: the
 containers keep serving while dockerd is gone, and the restarted dockerd stops
@@ -201,7 +201,7 @@ test node pass.
 - `deploy/systemd`: the drain script and `docker.service` drop-in.
 - `test/cluster`: any number of nodes, `add-node.sh`, `disrupt`, `aftercase`,
   retrying probes, `install-drain.sh`, test stacks; `regress.sh` runs on
-  macOS's bash 3.2 again, and `install-plugin.sh` copies builds to every node.
+  macOS's Bash 3.2 again, and `install-plugin.sh` copies builds to every node.
 
 ## Remaining risks
 

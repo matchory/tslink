@@ -91,5 +91,5 @@ component to run, a public URL, and a dependency on the issuer being up when
 tasks start. The network-level tags and stack check above carry over
 unchanged; only the credential source would change.
 
-Before building it, prove it end to end: a minimal issuer, one federated
+Before building it, prove it end-to-end: a minimal issuer, one federated
 credential, and one `tailscale up --id-token` from a task.

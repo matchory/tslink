@@ -30,7 +30,7 @@ type Endpoint struct {
 	Hostname    string
 	Tags        []string                  // ACL tags for tailscale up --advertise-tags
 	Service     string                    // Service name (e.g., "svc:hello-world")
-	Endpoints   []tailscale.ServeEndpoint // Serve endpoints (replaces ServePort)
+	Endpoints   []tailscale.ServeEndpoint // Parsed tslink.serve.<port> labels
 	Direct      bool                      // Serve the endpoints on the task's own name too
 	TailscaleIP string
 	VethName    string

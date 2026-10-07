@@ -173,6 +173,10 @@ three- and five-node swarms; see [docs/testing](docs/testing).
   reconnects, and the watchdog starts joined endpoints that never got a start.
 - Recovery no longer crashes on containers whose network settings Docker
   leaves out.
+- Errors from `tailscale serve`, `advertise`, `drain` and `logout` include
+  the CLI's output again, and the hints for untagged Service hosts and
+  pending approval appear: tslink dropped the output of every completed
+  line.
 
 ### Security
 

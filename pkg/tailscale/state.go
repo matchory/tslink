@@ -3,6 +3,8 @@ package tailscale
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"io/fs"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -109,6 +111,15 @@ func MarkEphemeral(stateDir string) error {
 		return err
 	}
 	return os.WriteFile(filepath.Join(stateDir, ephemeralMarker), nil, 0600)
+}
+
+// ClearEphemeral removes the mark MarkEphemeral set, if any, when stateDir is
+// used by a network whose nodes are not ephemeral.
+func ClearEphemeral(stateDir string) error {
+	if err := os.Remove(filepath.Join(stateDir, ephemeralMarker)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 // IsMarkedEphemeral reports whether stateDir was marked by MarkEphemeral.

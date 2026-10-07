@@ -57,6 +57,7 @@ type Endpoint struct {
 	startRequested   bool // Whether the driver has asked to start Tailscale
 
 	running bool                       // Whether RunTailscale is active
+	leaving bool                       // Leave has begun: RunTailscale starts nothing until a Join
 	runCtx  context.Context            //nolint:containedctx // Cancelled when the endpoint leaves
 	stopRun context.CancelFunc         // Cancels runCtx
 	startFn func(*ContainerInfo) error // Replaces StartTailscale in tests
@@ -240,6 +241,7 @@ func (e *Endpoint) Join(sandboxKey string) (*network.JoinResponse, error) {
 	e.mu.Lock()
 	e.SandboxKey = sandboxKey
 	e.VethName = vethHost
+	e.leaving = false
 	e.mu.Unlock()
 
 	logger.Infof(
@@ -413,10 +415,11 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 // it succeeds, fails in a way retrying cannot fix, or the endpoint leaves. A
 // transient failure, such as the control plane being unreachable when the task
 // starts, must not leave the task without its identity for good. Only one run
-// is active per endpoint, however often it is triggered.
+// is active per endpoint, however often it is triggered, and none once the
+// endpoint has begun to leave.
 func (e *Endpoint) RunTailscale(info *ContainerInfo) {
 	e.mu.Lock()
-	if e.running || e.tailscaleStarted {
+	if e.running || e.tailscaleStarted || e.leaving {
 		e.mu.Unlock()
 		return
 	}
@@ -600,12 +603,15 @@ func (e *Endpoint) GetInfo() (string, string) {
 // Leave is called when a container leaves the network.
 // It stops the Tailscale supervisor and cleans up networking resources.
 func (e *Endpoint) Leave() error {
-	e.cancelRun()
-
+	// From now on a late connect event or watchdog start starts nothing:
+	// Tailscale started after stopTailscale would run until DeleteEndpoint
 	e.mu.Lock()
+	e.leaving = true
 	vethName := e.VethName
 	sandboxKey := e.SandboxKey
 	e.mu.Unlock()
+
+	e.cancelRun()
 
 	logger.Infof("Endpoint %s leaving", e.ID)
 

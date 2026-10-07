@@ -10,4 +10,4 @@ networks:
     driver: ghcr.io/matchory/tslink:latest
     driver_opts:
       tslink.authkey: ${TSLINK_OAUTH_SECRET}?ephemeral=true&preauthorized=true
-      tslink.tags: tag:tslink-test-caller
+      tslink.tags: ${TSLINK_TEST_TAG:-tag:tslink-test}-caller

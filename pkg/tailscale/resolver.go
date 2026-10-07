@@ -35,6 +35,10 @@ var (
 	}
 )
 
+// dnsUpstreamsWarning is the key of the endpoint's warning that tailscaled
+// falls back to resolvers neither the container nor the host names.
+const dnsUpstreamsWarning = "dns-upstreams"
+
 // resolvConf holds what tailscaled reads from a resolv.conf.
 type resolvConf struct {
 	nameservers []netip.Addr

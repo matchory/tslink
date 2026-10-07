@@ -1,0 +1,9 @@
+#cloud-config
+package_update: true
+packages: [ca-certificates, curl, jq, iperf3, conntrack, nftables]
+runcmd:
+  - curl -fsSL https://get.docker.com | sh
+  - curl -fsSL https://tailscale.com/install.sh | sh
+  - mkdir -p /var/lib/docker-plugins/tailscale
+  - systemctl enable --now docker
+  - touch /var/lib/cloud-init-done

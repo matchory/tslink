@@ -1,0 +1,11 @@
+#!/bin/bash
+# failspans: per caller, contiguous spans of failed probe requests with wall-clock times
+B=$(dirname "$0")
+# shellcheck disable=SC2016 # awk program, expanded in the container
+spans='awk "{ if(\$3!=\"200\"){ if(!s){s=\$1;c=0}; c++; e=\$1 } else if(s){ print s, e, c; s=0 } } END{ if(s) print s, e, c, \"(ongoing)\" }" /tmp/probe.log'
+for n in mgr w1 w2; do
+	echo "== $n"
+	"$B/cx" "$n" caller_client "$spans" | while read -r s e c x; do
+		echo "  $(date -u -r "$s" +%T)-$(date -u -r "$e" +%T) failed=$c $x"
+	done
+done

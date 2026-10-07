@@ -1,0 +1,14 @@
+#!/bin/bash
+# await <service>: wait until the service's update completes; print state and duration
+B=$(dirname "$0")
+s=$1
+t0=$(date +%s)
+while :; do
+	st=$("$B"/s mgr "docker service inspect $s --format '{{if .UpdateStatus}}{{.UpdateStatus.State}}{{else}}none{{end}}'")
+	case $st in updating | rollback_started) sleep 2 ;; *) break ;; esac
+	[ $(($(date +%s) - t0)) -gt 600 ] && {
+		echo TIMEOUT
+		break
+	}
+done
+echo "$s: $st after $(($(date +%s) - t0))s"

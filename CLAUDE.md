@@ -42,6 +42,27 @@ container restarts with the same name, it keeps its Tailscale identity and IP.
 **Veth IP allocation**: Each container gets a unique /30 subnet from 10.200.0.0/16, derived by hashing the endpoint
 ID. This avoids IP conflicts without coordination.
 
+**Routing**: Docker gives the container its usual gateway (`docker_gwbridge` on Swarm); without one, its embedded DNS
+server refuses to resolve public names. tslink's veth carries only tailscaled's own traffic: tailscaled marks its
+sockets with `0x80000`, and a rule at priority 5200 sends that mark to table 5200, a default route via the veth. Tailnet
+ranges are `unreachable` in the main table, so tailnet traffic leaves through the container's tailscaled (table 52) or
+not at all, never through the host's.
+
+**Self-healing**: `Endpoint.RunTailscale` retries a failed start with backoff until the endpoint leaves, unless the
+error is a `permanentError` (wrong stack, invalid hostname). The supervisor restarts a crashed tailscaled, resumes after
+a crash-loop cooldown, and logs a node in again with `--force-reauth` when control answers 404 node not found. After a
+plugin restart, recovery adopts running containers' endpoints, and a node still logged in comes up without the auth
+key, so a rotated or revoked secret does not take it down. Garbage collection then removes ephemeral state (marked by
+an `ephemeral` file), sockets and status files no endpoint uses.
+
+**Stop and drain**: a Docker `kill` event with the container's stop signal drains its Tailscale Service backends before
+the container exits; plugin shutdown drains all of them. `Leave` logs ephemeral nodes out, with retries, and deletes
+their state. Each state directory serves one endpoint at a time (`ClaimStateDir`).
+
+**Binaries**: the plugin image ships a pinned Tailscale (`TS_VERSION=bundled`, from the `tailscale/tailscale` stage of
+the Dockerfile, which Dependabot updates). tailscaled's output goes to a rotated `tailscaled.log`, read by
+`drainLines`, which never stops reading: tailscaled blocks on a full pipe.
+
 ## Concurrency Notes
 
 **Lock ordering**: Never hold `driver.mu` when calling endpoint methods (they acquire `endpoint.mu`). Always:
@@ -53,9 +74,12 @@ seconds. Don't hold locks during these.
 ## Debugging
 
 ```bash
-# View endpoint debug logs
+# View endpoint logs, and containers whose Tailscale is not running
 docker run --rm -v /var/lib/docker-plugins/tailscale:/data alpine \
-  sh -c 'for d in /data/by-hostname/*/ /data/by-stack/*/*/; do echo "=== $d ==="; tail -20 "$d/debug.log" 2>/dev/null; done'
+  sh -c 'for d in /data/by-hostname/*/ /data/by-stack/*/*/; do
+    echo "=== $d ==="; tail -20 "$d/tailscaled.log" 2>/dev/null
+  done'
+docker run --rm -v /var/lib/docker-plugins/tailscale:/data alpine sh -c 'cat /data/status/*.json'
 
 # Plugin logs (Linux)
 journalctl -u docker -f | grep -i tailscale
@@ -81,7 +105,8 @@ pkg/
 - State: `/data/by-hostname/<hostname>/tailscaled.state`, or `/data/by-stack/<stack>/<hostname>/` for stack tasks
 - Socket: `/data/sock/<endpoint-id[:12]>.sock` (kept short: Unix socket paths are limited to 108 bytes), linked
   from `<state dir>/tailscaled.sock`
-- Debug: `<state dir>/debug.log`
+- Logs: `<state dir>/tailscaled.log` (rotated at 10 MB), `/data/plugin.log` (rotated at 50 MB)
+- Status: `/data/status/<endpoint-id[:12]>.json` while the endpoint exists
 
 ## Code Style
 
@@ -145,6 +170,7 @@ return fmt.Errorf("failed to create endpoint: %w", err)
 - Dependencies are updated by Dependabot (`.github/dependabot.yml`): Actions, Go modules and the Dockerfile base images.
 
 `test/integration` runs against upstream's tailnet (`atlas-diminished.ts.net`) and is not part of CI.
+`test/cluster` builds a three-node Swarm on Hetzner Cloud and runs `regress.sh` against a real tailnet; see its README.
 
 ## Troubleshooting
 

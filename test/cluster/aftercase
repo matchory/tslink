@@ -1,17 +1,30 @@
 #!/bin/bash
 # aftercase <since>: the checks after each test case -- task health, test devices orphaned since
-# <since> (offline, ephemeral, last seen after it; UTC, e.g. 2026-10-07T12:00:00Z) and nogrant
-# refused on every node. Node commands go through $MGR (default mgr).
+# <since> (offline, ephemeral, last seen after it, and still there 200 s later; UTC, e.g.
+# 2026-10-07T12:00:00Z) and nogrant refused on every node. Node commands go through $MGR (default mgr).
 B=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=config.sh
 . "$B/config.sh"
 T=$TSLINK_TEST_TAG
 since=$1
-"$B/health"
-"$B/tsapi" GET "/tailnet/$TSLINK_TEST_TAILNET/devices" | jq -r --arg since "$since" --arg t "$T" '.devices[]
+orphans() {
+	"$B/tsapi" GET "/tailnet/$TSLINK_TEST_TAILNET/devices" | jq -r --arg since "$since" --arg t "$T" '.devices[]
 	| select(any(.tags[]?; startswith($t + "-c") or . == $t + "-nogrant"))
 	| select((.connectedToControl | not) and .isEphemeral and .lastSeen > $since)
-	| "ORPHAN \(.hostname) \(.addresses[0]) lastSeen=\(.lastSeen)"' | grep . || echo "orphans: none"
+	| "ORPHAN \(.hostname) \(.addresses[0]) lastSeen=\(.lastSeen)"'
+}
+"$B/health"
+# The plugin's garbage collection logs out the nodes of tasks that vanished without a Leave (a
+# node crash), but only once their state is 2 minutes old (gcMinAge), in a scan every minute:
+# re-check for up to 200 s before calling an offline node an orphan
+o=$(orphans)
+[ -n "$o" ] && printf 'offline, re-checking after garbage collection:\n%s\n' "$o"
+end=$((SECONDS + 200))
+while [ -n "$o" ] && [ $SECONDS -lt $end ]; do
+	sleep 15
+	o=$(orphans)
+done
+echo "${o:-orphans: none}"
 targets=$("$B/tsapi" GET "/tailnet/$TSLINK_TEST_TAILNET/devices" | jq -r --arg t "$T" '[.devices[] | select(any(.tags[]?; . == $t + "-callee") and .connectedToControl) | .addresses[0]] | join(" ")')
 vip=$("$B/tsapi" GET "/tailnet/$TSLINK_TEST_TAILNET/services/$TSLINK_TEST_SVC-callee" | jq -r '.addrs[0]')
 for n in $("$B/nodes"); do

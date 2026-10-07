@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	dockerclient "github.com/moby/moby/client"
 
@@ -205,7 +206,7 @@ func parseContainerInfo(name string, labels map[string]string) *core.ContainerIn
 	if v, ok := labels["tslink.hostname"]; ok && v != "" {
 		info.Hostname = v
 	} else {
-		info.Hostname = name
+		info.Hostname = hostnameFromName(name)
 	}
 
 	// tslink.tags - comma-separated ACL tags (e.g., "tag:web,tag:prod")
@@ -228,6 +229,25 @@ func parseContainerInfo(name string, labels map[string]string) *core.ContainerIn
 	info.Endpoints = parseServeEndpoints(labels)
 
 	return info
+}
+
+// hostnameFromName turns a container name into a DNS label Tailscale accepts.
+// Swarm task names such as "stack_svc.1.<task-id>" contain underscores and
+// dots, which tailscale up rejects.
+func hostnameFromName(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		if r < 0x80 && (unicode.IsLetter(r) || unicode.IsDigit(r)) {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('-')
+		}
+	}
+	label := b.String()
+	if len(label) > 63 {
+		label = label[:63]
+	}
+	return strings.Trim(label, "-")
 }
 
 // parseServeEndpoints parses tslink.serve.<port> labels into ServeEndpoint structs.

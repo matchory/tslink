@@ -51,6 +51,7 @@ type Endpoint struct {
 	claims           *StateClaims // The driver's state directory claims
 	supervisor       *tailscale.DaemonSupervisor
 	tailscaleStarted bool // Whether Tailscale setup has been completed
+	startRequested   bool // Whether the driver has asked to start Tailscale
 
 	running bool                       // Whether RunTailscale is active
 	runCtx  context.Context            // Cancelled when the endpoint leaves
@@ -534,6 +535,22 @@ func (e *Endpoint) IsTailscaleStarted() bool {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return e.tailscaleStarted
+}
+
+// MarkStartRequested records that the driver asked to start Tailscale for
+// the endpoint, so recovery leaves it to that start.
+func (e *Endpoint) MarkStartRequested() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.startRequested = true
+}
+
+// StartRequested reports whether the driver asked to start Tailscale for the
+// endpoint. One that joined and was never asked missed its connect event.
+func (e *Endpoint) StartRequested() bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.startRequested
 }
 
 // GetSandboxKey returns the sandbox key (container netns path) safely.

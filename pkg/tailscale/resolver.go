@@ -35,6 +35,10 @@ var (
 	}
 )
 
+// dnsUpstreamsWarning is the key of the endpoint's warning that tailscaled
+// falls back to resolvers neither the container nor the host names.
+const dnsUpstreamsWarning = "dns-upstreams"
+
 // resolvConf holds what tailscaled reads from a resolv.conf.
 type resolvConf struct {
 	nameservers []netip.Addr
@@ -84,45 +88,27 @@ func reachable(addr netip.Addr) bool {
 // resolv.conf, systemd-resolved's (nil if absent), and the resolvers the
 // container was given. It returns a warning when it falls back.
 //
-// As Docker does, it takes the host's resolvers without those on its
-// loopback, and systemd-resolved's upstreams when that leaves none. Without
-// any, it names Docker's embedded resolver, unless that forwards to Tailscale's
-// resolver, the container's tailscaled, which would forward back to it: then
-// it names Docker's default resolvers.
+// The rule is Docker's for the container's embedded resolver: the container's
+// own resolvers, without Tailscale's, which is the container's tailscaled, and
+// Docker's embedded one, which forwards to the others. A resolver on the
+// loopback is kept: it runs in the container's network namespace, which
+// tailscaled shares. Without any, it takes the host's resolvers without those
+// on its loopback, and systemd-resolved's upstreams when that leaves none.
+// The search and options lines are those of the host's resolv.conf, or of
+// systemd-resolved's if its upstreams are used.
 func tailscaledResolvConf(host, resolved []byte, containerDNS []netip.Addr) ([]byte, string) {
-	rc := parseResolvConf(host)
-	rc.nameservers = slices.DeleteFunc(
-		rc.nameservers,
-		func(a netip.Addr) bool { return !reachable(a) },
-	)
-	if len(rc.nameservers) == 0 {
-		alt := parseResolvConf(resolved)
-		alt.nameservers = slices.DeleteFunc(
-			alt.nameservers,
-			func(a netip.Addr) bool { return !reachable(a) },
-		)
-		if len(alt.nameservers) > 0 {
-			rc = alt
-		}
+	rc := hostResolvConf(host, resolved)
+	own := slices.DeleteFunc(slices.Clone(containerDNS), func(a netip.Addr) bool {
+		a = a.Unmap()
+		return a == dockerResolver || slices.Contains(tailscaleResolvers, a)
+	})
+	if len(own) > 0 {
+		rc.nameservers = own
 	}
 
 	var warning string
 	if len(rc.nameservers) == 0 {
-		if slices.ContainsFunc(
-			containerDNS,
-			func(a netip.Addr) bool { return slices.Contains(tailscaleResolvers, a.Unmap()) },
-		) {
-			rc.nameservers = dockerDefaultResolvers
-			warning = fmt.Sprintf(
-				"the host has no resolver a container can reach, and Docker's embedded resolver "+
-					"forwards to Tailscale's (the container's DNS is %v): tailscaled uses %v",
-				containerDNS,
-				rc.nameservers,
-			)
-		} else {
-			rc.nameservers = []netip.Addr{dockerResolver}
-			warning = "the host has no resolver a container can reach: tailscaled uses Docker's embedded resolver"
-		}
+		rc.nameservers, warning = fallbackResolvers(containerDNS)
 	}
 
 	var b strings.Builder
@@ -136,4 +122,41 @@ func tailscaledResolvConf(host, resolved []byte, containerDNS []netip.Addr) ([]b
 		fmt.Fprintf(&b, "options %s\n", strings.Join(rc.options, " "))
 	}
 	return []byte(b.String()), warning
+}
+
+// hostResolvConf parses the host's resolv.conf, without the resolvers a
+// container cannot reach; if that leaves none, systemd-resolved's, if that
+// names any.
+func hostResolvConf(host, resolved []byte) resolvConf {
+	unreachable := func(a netip.Addr) bool { return !reachable(a) }
+	rc := parseResolvConf(host)
+	rc.nameservers = slices.DeleteFunc(rc.nameservers, unreachable)
+	if len(rc.nameservers) == 0 {
+		alt := parseResolvConf(resolved)
+		alt.nameservers = slices.DeleteFunc(alt.nameservers, unreachable)
+		if len(alt.nameservers) > 0 {
+			rc = alt
+		}
+	}
+	return rc
+}
+
+// fallbackResolvers returns the resolvers for tailscaled when neither the
+// container nor the host has one it can use, and a warning saying so: Docker's
+// embedded resolver, unless the container uses Tailscale's resolver, its
+// tailscaled, to which Docker's would forward; then Docker's default resolvers.
+func fallbackResolvers(containerDNS []netip.Addr) ([]netip.Addr, string) {
+	if !slices.ContainsFunc(
+		containerDNS,
+		func(a netip.Addr) bool { return slices.Contains(tailscaleResolvers, a.Unmap()) },
+	) {
+		return []netip.Addr{dockerResolver},
+			"the host has no resolver a container can reach: tailscaled uses Docker's embedded resolver"
+	}
+	return dockerDefaultResolvers, fmt.Sprintf(
+		"the host has no resolver a container can reach, and Docker's embedded resolver "+
+			"forwards to Tailscale's (the container's DNS is %v): tailscaled uses %v",
+		containerDNS,
+		dockerDefaultResolvers,
+	)
 }

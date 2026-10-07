@@ -31,7 +31,7 @@ func TestTailscaledResolvConf(t *testing.T) {
 			want: "nameserver 1.1.1.1\nnameserver 9.9.9.9\n",
 		},
 		{
-			name:      "host resolvers win over the container's",
+			name:      "a container using only Tailscale's resolver gets the host's",
 			host:      "nameserver 1.1.1.1\n",
 			container: quad100,
 			want:      "nameserver 1.1.1.1\n",
@@ -62,14 +62,48 @@ func TestTailscaledResolvConf(t *testing.T) {
 			warns:    true,
 		},
 		{
-			name: "Docker's resolver would loop through a container using 100.100.100.100",
+			name:      "Docker's resolver would loop through a container using 100.100.100.100",
+			host:      resolvedStub,
+			container: quad100,
+			want:      "nameserver 8.8.8.8\nnameserver 8.8.4.4\nsearch corp.example\noptions edns0 trust-ad\n",
+			warns:     true,
+		},
+		{
+			name:      "the container's resolvers win over the host's",
+			host:      "nameserver 1.1.1.1\nsearch host.example\n",
+			container: []netip.Addr{netip.MustParseAddr("10.0.0.2")},
+			want:      "nameserver 10.0.0.2\nsearch host.example\n",
+		},
+		{
+			name: "the container's resolvers besides Tailscale's are used, without a fallback",
 			host: resolvedStub,
 			container: []netip.Addr{
 				netip.MustParseAddr("100.100.100.100"),
 				netip.MustParseAddr("10.0.0.2"),
 			},
-			want:  "nameserver 8.8.8.8\nnameserver 8.8.4.4\nsearch corp.example\noptions edns0 trust-ad\n",
-			warns: true,
+			want: "nameserver 10.0.0.2\nsearch corp.example\noptions edns0 trust-ad\n",
+		},
+		{
+			name: "Tailscale's IPv6 resolver and Docker's are dropped from the container's",
+			host: "nameserver 1.1.1.1\n",
+			container: []netip.Addr{
+				netip.MustParseAddr("fd7a:115c:a1e0::53"),
+				netip.MustParseAddr("127.0.0.11"),
+				netip.MustParseAddr("2001:db8::53"),
+			},
+			want: "nameserver 2001:db8::53\n",
+		},
+		{
+			name:      "a container using only Docker's resolver gets the host's",
+			host:      "nameserver 1.1.1.1\n",
+			container: []netip.Addr{netip.MustParseAddr("127.0.0.11")},
+			want:      "nameserver 1.1.1.1\n",
+		},
+		{
+			name:      "a resolver on the container's loopback is kept",
+			host:      "nameserver 1.1.1.1\n",
+			container: []netip.Addr{netip.MustParseAddr("127.0.0.1")},
+			want:      "nameserver 127.0.0.1\n",
 		},
 		{
 			name:      "Docker's resolver would loop through a container using Tailscale's IPv6 resolver",
@@ -193,5 +227,33 @@ func TestTailscaledCommandWritesResolvConf(t *testing.T) {
 	want = "nsenter --net=/run/netns/x -- /tailscaled --tun=tailscale0\n"
 	if !strings.HasSuffix(string(out), want) {
 		t.Errorf("output %q does not end with %q", out, want)
+	}
+}
+
+// Falling back to other resolvers than the host's is reported in the
+// endpoint's status, and a later start with the host's resolvers clears it.
+func TestTailscaledCommandWarnsAboutFallback(t *testing.T) {
+	dir := t.TempDir()
+	host := filepath.Join(dir, "host-resolv.conf")
+	if err := os.WriteFile(host, []byte("nameserver 127.0.0.53\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	oldHost, oldResolved := hostResolvConfPath, resolvedResolvConfPath
+	hostResolvConfPath, resolvedResolvConfPath = host, filepath.Join(dir, "absent")
+	t.Cleanup(func() { hostResolvConfPath, resolvedResolvConfPath = oldHost, oldResolved })
+
+	d, rec := newWarningDaemon(t)
+	d.config.ContainerDNS = []netip.Addr{netip.MustParseAddr("100.100.100.100")}
+	d.tailscaledCommand(nil)
+	if got := rec.get("dns-upstreams"); !strings.Contains(got, "8.8.8.8") {
+		t.Errorf("warning = %q, want one naming 8.8.8.8", got)
+	}
+
+	if err := os.WriteFile(host, []byte("nameserver 1.1.1.1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d.tailscaledCommand(nil)
+	if got := rec.get("dns-upstreams"); got != "" {
+		t.Errorf("warning kept after a start with the host's resolvers: %q", got)
 	}
 }

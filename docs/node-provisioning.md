@@ -19,12 +19,20 @@ work if they meet the requirements below, but have not been tested.
   `com.docker.network.driver.mtu` on every tslink network.
 - **DNS**: a resolver that containers can reach. Each task's tailscaled
   resolves names, and forwards the container's queries for names outside the
-  tailnet, through the host's resolvers from `/etc/resolv.conf`, without those
-  on the host's loopback. When that leaves none, it uses systemd-resolved's
+  tailnet, through the resolvers Docker's embedded resolver would use: the
+  container's own DNS servers (`dns:` of the container or service), without
+  Tailscale's (`100.100.100.100`, `fd7a:115c:a1e0::53`) and Docker's
+  (`127.0.0.11`). A server on the loopback, such as `127.0.0.1`, is kept: it
+  runs in the container's network namespace, which tailscaled shares. If none
+  remain, it uses the host's resolvers from `/etc/resolv.conf`, without those
+  on the host's loopback, and when that leaves none, systemd-resolved's
   upstreams from `/run/systemd/resolve/resolv.conf`, as Docker does. With
   neither, it falls back to Docker's embedded resolver, or, for a container
   whose DNS server is `100.100.100.100`, to Google's public resolvers (Docker's
-  default), and logs a warning. tailscaled reads them when it starts.
+  default), and warns in the plugin log and the endpoint's status
+  (`dns-upstreams`). tailscaled picks its upstreams when it starts, as Docker
+  does when the container starts. tslink does not see a `dns` setting in
+  `/etc/docker/daemon.json`, only the container's or service's own.
 - **Clock**: synchronised (NTP); Tailscale rejects badly skewed clocks.
 - **Firewall**: no inbound rule. Each task's tailscaled needs outbound TCP 443
   (control plane, DERP) and outbound UDP (STUN on 3478, direct connections on
@@ -136,8 +144,9 @@ each endpoint's state to `/var/lib/docker-plugins/tailscale/status/<endpoint>.js
 `running`, `retrying` with the error, or `failed`. Export them, for example to
 your monitoring system, and alert when a state is not `running` for more than
 a few minutes. A file's `warnings` list conditions that need no immediate
-action but should be seen, such as a blocked HTTPS certificate renewal or a
-certificate close to expiry. For example, for the Prometheus node exporter's textfile
+action but should be seen, such as a blocked HTTPS certificate renewal, a
+certificate close to expiry, or tailscaled falling back to resolvers neither
+the container nor the host lists. For example, for the Prometheus node exporter's textfile
 collector:
 
 ```bash

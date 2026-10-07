@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end test against a headscale control server on this host: builds
 # tslink from source, installs it as the plugin "tslink", and checks tailnet
-# reachability, ACLs, plugin restarts and ephemeral nodes.
+# reachability, ACLs, DNS upstreams, plugin restarts and ephemeral nodes.
 # Needs Docker, sudo, curl and jq; no Tailscale account. It replaces the
 # host's plugin "tslink", so run it on a disposable machine such as CI.
 set -euo pipefail
@@ -13,11 +13,14 @@ DATA=/var/lib/docker-plugins/tailscale
 HEADSCALE_IMAGE=docker.io/headscale/headscale:0.29.4@sha256:8833f828b414c0907b7e5c71da76473216fe17cce0818a166b536ec552c0903f
 ALPINE=alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
 MARK=tslink-e2e
+# A name only the test's DNS server knows, and its address
+PROBE_NAME=probe.tslink.test
+PROBE_IP=192.0.2.53
 # The containers' tailscaleds reach headscale through tslink's NAT to the
 # host, so it must listen on an address other than loopback
 HOST_IP=${HOST_IP:-$(ip -4 route get 1.1.1.1 | awk '{for (i = 1; i < NF; i++) if ($i == "src") print $(i + 1)}')}
 URL=http://$HOST_IP:8080
-CONTAINERS=(e2e-server e2e-client e2e-outsider e2e-ephemeral e2e-late)
+CONTAINERS=(e2e-server e2e-client e2e-outsider e2e-ephemeral e2e-late e2e-dns e2e-resolver)
 NETWORKS=(e2e-alice e2e-bob e2e-ephemeral)
 WORK=$(mktemp -d)
 
@@ -61,12 +64,19 @@ node_gone() { [ "$(nodes_named "$1")" = 0 ]; }
 # state_gone HOSTNAME: whether tslink deleted the hostname's state directory
 state_gone() { ! sudo test -e "$DATA/by-hostname/$1"; }
 
+# resolves CONTAINER [SERVER]: whether CONTAINER resolves $PROBE_NAME to $PROBE_IP
+resolves() {
+	docker exec "$1" nslookup -type=a "$PROBE_NAME" ${2:+"$2"} 2>/dev/null | grep -qF "$PROBE_IP"
+}
+
 dump_logs() {
 	log "Diagnostics"
 	docker ps -a || true
 	hs nodes list || true
 	echo "--- headscale"
 	docker logs --tail 200 e2e-headscale 2>&1 || true
+	echo "--- dnsmasq"
+	docker logs --tail 50 e2e-dns 2>&1 || true
 	echo "--- $DATA/plugin.log"
 	sudo tail -n 300 "$DATA/plugin.log" || true
 	sudo sh -c "for f in $DATA/by-hostname/*/tailscaled.log; do echo \"--- \$f\"; tail -n 60 \"\$f\"; done; cat $DATA/status/*.json" || true
@@ -161,6 +171,22 @@ docker stop -t 1 e2e-ephemeral >/dev/null
 # tslink's logout removes the node this soon
 retry 20 node_gone e2e-ephemeral || fail "ephemeral node not logged out within 20s"
 retry 20 state_gone e2e-ephemeral || fail "ephemeral node's state not deleted"
+
+log "Tailscale's resolver forwards to the container's other DNS servers"
+# On the host's network, like headscale, so tailscaled reaches it through
+# tslink's NAT to the host. Docker asks the container's first DNS server,
+# 100.100.100.100, and accepts its answer, so the name resolves only if the
+# container's tailscaled forwards to the second.
+docker run -d --name e2e-dns --network host "$ALPINE" sh -c \
+	"apk add --no-cache dnsmasq >/dev/null && exec dnsmasq --keep-in-foreground --log-facility=- --log-queries \
+	--no-resolv --no-hosts --bind-interfaces --listen-address=$HOST_IP --address=/$PROBE_NAME/$PROBE_IP"
+retry 60 resolves e2e-dns "$HOST_IP" || fail "dnsmasq does not answer"
+docker run -d --name e2e-resolver --network e2e-alice --dns 100.100.100.100 --dns "$HOST_IP" "$ALPINE" sleep 3600
+wait_ip e2e-resolver
+# Asking 100.100.100.100 itself rules out Docker trying the second server
+# because the first did not answer
+retry 60 resolves e2e-resolver 100.100.100.100 || fail "Tailscale's resolver does not forward to the container's"
+resolves e2e-resolver || fail "e2e-resolver cannot resolve $PROBE_NAME"
 
 log "A plugin restart keeps the containers' identities"
 docker plugin disable -f "$PLUGIN"

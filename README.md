@@ -333,8 +333,10 @@ docker run --rm -v /var/lib/docker-plugins/tailscale:/data alpine \
 
 ## Development
 
-See [CLAUDE.md](CLAUDE.md) for development setup.
+See [CONTRIBUTING.md](CONTRIBUTING.md). Report security issues as described in
+[SECURITY.md](SECURITY.md); changes are listed in [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
-MIT
+MIT, see [LICENSE](LICENSE). tslink is a fork of
+[aaomidi/tslink](https://github.com/aaomidi/tslink) by Amir Omidi.

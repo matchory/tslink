@@ -112,6 +112,7 @@ type DaemonSupervisor struct {
 
 // NewDaemonSupervisor creates a new supervisor for managing a tailscaled daemon.
 func NewDaemonSupervisor(cfg DaemonConfig) *DaemonSupervisor {
+	cfg.gate = &serviceGate{}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &DaemonSupervisor{
 		cfg:         cfg,
@@ -189,9 +190,12 @@ func (s *DaemonSupervisor) Logout() error {
 }
 
 // Drain stops new connections to the node's backend for a Tailscale Service.
+// The backend stays drained, even if tailscaled is down and the drain fails:
+// a daemon the supervisor starts later does not advertise it.
 func (s *DaemonSupervisor) Drain(service string) error {
+	s.cfg.gate.drained.Store(true)
 	d := s.GetDaemon()
-	if d == nil || !d.IsRunning() {
+	if d == nil {
 		return fmt.Errorf("tailscaled is not running")
 	}
 	return d.Drain(service)

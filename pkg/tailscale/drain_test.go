@@ -246,19 +246,15 @@ func TestDrainAndWaitWithoutDaemon(t *testing.T) {
 	}
 }
 
-// failingCertBin returns a tailscale CLI that fails "tailscale cert" with msg.
-func failingCertBin(t *testing.T, msg string) string {
-	t.Helper()
-	bin := filepath.Join(t.TempDir(), "tailscale")
-	script := "#!/bin/sh\necho '" + msg + "' >&2\nexit 1\n"
-	if err := os.WriteFile(
-		bin,
-		[]byte(script),
-		0o700,
-	); err != nil {
-		t.Fatal(err)
+// failingCert returns a tailscale CLI that fails "tailscale cert" with msg on
+// its standard error, as tailscale does, and passes other calls to cli.
+func failingCert(cli *fakeCLI, msg string) func(context.Context, cliCall) (cliOutput, error) {
+	return func(ctx context.Context, c cliCall) (cliOutput, error) {
+		if slices.Contains(c.args, "cert") {
+			return cliOutput{stderr: msg + "\n"}, errors.New("exit status 1")
+		}
+		return cli.run(ctx, c)
 	}
-	return bin
 }
 
 // newCertDaemon returns a daemon serving svc:web over HTTPS with a shared
@@ -398,7 +394,7 @@ func TestLeaseHolderAdvertisedOnlyWithCert(t *testing.T) {
 	setDuration(t, &certPollInterval, 10*time.Millisecond)
 	cli := &fakeCLI{}
 	d, dir := newCertDaemon(t, cli)
-	d.config.TailscaleBin = failingCertBin(t, "not issued yet")
+	d.runCLI = failingCert(cli, "not issued yet")
 
 	done := runAfterCert(d, dir)
 	waitFor(
@@ -436,10 +432,7 @@ func TestLeaseHolderAdvertisesWhenDomainRefused(t *testing.T) {
 	setDuration(t, &certDomainGrace, 50*time.Millisecond)
 	cli := &fakeCLI{}
 	d, dir := newCertDaemon(t, cli)
-	d.config.TailscaleBin = failingCertBin(
-		t,
-		`invalid domain "api.example.ts.net"; must be one of []`,
-	)
+	d.runCLI = failingCert(cli, `invalid domain "api.example.ts.net"; must be one of []`)
 
 	done := runAfterCert(d, dir)
 	waitFor(
@@ -461,7 +454,7 @@ func TestDrainedLeaseHolderStops(t *testing.T) {
 	setDuration(t, &certPollInterval, 10*time.Millisecond)
 	cli := &fakeCLI{}
 	d, dir := newCertDaemon(t, cli)
-	d.config.TailscaleBin = failingCertBin(t, "not issued yet")
+	d.runCLI = failingCert(cli, "not issued yet")
 
 	done := runAfterCert(d, dir)
 	waitFor(

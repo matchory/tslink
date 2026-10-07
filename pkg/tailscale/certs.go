@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -236,14 +235,15 @@ func (d *Daemon) requestCert(dir, domain string) error {
 			return errDrained
 		}
 		ctx, cancel := context.WithTimeout(d.ctx, certLeaseStale)
-		// The certificate and its key go to stdout, which is discarded
-		cmd := exec.CommandContext(ctx, d.config.TailscaleBin, "--socket="+d.socketPath,
-			"cert", "--cert-file=-", "--key-file=-", domain)
-		_, err := cmd.Output()
+		// The certificate and its key go to stdout, which is neither logged
+		// (no prefix) nor kept
+		out, err := d.runTailscale(ctx, cliCall{args: []string{
+			"--socket=" + d.socketPath, "cert", "--cert-file=-", "--key-file=-", domain,
+		}})
 		cancel()
 		if err != nil {
-			if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
-				err = fmt.Errorf("%w: %s", err, strings.TrimSpace(string(exitErr.Stderr)))
+			if stderr := strings.TrimSpace(out.stderr); stderr != "" {
+				err = fmt.Errorf("%w: %s", err, stderr)
 			}
 			if err.Error() != lastErr {
 				logger.Infof("Certificate for %s not issued yet: %v", domain, err)
@@ -392,15 +392,14 @@ func servesWeb(endpoints []ServeEndpoint) bool {
 func (d *Daemon) serviceDomain() (string, error) {
 	ctx, cancel := context.WithTimeout(d.ctx, 10*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, d.config.TailscaleBin, "--socket="+d.socketPath, "status", "--json").
-		Output()
+	out, err := d.statusJSON(ctx)
 	if err != nil {
 		return "", fmt.Errorf("tailscale status failed: %w", err)
 	}
 	var status struct {
 		MagicDNSSuffix string `json:"MagicDNSSuffix"`
 	}
-	if err := json.Unmarshal(out, &status); err != nil {
+	if err := json.Unmarshal([]byte(out.stdout), &status); err != nil {
 		return "", fmt.Errorf("failed to parse status: %w", err)
 	}
 	if status.MagicDNSSuffix == "" {

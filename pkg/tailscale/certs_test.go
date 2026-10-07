@@ -2,6 +2,7 @@ package tailscale
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -12,6 +13,8 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -230,5 +233,52 @@ func TestServesWeb(t *testing.T) {
 		if !servesWeb([]ServeEndpoint{{Proto: "tcp"}, {Proto: proto}}) {
 			t.Errorf("servesWeb = false with an %s endpoint", proto)
 		}
+	}
+}
+
+// "tailscale cert" runs through the CLI seam on the daemon's socket, without
+// logging its output, which holds the private key.
+func TestRequestCertRunsCLI(t *testing.T) {
+	setDuration(t, &certPollInterval, 10*time.Millisecond)
+	d, dir := newCertDaemon(t, &fakeCLI{})
+	var calls []cliCall
+	d.runCLI = func(_ context.Context, c cliCall) (cliOutput, error) {
+		calls = append(calls, c)
+		if len(calls) == 1 {
+			return cliOutput{stderr: "not issued yet\n"}, errors.New("exit status 1")
+		}
+		writeCert(t, dir, certDomain, certDomain, time.Now().Add(time.Hour))
+		return cliOutput{stdout: "certificate and key"}, nil
+	}
+	if err := d.requestCert(dir, certDomain); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"--socket=" + testSocket, "cert", "--cert-file=-", "--key-file=-", certDomain}
+	if len(calls) != 2 {
+		t.Fatalf("ran %d commands, want 2", len(calls))
+	}
+	for _, c := range calls {
+		if !slices.Equal(c.args, want) || c.prefix != "" {
+			t.Errorf("call = %q with prefix %q, want %q without one", c.args, c.prefix, want)
+		}
+	}
+}
+
+func TestServiceDomain(t *testing.T) {
+	cli := &fakeCLI{out: `{"MagicDNSSuffix":"example.ts.net"}`}
+	d := newTestDaemon(t, cli, "svc:api")
+	got, err := d.serviceDomain()
+	if err != nil || got != "api.example.ts.net" {
+		t.Errorf("serviceDomain() = %q, %v, want api.example.ts.net", got, err)
+	}
+	if want := [][]string{{"status", "--json"}}; !slices.EqualFunc(
+		cli.snapshot(), want, slices.Equal,
+	) {
+		t.Errorf("calls = %q, want %q", cli.snapshot(), want)
+	}
+
+	cli.out = `{"MagicDNSSuffix":""}`
+	if _, err := d.serviceDomain(); err == nil || !strings.Contains(err.Error(), "MagicDNS") {
+		t.Errorf("without MagicDNS: err = %v, want an error naming MagicDNS", err)
 	}
 }

@@ -43,17 +43,10 @@ func (d *Daemon) WaitForIP() (*Status, error) {
 
 // getStatus gets the current Tailscale status.
 func (d *Daemon) getStatus() (*Status, error) {
-	args := []string{
-		"--socket=" + d.socketPath,
-		"status",
-		"--json",
-	}
-
 	ctx, cancel := context.WithTimeout(d.ctx, 10*time.Second)
 	defer cancel()
 
-	// Not logged: it is polled, and lists every peer
-	out, err := d.runTailscale(ctx, cliCall{args: args})
+	out, err := d.statusJSON(ctx)
 	if err != nil {
 		return nil, fmt.Errorf(
 			"tailscale status failed: %w (output: %s)",

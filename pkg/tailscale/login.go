@@ -75,9 +75,7 @@ func (d *Daemon) waitBackendState() string {
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		ctx, cancel := context.WithTimeout(d.ctx, 5*time.Second)
-		out, err := d.runTailscale(ctx, cliCall{
-			args: []string{"--socket=" + d.socketPath, "status", "--json"},
-		})
+		out, err := d.statusJSON(ctx)
 		cancel()
 		var st struct {
 			BackendState string `json:"BackendState"`

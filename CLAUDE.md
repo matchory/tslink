@@ -59,8 +59,14 @@ the state with only the machine key and the current profile, its prefs logged ou
 online) and without services or serve config. The state goes even if the logout fails.
 
 **Stop and drain**: a Docker `kill` event with the container's stop signal drains its Tailscale Service backends before
-the container exits; plugin shutdown drains all of them. `Leave` logs ephemeral nodes out, with retries, and deletes
-their state. Each state directory serves one endpoint at a time (`ClaimStateDir`).
+the container exits; plugin shutdown drains all of them. `Leave` drains a Service host itself if that did not happen
+(a task that crashed or completed gets no `kill` event), then waits for control to fetch the drained Service list:
+tailscaled logs `c2n: GET /vip-services received`, at least 1 s and at most 10 s after the drain
+(`DaemonSupervisor.DrainAndWait`). Only then does it log ephemeral nodes out, with retries, and delete their state, or
+stop tailscaled. A node gone before control processed its drain leaves callers pointed at it for minutes. A drain is
+final for the supervisor (`serviceGate`, shared by its daemons): neither a certificate that appears later nor a
+restarted tailscaled advertises the backend again, and the certificate lease holder is advertised only once its
+certificate exists. Each state directory serves one endpoint at a time (`ClaimStateDir`).
 
 **Binaries**: the plugin image ships a pinned Tailscale (from the `tailscale/tailscale` stage of the Dockerfile, which
 Dependabot updates), and tslink runs only these binaries: it downloads nothing at runtime and ignores the old

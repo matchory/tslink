@@ -130,3 +130,31 @@ func TestStateDirClaimedOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestCollectGarbageKeepsClaimedState(t *testing.T) {
+	// Collection runs periodically, so an endpoint may claim a directory
+	// after the caller listed the endpoints in use.
+	data := t.TempDir()
+	e := &Endpoint{ID: "fedcba9876543210", DataDir: data}
+	if err := e.ClaimStateDir(&ContainerInfo{Hostname: "app_web.4.claimed", Stack: "app"}); err != nil {
+		t.Fatal(err)
+	}
+	defer e.releaseStateDir()
+	dir := e.GetStateDir()
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := tailscale.MarkEphemeral(dir); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(dir, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	CollectGarbage(data, nil, nil, time.Minute)
+
+	if _, err := os.Stat(dir); err != nil {
+		t.Errorf("claimed %s should be kept: %v", dir, err)
+	}
+}

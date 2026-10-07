@@ -1,16 +1,25 @@
 #!/bin/bash
 # deploy <stack> [secret] -- docker stack deploy on $MGR (default mgr), with
-# $TSLINK_TEST_DIR/<secret>.secret as TSLINK_OAUTH_SECRET and the tag and Service prefixes from
-# config.sh; the secret travels on stdin, never on a command line
+# $TSLINK_TEST_DIR/<secret>.secret as TSLINK_OAUTH_SECRET (secret "-": none, for the stacks on the
+# cluster credential), the tag and Service prefixes from config.sh, TSLINK_TEST_PIN if set, and
+# for a stack that probes the VIP, TSLINK_TEST_VIP (default: the VIP of $TSLINK_TEST_SVC-callee,
+# from the API); the secret travels on stdin, never on a command line
 set -euo pipefail
 B=$(dirname "$0")
 # shellcheck source=config.sh
 . "$B/config.sh"
 st=$1
 sec=${2:-$1}
+vip=
+if grep -q TSLINK_TEST_VIP "$B/stacks/$st.yml"; then
+	vip=${TSLINK_TEST_VIP:-$("$B/tsapi" GET "/tailnet/$TSLINK_TEST_TAILNET/services/$TSLINK_TEST_SVC-callee" | jq -r '.addrs[0] // empty')}
+fi
 scp -q -F "$TSLINK_TEST_SSH_CONFIG" "$B/stacks/$st.yml" "${MGR:-mgr}:/root/$st.yml"
 {
 	printf 'TSLINK_TEST_TAG=%q\nTSLINK_TEST_SVC=%q\n' "$TSLINK_TEST_TAG" "$TSLINK_TEST_SVC"
-	printf 'TSLINK_OAUTH_SECRET='
-	cat "$TSLINK_TEST_DIR/$sec.secret"
+	printf 'TSLINK_TEST_PIN=%q\nTSLINK_TEST_VIP=%q\n' "${TSLINK_TEST_PIN:-}" "$vip"
+	if [ "$sec" != - ]; then
+		printf 'TSLINK_OAUTH_SECRET='
+		cat "$TSLINK_TEST_DIR/$sec.secret"
+	fi
 } | "$B/s" "${MGR:-mgr}" "set -a; . /dev/stdin; set +a; docker stack deploy -d -c /root/$st.yml $st"

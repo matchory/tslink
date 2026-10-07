@@ -691,6 +691,11 @@ func (d *Daemon) configureDirectServe() error {
 
 	logger.Info("Configuring direct machine serve with %d endpoint(s) for %s",
 		len(d.config.Endpoints), d.config.EndpointID)
+	if servesWeb(d.config.Endpoints) {
+		logger.Warn("Endpoint %s serves HTTP on its own name %s: tailscaled issues a certificate for it, "+
+			"even for plain HTTP, and every new task's name counts against Let's Encrypt's weekly limit for the tailnet",
+			d.config.EndpointID[:12], d.config.Hostname)
+	}
 
 	// Configure each endpoint for direct serve
 	for i, ep := range d.config.Endpoints {

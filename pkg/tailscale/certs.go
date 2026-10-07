@@ -35,6 +35,7 @@ const (
 	certLeaseRefresh   = 15 * time.Second
 	certLeaseStale     = 2 * time.Minute // tailscaled gives up on an issuance after 2 minutes
 	certPollInterval   = 5 * time.Second
+	protoHTTP          = "http"
 	protoHTTPS         = "https"
 )
 
@@ -307,6 +308,17 @@ func (d *Daemon) configureServiceWithCert(dir, domain string) error {
 func servesHTTPS(endpoints []ServeEndpoint) bool {
 	for _, ep := range endpoints {
 		if ep.Proto == protoHTTPS {
+			return true
+		}
+	}
+	return false
+}
+
+// servesWeb reports whether any endpoint is served over HTTP or HTTPS, for
+// which tailscaled fetches a certificate either way.
+func servesWeb(endpoints []ServeEndpoint) bool {
+	for _, ep := range endpoints {
+		if ep.Proto == protoHTTP || ep.Proto == protoHTTPS {
 			return true
 		}
 	}

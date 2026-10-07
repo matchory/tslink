@@ -60,6 +60,15 @@ three- and five-node swarms; see [docs/testing](docs/testing).
 - `test/cluster`: scripts that build a Swarm test bed and a regression suite.
 - `test/integration`: an end-to-end test against a local headscale, run in CI
   on every pull request.
+- Cluster credential: networks without `tslink.authkey` register their nodes
+  with an OAuth client secret in `oauth-client.secret` in the plugin's data
+  directory, so stack files carry only their tags. The file is read at every
+  registration, so replacing it rotates the secret. A stack using it may only
+  use `tag:<stack>` and `tag:<stack>-*`.
+- Shared HTTPS certificates: tailscaled keeps its certificates in the new
+  `shared` mount, which can point at a volume shared between hosts. Replicas of
+  a Tailscale Service share its certificate: one replica issues it while the
+  others wait, and they are advertised once it exists.
 
 ### Changed
 
@@ -76,6 +85,10 @@ three- and five-node swarms; see [docs/testing](docs/testing).
   the same hostname on a node waits without an identity.
 - Container names that are not valid hostnames are converted to valid
   hostnames; an invalid `tslink.hostname` label is refused.
+- `tslink.direct` defaults to `false` for containers with `tslink.service`, so
+  Service replicas no longer each serve on, and fetch a certificate for, a
+  name of their own. tslink warns when a container serves HTTP on its own
+  name ([tailscale/tailscale#21693](https://github.com/tailscale/tailscale/issues/21693)).
 - CI moved to GitHub Actions with golangci-lint, super-linter and CodeQL;
   dependency updates come from Dependabot instead of Renovate.
 
@@ -100,6 +113,13 @@ three- and five-node swarms; see [docs/testing](docs/testing).
   forgotten, and new containers on them failed with "network not found".
 - A Service whose configuration arrived after Tailscale was up was never
   advertised again, so a backend drained in its state stayed drained.
+- HTTPS serving never got a certificate on hosts whose resolver is on the
+  host's loopback, such as systemd-resolved: tailscaled used the host's
+  `resolv.conf` inside the container's network namespace. It now uses Docker's
+  embedded resolver.
+- The first replica of a Tailscale Service with HTTPS waited up to an hour for
+  its certificate, since tailscaled only fetches it right away if control has
+  already announced the Service's name.
 
 ### Security
 

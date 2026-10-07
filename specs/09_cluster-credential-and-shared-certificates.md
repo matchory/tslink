@@ -205,7 +205,7 @@ this spec accepts it and counts on validation to show how often it happens.
 
 ## Validation
 
-On the test bed (`docs/testbed-2026-10-07.md`), against Let's Encrypt staging through
+On the test bed ([test/cluster](../test/cluster/README.md)), against Let's Encrypt staging through
 `TS_DEBUG_ACME_DIRECTORY_URL`, with an NFS export from `mgr` mounted on all five nodes as the shared volume. Results
 from 2026-10-07 follow each item; renewal (5) is not yet tested.
 

@@ -263,9 +263,7 @@ logs the node out and deletes its state when the container stops.
 
 ## Running on Swarm
 
-Measured on three- and five-node swarms; see
-[docs/testing/swarm-cluster-test-2026-10-07.md](docs/testing/swarm-cluster-test-2026-10-07.md)
-and [docs/testing/swarm-cluster-followup-2026-10-07.md](docs/testing/swarm-cluster-followup-2026-10-07.md).
+Measured on three- and five-node swarms; see [docs/testing.md](docs/testing.md).
 
 - **Zero-downtime updates of a Tailscale Service.** tslink drains a task's
   Service backend when Docker sends it the stop signal, and callers move to

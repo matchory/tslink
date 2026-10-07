@@ -1,19 +1,21 @@
 package tailscale
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -87,12 +89,38 @@ type ServeEndpoint struct {
 	Port   string // External port Tailscale exposes
 	Target string // Container port or address to forward to
 	Path   string // L7 only - path prefix (e.g., "/api")
+
+	ProxyProtocol string // L4 only - PROXY protocol version sent to the target ("1", "2" or "")
+	AcceptAppCaps string // L7 only - comma-separated app capabilities forwarded to the target
+}
+
+// serveOptionArgs returns the "tailscale serve" flags for the endpoint's options.
+func serveOptionArgs(ep ServeEndpoint) []string {
+	var args []string
+	if ep.ProxyProtocol != "" {
+		args = append(args, "--proxy-protocol="+ep.ProxyProtocol)
+	}
+	if ep.AcceptAppCaps != "" {
+		args = append(args, "--accept-app-caps="+ep.AcceptAppCaps)
+	}
+	return args
 }
 
 // Arguments of the "tailscale serve" commands the daemon runs.
 const (
 	serveCmd        = "serve"
 	serveBackground = "--bg"
+)
+
+// nodeNotFoundLog is what tailscaled logs while control does not know its
+// node key. BackendState stays Running meanwhile.
+const nodeNotFoundLog = "404: node not found"
+
+// Limits for tailscaled's output: a line longer than maxLogLine is cut, and
+// its log is rotated at tailscaledLogMaxBytes.
+const (
+	maxLogLine            = 16 << 10
+	tailscaledLogMaxBytes = 10 << 20
 )
 
 // DaemonConfig holds configuration for a tailscaled instance.
@@ -132,6 +160,10 @@ type Daemon struct {
 	// Mutex protects cmd and running state
 	mu      sync.RWMutex
 	running bool
+
+	// When tailscaled last reported that control does not know its node
+	// (deleted, or an expired ephemeral node), as Unix seconds
+	nodeNotFound atomic.Int64
 
 	// Pipe references for cleanup (closing unblocks reader goroutines)
 	stdoutPipe io.ReadCloser
@@ -240,19 +272,34 @@ func (d *Daemon) Start() error {
 
 	debugFile := filepath.Join(d.config.StateDir, "debug.log")
 
-	// Stream stdout in background (exits when pipe is closed in Stop())
-	d.wg.Go(func() {
-		scanner := bufio.NewScanner(stdoutPipe)
-		for scanner.Scan() {
-			logger.Debug("[tailscaled:%s:stdout] %s", d.config.EndpointID[:8], scanner.Text())
+	// tailscaled's output goes to its own size-capped log: it is verbose, and
+	// the plugin log is shared by every endpoint on the node
+	logPath := filepath.Join(d.config.StateDir, "tailscaled.log")
+	logFile, err := logger.OpenRotating(logPath, tailscaledLogMaxBytes)
+	if err != nil {
+		logger.Warn("Failed to open %s, discarding tailscaled output: %v", logPath, err)
+	}
+	writeLine := func(line string) {
+		if strings.Contains(line, nodeNotFoundLog) {
+			d.nodeNotFound.Store(time.Now().Unix())
 		}
-	})
+		if logFile != nil {
+			if _, err := logFile.Write([]byte(line + "\n")); err != nil {
+				logger.Debug("Failed to write %s: %v", logPath, err)
+			}
+		}
+	}
 
-	// Stream stderr in background (exits when pipe is closed in Stop())
+	// Drain both pipes until tailscaled exits or Stop() closes them
+	var drains sync.WaitGroup
+	drains.Go(func() { drainLines(stdoutPipe, maxLogLine, writeLine) })
+	drains.Go(func() { drainLines(stderrPipe, maxLogLine, writeLine) })
 	d.wg.Go(func() {
-		scanner := bufio.NewScanner(stderrPipe)
-		for scanner.Scan() {
-			logger.Debug("[tailscaled:%s:stderr] %s", d.config.EndpointID[:8], scanner.Text())
+		drains.Wait()
+		if logFile != nil {
+			if err := logFile.Close(); err != nil {
+				logger.Debug("Failed to close %s: %v", logPath, err)
+			}
 		}
 	})
 
@@ -371,8 +418,23 @@ func (d *Daemon) waitForSocket() error {
 // bringUp runs "tailscale up" with retry logic for state reuse.
 // First attempts with existing state, then wipes and retries on auth failures.
 func (d *Daemon) bringUp() error {
+	// A node that is still logged in comes up without the auth key. The CLI
+	// exchanges an OAuth client secret for a key before it looks at the
+	// node, so passing it would make every restart depend on the API and on
+	// the secret still being valid: a revoked or rotated secret would take
+	// down nodes that have working keys.
+	if StateExists(d.config.StateDir) {
+		if st := d.waitBackendState(); st != "" && st != "NeedsLogin" && st != "NoState" {
+			err := d.tryBringUp(false)
+			if err == nil {
+				return nil
+			}
+			logger.Warn("tailscale up with existing login failed, using the auth key: %v", err)
+		}
+	}
+
 	// First attempt with existing state
-	err := d.tryBringUp()
+	err := d.tryBringUp(true)
 	if err == nil {
 		return nil
 	}
@@ -386,7 +448,7 @@ func (d *Daemon) bringUp() error {
 
 		// Second attempt with fresh state
 		logger.Info("Retrying tailscale up with fresh state...")
-		return d.tryBringUp()
+		return d.tryBringUp(true)
 	}
 
 	return err
@@ -408,8 +470,28 @@ func isStateError(err error) bool {
 		strings.Contains(errStr, "invalid node key")
 }
 
+// waitBackendState returns tailscaled's backend state once it has loaded its
+// state, or "" if it cannot tell within a few seconds.
+func (d *Daemon) waitBackendState() string {
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		ctx, cancel := context.WithTimeout(d.ctx, 5*time.Second)
+		out, err := exec.CommandContext(ctx, d.config.TailscaleBin, "--socket="+d.socketPath, "status", "--json").Output()
+		cancel()
+		var st struct{ BackendState string }
+		if err == nil && json.Unmarshal(out, &st) == nil && st.BackendState != "NoState" {
+			return st.BackendState
+		}
+		if time.Now().After(deadline) {
+			return ""
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
 // tryBringUp runs "tailscale up" to connect to the network (single attempt).
-func (d *Daemon) tryBringUp() error {
+// Without withKey, it relies on the node still being logged in.
+func (d *Daemon) tryBringUp(withKey bool, extraArgs ...string) error {
 	logger.Info("Bringing up Tailscale for endpoint %s", d.config.EndpointID)
 
 	// The tailscale CLI communicates with tailscaled via the socket.
@@ -419,10 +501,14 @@ func (d *Daemon) tryBringUp() error {
 		"--socket=" + d.socketPath,
 		"up",
 		"--hostname=" + d.config.Hostname,
-		"--authkey=" + d.config.AuthKey,
 		"--accept-routes",
 		"--netfilter-mode=off",
 	}
+	if withKey {
+		// From stdin: arguments are visible to every process on the host
+		args = append(args, "--authkey=file:/dev/stdin")
+	}
+	args = append(args, extraArgs...)
 
 	// Add tags if configured (required for Services)
 	if len(d.config.Tags) > 0 {
@@ -445,6 +531,9 @@ func (d *Daemon) tryBringUp() error {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, d.config.TailscaleBin, args...)
+	if withKey {
+		cmd.Stdin = strings.NewReader(d.config.AuthKey)
+	}
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		logger.Error("tailscale up failed with output: %s", string(output))
@@ -478,6 +567,15 @@ func (d *Daemon) configureService() error {
 		}
 	}
 
+	// A drained service stays drained in the node's state, as after a
+	// plugin restart: advertise it again
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, d.config.TailscaleBin, "--socket="+d.socketPath,
+		serveCmd, "advertise", d.config.Service).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("tailscale serve advertise failed: %w (output: %s)", err, strings.TrimSpace(string(out)))
+	}
 	return nil
 }
 
@@ -531,6 +629,7 @@ func (d *Daemon) configureDirectServeEndpoint(ep ServeEndpoint) error {
 		if ep.Path != "" {
 			args = append(args, "--set-path="+ep.Path)
 		}
+		args = append(args, serveOptionArgs(ep)...)
 		args = append(args, fmt.Sprintf("http://127.0.0.1:%s", ep.Target))
 
 	case "tcp":
@@ -540,8 +639,9 @@ func (d *Daemon) configureDirectServeEndpoint(ep ServeEndpoint) error {
 			serveCmd,
 			serveBackground, // Run in background
 			"--tcp=" + ep.Port,
-			fmt.Sprintf("tcp://127.0.0.1:%s", ep.Target),
 		}
+		args = append(args, serveOptionArgs(ep)...)
+		args = append(args, fmt.Sprintf("tcp://127.0.0.1:%s", ep.Target))
 
 	case "tls-terminated-tcp":
 		// L4 with TLS termination: tailscale serve --bg --tls-terminated-tcp=443 tcp://127.0.0.1:8080
@@ -550,8 +650,9 @@ func (d *Daemon) configureDirectServeEndpoint(ep ServeEndpoint) error {
 			serveCmd,
 			serveBackground, // Run in background
 			"--tls-terminated-tcp=" + ep.Port,
-			fmt.Sprintf("tcp://127.0.0.1:%s", ep.Target),
 		}
+		args = append(args, serveOptionArgs(ep)...)
+		args = append(args, fmt.Sprintf("tcp://127.0.0.1:%s", ep.Target))
 
 	case "tun":
 		// L3: not applicable for direct serve without service
@@ -610,6 +711,7 @@ func (d *Daemon) configureServeEndpoint(ep ServeEndpoint) error {
 		if ep.Path != "" {
 			args = append(args, "--set-path="+ep.Path)
 		}
+		args = append(args, serveOptionArgs(ep)...)
 		args = append(args, fmt.Sprintf("127.0.0.1:%s", ep.Target))
 
 	case "tcp":
@@ -619,8 +721,9 @@ func (d *Daemon) configureServeEndpoint(ep ServeEndpoint) error {
 			serveCmd,
 			"--service=" + d.config.Service,
 			"--tcp=" + ep.Port,
-			fmt.Sprintf("tcp://127.0.0.1:%s", ep.Target),
 		}
+		args = append(args, serveOptionArgs(ep)...)
+		args = append(args, fmt.Sprintf("tcp://127.0.0.1:%s", ep.Target))
 
 	case "tls-terminated-tcp":
 		// L4 with TLS termination: tailscale serve --service=svc:name --tls-terminated-tcp=443 tcp://127.0.0.1:8080
@@ -629,8 +732,9 @@ func (d *Daemon) configureServeEndpoint(ep ServeEndpoint) error {
 			serveCmd,
 			"--service=" + d.config.Service,
 			"--tls-terminated-tcp=" + ep.Port,
-			fmt.Sprintf("tcp://127.0.0.1:%s", ep.Target),
 		}
+		args = append(args, serveOptionArgs(ep)...)
+		args = append(args, fmt.Sprintf("tcp://127.0.0.1:%s", ep.Target))
 
 	case "tun":
 		// L3: tailscale serve --service=svc:name --tun ...
@@ -865,6 +969,86 @@ func (d *Daemon) Logout() error {
 	out, err := exec.CommandContext(ctx, d.config.TailscaleBin, "--socket="+d.socketPath, "logout").CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("tailscale logout failed: %w (output: %s)", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// BackendState returns tailscaled's backend state, such as Running or
+// NeedsLogin, from its LocalAPI: cheaper than running the CLI on every
+// health check.
+func (d *Daemon) BackendState() (string, error) {
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				var dialer net.Dialer
+				return dialer.DialContext(ctx, "unix", d.socketPath)
+			},
+		},
+	}
+	defer client.CloseIdleConnections()
+
+	req, err := http.NewRequestWithContext(d.ctx, http.MethodGet,
+		"http://local-tailscaled.sock/localapi/v0/status?peers=false", nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to build status request: %w", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to query tailscaled: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("tailscaled status: %s", resp.Status)
+	}
+	var status struct{ BackendState string }
+	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+		return "", fmt.Errorf("failed to parse tailscaled status: %w", err)
+	}
+	return status.BackendState, nil
+}
+
+// LoggedOut reports whether the node has lost its login: tailscaled needs a
+// login, or control recently said it does not know the node. Being offline
+// is not enough: the control plane may just be unreachable, and the node key
+// still valid.
+func (d *Daemon) LoggedOut() bool {
+	if time.Since(time.Unix(d.nodeNotFound.Load(), 0)) < 30*time.Second {
+		return true
+	}
+	state, err := d.BackendState()
+	return err == nil && state == "NeedsLogin"
+}
+
+// Reauthenticate logs a node in again with the auth key, as a new device, and
+// restores what it serves.
+func (d *Daemon) Reauthenticate() error {
+	if err := d.tryBringUp(true, "--force-reauth"); err != nil {
+		return err
+	}
+	d.nodeNotFound.Store(0)
+	if d.config.Direct && len(d.config.Endpoints) > 0 {
+		if err := d.configureDirectServe(); err != nil {
+			return fmt.Errorf("failed to configure direct serve: %w", err)
+		}
+	}
+	if d.config.Service != "" {
+		if err := d.configureService(); err != nil {
+			return fmt.Errorf("failed to configure Tailscale service: %w", err)
+		}
+	}
+	return nil
+}
+
+// Drain stops new connections to the node's backend for a Tailscale Service.
+func (d *Daemon) Drain(service string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx, d.config.TailscaleBin, "--socket="+d.socketPath, serveCmd, "drain", service).
+		CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("tailscale serve drain failed: %w (output: %s)", err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }

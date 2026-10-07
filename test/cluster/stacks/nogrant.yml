@@ -1,0 +1,15 @@
+services:
+  client:
+    image: alpine:3.23
+    command: ["sh","-c","apk add -q curl iperf3 bind-tools >/dev/null; while :; do sleep 3600; done"]
+    networks: [tailnet]
+    dns: [100.100.100.100]
+    deploy:
+      mode: global
+networks:
+  tailnet:
+    driver: ghcr.io/matchory/tslink:latest
+    driver_opts:
+      tslink.authkey: ${TSLINK_OAUTH_SECRET}?ephemeral=true&preauthorized=true
+      com.docker.network.driver.mtu: "1450"
+      tslink.tags: tag:tslink-test-nogrant

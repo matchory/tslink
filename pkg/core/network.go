@@ -5,4 +5,5 @@ type Network struct {
 	ID      string
 	AuthKey string
 	Tags    []string // If set, overrides the tslink.tags container label
+	MTU     int      // veth MTU; 0 for the default
 }

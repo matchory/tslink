@@ -1,0 +1,45 @@
+#!/bin/sh
+# tslink-drain: drain every tslink Tailscale Service backend on this node, then give callers time
+# to move to other backends. docker.service runs it as ExecStop (tslink-drain.conf), before dockerd
+# gets SIGTERM and stops the containers: Docker sends no events once it shuts down, so tslink
+# cannot drain them itself. Always exits 0, so a failed drain never holds up the stop.
+#
+# Environment:
+#   TSLINK_DATA        tslink's data directory (default /var/lib/docker-plugins/tailscale)
+#   TSLINK_TAILSCALE   tailscale CLI (default: the one bundled in the tslink plugin, else PATH)
+#   TSLINK_DRAIN_WAIT  seconds to wait after draining (default 3; callers moved within 1.5 s)
+data=${TSLINK_DATA:-/var/lib/docker-plugins/tailscale}
+wait=${TSLINK_DRAIN_WAIT:-3}
+ts=${TSLINK_TAILSCALE:-}
+if [ -z "$ts" ]; then
+	for f in /var/lib/docker/plugins/*/rootfs/usr/local/bin/tailscale; do
+		[ -x "$f" ] && ts=$f && break
+	done
+fi
+ts=${ts:-$(command -v tailscale)}
+if [ -z "$ts" ]; then
+	echo "tslink-drain: no tailscale CLI found, nothing drained"
+	exit 0
+fi
+
+drains=0
+for sock in "$data"/sock/*.sock; do
+	[ -S "$sock" ] || continue
+	ep=$(basename "$sock" .sock)
+	for svc in $(timeout 5 "$ts" --socket="$sock" serve status --json 2>/dev/null | grep -o '"svc:[^"]*"' | tr -d '"' | sort -u); do
+		(
+			if timeout 10 "$ts" --socket="$sock" serve drain "$svc" >/dev/null 2>&1; then
+				echo "tslink-drain: drained $svc on endpoint $ep"
+			else
+				echo "tslink-drain: failed to drain $svc on endpoint $ep"
+			fi
+		) &
+		drains=$((drains + 1))
+	done
+done
+wait
+if [ "$drains" -gt 0 ]; then
+	echo "tslink-drain: waiting ${wait}s for callers to move"
+	sleep "$wait"
+fi
+exit 0

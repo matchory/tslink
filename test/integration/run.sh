@@ -21,45 +21,45 @@ echo "Static service: $STATIC_SERVICE"
 
 # Validate required environment
 if [ -z "${TS_AUTHKEY:-}" ]; then
-    echo "ERROR: TS_AUTHKEY environment variable is required"
-    exit 1
+	echo "ERROR: TS_AUTHKEY environment variable is required"
+	exit 1
 fi
 
 # Export logs for artifact upload
 export_logs() {
-    echo "=== Exporting logs to $LOG_DIR ==="
-    mkdir -p "$LOG_DIR"
+	echo "=== Exporting logs to $LOG_DIR ==="
+	mkdir -p "$LOG_DIR"
 
-    # Plugin logs
-    sudo cp -r /var/lib/docker-plugins/tailscale/*.log "$LOG_DIR/" 2>/dev/null || true
-    sudo find /var/lib/docker-plugins/tailscale -name "debug.log" -exec cp {} "$LOG_DIR/" \; 2>/dev/null || true
+	# Plugin logs
+	sudo cp -r /var/lib/docker-plugins/tailscale/*.log "$LOG_DIR/" 2>/dev/null || true
+	sudo find /var/lib/docker-plugins/tailscale -name "debug.log" -exec cp {} "$LOG_DIR/" \; 2>/dev/null || true
 
-    # Plugin state (for debugging)
-    docker plugin inspect "$PLUGIN_NAME:$PLUGIN_TAG" > "$LOG_DIR/plugin-inspect.json" 2>&1 || true
+	# Plugin state (for debugging)
+	docker plugin inspect "$PLUGIN_NAME:$PLUGIN_TAG" >"$LOG_DIR/plugin-inspect.json" 2>&1 || true
 
-    # Container logs
-    docker compose -f "$SCRIPT_DIR/docker-compose.yml" logs > "$LOG_DIR/compose.log" 2>&1 || true
+	# Container logs
+	docker compose -f "$SCRIPT_DIR/docker-compose.yml" logs >"$LOG_DIR/compose.log" 2>&1 || true
 
-    # Fix permissions so CI can read them
-    sudo chown -R "$(id -u):$(id -g)" "$LOG_DIR" 2>/dev/null || true
+	# Fix permissions so CI can read them
+	sudo chown -R "$(id -u):$(id -g)" "$LOG_DIR" 2>/dev/null || true
 
-    echo "Logs exported to $LOG_DIR"
-    ls -la "$LOG_DIR" || true
+	echo "Logs exported to $LOG_DIR"
+	ls -la "$LOG_DIR" || true
 }
 
 # Cleanup function
 cleanup() {
-    local exit_code=$?
+	local exit_code=$?
 
-    # Always export logs
-    export_logs
+	# Always export logs
+	export_logs
 
-    echo "=== Cleaning up ==="
-    docker compose -f "$SCRIPT_DIR/docker-compose.yml" down -v 2>/dev/null || true
-    docker plugin disable "$PLUGIN_NAME:$PLUGIN_TAG" -f 2>/dev/null || true
-    docker plugin rm "$PLUGIN_NAME:$PLUGIN_TAG" -f 2>/dev/null || true
+	echo "=== Cleaning up ==="
+	docker compose -f "$SCRIPT_DIR/docker-compose.yml" down -v 2>/dev/null || true
+	docker plugin disable "$PLUGIN_NAME:$PLUGIN_TAG" -f 2>/dev/null || true
+	docker plugin rm "$PLUGIN_NAME:$PLUGIN_TAG" -f 2>/dev/null || true
 
-    exit $exit_code
+	exit $exit_code
 }
 trap cleanup EXIT
 
@@ -82,8 +82,8 @@ docker plugin enable "$PLUGIN_NAME:$PLUGIN_TAG"
 # Run tests via docker compose (V2)
 echo "=== Running integration tests ==="
 docker compose -f "$SCRIPT_DIR/docker-compose.yml" up \
-    --build \
-    --abort-on-container-exit \
-    --exit-code-from client
+	--build \
+	--abort-on-container-exit \
+	--exit-code-from client
 
 echo "=== Integration tests passed! ==="

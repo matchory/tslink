@@ -2,14 +2,17 @@ package core
 
 import (
 	"os"
+	"strconv"
 	"strings"
+
+	"github.com/aaomidi/tslink/pkg/tailscale"
 )
 
 // Config holds the plugin configuration.
 type Config struct {
 	AuthKey   string
 	DataDir   string
-	TSVersion string // Tailscale version to download ("latest" or specific version)
+	TSVersion string // "bundled" (the image's binaries), "latest" or a version to download
 	TSPath    string // Optional path to user-provided Tailscale binaries
 }
 
@@ -17,6 +20,19 @@ type Config struct {
 type NetworkOptions struct {
 	AuthKey string
 	Tags    []string
+	MTU     int // 0 if unset or invalid
+}
+
+// MTUOption is Docker's standard network option for the interface MTU.
+const MTUOption = "com.docker.network.driver.mtu"
+
+// ParseMTU returns the MTU an option value sets, or 0 if it is not a valid one.
+func ParseMTU(s string) int {
+	mtu, err := strconv.Atoi(s)
+	if err != nil || mtu < 576 || mtu > 65535 {
+		return 0
+	}
+	return mtu
 }
 
 // EndpointOptions holds options for endpoint creation.
@@ -38,7 +54,7 @@ func LoadConfig() (*Config, error) {
 	}
 
 	if cfg.TSVersion == "" {
-		cfg.TSVersion = "latest"
+		cfg.TSVersion = tailscale.BundledVersion
 	}
 
 	return cfg, nil
@@ -62,6 +78,12 @@ func ParseNetworkOptions(opts map[string]any) NetworkOptions {
 	if v, ok := genericOpts["tslink.authkey"]; ok {
 		if s, ok := v.(string); ok {
 			options.AuthKey = s
+		}
+	}
+
+	if v, ok := genericOpts[MTUOption]; ok {
+		if s, ok := v.(string); ok {
+			options.MTU = ParseMTU(s)
 		}
 	}
 

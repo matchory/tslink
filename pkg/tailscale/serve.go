@@ -12,6 +12,7 @@ import (
 )
 
 // ServeEndpoint represents a single Tailscale serve configuration.
+// Configured via labels like: tslink.serve.443=https:8080/api.
 type ServeEndpoint struct {
 	Proto  string // http, https, tcp, tls-terminated-tcp, tun
 	Port   string // External port Tailscale exposes

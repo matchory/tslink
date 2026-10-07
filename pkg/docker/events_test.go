@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/matchory/tslink/pkg/core"
+	"github.com/matchory/tslink/pkg/tailscale"
 )
 
 func TestParseContainerInfoStack(t *testing.T) {
@@ -64,29 +65,39 @@ func TestIsStopSignal(t *testing.T) {
 func TestParseServeValueProxyProtocol(t *testing.T) {
 	tests := []struct {
 		port, value string
-		want        *core.ServeEndpoint
+		want        *tailscale.ServeEndpoint
 	}{
 		{
 			"5432",
 			"tcp:5432?proxy-protocol=2",
-			&core.ServeEndpoint{Proto: "tcp", Port: "5432", Target: "5432", ProxyProtocol: "2"},
+			&tailscale.ServeEndpoint{
+				Proto:         "tcp",
+				Port:          "5432",
+				Target:        "5432",
+				ProxyProtocol: "2",
+			},
 		},
 		{
 			"5432",
 			"tcp?proxy-protocol=1",
-			&core.ServeEndpoint{Proto: "tcp", Port: "5432", Target: "5432", ProxyProtocol: "1"},
+			&tailscale.ServeEndpoint{
+				Proto:         "tcp",
+				Port:          "5432",
+				Target:        "5432",
+				ProxyProtocol: "1",
+			},
 		},
 		{
 			"443",
 			"tls-terminated-tcp:8443?proxy-protocol=2",
-			&core.ServeEndpoint{
+			&tailscale.ServeEndpoint{
 				Proto:         "tls-terminated-tcp",
 				Port:          "443",
 				Target:        "8443",
 				ProxyProtocol: "2",
 			},
 		},
-		{"5432", "tcp:5432", &core.ServeEndpoint{Proto: "tcp", Port: "5432", Target: "5432"}},
+		{"5432", "tcp:5432", &tailscale.ServeEndpoint{Proto: "tcp", Port: "5432", Target: "5432"}},
 		{"5432", "tcp:5432?proxy-protocol=3", nil},
 		{"5432", "tcp:5432?proxy-protocol=", nil},
 		{"5432", "tcp:5432?bogus=1", nil},
@@ -103,12 +114,12 @@ func TestParseServeValueProxyProtocol(t *testing.T) {
 func TestParseServeValueAcceptAppCaps(t *testing.T) {
 	tests := []struct {
 		port, value string
-		want        *core.ServeEndpoint
+		want        *tailscale.ServeEndpoint
 	}{
 		{
 			"80",
 			"http:80?accept-app-caps=example.com/cap/a",
-			&core.ServeEndpoint{
+			&tailscale.ServeEndpoint{
 				Proto:         "http",
 				Port:          "80",
 				Target:        "80",
@@ -118,7 +129,7 @@ func TestParseServeValueAcceptAppCaps(t *testing.T) {
 		{
 			"443",
 			"https:8080/api?accept-app-caps=example.com/cap/a,example.com/cap/b",
-			&core.ServeEndpoint{
+			&tailscale.ServeEndpoint{
 				Proto:         "https",
 				Port:          "443",
 				Target:        "8080",

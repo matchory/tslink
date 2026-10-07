@@ -3,6 +3,8 @@ package tailscale
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -368,5 +370,54 @@ func TestConfigureServeEndpoints(t *testing.T) {
 	}
 	if !slices.EqualFunc(cli.calls, want, slices.Equal) {
 		t.Errorf("calls =\n  %q\nwant\n  %q", cli.calls, want)
+	}
+}
+
+func TestServeDebugLogKeepsEarlierAttempts(t *testing.T) {
+	cli := &fakeCLI{}
+	d := newTestDaemon(t, cli, "svc:web")
+	ep := ServeEndpoint{Proto: "tcp", Port: "22", Target: "22"}
+	if err := d.configureServeEndpoint(ep); err != nil {
+		t.Fatal(err)
+	}
+	cli.out, cli.err = "boom", errors.New("exit status 1")
+	if err := d.configureServeEndpoint(ep); err == nil {
+		t.Fatal("second attempt succeeded, want an error")
+	}
+	log, err := os.ReadFile(filepath.Join(d.config.StateDir, "serve-debug.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"SUCCESS", "FAILED: exit status 1", "Output: boom"} {
+		if !strings.Contains(string(log), want) {
+			t.Errorf("log missing %q:\n%s", want, log)
+		}
+	}
+	if n := strings.Count(string(log), "Running: "); n != 2 {
+		t.Errorf("log has %d attempts, want 2:\n%s", n, log)
+	}
+}
+
+func TestServeDebugLogIsBounded(t *testing.T) {
+	old := serveDebugLogMaxBytes
+	serveDebugLogMaxBytes = 300
+	t.Cleanup(func() { serveDebugLogMaxBytes = old })
+
+	cli := &fakeCLI{out: strings.Repeat("x", 100)}
+	d := newTestDaemon(t, cli, "svc:web")
+	for range 10 {
+		if err := d.configureServeEndpoint(ServeEndpoint{Proto: "tcp", Port: "22", Target: "22"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	path := filepath.Join(d.config.StateDir, "serve-debug.log")
+	for _, p := range []string{path, path + ".1"} {
+		st, err := os.Stat(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if st.Size() > serveDebugLogMaxBytes {
+			t.Errorf("%s is %d bytes, want at most %d", p, st.Size(), serveDebugLogMaxBytes)
+		}
 	}
 }

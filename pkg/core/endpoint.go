@@ -664,13 +664,16 @@ func wipeStateOnKeyChange(stateDir string, network *Network) {
 	}
 }
 
-// stopTailscale stops the endpoint's tailscaled, if it runs. An ephemeral node
-// is logged out and its state deleted, since nothing will reuse it.
+// stopTailscale stops the endpoint's tailscaled, if it runs. A Service backend
+// is drained first, unless its stop signal did that, and control given time to
+// learn of it. An ephemeral node is then logged out and its state deleted,
+// since nothing will reuse it.
 func (e *Endpoint) stopTailscale() {
 	defer e.releaseStateDir()
 
 	e.mu.Lock()
 	stateDir := e.StateDir
+	service := e.Service
 	ephemeral := e.Network != nil && e.Network.Ephemeral()
 	supervisor := e.supervisor
 	e.supervisor = nil
@@ -687,9 +690,16 @@ func (e *Endpoint) stopTailscale() {
 		}
 		return
 	}
+	// A task that exits on its own gets no stop signal, and a node that goes
+	// before control learned of its drain can keep callers of the Service
+	// pointed at it
+	if service != "" {
+		supervisor.DrainAndWait(service)
+	}
 	// An ephemeral node would linger offline until Tailscale removes it;
 	// logging out deletes it now
 	if ephemeral {
+		logger.Info("Endpoint %s: logging out ephemeral node", e.ID[:12])
 		if err := logoutWithRetry(supervisor.Logout); err != nil {
 			logger.Warn("Failed to log out ephemeral node during Leave: %v", err)
 		}

@@ -34,10 +34,21 @@ const (
 	acmeAccountKeyFile = "acme-account.key.pem" // tailscaled's name for its ACME account key
 	certLeaseRefresh   = 15 * time.Second
 	certLeaseStale     = 2 * time.Minute // tailscaled gives up on an issuance after 2 minutes
-	certPollInterval   = 5 * time.Second
 	protoHTTP          = "http"
 	protoHTTPS         = "https"
 )
+
+// certPollInterval spaces the checks for a certificate, and certDomainGrace is
+// how long the lease holder waits, unadvertised, for control to make the
+// Service's name one of its certificate domains. Variables for tests.
+var (
+	certPollInterval = 5 * time.Second
+	certDomainGrace  = 30 * time.Second
+)
+
+// certDomainError is what "tailscale cert" fails with for a name that is not
+// among the node's certificate domains.
+const certDomainError = "invalid domain"
 
 // errLeaseHeld means another replica holds the lease to issue a certificate.
 var errLeaseHeld = errors.New("another replica is issuing the certificate")
@@ -205,14 +216,22 @@ func (l *certLease) release() {
 	}
 }
 
-// requestCert asks tailscaled for domain's certificate until dir holds it.
-// Serving the Service would make tailscaled fetch it only if the domain were
-// already among the node's certificate domains when the Service was
-// configured, but control adds it seconds later, and the next attempt would
-// be an hour away.
+// requestCert asks tailscaled for domain's certificate until dir holds it,
+// or the backend is drained. Serving the Service would make tailscaled fetch
+// it only if the domain were already among the node's certificate domains
+// when the Service was configured, but control adds it seconds later, and the
+// next attempt would be an hour away.
+//
+// The holder asks unadvertised. Should control keep refusing the name for
+// certDomainGrace, the holder advertises the Service, in case control makes it
+// a certificate domain only of hosts that advertise it.
 func (d *Daemon) requestCert(dir, domain string) error {
 	var lastErr string
+	start, advertised := time.Now(), false
 	for !validCert(dir, domain, time.Now()) {
+		if d.isDrained() {
+			return errDrained
+		}
 		ctx, cancel := context.WithTimeout(d.ctx, certLeaseStale)
 		// The certificate and its key go to stdout, which is discarded
 		cmd := exec.CommandContext(ctx, d.config.TailscaleBin, "--socket="+d.socketPath,
@@ -227,6 +246,14 @@ func (d *Daemon) requestCert(dir, domain string) error {
 				logger.Info("Certificate for %s not issued yet: %v", domain, err)
 				lastErr = err.Error()
 			}
+			if !advertised && strings.Contains(err.Error(), certDomainError) && time.Since(start) >= certDomainGrace {
+				logger.Warn("Control has not made %s a certificate domain of %s within %v: advertising %s",
+					domain, d.config.EndpointID, certDomainGrace, d.config.Service)
+				if err := d.advertise(d.config.Service); err != nil {
+					return err
+				}
+				advertised = true
+			}
 		}
 		select {
 		case <-d.ctx.Done():
@@ -240,10 +267,14 @@ func (d *Daemon) requestCert(dir, domain string) error {
 // configureServiceWhenCertified configures the Service backend, at once if it
 // serves no HTTPS or its certificate exists, and otherwise in the background
 // once it does or this replica holds the lease to issue it: waiting here would
-// hold up the daemon's start.
+// hold up the daemon's start. A drained backend is left alone.
 func (d *Daemon) configureServiceWhenCertified() error {
+	if d.isDrained() {
+		logger.Info("Not configuring %s for %s: drained", d.config.Service, d.config.EndpointID)
+		return nil
+	}
 	if !servesHTTPS(d.config.Endpoints) {
-		return d.configureService()
+		return ignoreDrained(d.configureService())
 	}
 	domain, err := d.serviceDomain()
 	if err != nil {
@@ -251,16 +282,29 @@ func (d *Daemon) configureServiceWhenCertified() error {
 	}
 	dir := filepath.Join(d.config.StateDir, certsDirName)
 	if validCert(dir, domain, time.Now()) {
-		return d.configureService()
+		return ignoreDrained(d.configureService())
 	}
 	logger.Info("No certificate for %s yet: configuring %s once there is one", domain, d.config.Service)
 	go d.configureServiceAfterCert(dir, domain)
 	return nil
 }
 
+// ignoreDrained returns err, or nil for errDrained.
+func ignoreDrained(err error) error {
+	if errors.Is(err, errDrained) {
+		return nil
+	}
+	return err
+}
+
 func (d *Daemon) configureServiceAfterCert(dir, domain string) {
 	for {
 		err := d.configureServiceWithCert(dir, domain)
+		if errors.Is(err, errDrained) {
+			logger.Info("%s drained for %s: no longer waiting for the certificate for %s",
+				d.config.Service, d.config.EndpointID, domain)
+			return
+		}
 		if err == nil || d.ctx.Err() != nil {
 			return
 		}
@@ -277,8 +321,12 @@ func (d *Daemon) configureServiceAfterCert(dir, domain string) {
 
 // configureServiceWithCert configures the Service if its certificate exists,
 // or if this replica takes the lease to issue it. It returns errLeaseHeld if
-// another replica holds the lease.
+// another replica holds the lease, and errDrained once the backend is drained.
+// No replica is advertised before the certificate exists.
 func (d *Daemon) configureServiceWithCert(dir, domain string) error {
+	if d.isDrained() {
+		return errDrained
+	}
 	if validCert(dir, domain, time.Now()) {
 		if err := d.configureService(); err != nil {
 			return err
@@ -292,16 +340,17 @@ func (d *Daemon) configureServiceWithCert(dir, domain string) error {
 		return err
 	}
 	defer lease.release()
-	logger.Info("Holding the certificate lease for %s: configuring %s to issue it", domain, d.config.Service)
-	if err := d.configureService(); err != nil {
+	logger.Info("Holding the certificate lease for %s: configuring %s, unadvertised, to issue it",
+		domain, d.config.Service)
+	if err := d.configureServiceBackend(false); err != nil {
 		return err
 	}
 	// Keep the lease until the certificate exists, so the others wait for it
 	if err := d.requestCert(dir, domain); err != nil {
 		return err
 	}
-	logger.Info("Certificate for %s issued", domain)
-	return nil
+	logger.Info("Certificate for %s issued: advertising %s", domain, d.config.Service)
+	return d.advertise(d.config.Service)
 }
 
 // servesHTTPS reports whether any endpoint makes tailscaled terminate TLS.

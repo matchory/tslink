@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -26,24 +27,44 @@ func TestServeOptionArgs(t *testing.T) {
 // fakeCLI records the tailscale CLI calls of a daemon and answers them with
 // out and err.
 type fakeCLI struct {
+	mu    sync.Mutex
 	calls [][]string
 	out   string
 	err   error
 }
 
 func (f *fakeCLI) run(_ context.Context, _ string, args ...string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.calls = append(f.calls, args)
 	return f.out, f.err
+}
+
+// snapshot returns the calls so far, without the socket argument.
+func (f *fakeCLI) snapshot() [][]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	calls := make([][]string, len(f.calls))
+	for i, c := range f.calls {
+		calls[i] = slices.Clone(c[1:])
+	}
+	return calls
 }
 
 const testSocket = "/run/test.sock"
 
 func newTestDaemon(t *testing.T, cli *fakeCLI, service string) *Daemon {
 	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
 	return &Daemon{
-		config:     DaemonConfig{EndpointID: "test", StateDir: t.TempDir(), Service: service},
+		config: DaemonConfig{
+			EndpointID: "test", StateDir: t.TempDir(), Service: service, gate: &serviceGate{},
+		},
 		socketPath: testSocket,
 		runCLI:     cli.run,
+		ctx:        ctx,
+		cancel:     cancel,
 	}
 }
 
@@ -342,11 +363,23 @@ func TestDrain(t *testing.T) {
 	if len(cli.calls) != 1 || !slices.Equal(cli.calls[0], want) {
 		t.Errorf("calls = %q, want %q", cli.calls, want)
 	}
+	// Once drained, draining again, as Leave does after the stop signal's drain, does nothing
+	if err := d.Drain("svc:web"); err != nil || len(cli.calls) != 1 {
+		t.Errorf("second Drain = %v, calls %q; want no command", err, cli.calls)
+	}
 
-	cli.out, cli.err = "no such service\n", errors.New("exit status 1")
+	// A failed drain still keeps the backend from being advertised, and is retried
+	cli = &fakeCLI{out: "no such service\n", err: errors.New("exit status 1")}
+	d = newTestDaemon(t, cli, "")
 	err := d.Drain("svc:web")
 	if err == nil || err.Error() != "tailscale serve drain failed: exit status 1 (output: no such service)" {
 		t.Errorf("error = %v", err)
+	}
+	if !d.isDrained() {
+		t.Error("failed drain left the backend advertisable")
+	}
+	if err := d.Drain("svc:web"); err == nil || len(cli.calls) != 2 {
+		t.Errorf("drain after a failure = %v, calls %q; want it run again", err, cli.calls)
 	}
 }
 

@@ -2,6 +2,7 @@ package tailscale
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strconv"
@@ -98,9 +99,16 @@ const untaggedServiceHostError = "service hosts must be tagged nodes"
 // attempts, is rotated; a variable for tests.
 var serveDebugLogMaxBytes int64 = 1 << 20
 
-// configureService runs "tailscale serve" to register as a service backend.
-// This should be called after bringUp() succeeds.
+// configureService runs "tailscale serve" to register as a service backend,
+// and advertises it. This should be called after bringUp() succeeds.
 func (d *Daemon) configureService() error {
+	return d.configureServiceBackend(true)
+}
+
+// configureServiceBackend configures the node as a backend of its Service,
+// and advertises it if advertise is set. A drained backend is left alone: it
+// returns errDrained.
+func (d *Daemon) configureServiceBackend(advertise bool) error {
 	if d.config.Service == "" {
 		return nil // No service configured, skip
 	}
@@ -108,6 +116,14 @@ func (d *Daemon) configureService() error {
 	if len(d.config.Endpoints) == 0 {
 		logger.Warn("Service %s configured but no endpoints defined", d.config.Service)
 		return nil
+	}
+
+	g := d.config.gate
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if d.isDrained() {
+		logger.Info("Not configuring %s for %s: drained", d.config.Service, d.config.EndpointID)
+		return errDrained
 	}
 
 	logger.Info("Configuring Tailscale Service %s with %d endpoint(s) for %s",
@@ -121,21 +137,24 @@ func (d *Daemon) configureService() error {
 		}
 	}
 
-	return d.advertise(d.config.Service)
+	if !advertise {
+		// "tailscale serve --service" advertises the Service by itself
+		return d.runServe(context.Background(), "serve-unadvertise", "drain", d.config.Service)
+	}
+	return d.runServe(context.Background(), "serve-advertise", "advertise", d.config.Service)
 }
 
-// advertise runs "tailscale serve advertise". A drained service stays drained
-// in the node's state, as after a plugin restart: advertise it again once its
-// endpoints are configured.
+// advertise runs "tailscale serve advertise", unless the backend was drained.
+// A drained service stays drained in the node's state, as after a plugin
+// restart: advertise it again once its endpoints are configured.
 func (d *Daemon) advertise(service string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	out, err := d.tailscale(ctx, "serve-advertise", "--socket="+d.socketPath,
-		serveCmd, "advertise", service)
-	if err != nil {
-		return fmt.Errorf("tailscale serve advertise failed: %w (output: %s)", err, strings.TrimSpace(out))
+	g := d.config.gate
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if d.isDrained() {
+		return errDrained
 	}
-	return nil
+	return d.runServe(context.Background(), "serve-advertise", "advertise", service)
 }
 
 // configureDirectServe runs "tailscale serve" without --service flag to configure
@@ -263,18 +282,6 @@ func (d *Daemon) serveDebug(format string, args ...any) {
 	}
 }
 
-// Drain stops new connections to the node's backend for a Tailscale Service.
-func (d *Daemon) Drain(service string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	out, err := d.tailscale(ctx, "serve-drain", "--socket="+d.socketPath, serveCmd, "drain", service)
-	if err != nil {
-		return fmt.Errorf("tailscale serve drain failed: %w (output: %s)", err, strings.TrimSpace(out))
-	}
-	return nil
-}
-
 // ConfigureServeEndpoints configures multiple Tailscale serve endpoints after startup.
 // This is called when container info is obtained from cache after initial Join.
 func (d *Daemon) ConfigureServeEndpoints(service string, endpoints []ServeEndpoint, tags []string, direct bool) error {
@@ -316,19 +323,13 @@ func (d *Daemon) ConfigureServeEndpoints(service string, endpoints []ServeEndpoi
 
 	// Configure service backend if specified
 	if service != "" {
-		for i, ep := range endpoints {
-			if err := d.configureServeEndpoint(ep); err != nil {
-				return fmt.Errorf("failed to configure service endpoint %d (%s:%s): %w",
-					i, ep.Proto, ep.Port, err)
-			}
+		switch err := d.configureService(); {
+		case errors.Is(err, errDrained):
+		case err != nil:
+			return err
+		default:
+			logger.Info("Late service configuration completed")
 		}
-		// As configureService: no endpoints, nothing to advertise
-		if len(endpoints) > 0 {
-			if err := d.advertise(service); err != nil {
-				return err
-			}
-		}
-		logger.Info("Late service configuration completed")
 	}
 
 	return nil

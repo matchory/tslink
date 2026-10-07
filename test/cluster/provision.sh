@@ -31,7 +31,10 @@ wait
 	printf '  ControlMaster auto\n  ControlPath ~/.tslink-test/cm-%%h\n  ControlPersist 30m\n'
 } >"$B/ssh_config"
 
-until for n in mgr w1 w2; do "$B/s" "$n" test -f /var/lib/cloud-init-done || exit 1; done; do sleep 10; done
+ready() {
+	for n in mgr w1 w2; do "$B/s" "$n" test -f /var/lib/cloud-init-done 2>/dev/null || return 1; done
+}
+until ready; do sleep 10; done
 "$B/s" mgr "docker swarm init --advertise-addr $(hcloud server describe tslink-test-mgr -o json | jq -r '.private_net[0].ip')" >/dev/null
 TOKEN=$("$B/s" mgr docker swarm join-token -q worker)
 MGR=$(hcloud server describe tslink-test-mgr -o json | jq -r '.private_net[0].ip')

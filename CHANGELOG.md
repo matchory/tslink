@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Changes since upstream [aaomidi/tslink](https://github.com/aaomidi/tslink)
 v0.1.0, of which this project is a fork. The Swarm features were tested on
-three- and five-node swarms; see [docs/testing](docs/testing).
+three- and five-node swarms; see [docs/testing.md](docs/testing.md).
 
 ### Added
 

@@ -1,14 +1,15 @@
 # Credentials and tags for Swarm services
 
-How a Swarm task gets its tailnet identity without letting a task choose
-someone else's. Decided 2026-10-07, after the
-[Swarm spike](testing/swarm-spike-2026-10-06.md).
+How to give each Swarm task a tailnet identity without letting a task choose
+someone else's. Based on the [Swarm spike](testing/swarm-spike-2026-10-06.md)
+and the [cluster test](testing/swarm-cluster-test-2026-10-07.md).
 
-## Decision
+## Recommended setup
 
-Each stack gets its own Tailscale OAuth client, allowed to apply only that
-stack's tags. CI injects the client secret into the stack's network
-definition at deploy time; the tags sit next to it:
+Give each stack its own Tailscale OAuth client, allowed to apply only that
+stack's tags. Inject the client secret into the stack's network definition at
+deploy time, for example from your CI or deployment tool's secret store, and
+put the tags next to it:
 
 ```yaml
 networks:
@@ -18,6 +19,8 @@ networks:
       tslink.authkey: ${TSLINK_OAUTH_SECRET}?ephemeral=true&preauthorized=true
       tslink.tags: tag:svc-billing
 ```
+
+What makes this safe:
 
 - **Tags come from the network.** `tslink.tags` on the network overrides the
   container label, so a task cannot pick its own tags. Tailscale rejects tags
@@ -37,22 +40,24 @@ networks:
   `docker network inspect`, i.e. to holders of the Docker API, and tslink does
   not log option values.
 
+## Rotation and revocation
+
 Rotating the secret means recreating the network, which takes the stack down
 briefly: 14 seconds from `docker stack rm` until the redeployed stack answered
-on its Service VIP, in the [cluster test](testing/swarm-cluster-test-2026-10-07.md).
-OAuth client secrets do not expire, so this should be rare. A stack that
-cannot afford the gap can be deployed under a new stack name with the new
-client first, and the old one removed once the new one serves.
+on its Service VIP, in the cluster test. OAuth client secrets do not expire,
+so this should be rare. A stack that cannot afford the gap can be deployed
+under a new stack name with the new client first, and the old one removed
+once the new one serves.
 
 The secret is only used to register nodes. Revoking it leaves running tasks
 online, and they also survive a plugin restart or reboot, since a node that is
 still logged in comes up without its key; tasks started after the revocation
 fail to register and retry until the network carries a valid secret.
 
-### Rejected
+## Alternatives not recommended
 
-- **Policy file on each node** mapping stacks to credentials: couples cluster
-  deployments to node provisioning.
+- **A policy file on each node** mapping stacks to credentials: couples
+  cluster deployments to node provisioning.
 - **Docker secrets:** Swarm hands secret contents only to the tasks they are
   mounted into, so tslink would have to read the secret from the application's
   own container. A compromised application would then hold a non-expiring
@@ -60,7 +65,7 @@ fail to register and retry until the network carries a valid secret.
 - **Plugin settings (`docker plugin set`):** per node, and changing them
   requires disabling the plugin.
 
-## Postponed: workload identity federation
+## Not supported: workload identity federation
 
 [Workload identity federation](https://tailscale.com/docs/features/workload-identity-federation)
 would remove the per-stack secrets. Since v1.92.1, `tailscale up` accepts
@@ -70,8 +75,9 @@ matches the token's `sub` (wildcards allowed) and optional custom claims, and
 fixes the tags. Custom issuers work if Tailscale can reach their discovery
 document and JWKS over the public internet.
 
-Swarm has no token issuer, and the Hetzner Cloud servers we run on have no
-workload identity, so we would need our own:
+Swarm has no token issuer, and hosts without a cloud workload identity (such
+as the Hetzner Cloud servers of the cluster test) have none either, so a
+cluster would need its own:
 
 - A token issuer service on the managers, holding one signing key for the
   cluster as a Docker secret mounted only into that service. It serves its
@@ -91,5 +97,6 @@ component to run, a public URL, and a dependency on the issuer being up when
 tasks start. The network-level tags and stack check above carry over
 unchanged; only the credential source would change.
 
-Before building it, prove it end-to-end: a minimal issuer, one federated
-credential, and one `tailscale up --id-token` from a task.
+Neither the issuer nor `tslink.clientid` exists yet. Before building them,
+prove the approach end-to-end: a minimal issuer, one federated credential, and
+one `tailscale up --id-token` from a task.

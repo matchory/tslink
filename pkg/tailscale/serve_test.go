@@ -294,6 +294,7 @@ func TestConfigureServiceErrors(t *testing.T) {
 	}{
 		{"unknown service", "error: service not found", "service svc:web not found: create it in Tailscale admin console first"},
 		{"untagged node", "service hosts must be tagged nodes", "requires tagged auth key"},
+		{"other mentioning a tag", "invalid tag:web", "tailscale serve failed: exit status 1 (output: invalid tag:web)"},
 		{"other", "boom", "tailscale serve failed: exit status 1 (output: boom)"},
 	}
 	for _, tt := range tests {

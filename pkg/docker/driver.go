@@ -97,7 +97,7 @@ func NewDriver() (*Driver, error) {
 			}
 			err := d.RecoverEndpoints(ctx)
 			if err == nil {
-				d.collectGarbage()
+				d.collectGarbage(ctx)
 				return
 			}
 			logger.Warn("Initial endpoint recovery failed, retrying: %v", err)
@@ -494,7 +494,7 @@ const gcMinAge = 2 * time.Minute
 // collectGarbage removes state and sockets of endpoints that are gone without
 // a Leave, as after a host crash. It runs once recovery knows every endpoint,
 // and after each watchdog scan.
-func (d *Driver) collectGarbage() {
+func (d *Driver) collectGarbage(ctx context.Context) {
 	d.mu.RLock()
 	endpoints := make([]*core.Endpoint, 0, len(d.endpoints))
 	for _, ep := range d.endpoints {
@@ -510,7 +510,7 @@ func (d *Driver) collectGarbage() {
 		state[ep.GetStateDir()] = true
 	}
 
-	core.CollectGarbage(d.config.DataDir, state, sockets, gcMinAge)
+	core.CollectGarbage(ctx, d.config.DataDir, state, sockets, gcMinAge)
 }
 
 // runWatchdog periodically scans for orphaned endpoints and recovers them,
@@ -538,7 +538,7 @@ func (d *Driver) runWatchdog(ctx context.Context) {
 				continue
 			}
 			// Again here: state younger than gcMinAge survives the first run
-			d.collectGarbage()
+			d.collectGarbage(ctx)
 		}
 	}
 }

@@ -1,8 +1,14 @@
 package core
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -54,7 +60,14 @@ func TestCollectGarbage(t *testing.T) {
 	deadStatus := sock("../status/aaaaaaaaaaaa.json", old)
 	liveStatus := sock("../status/bbbbbbbbbbbb.json", old)
 
-	CollectGarbage(data, map[string]bool{inUse: true}, map[string]bool{"bbbbbbbbbbbb": true}, time.Minute)
+	loggedOut := stubLogout(t, nil)
+
+	CollectGarbage(context.Background(), data, map[string]bool{inUse: true}, map[string]bool{"bbbbbbbbbbbb": true}, time.Minute)
+
+	// Only the nodes whose state goes are logged out
+	if got := loggedOut(); !slices.Equal(got, []string{deadHost, dead}) {
+		t.Errorf("logged out %v, want %v", got, []string{deadHost, dead})
+	}
 
 	for _, p := range []string{dead, deadHost, deadSock, deadStatus} {
 		if _, err := os.Stat(p); !os.IsNotExist(err) {
@@ -152,9 +165,149 @@ func TestCollectGarbageKeepsClaimedState(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	CollectGarbage(data, nil, nil, time.Minute)
+	loggedOut := stubLogout(t, nil)
+
+	CollectGarbage(context.Background(), data, nil, nil, time.Minute)
 
 	if _, err := os.Stat(dir); err != nil {
 		t.Errorf("claimed %s should be kept: %v", dir, err)
+	}
+	if got := loggedOut(); len(got) != 0 {
+		t.Errorf("claimed node logged out: %v", got)
+	}
+}
+
+// stubLogout replaces logoutNode for the test with one that runs fn, if not
+// nil, and records the directories. It returns them, sorted.
+func stubLogout(t *testing.T, fn func(ctx context.Context, dir string) error) func() []string {
+	t.Helper()
+	var mu sync.Mutex
+	var dirs []string
+	saved := logoutNode
+	t.Cleanup(func() { logoutNode = saved })
+	logoutNode = func(ctx context.Context, _, dir string) error {
+		mu.Lock()
+		dirs = append(dirs, dir)
+		mu.Unlock()
+		if fn != nil {
+			return fn(ctx, dir)
+		}
+		return nil
+	}
+	return func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		out := slices.Clone(dirs)
+		slices.Sort(out)
+		return out
+	}
+}
+
+// orphan creates the state directory of an ephemeral node no endpoint uses.
+func orphan(t *testing.T, data, rel string) string {
+	t.Helper()
+	dir := filepath.Join(data, rel)
+	if err := tailscale.MarkEphemeral(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "tailscaled.state"), []byte("{}"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(dir, old, old); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func TestCollectGarbageLogsOutBeforeRemoving(t *testing.T) {
+	// A node logged out frees its name, so a task with the same
+	// tslink.hostname comes back under it rather than as <hostname>-1
+	data := t.TempDir()
+	dir := orphan(t, data, "by-stack/app/web")
+	info := &ContainerInfo{Hostname: "web", Stack: "app"}
+	e := &Endpoint{ID: "0123456789abcdef", DataDir: data, Network: &Network{}}
+
+	stubLogout(t, func(ctx context.Context, got string) error {
+		if !tailscale.StateExists(got) {
+			t.Error("state removed before the logout")
+		}
+		if _, ok := ctx.Deadline(); !ok {
+			t.Error("logout without a deadline")
+		}
+		// No endpoint starts on the state while its node is logged out
+		err := e.ClaimStateDir(info)
+		if err == nil || !strings.Contains(err.Error(), "garbage collect") {
+			t.Errorf("claim during the logout: %v", err)
+		}
+		// Control answers so when Tailscale deleted the node already
+		return errors.New("404 node not found")
+	})
+
+	CollectGarbage(context.Background(), data, nil, nil, time.Minute)
+
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Errorf("%s should be removed although the logout failed (err=%v)", dir, err)
+	}
+	if err := e.ClaimStateDir(info); err != nil {
+		t.Errorf("claim after collection: %v", err)
+	}
+	e.releaseStateDir()
+}
+
+func TestCollectGarbageKeepsStateOnShutdown(t *testing.T) {
+	// A logout the plugin's shutdown interrupts runs again on the next start
+	data := t.TempDir()
+	dir := orphan(t, data, "by-hostname/web")
+	ctx, cancel := context.WithCancel(context.Background())
+	stubLogout(t, func(ctx context.Context, _ string) error {
+		cancel()
+		<-ctx.Done()
+		return ctx.Err()
+	})
+
+	CollectGarbage(ctx, data, nil, nil, time.Minute)
+
+	if !tailscale.StateExists(dir) {
+		t.Errorf("state of %s removed without a logout", dir)
+	}
+	if !claimUnclaimed(dir) {
+		t.Error("claim of garbage collection not released")
+	}
+	stateClaimsMu.Lock()
+	delete(stateClaims, dir)
+	stateClaimsMu.Unlock()
+}
+
+func TestLogoutNodeWithoutState(t *testing.T) {
+	// A start that failed before tailscaled ran left no node to log out, and
+	// needs no Tailscale binaries
+	if err := logoutNode(context.Background(), t.TempDir(), t.TempDir()); err != nil {
+		t.Errorf("logoutNode: %v", err)
+	}
+}
+
+func TestCollectGarbageBoundsLogouts(t *testing.T) {
+	data := t.TempDir()
+	for name := range strings.FieldsSeq("a b c d e f g h i j") {
+		orphan(t, data, filepath.Join("by-hostname", name))
+	}
+	var running, most atomic.Int32
+	loggedOut := stubLogout(t, func(context.Context, string) error {
+		n := running.Add(1)
+		defer running.Add(-1)
+		for m := most.Load(); n > m && !most.CompareAndSwap(m, n); m = most.Load() {
+		}
+		time.Sleep(50 * time.Millisecond)
+		return nil
+	})
+
+	CollectGarbage(context.Background(), data, nil, nil, time.Minute)
+
+	if got := len(loggedOut()); got != 10 {
+		t.Errorf("logged out %d nodes, want 10", got)
+	}
+	if m := most.Load(); m > gcLogoutConcurrency || m < 2 {
+		t.Errorf("%d logouts at once, want 2 to %d", m, gcLogoutConcurrency)
 	}
 }

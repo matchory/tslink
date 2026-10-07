@@ -75,9 +75,9 @@ func CollectGarbage(
 		if socketsInUse[id] || !stale(file) {
 			continue
 		}
-		logger.Info("Removing file of unknown endpoint: %s", file)
+		logger.Infof("Removing file of unknown endpoint: %s", file)
 		if err := os.Remove(file); err != nil {
-			logger.Warn("Failed to remove %s: %v", file, err)
+			logger.Warnf("Failed to remove %s: %v", file, err)
 		}
 	}
 
@@ -108,7 +108,7 @@ func collectCertificates(dir string, now time.Time) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if !errors.Is(err, fs.ErrNotExist) {
-			logger.Warn("Failed to read the certificate directory %s: %v", dir, err)
+			logger.Warnf("Failed to read the certificate directory %s: %v", dir, err)
 		}
 		return
 	}
@@ -122,7 +122,12 @@ func collectCertificates(dir string, now time.Time) {
 		case strings.HasSuffix(name, ".lease"):
 			removeOlder(path, now.Add(-certLeaseMaxAge))
 		case strings.HasSuffix(name, ".key"):
-			if _, err := os.Lstat(strings.TrimSuffix(path, ".key") + ".crt"); errors.Is(err, fs.ErrNotExist) {
+			if _, err := os.Lstat(
+				strings.TrimSuffix(path, ".key") + ".crt",
+			); errors.Is(
+				err,
+				fs.ErrNotExist,
+			) {
 				removeOlder(path, now.Add(-certOrphanAge))
 			}
 		case strings.HasSuffix(name, ".crt"):
@@ -148,7 +153,7 @@ func removeExpiredCert(crt string, cutoff time.Time) {
 	if again, err := os.Stat(crt); err != nil || !again.ModTime().Equal(st.ModTime()) {
 		return
 	}
-	logger.Info("Removing certificate %s, expired %s", crt, notAfter.Format(time.DateOnly))
+	logger.Infof("Removing certificate %s, expired %s", crt, notAfter.Format(time.DateOnly))
 	removeFile(crt)
 	if olderThan(key, cutoff) {
 		removeFile(key)
@@ -189,14 +194,14 @@ func removeOlder(path string, cutoff time.Time) {
 	if err != nil || !st.ModTime().Before(cutoff) {
 		return
 	}
-	logger.Info("Removing %s, unchanged since %s", path, st.ModTime().Format(time.DateTime))
+	logger.Infof("Removing %s, unchanged since %s", path, st.ModTime().Format(time.DateTime))
 	removeFile(path)
 }
 
 // removeFile removes path, which another host may have removed already.
 func removeFile(path string) {
 	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		logger.Warn("Failed to remove %s: %v", path, err)
+		logger.Warnf("Failed to remove %s: %v", path, err)
 	}
 }
 
@@ -207,13 +212,16 @@ func RemoveDownloadCache(dataDir string) {
 	cache := filepath.Join(dataDir, "tailscale-bin")
 	if _, err := os.Lstat(cache); err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
-			logger.Warn("Failed to check for the old Tailscale download cache %s: %v", cache, err)
+			logger.Warnf("Failed to check for the old Tailscale download cache %s: %v", cache, err)
 		}
 		return
 	}
-	logger.Info("Removing the old Tailscale download cache %s: tslink uses its bundled binaries", cache)
+	logger.Infof(
+		"Removing the old Tailscale download cache %s: tslink uses its bundled binaries",
+		cache,
+	)
 	if err := os.RemoveAll(cache); err != nil {
-		logger.Warn("Failed to remove %s: %v", cache, err)
+		logger.Warnf("Failed to remove %s: %v", cache, err)
 	}
 }
 
@@ -226,18 +234,22 @@ func RemoveDownloadCache(dataDir string) {
 func removeEphemeral(ctx context.Context, claims *StateClaims, dataDir, dir string) {
 	defer claims.release(dir, gcClaim)
 
-	logger.Info("Logging out and removing ephemeral node no endpoint uses: %s", dir)
+	logger.Infof("Logging out and removing ephemeral node no endpoint uses: %s", dir)
 	logoutCtx, cancel := context.WithTimeout(ctx, gcLogoutTimeout)
 	defer cancel()
 	if err := logoutNode(logoutCtx, dataDir, dir); err != nil {
 		if ctx.Err() != nil {
-			logger.Info("Logging out ephemeral node of %s interrupted, keeping its state", dir)
+			logger.Infof("Logging out ephemeral node of %s interrupted, keeping its state", dir)
 			return
 		}
-		logger.Warn("Failed to log out ephemeral node of %s, removing its state anyway: %v", dir, err)
+		logger.Warnf(
+			"Failed to log out ephemeral node of %s, removing its state anyway: %v",
+			dir,
+			err,
+		)
 	}
 	if err := os.RemoveAll(dir); err != nil {
-		logger.Warn("Failed to remove %s: %v", dir, err)
+		logger.Warnf("Failed to remove %s: %v", dir, err)
 	}
 }
 

@@ -37,7 +37,7 @@ func (c *ContainerCache) Store(endpointID string, info *core.ContainerInfo) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.byEndpoint[endpointID] = info
-	logger.Info(
+	logger.Infof(
 		"ContainerCache: stored info for endpoint %s (hostname=%s service=%s endpoints=%d direct=%v)",
 		endpointID[:12],
 		info.Hostname,
@@ -83,7 +83,7 @@ func WatchEvents(
 	onInfo ContainerInfoCallback,
 	onStop ContainerStopCallback,
 ) {
-	logger.Info("Starting Docker event watcher")
+	logger.Infof("Starting Docker event watcher")
 
 	// Watch for network connects, and for kills to see containers stopping
 	filterArgs := dockerclient.Filters{}.
@@ -98,28 +98,28 @@ func WatchEvents(
 		Filters: filterArgs,
 	})
 
-	logger.Debug("Event stream started, waiting for events...")
+	logger.Debugf("Event stream started, waiting for events...")
 
 	for {
 		select {
 		case <-ctx.Done():
-			logger.Info("Event watcher shutting down")
+			logger.Infof("Event watcher shutting down")
 			return
 
 		case err := <-result.Err:
 			if err != nil {
 				// Check if context is cancelled before reconnecting
 				if ctx.Err() != nil {
-					logger.Info("Event watcher context cancelled, stopping")
+					logger.Infof("Event watcher context cancelled, stopping")
 					return
 				}
 
-				logger.Warn("Event stream error: %v, reconnecting in 1s...", err)
+				logger.Warnf("Event stream error: %v, reconnecting in 1s...", err)
 
 				// Backoff before reconnecting to avoid tight loop
 				select {
 				case <-ctx.Done():
-					logger.Info("Event watcher context cancelled during backoff")
+					logger.Infof("Event watcher context cancelled during backoff")
 					return
 				case <-time.After(1 * time.Second):
 				}
@@ -137,13 +137,15 @@ func WatchEvents(
 			}
 
 			// Log all network events for debugging
-			logger.Debug("Event received: type=%s network=%s driver=%s",
+			logger.Debugf("Event received: type=%s network=%s driver=%s",
 				msg.Action, msg.Actor.ID, msg.Actor.Attributes["type"])
 
 			if msg.Type == events.ContainerEventType {
-				if msg.Action == events.ActionKill && onStop != nil &&
-					isStopSignal(msg.Actor.Attributes["signal"], stopSignalOf(ctx, cli, msg.Actor.ID)) {
-					onStop(msg.Actor.ID)
+				if msg.Action == events.ActionKill && onStop != nil {
+					signal := msg.Actor.Attributes["signal"]
+					if isStopSignal(signal, stopSignalOf(ctx, cli, msg.Actor.ID)) {
+						onStop(msg.Actor.ID)
+					}
 				}
 				continue
 			}
@@ -154,72 +156,102 @@ func WatchEvents(
 				continue
 			}
 
-			containerID := msg.Actor.Attributes["container"]
-			networkName := msg.Actor.Attributes["name"]
-
-			if containerID == "" {
-				continue
-			}
-
-			logger.Info("Event: network connect - container=%s network=%s", containerID[:12], networkName)
-
-			// Inspect container to get labels and endpoint ID
-			// This is safe - we're not in a callback
-			info, err := cli.ContainerInspect(ctx, containerID, dockerclient.ContainerInspectOptions{})
-			if err != nil {
-				logger.Error("Failed to inspect container %s: %v", containerID[:12], err)
-				continue
-			}
-
-			// Find the endpoint ID for this network
-			if info.Container.NetworkSettings == nil || info.Container.NetworkSettings.Networks == nil {
-				logger.Warn("Container %s has no network settings", containerID[:12])
-				continue
-			}
-
-			netSettings, ok := info.Container.NetworkSettings.Networks[networkName]
-			if !ok {
-				logger.Warn("Container %s not found in network %s", containerID[:12], networkName)
-				continue
-			}
-
-			endpointID := netSettings.EndpointID
-			if endpointID == "" {
-				logger.Warn("Container %s has no endpoint ID for network %s", containerID[:12], networkName)
-				continue
-			}
-
-			logger.Debug("Container %s has endpoint ID %s", containerID[:12], endpointID[:12])
-
-			// Parse container info
-			name := strings.TrimPrefix(info.Container.Name, "/")
-
-			labels := make(map[string]string)
-			if info.Container.Config != nil && info.Container.Config.Labels != nil {
-				labels = info.Container.Config.Labels
-			}
-
-			containerInfo := parseContainerInfo(name, labels)
-			if info.Container.HostConfig != nil {
-				containerInfo.DNS = info.Container.HostConfig.DNS
-			}
-
-			// The network's stack decides which tasks may use it
-			netInfo, err := cli.NetworkInspect(ctx, netSettings.NetworkID, dockerclient.NetworkInspectOptions{})
-			if err != nil {
-				logger.Error("Failed to inspect network %s: %v", networkName, err)
-				continue
-			}
-			containerInfo.NetworkStack = netInfo.Network.Labels[core.StackLabel]
-
-			// Store in cache
-			cache.Store(endpointID, containerInfo)
-
-			// Trigger callback to start Tailscale setup
-			if onInfo != nil {
-				onInfo(endpointID, containerInfo)
-			}
+			handleConnect(ctx, cli, msg, cache, onInfo)
 		}
+	}
+}
+
+// handleConnect handles a container connecting to a tslink network: it
+// inspects the container and network, caches the container's settings and
+// passes them to onInfo.
+func handleConnect(
+	ctx context.Context,
+	cli dockerAPI,
+	msg events.Message,
+	cache *ContainerCache,
+	onInfo ContainerInfoCallback,
+) {
+	containerID := msg.Actor.Attributes["container"]
+	networkName := msg.Actor.Attributes["name"]
+
+	if containerID == "" {
+		return
+	}
+
+	logger.Infof(
+		"Event: network connect - container=%s network=%s",
+		containerID[:12],
+		networkName,
+	)
+
+	// Inspect container to get labels and endpoint ID
+	// This is safe - we're not in a callback
+	info, err := cli.ContainerInspect(
+		ctx,
+		containerID,
+		dockerclient.ContainerInspectOptions{},
+	)
+	if err != nil {
+		logger.Errorf("Failed to inspect container %s: %v", containerID[:12], err)
+		return
+	}
+
+	// Find the endpoint ID for this network
+	if info.Container.NetworkSettings == nil ||
+		info.Container.NetworkSettings.Networks == nil {
+		logger.Warnf("Container %s has no network settings", containerID[:12])
+		return
+	}
+
+	netSettings, ok := info.Container.NetworkSettings.Networks[networkName]
+	if !ok {
+		logger.Warnf("Container %s not found in network %s", containerID[:12], networkName)
+		return
+	}
+
+	endpointID := netSettings.EndpointID
+	if endpointID == "" {
+		logger.Warnf(
+			"Container %s has no endpoint ID for network %s",
+			containerID[:12],
+			networkName,
+		)
+		return
+	}
+
+	logger.Debugf("Container %s has endpoint ID %s", containerID[:12], endpointID[:12])
+
+	// Parse container info
+	name := strings.TrimPrefix(info.Container.Name, "/")
+
+	labels := make(map[string]string)
+	if info.Container.Config != nil && info.Container.Config.Labels != nil {
+		labels = info.Container.Config.Labels
+	}
+
+	containerInfo := parseContainerInfo(name, labels)
+	if info.Container.HostConfig != nil {
+		containerInfo.DNS = info.Container.HostConfig.DNS
+	}
+
+	// The network's stack decides which tasks may use it
+	netInfo, err := cli.NetworkInspect(
+		ctx,
+		netSettings.NetworkID,
+		dockerclient.NetworkInspectOptions{},
+	)
+	if err != nil {
+		logger.Errorf("Failed to inspect network %s: %v", networkName, err)
+		return
+	}
+	containerInfo.NetworkStack = netInfo.Network.Labels[core.StackLabel]
+
+	// Store in cache
+	cache.Store(endpointID, containerInfo)
+
+	// Trigger callback to start Tailscale setup
+	if onInfo != nil {
+		onInfo(endpointID, containerInfo)
 	}
 }
 
@@ -375,20 +407,8 @@ func parseServeValue(externalPort, value string) *core.ServeEndpoint {
 	}
 
 	value, options, _ := strings.Cut(value, "?")
-	if options != "" {
-		for opt := range strings.SplitSeq(options, "&") {
-			key, v, _ := strings.Cut(opt, "=")
-			switch {
-			case key == "proxy-protocol" && (v == "1" || v == "2"):
-				endpoint.ProxyProtocol = v
-			case key == "accept-app-caps" && validAppCaps(v):
-				endpoint.AcceptAppCaps = v
-			default:
-				logger.Warn("tslink.serve.%s: ignoring endpoint with invalid option %q "+
-					"(want proxy-protocol=1|2 or accept-app-caps=<domain>/<name>[,...])", externalPort, opt)
-				return nil
-			}
-		}
+	if options != "" && !parseServeOptions(endpoint, options) {
+		return nil
 	}
 
 	// Split by colon to get proto and target
@@ -400,7 +420,11 @@ func parseServeValue(externalPort, value string) *core.ServeEndpoint {
 	case "http", "https", "tcp", "tls-terminated-tcp", "tun":
 		// Valid
 	default:
-		logger.Debug("parseServeValue: unknown protocol %q for port %s", endpoint.Proto, externalPort)
+		logger.Debugf(
+			"parseServeValue: unknown protocol %q for port %s",
+			endpoint.Proto,
+			externalPort,
+		)
 		return nil
 	}
 
@@ -416,12 +440,21 @@ func parseServeValue(externalPort, value string) *core.ServeEndpoint {
 		}
 	}
 
-	if endpoint.ProxyProtocol != "" && endpoint.Proto != "tcp" && endpoint.Proto != "tls-terminated-tcp" {
-		logger.Warn("tslink.serve.%s: ignoring endpoint: proxy-protocol needs tcp or tls-terminated-tcp, not %s", externalPort, endpoint.Proto)
+	if endpoint.ProxyProtocol != "" && endpoint.Proto != "tcp" &&
+		endpoint.Proto != "tls-terminated-tcp" {
+		logger.Warnf(
+			"tslink.serve.%s: ignoring endpoint: proxy-protocol needs tcp or tls-terminated-tcp, not %s",
+			externalPort,
+			endpoint.Proto,
+		)
 		return nil
 	}
 	if endpoint.AcceptAppCaps != "" && endpoint.Proto != "http" && endpoint.Proto != "https" {
-		logger.Warn("tslink.serve.%s: ignoring endpoint: accept-app-caps needs http or https, not %s", externalPort, endpoint.Proto)
+		logger.Warnf(
+			"tslink.serve.%s: ignoring endpoint: accept-app-caps needs http or https, not %s",
+			externalPort,
+			endpoint.Proto,
+		)
 		return nil
 	}
 
@@ -431,6 +464,25 @@ func parseServeValue(externalPort, value string) *core.ServeEndpoint {
 	}
 
 	return endpoint
+}
+
+// parseServeOptions sets the endpoint's options from the query after the
+// "?" of a tslink.serve value, and reports false if one is invalid.
+func parseServeOptions(endpoint *core.ServeEndpoint, options string) bool {
+	for opt := range strings.SplitSeq(options, "&") {
+		key, v, _ := strings.Cut(opt, "=")
+		switch {
+		case key == "proxy-protocol" && (v == "1" || v == "2"):
+			endpoint.ProxyProtocol = v
+		case key == "accept-app-caps" && validAppCaps(v):
+			endpoint.AcceptAppCaps = v
+		default:
+			logger.Warnf("tslink.serve.%s: ignoring endpoint with invalid option %q "+
+				"(want proxy-protocol=1|2 or accept-app-caps=<domain>/<name>[,...])", endpoint.Port, opt)
+			return false
+		}
+	}
+	return true
 }
 
 // validAppCaps reports whether caps is a comma-separated list of app

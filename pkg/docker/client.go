@@ -9,8 +9,14 @@ import (
 // dockerAPI is the part of the Docker client the driver and the event watcher
 // use. The moby client satisfies it; tests replace it with a fake.
 type dockerAPI interface {
-	PluginList(ctx context.Context, options dockerclient.PluginListOptions) (dockerclient.PluginListResult, error)
-	ContainerList(ctx context.Context, options dockerclient.ContainerListOptions) (dockerclient.ContainerListResult, error)
+	PluginList(
+		ctx context.Context,
+		options dockerclient.PluginListOptions,
+	) (dockerclient.PluginListResult, error)
+	ContainerList(
+		ctx context.Context,
+		options dockerclient.ContainerListOptions,
+	) (dockerclient.ContainerListResult, error)
 	ContainerInspect(
 		ctx context.Context,
 		containerID string,

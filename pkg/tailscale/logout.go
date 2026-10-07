@@ -49,18 +49,18 @@ func LogoutState(ctx context.Context, tailscaleBin, tailscaledBin, stateDir, soc
 	}
 	defer func() {
 		if err := os.RemoveAll(workDir); err != nil {
-			logger.Warn("Failed to remove %s: %v", workDir, err)
+			logger.Warnf("Failed to remove %s: %v", workDir, err)
 		}
 	}()
-	if err := os.WriteFile(filepath.Join(workDir, "tailscaled.state"), state, 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(workDir, "tailscaled.state"), state, 0o600); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(socket), 0700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(socket), 0o700); err != nil {
 		return err
 	}
 	defer func() {
 		if err := os.Remove(socket); err != nil && !os.IsNotExist(err) {
-			logger.Warn("Failed to remove %s: %v", socket, err)
+			logger.Warnf("Failed to remove %s: %v", socket, err)
 		}
 	}()
 	return runLogout(ctx, tailscaleBin, tailscaledBin, workDir, socket)
@@ -82,7 +82,8 @@ func logoutState(raw []byte) ([]byte, error) {
 	}
 	prefsKey := string(state[stateCurrentProfile])
 	prefsRaw := state[prefsKey]
-	if prefsKey == "" || prefsRaw == nil || state[stateMachineKey] == nil || state[stateProfiles] == nil {
+	if prefsKey == "" || prefsRaw == nil || state[stateMachineKey] == nil ||
+		state[stateProfiles] == nil {
 		return nil, nil
 	}
 
@@ -90,7 +91,9 @@ func logoutState(raw []byte) ([]byte, error) {
 	if err := json.Unmarshal(prefsRaw, &prefs); err != nil {
 		return nil, errors.New("tailscaled.state holds invalid prefs")
 	}
-	var persist struct{ PrivateNodeKey string }
+	var persist struct {
+		PrivateNodeKey string `json:"PrivateNodeKey"`
+	}
 	if cfg := prefs["Config"]; cfg != nil {
 		if err := json.Unmarshal(cfg, &persist); err != nil {
 			return nil, errors.New("tailscaled.state holds invalid prefs")
@@ -138,7 +141,7 @@ var runLogout = func(ctx context.Context, tailscaleBin, tailscaledBin, workDir, 
 		defer close(exited)
 		// Killed below once the logout is done: its exit status says nothing
 		if err := daemon.Wait(); err != nil && ctx.Err() == nil {
-			logger.Debug("tailscaled for logout exited: %v", err)
+			logger.Debugf("tailscaled for logout exited: %v", err)
 		}
 	}()
 	defer func() {
@@ -147,7 +150,8 @@ var runLogout = func(ctx context.Context, tailscaleBin, tailscaledBin, workDir, 
 	}()
 
 	cli := func(args ...string) ([]byte, error) {
-		return exec.CommandContext(ctx, tailscaleBin, append([]string{"--socket=" + socket}, args...)...).CombinedOutput()
+		return exec.CommandContext(ctx, tailscaleBin, append([]string{"--socket=" + socket}, args...)...).
+			CombinedOutput()
 	}
 	// The local API answers once the backend has started
 	for {
@@ -163,7 +167,11 @@ var runLogout = func(ctx context.Context, tailscaleBin, tailscaledBin, workDir, 
 		}
 	}
 	if out, err := cli("logout"); err != nil {
-		return fmt.Errorf("tailscale logout failed: %w (output: %s)", err, strings.TrimSpace(string(out)))
+		return fmt.Errorf(
+			"tailscale logout failed: %w (output: %s)",
+			err,
+			strings.TrimSpace(string(out)),
+		)
 	}
 	return nil
 }

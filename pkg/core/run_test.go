@@ -116,7 +116,10 @@ func TestLogoutRetriesTransientFailures(t *testing.T) {
 	}
 
 	calls = 0
-	if err := logoutWithRetry(func() error { calls++; return errors.New("down") }); err == nil || calls != logoutAttempts {
+	if err := logoutWithRetry(
+		func() error { calls++; return errors.New("down") },
+	); err == nil ||
+		calls != logoutAttempts {
 		t.Errorf("got err=%v after %d calls, want error after %d", err, calls, logoutAttempts)
 	}
 }

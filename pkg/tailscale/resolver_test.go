@@ -62,11 +62,14 @@ func TestTailscaledResolvConf(t *testing.T) {
 			warns:    true,
 		},
 		{
-			name:      "Docker's resolver would loop through a container using 100.100.100.100",
-			host:      resolvedStub,
-			container: []netip.Addr{netip.MustParseAddr("100.100.100.100"), netip.MustParseAddr("10.0.0.2")},
-			want:      "nameserver 8.8.8.8\nnameserver 8.8.4.4\nsearch corp.example\noptions edns0 trust-ad\n",
-			warns:     true,
+			name: "Docker's resolver would loop through a container using 100.100.100.100",
+			host: resolvedStub,
+			container: []netip.Addr{
+				netip.MustParseAddr("100.100.100.100"),
+				netip.MustParseAddr("10.0.0.2"),
+			},
+			want:  "nameserver 8.8.8.8\nnameserver 8.8.4.4\nsearch corp.example\noptions edns0 trust-ad\n",
+			warns: true,
 		},
 		{
 			name:      "Docker's resolver would loop through a container using Tailscale's IPv6 resolver",
@@ -132,7 +135,13 @@ func TestTailscaledCommandWritesResolvConf(t *testing.T) {
 	if err := os.Mkdir(stateDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	d := &Daemon{config: DaemonConfig{StateDir: stateDir, NetNSPath: "/run/netns/x", TailscaledBin: "/tailscaled"}}
+	d := &Daemon{
+		config: DaemonConfig{
+			StateDir:      stateDir,
+			NetNSPath:     "/run/netns/x",
+			TailscaledBin: "/tailscaled",
+		},
+	}
 	d.ctx = t.Context()
 	cmd := d.tailscaledCommand([]string{"--tun=tailscale0"})
 
@@ -163,7 +172,11 @@ func TestTailscaledCommandWritesResolvConf(t *testing.T) {
 	}
 	for _, name := range []string{"mount", "nsenter"} {
 		script := "#!/bin/sh\necho " + name + ` "$@"` + "\n"
-		if err := os.WriteFile(filepath.Join(bin, name), []byte(script), 0o700); err != nil { // #nosec G306 -- test script
+		if err := os.WriteFile(
+			filepath.Join(bin, name),
+			[]byte(script),
+			0o700,
+		); err != nil { // #nosec G306 -- test script
 			t.Fatal(err)
 		}
 	}

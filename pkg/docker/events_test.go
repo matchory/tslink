@@ -82,3 +82,24 @@ func TestParseServeValueProxyProtocol(t *testing.T) {
 		}
 	}
 }
+
+func TestParseServeValueAcceptAppCaps(t *testing.T) {
+	tests := []struct {
+		port, value string
+		want        *core.ServeEndpoint
+	}{
+		{"80", "http:80?accept-app-caps=example.com/cap/a", &core.ServeEndpoint{Proto: "http", Port: "80", Target: "80", AcceptAppCaps: "example.com/cap/a"}},
+		{"443", "https:8080/api?accept-app-caps=example.com/cap/a,example.com/cap/b", &core.ServeEndpoint{Proto: "https", Port: "443", Target: "8080", Path: "/api", AcceptAppCaps: "example.com/cap/a,example.com/cap/b"}},
+		{"80", "http:80?accept-app-caps=", nil},
+		{"80", "http:80?accept-app-caps=nodomain", nil},
+		{"80", "http:80?accept-app-caps=example.com/cap/a,,example.com/cap/b", nil},
+		{"5432", "tcp:5432?accept-app-caps=example.com/cap/a", nil}, // HTTP only
+		{"5432", "tcp:5432?proxy-protocol=2&accept-app-caps=example.com/cap/a", nil},
+	}
+	for _, tt := range tests {
+		got := parseServeValue(tt.port, tt.value)
+		if (got == nil) != (tt.want == nil) || (got != nil && *got != *tt.want) {
+			t.Errorf("parseServeValue(%q, %q) = %+v, want %+v", tt.port, tt.value, got, tt.want)
+		}
+	}
+}

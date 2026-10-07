@@ -4,7 +4,7 @@ services:
     networks: [tailnet]
     labels:
       tslink.service: svc:tslink-test-callee
-      tslink.serve.80: http:80
+      tslink.serve.80: http:80?accept-app-caps=matchory.com/cap/tslink-test
       tslink.direct: "false"
 networks:
   tailnet:

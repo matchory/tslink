@@ -339,9 +339,13 @@ func parseServeEndpoints(labels map[string]string) []core.ServeEndpoint {
 }
 
 // parseServeValue parses a serve label value.
-// Format: <proto>[:<target>][/<path>][?proxy-protocol=1|2]
-// The proxy-protocol option, for tcp and tls-terminated-tcp, sends the target
-// the caller's tailnet address in a PROXY protocol header.
+// Format: <proto>[:<target>][/<path>][?<option>[&<option>]]
+// Options:
+//   - proxy-protocol=1|2, for tcp and tls-terminated-tcp: send the target the
+//     caller's tailnet address in a PROXY protocol header
+//   - accept-app-caps=<cap>[,<cap>], for http and https: forward the caller's
+//     grants of these app capabilities in the Tailscale-App-Capabilities header
+//
 // Examples:
 //   - "https:8080"      → proto=https, target=8080
 //   - "http:3000/api"   → proto=http, target=3000, path=/api
@@ -361,11 +365,16 @@ func parseServeValue(externalPort, value string) *core.ServeEndpoint {
 	if options != "" {
 		for opt := range strings.SplitSeq(options, "&") {
 			key, v, _ := strings.Cut(opt, "=")
-			if key != "proxy-protocol" || (v != "1" && v != "2") {
-				logger.Warn("tslink.serve.%s: ignoring endpoint with invalid option %q (want proxy-protocol=1 or 2)", externalPort, opt)
+			switch {
+			case key == "proxy-protocol" && (v == "1" || v == "2"):
+				endpoint.ProxyProtocol = v
+			case key == "accept-app-caps" && validAppCaps(v):
+				endpoint.AcceptAppCaps = v
+			default:
+				logger.Warn("tslink.serve.%s: ignoring endpoint with invalid option %q "+
+					"(want proxy-protocol=1|2 or accept-app-caps=<domain>/<name>[,...])", externalPort, opt)
 				return nil
 			}
-			endpoint.ProxyProtocol = v
 		}
 	}
 
@@ -398,6 +407,10 @@ func parseServeValue(externalPort, value string) *core.ServeEndpoint {
 		logger.Warn("tslink.serve.%s: ignoring endpoint: proxy-protocol needs tcp or tls-terminated-tcp, not %s", externalPort, endpoint.Proto)
 		return nil
 	}
+	if endpoint.AcceptAppCaps != "" && endpoint.Proto != "http" && endpoint.Proto != "https" {
+		logger.Warn("tslink.serve.%s: ignoring endpoint: accept-app-caps needs http or https, not %s", externalPort, endpoint.Proto)
+		return nil
+	}
 
 	// Default target to external port if empty
 	if endpoint.Target == "" {
@@ -405,4 +418,16 @@ func parseServeValue(externalPort, value string) *core.ServeEndpoint {
 	}
 
 	return endpoint
+}
+
+// validAppCaps reports whether caps is a comma-separated list of app
+// capability names, each of the form <domain>/<name>.
+func validAppCaps(caps string) bool {
+	for c := range strings.SplitSeq(caps, ",") {
+		domain, name, ok := strings.Cut(c, "/")
+		if !ok || domain == "" || name == "" || strings.ContainsAny(c, " \t") {
+			return false
+		}
+	}
+	return true
 }

@@ -5,15 +5,14 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/aaomidi/tslink/pkg/logger"
 	"github.com/aaomidi/tslink/pkg/tailscale"
 )
 
 // Config holds the plugin configuration.
 type Config struct {
-	AuthKey   string
-	DataDir   string
-	TSVersion string // "bundled" (the image's binaries), "latest" or a version to download
-	TSPath    string // Optional path to user-provided Tailscale binaries
+	AuthKey string
+	DataDir string
 }
 
 // NetworkOptions holds options for network creation.
@@ -45,18 +44,22 @@ type EndpointOptions struct {
 // LoadConfig loads configuration from environment variables.
 func LoadConfig() (*Config, error) {
 	cfg := &Config{
-		AuthKey:   os.Getenv("TS_AUTHKEY"),
-		DataDir:   os.Getenv("TS_DATA_DIR"),
-		TSVersion: os.Getenv("TS_VERSION"),
-		TSPath:    os.Getenv("TS_PATH"),
+		AuthKey: os.Getenv("TS_AUTHKEY"),
+		DataDir: os.Getenv("TS_DATA_DIR"),
 	}
 
 	if cfg.DataDir == "" {
 		cfg.DataDir = "/data"
 	}
 
-	if cfg.TSVersion == "" {
-		cfg.TSVersion = tailscale.BundledVersion
+	// tslink no longer downloads Tailscale or runs other binaries: an
+	// installation upgraded with these settings keeps working, on the bundled
+	// version.
+	if v := os.Getenv("TS_VERSION"); v != "" && !strings.EqualFold(v, tailscale.BundledVersion) {
+		logger.Warn("Ignoring TS_VERSION=%s: tslink runs the Tailscale bundled in the plugin image", v)
+	}
+	if p := os.Getenv("TS_PATH"); p != "" {
+		logger.Warn("Ignoring TS_PATH=%s: tslink runs the Tailscale bundled in the plugin image", p)
 	}
 
 	return cfg, nil

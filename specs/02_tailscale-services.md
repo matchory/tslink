@@ -80,13 +80,12 @@ Labels are read from the container when it joins the network. The plugin queries
 
 1. Container joins network with service labels
 2. Plugin validates configuration (service requires at least one serve endpoint)
-3. Plugin checks Tailscale version >= 1.86.0
-4. Container registers as service backend with specified endpoints
-5. If service doesn't exist in admin console, container join fails
+3. Container registers as service backend with specified endpoints
+4. If service doesn't exist in admin console, container join fails
 
 ### Version Requirements
 
-Tailscale Services requires version 1.86.0 or later. The plugin only enforces this check when service labels are present. Containers without service labels work with any Tailscale version.
+Tailscale Services requires version 1.86.0 or later. The plugin image bundles a newer pinned version, so the plugin does not check the version at runtime.
 
 ### Tag-Based Authentication
 
@@ -99,7 +98,6 @@ Tailscale Services requires tag-based authentication. The auth key used for the 
 | `tslink.service` without `tslink.serve.*` | `tslink.service requires at least one tslink.serve.<port> endpoint` | Add tslink.serve.<port> label |
 | Invalid port format | `invalid external port "abc": must be numeric` | Use numeric port |
 | Invalid protocol | `unsupported protocol: xyz` | Use http, https, tcp, tls-terminated-tcp, or tun |
-| Tailscale < 1.86.0 | `Tailscale 1.76.0 does not support Services (minimum: 1.86.0)` | Set TS_VERSION=1.86.0 or later |
 | Service doesn't exist | `service svc:foo not found: create it in Tailscale admin console first` | Create service in admin console |
 | Missing tags | `tailscale serve failed: requires tagged auth key` | Use auth key with tags |
 

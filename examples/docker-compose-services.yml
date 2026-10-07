@@ -19,7 +19,7 @@
 
 networks:
   tailnet:
-    driver: tslink
+    driver: tslink:latest
     driver_opts:
       tslink.authkey: ${TS_AUTHKEY}
 

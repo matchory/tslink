@@ -212,7 +212,8 @@ func (n *Network) checkEphemeral() error {
 
 // CheckTagScope reports whether a stack may register nodes with tags using the
 // cluster credential: the cluster client owns every stack's tags, so each
-// stack is confined to tag:<stack> and tag:<stack>-*.
+// stack is confined to tag:<stack>, or with strict false (TSLINK_TAG_SCOPE=
+// prefix) also tag:<stack>-*.
 func CheckTagScope(stack string, tags []string, strict bool) error {
 	if stack == "" {
 		return errors.New(

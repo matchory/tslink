@@ -216,9 +216,14 @@ three- and five-node swarms; see [docs/testing.md](docs/testing.md).
   container's veth address, on any network, past Docker's network isolation
   and the tailnet's ACLs: with an ordinary socket through its Docker gateway,
   or with raw frames through its veth. Only tailscaled's WireGuard port passes
-  between them now, so co-located nodes keep their direct connection rather
+  between them now, so colocated nodes keep their direct connection rather
   than falling back to DERP; tailscaled listens on the fixed port 41641 for
   this. The rules are always on and stay when the plugin stops.
+- A stack using the cluster credential is now confined to the exact tag
+  `tag:<stack>`, not `tag:<stack>-*`. The prefix form let a stack claim a
+  longer-named stack's base tag: stack `a` could register `tag:a-b`, stack
+  `a-b`'s identity. The plugin setting `TSLINK_TAG_SCOPE=prefix` restores the
+  old behaviour for operators who need it.
 - Containers no longer reach the tailnet through the host's own tailscaled.
   On a host running tailscaled, any container reached the tailnet with the
   host's identity: one on Docker's bridges with an ordinary socket, and one on

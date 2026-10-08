@@ -45,7 +45,7 @@ func TestKillProcessTakesNodeDown(t *testing.T) {
 }
 
 // tailscaled listens on a fixed WireGuard port: the host lets only that port
-// through between tslink's veths, so co-located nodes keep a direct path.
+// through between tslink's veths, so colocated nodes keep a direct path.
 func TestTailscaledArgsFixedPort(t *testing.T) {
 	d := &Daemon{config: DaemonConfig{StateDir: "/s"}, socketPath: "/sock"}
 	args := d.tailscaledArgs()

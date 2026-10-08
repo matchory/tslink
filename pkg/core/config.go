@@ -18,11 +18,38 @@ type Config struct {
 	// IsolateHostTailnet keeps every container on the host from reaching the
 	// tailnet through the host's own tailscaled (see netutil.SetupHostIsolation)
 	IsolateHostTailnet bool
+
+	// StrictTagScope confines a cluster-credential stack to tag:<stack>
+	// exactly. TSLINK_TAG_SCOPE=prefix turns it off.
+	StrictTagScope bool
 }
 
 // IsolateHostTailnetSetting is the plugin setting that turns the host's
 // tailnet isolation off.
 const IsolateHostTailnetSetting = "TSLINK_ISOLATE_HOST_TAILNET"
+
+// TagScopeSetting selects how strictly a stack using the cluster credential is
+// confined to its tags: "exact" (the default) allows only tag:<stack>,
+// "prefix" also allows tag:<stack>-*, the old behaviour, which lets a stack
+// claim a longer-named stack's base tag.
+const TagScopeSetting = "TSLINK_TAG_SCOPE"
+
+// tagScopeStrict parses TagScopeSetting. Only "prefix" relaxes the scope; any
+// other value, a typo included, keeps the exact match.
+func tagScopeStrict(v string) bool {
+	switch {
+	case strings.EqualFold(v, "prefix"):
+		logger.Warnf(
+			"%s=prefix: a stack may claim a longer-named stack's base tag",
+			TagScopeSetting,
+		)
+		return false
+	case v != "" && !strings.EqualFold(v, "exact"):
+		logger.Warnf("%s=%q is neither exact nor prefix: keeping the exact tag scope",
+			TagScopeSetting, v)
+	}
+	return true
+}
 
 // isolateHostTailnet parses IsolateHostTailnetSetting. Only "false" turns the
 // isolation off: any other value, a typo included, keeps the host's tailnet
@@ -87,6 +114,7 @@ func LoadConfig() (*Config, error) {
 		SharedDir: os.Getenv("TS_SHARED_DIR"),
 
 		IsolateHostTailnet: isolateHostTailnet(os.Getenv(IsolateHostTailnetSetting)),
+		StrictTagScope:     tagScopeStrict(os.Getenv(TagScopeSetting)),
 	}
 
 	// tslink no longer downloads Tailscale or runs other binaries: an

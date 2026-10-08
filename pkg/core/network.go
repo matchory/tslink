@@ -28,6 +28,8 @@ type Network struct {
 	LoginServer string // control server URL; empty for Tailscale's
 
 	ephemeral *bool // tslink.ephemeral; nil if unset
+
+	StrictTagScope bool // confine a cluster-credential stack to tag:<stack> exactly
 }
 
 // NewNetwork builds a network from its options and resolves its credential:
@@ -38,11 +40,12 @@ func NewNetwork(id string, opts NetworkOptions, cfg *Config) (*Network, error) {
 		return nil, err
 	}
 	n := &Network{
-		ID:          id,
-		AuthKey:     opts.AuthKey,
-		Tags:        opts.Tags,
-		MTU:         opts.MTU,
-		LoginServer: opts.LoginServer,
+		ID:             id,
+		AuthKey:        opts.AuthKey,
+		Tags:           opts.Tags,
+		MTU:            opts.MTU,
+		LoginServer:    opts.LoginServer,
+		StrictTagScope: cfg.StrictTagScope,
 	}
 	if opts.Ephemeral != "" {
 		v, err := strconv.ParseBool(opts.Ephemeral)
@@ -210,23 +213,30 @@ func (n *Network) checkEphemeral() error {
 // CheckTagScope reports whether a stack may register nodes with tags using the
 // cluster credential: the cluster client owns every stack's tags, so each
 // stack is confined to tag:<stack> and tag:<stack>-*.
-func CheckTagScope(stack string, tags []string) error {
+func CheckTagScope(stack string, tags []string, strict bool) error {
 	if stack == "" {
 		return errors.New(
 			"the cluster credential is only available to networks of a stack: use tslink.authkey",
 		)
 	}
-	prefix := "tag:" + stack
+	exact := "tag:" + stack
 	for _, tag := range tags {
-		if tag != prefix && !strings.HasPrefix(tag, prefix+"-") {
-			return fmt.Errorf(
-				"tag %q is outside stack %q's scope (%s or %s-*): use tslink.authkey for other tags",
-				tag,
-				stack,
-				prefix,
-				prefix,
-			)
+		// Exact is the default. The prefix opt-out also allows tag:<stack>-*,
+		// which lets stack "a" claim "tag:a-b", stack "a-b"'s base tag.
+		if tag == exact {
+			continue
 		}
+		if !strict && strings.HasPrefix(tag, exact+"-") {
+			continue
+		}
+		scope := exact
+		if !strict {
+			scope = exact + " or " + exact + "-*"
+		}
+		return fmt.Errorf(
+			"tag %q is outside stack %q's scope (%s): use tslink.authkey for other tags",
+			tag, stack, scope,
+		)
 	}
 	return nil
 }

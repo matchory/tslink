@@ -53,7 +53,7 @@ the host's tailnet addresses in the mangle table (`TSLINK_ISOLATE_HOST_TAILNET`)
 plugin installs it before serving, the watchdog restores it, and it stays when the plugin stops. The host also forwards
 between tslink's veths, so `netutil.SetupVethIsolation` (always on) lets only tailscaled's WireGuard port, the fixed
 `--port=41641` (`tailscale.WireGuardPort`), through from container interfaces to `10.200.0.0/16`: containers cannot
-reach each other's veth addresses, and co-located nodes keep their direct path instead of falling back to DERP.
+reach each other's veth addresses, and colocated nodes keep their direct path instead of falling back to DERP.
 
 **Self-healing**: `Endpoint.RunTailscale` retries a failed start with backoff until the endpoint leaves, unless the
 error is a `permanentError` (wrong stack, invalid hostname). The supervisor restarts a crashed tailscaled, resumes after

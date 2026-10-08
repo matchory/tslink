@@ -36,7 +36,7 @@ const (
 // it a container reaches another tslink container's veth address, past
 // Docker's network isolation and past the tailnet's ACLs, with an ordinary
 // socket through its Docker gateway or with raw frames through its veth. Only
-// tailscaled's WireGuard port passes, so co-located nodes keep their direct
+// tailscaled's WireGuard port passes, so colocated nodes keep their direct
 // path instead of falling back to DERP; WireGuard drops what is not from a
 // peer. It does not depend on TSLINK_ISOLATE_HOST_TAILNET.
 const vethIsolateChain = "TSLINK-VETH-FWD"

@@ -409,7 +409,7 @@ func (d *Daemon) servicesFetches() (int64, <-chan struct{}) {
 
 // WireGuardPort is the UDP port every tslink tailscaled listens on, each in
 // its container's namespace. The host lets only this port through between
-// tslink's veths (netutil.SetupVethIsolation), so co-located nodes keep a
+// tslink's veths (netutil.SetupVethIsolation), so colocated nodes keep a
 // direct path while containers cannot reach each other's other ports.
 const WireGuardPort = 41641
 

@@ -4,6 +4,11 @@
 			"src": ["alice@"],
 			"dst": ["alice@"],
 			"ip": ["*"]
+		},
+		{
+			"src": ["host@"],
+			"dst": ["alice@"],
+			"ip": ["*"]
 		}
 	]
 }

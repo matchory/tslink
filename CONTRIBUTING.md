@@ -103,7 +103,7 @@ holds the design history.
 - tslink is for anyone running Docker with Tailscale. Keep code, docs and
   tests free of assumptions about a particular organisation, cloud provider
   or configuration tool; state what a host needs as a requirement instead.
-  Docs install the plugin with `--alias tslink` and use `driver: tslink`.
+  Docs install the plugin with `--alias tslink` and use `driver: tslink:latest`.
 - Tailscale's control server comes first. headscale is supported on a
   best-effort basis: the end-to-end test runs against it, but a change
   should not trade Tailscale behaviour for headscale behaviour.

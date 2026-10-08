@@ -36,5 +36,14 @@ Host testbed
   ControlPath $TSLINK_SEC_DIR/cm-%h
   ControlPersist 30m
 EOF
-until "$B/s" test -f /var/lib/cloud-init-done 2>/dev/null; do sleep 10; done
+deadline=$((SECONDS + 900))
+until "$B/s" test -f /var/lib/cloud-init-done 2>/dev/null; do
+	if [ "$SECONDS" -ge "$deadline" ]; then
+		echo "cloud-init has not finished after 15 minutes; the server exists and is billed." >&2
+		echo "Inspect it: test/security/testbed/s cloud-init status --long" >&2
+		echo "Remove it: test/security/testbed/teardown.sh" >&2
+		exit 1
+	fi
+	sleep 10
+done
 echo "testbed ready: Docker $("$B/s" docker version --format '{{.Server.Version}}')"

@@ -10,11 +10,20 @@ B=$(cd "$(dirname "$0")" && pwd)
 S=$B/testbed/s
 TREE=$(cd "$B/../.." && pwd)
 PROBES=""
+usage() { echo "usage: redteam.sh [--tree DIR] [--probes DIR]" >&2; exit 2; }
 while [ $# -gt 0 ]; do
 	case $1 in
-	--tree) TREE=$(cd "$2" && pwd); shift 2 ;;
-	--probes) PROBES=$(cd "$2" && pwd); shift 2 ;;
-	*) echo "usage: redteam.sh [--tree DIR] [--probes DIR]" >&2; exit 2 ;;
+	--tree)
+		[ $# -ge 2 ] || usage
+		TREE=$(cd "$2" 2>/dev/null && pwd) || { echo "--tree $2: no such directory" >&2; exit 2; }
+		shift 2
+		;;
+	--probes)
+		[ $# -ge 2 ] || usage
+		PROBES=$(cd "$2" 2>/dev/null && pwd) || { echo "--probes $2: no such directory" >&2; exit 2; }
+		shift 2
+		;;
+	*) usage ;;
 	esac
 done
 
@@ -53,7 +62,10 @@ probes=("$B"/redteam/*.sh)
 for p in "${probes[@]}"; do
 	[ -f "$p" ] || continue
 	name=$(basename "$p" .sh)
-	"$S" 'mkdir -p /root/probes && cat >/root/probes/p.sh && chmod +x /root/probes/p.sh' <"$p"
+	if ! "$S" 'mkdir -p /root/probes && cat >/root/probes/p.sh && chmod +x /root/probes/p.sh' <"$p"; then
+		results+=("ERROR   $name (upload failed)")
+		continue
+	fi
 	"$S" 'cd /root/tslink && /root/probes/p.sh' >"$OUT/$name.log" 2>&1
 	case $? in
 	0) results+=("PASS    $name") ;;

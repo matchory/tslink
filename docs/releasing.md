@@ -7,8 +7,9 @@ check that tslink's security guarantees hold for the commit, as
 1. CI is green on the commit: lint, the Go tests (including the check that
    every published guarantee is guarded), the network namespace tests as
    root, and the end-to-end test with its probes.
-2. The weekly fuzz run on `main` succeeded within the last 7 days, and no
-   failing input is open.
+2. The weekly fuzz run on `main` succeeded within the last 7 days:
+   `test/security/report.sh` checks that it succeeded and how recently.
+   Check by hand whether a failing input is still open.
 3. The red team ran on the testbed for this commit without a failure:
    `test/security/testbed/provision.sh`, `test/security/redteam.sh`, then
    `test/security/testbed/teardown.sh`.

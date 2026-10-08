@@ -20,7 +20,7 @@ func TestGetStatus(t *testing.T) {
 	if *st != (Status{IP: "100.64.0.1", Hostname: "web", Online: true}) {
 		t.Errorf("status = %+v", *st)
 	}
-	if want := []string{statusPath + "?peers=false"}; !slices.Equal(api.paths(), want) {
+	if want := []string{"GET " + statusPath + "?peers=false"}; !slices.Equal(api.paths(), want) {
 		t.Errorf("requests = %q, want %q", api.paths(), want)
 	}
 
@@ -38,7 +38,7 @@ func TestWaitBackendState(t *testing.T) {
 	if st := d.waitBackendState(); st != "NeedsLogin" {
 		t.Errorf("backend state = %q, want NeedsLogin", st)
 	}
-	if want := []string{statusPath + "?peers=false"}; !slices.Equal(api.paths(), want) {
+	if want := []string{"GET " + statusPath + "?peers=false"}; !slices.Equal(api.paths(), want) {
 		t.Errorf("requests = %q, want %q", api.paths(), want)
 	}
 }

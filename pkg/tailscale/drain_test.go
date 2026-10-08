@@ -8,6 +8,8 @@ import (
 	"slices"
 	"testing"
 	"time"
+
+	"tailscale.com/ipn"
 )
 
 // A line as tailscaled logs it when control fetches its Service list.
@@ -76,6 +78,12 @@ func TestDrainAndWaitWaitsForControl(t *testing.T) {
 	setDuration(t, &drainAckTimeout, 5*time.Second)
 	cli := &fakeCLI{}
 	s, d := newTestSupervisor(t, cli)
+	api := newFakeLocalAPI(t)
+	api.loggedIn(ipn.Prefs{})
+	d.lc = api.client()
+	loggedOut := func() bool {
+		return slices.Contains(api.paths(), "POST /localapi/v0/logout")
+	}
 	// A fetch before the drain is not an acknowledgement of it
 	d.handleLine(servicesFetchLine)
 
@@ -90,7 +98,7 @@ func TestDrainAndWaitWaitsForControl(t *testing.T) {
 	}()
 	waitFor(t, "the drain", func() bool { return ran(cli.snapshot(), "serve", "drain", "svc:web") })
 	time.Sleep(100 * time.Millisecond)
-	if ran(cli.snapshot(), "logout") {
+	if loggedOut() {
 		t.Fatal("logged out before control fetched the drain")
 	}
 	d.handleLine(servicesFetchLine)
@@ -99,9 +107,12 @@ func TestDrainAndWaitWaitsForControl(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("DrainAndWait did not return after control fetched the drain")
 	}
-	want := [][]string{{"serve", "drain", "svc:web"}, {"logout"}}
+	want := [][]string{{"serve", "drain", "svc:web"}}
 	if got := cli.snapshot(); !slices.EqualFunc(got, want, slices.Equal) {
 		t.Errorf("calls = %q, want %q", got, want)
+	}
+	if !loggedOut() {
+		t.Error("not logged out after control fetched the drain")
 	}
 	if elapsed := time.Since(start); elapsed < drainAckFloor {
 		t.Errorf("returned after %v, want at least %v", elapsed, drainAckFloor)

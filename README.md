@@ -146,7 +146,7 @@ services:
 | `tslink.authkey` | Tailscale auth key | Required, unless the plugin has a [cluster credential](#cluster-credential) or `TS_AUTHKEY` |
 | `tslink.tags` | ACL tags (comma-separated) for every container on the network; overrides the `tslink.tags` label | None |
 | `tslink.ephemeral` | `true` or `false`: whether the network's nodes are ephemeral, for keys that do not say so themselves, such as auth keys and headscale's keys. With `true`, tslink logs a node out and deletes its state when the container stops, so the device and its identity are gone; set it only with a key that creates ephemeral nodes. Appended to an OAuth client secret as `?ephemeral=`; a secret whose own `ephemeral` parameter differs is refused, and so is `false` with the [cluster credential](#cluster-credential) | Taken from the key: ephemeral for OAuth client secrets and the cluster credential, otherwise not |
-| `tslink.loginserver` | URL of a control server other than Tailscale's, such as [headscale](https://github.com/juanfont/headscale); passed to `tailscale up --login-server` | Tailscale's |
+| `tslink.loginserver` | URL of a control server other than Tailscale's, such as [headscale](https://github.com/juanfont/headscale); tailscaled logs in there | Tailscale's |
 | `com.docker.network.driver.mtu` | MTU of the interface tslink adds to the container | 1500 |
 
 A network created by `docker stack deploy` serves only that stack's tasks:
@@ -260,7 +260,7 @@ See [docs/credentials.md](docs/credentials.md) for the reasoning.
 | **Ephemeral key** | Nodes are automatically removed when the container stops |
 | **Reusable key** | Nodes persist in your tailnet after container stops |
 | **Pre-approved key** | Nodes don't require manual approval |
-| **OAuth client secret** | Nodes are ephemeral unless `?ephemeral=false` is appended; tslink logs them out and deletes their state when the container stops. Requires `tslink.tags`. Parameters such as `?ephemeral=` work only on OAuth client secrets: `tailscale up` passes an auth key on unchanged |
+| **OAuth client secret** | Nodes are ephemeral unless `?ephemeral=false` is appended; tslink logs them out and deletes their state when the container stops. Requires `tslink.tags`. Parameters such as `?ephemeral=` work only on OAuth client secrets: tslink passes an auth key on unchanged |
 
 For most use cases, use an ephemeral, reusable, pre-approved key.
 

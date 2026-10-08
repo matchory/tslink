@@ -52,8 +52,9 @@ default to the values above. It also passes two settings of single stacks:
   `$TSLINK_TEST_SVC-callee`, and the deploy fails without one
 
 The `tslink-test-*` stacks run on the cluster credential (`./deploy tslink-test-callee -`), whose
-tag scope requires a stack's tags to start with `tag:<stack>`: with another `TSLINK_TEST_TAG`,
-deploy them under the matching stack names. The tests need the Tailscale API and Tailscale
+tag scope requires a stack's tag to be exactly `tag:<stack>` (unless the plugin sets
+`TSLINK_TAG_SCOPE=prefix`): with another `TSLINK_TEST_TAG`, deploy them under the matching stack
+names. The tests need the Tailscale API and Tailscale
 Services, so they do not run against headscale.
 
 ## Run

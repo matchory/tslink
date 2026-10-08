@@ -90,6 +90,8 @@ probe directory passed with `--probes`. It writes a report under
 `$TSLINK_TEST_DIR/reports/`, which is never committed. The testbed and the
 red team run by hand, not in CI.
 
+Before a release, follow [docs/releasing.md](releasing.md).
+
 ## Fuzzing
 
 Fuzz targets check properties of code that handles input from containers,

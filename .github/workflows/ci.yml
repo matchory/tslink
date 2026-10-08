@@ -58,10 +58,12 @@ jobs:
         id: go-test
         run: go test -race -cover ./...
 
-      # The network namespace tests need CAP_NET_ADMIN and skip without it.
+      # The network and mount namespace tests need root and skip without it.
       # Build as the runner user, run as root.
       - name: Test network namespaces
         id: go-test-netns
         run: |
           go test -c -o "${RUNNER_TEMP}/netutil.test" ./pkg/netutil
           sudo "${RUNNER_TEMP}/netutil.test" -test.v -test.count=1
+          go test -c -o "${RUNNER_TEMP}/tailscale.test" ./pkg/tailscale
+          sudo "${RUNNER_TEMP}/tailscale.test" -test.v -test.count=1 -test.run 'OverStale|SystemBus'

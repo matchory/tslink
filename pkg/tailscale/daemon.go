@@ -158,7 +158,6 @@ func (d *Daemon) Start() error {
 	}
 
 	d.cmd = d.tailscaledCommand(tailscaledArgs)
-	d.cmd.Env = os.Environ()
 
 	// Set up streaming output - logs each line as it arrives
 	stdoutPipe, err := d.cmd.StdoutPipe()
@@ -457,7 +456,14 @@ func (d *Daemon) tailscaledCommand(args []string) *exec.Cmd {
 	if err := os.WriteFile(backup, nil, 0o644); err != nil { // #nosec G306 -- not secret
 		logger.Warnf("Failed to write %s: %v", backup, err)
 	}
-	// unshare, sh and nsenter each exec the next, so the process is tailscaled
+	// unshare, sh and nsenter each exec the next, so the process is tailscaled.
+	// The plugin's resolv.conf is a bind mount of the host's, and the kernel
+	// refuses to mount over it once the host replaced that file (move_mount:
+	// ENOENT), as systemd-resolved does when the host's DNS changes. The
+	// namespace is tailscaled's own, so it drops that mount and tries again.
+	// tailscaled must not reach the host's system bus, in the host's /run:
+	// with it, it would configure the host's systemd-resolved with the
+	// control server's DNS settings. It does not start if the bus stays.
 	unshareArgs := []string{
 		"--mount",
 		"--propagation",
@@ -465,9 +471,16 @@ func (d *Daemon) tailscaledCommand(args []string) *exec.Cmd {
 		"--",
 		"sh",
 		"-c",
-		`mount --bind "$0" /etc/resolv.conf || echo "tslink: tailscaled keeps the plugin's resolv.conf" >&2
+		`mount --bind "$0" /etc/resolv.conf 2>/dev/null ||
+	{ umount /etc/resolv.conf && mount --bind "$0" /etc/resolv.conf; } ||
+	echo "tslink: tailscaled keeps the plugin's resolv.conf" >&2
 b=/etc/resolv.pre-tailscale-backup.conf
 { [ -e $b ] || touch $b; } && mount --bind "$1" $b || echo "tslink: tailscaled shares the plugin's resolv.conf backup" >&2
+for d in /run/dbus /var/run/dbus; do
+	[ ! -d $d ] || mount -t tmpfs -o size=4k,mode=0755 tmpfs $d ||
+		{ echo "tslink: cannot hide the host's system bus from tailscaled" >&2; exit 1; }
+done
+unset DBUS_SYSTEM_BUS_ADDRESS
 netns=$2; shift 2; exec nsenter --net="$netns" -- "$@"`,
 		resolvConf,
 		backup,
@@ -476,7 +489,11 @@ netns=$2; shift 2; exec nsenter --net="$netns" -- "$@"`,
 	}
 	unshareArgs = append(unshareArgs, args...)
 	logger.Debugf("Running: unshare %v", unshareArgs)
-	return exec.CommandContext(d.ctx, "unshare", unshareArgs...)
+	cmd := exec.CommandContext(d.ctx, "unshare", unshareArgs...)
+	// tailscaled does not need the plugin's auth key, and its peerapi serves
+	// its environment to peers the control server lets debug it
+	cmd.Env = withoutAuthKey(os.Environ())
+	return cmd
 }
 
 // waitForSocket waits for the tailscaled socket to be ready.

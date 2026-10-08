@@ -176,7 +176,8 @@ return fmt.Errorf("failed to create endpoint: %w", err)
 ## CI
 
 - `ci.yml`: golangci-lint, pinned to the version `.golangci.toml` is written for, and the Go tests. The network
-  namespace tests in `pkg/netutil` skip without root, so CI runs them a second time with `sudo`.
+  namespace tests in `pkg/netutil` and the mount namespace test in `pkg/tailscale` skip without root, so CI
+  runs them a second time with `sudo`.
 - `linter.yml`: super-linter for everything except Go (Markdown, YAML, shell, Dockerfile). Configs are in
   `.github/linters/`.
 - `e2e.yml`: `test/integration/run.sh`, the end-to-end test. It builds the plugin, installs it as `tslink` and runs

@@ -1,0 +1,9 @@
+#cloud-config
+# The security testbed: Docker, and the tools test/integration/run.sh needs.
+# No Tailscale: run.sh runs a tailscaled of its own.
+package_update: true
+packages: [ca-certificates, curl, jq, iptables, python3]
+runcmd:
+  - curl -fsSL https://get.docker.com | sh
+  - systemctl enable --now docker
+  - touch /var/lib/cloud-init-done

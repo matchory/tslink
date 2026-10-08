@@ -51,7 +51,8 @@ During the start, the container has no node. Connections to tailnet addresses fa
 ## Identity
 
 tslink keeps the state of a node by hostname, not by container ID. When a container starts with the hostname of an
-earlier container, it gets the earlier identity: the same node and the same tailnet addresses.
+earlier container, it gets the earlier identity: the same node and the same tailnet addresses. For the exceptions,
+see [`tslink.hostname`](../reference/container-labels.md#tslinkhostname).
 
 Containers in a stack have their state directories in the directory of the stack. See
 [State directories](security-model.md#state-directories-are-in-the-directory-of-the-stack). One endpoint at a time can
@@ -94,9 +95,10 @@ that gives a DNS server:
 2. The DNS servers in `/etc/resolv.conf` of the host, without the servers on the loopback interface of the host.
 3. The upstream servers of systemd-resolved, in `/run/systemd/resolve/resolv.conf`.
 
-Docker uses the same sources. If no source gives a server, tailscaled uses the DNS server of Docker. If the DNS
-server of the container is `100.100.100.100`, tailscaled uses the public servers of Google, the default of Docker. In
-both cases, tslink writes the warning `dns-upstreams` in the plugin log and the status file.
+Docker uses the same sources. If no source gives a server, tailscaled uses the DNS server of Docker. If no source
+gives a server and the DNS server of the container is `100.100.100.100`, tailscaled uses the public servers of
+Google, the default of Docker. In both cases, tslink writes the warning `dns-upstreams` in the plugin log and the
+status file.
 
 tailscaled selects its servers when it starts, as Docker does when the container starts. tslink does not read the
 `dns` setting in `/etc/docker/daemon.json`. It reads only the `dns` setting of the container or the service.
@@ -127,8 +129,9 @@ If tslink stopped the node before the control server knew about the drain, calle
 for some minutes. A drain is final: tslink does not make the container a backend again, also after a restart of
 tailscaled.
 
-When Docker stops, it sends no more events. The [drain drop-in](../guides/zero-downtime-updates.md#install-the-drain-drop-in)
-drains the backends of the host before Docker stops.
+When Docker stops, it sends no more events. The
+[drain drop-in](../guides/zero-downtime-updates.md#install-the-drain-drop-in) drains the backends of the host before
+Docker stops.
 
 ## Throughput
 

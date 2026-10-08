@@ -31,7 +31,8 @@ The ACL tags of all nodes on the network, separated by commas, for example `tag:
 | Condition | Effect |
 | --- | --- |
 | The option is set | It overrides the `tslink.tags` label of each container. |
-| The credential is an OAuth client secret or the cluster credential | The option is required. |
+| The network uses the cluster credential | The option is required. |
+| The credential is an OAuth client secret | The option or the `tslink.tags` label of the container is required. Without tags, the node does not start. |
 | The network uses the cluster credential | Each tag must agree with the stack name. See [Tag rules](credentials.md#tag-rules). |
 
 ## tslink.ephemeral

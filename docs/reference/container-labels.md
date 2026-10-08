@@ -19,9 +19,9 @@ The hostname of the node in the tailnet, for example `my-api`.
 
 | Condition | Effect |
 | --- | --- |
-| The label is not set | tslink uses the container name. It replaces each character that is not a letter or a digit with `-`, and uses the first 63 characters. |
+| The label is not set | tslink uses the container name. It replaces each character that is not an ASCII letter or a digit with `-`, uses the first 63 characters, and removes `-` at the start and the end. |
 | Two containers on one host use the same hostname | The second container waits without a node until the first container leaves. |
-| A container starts with the hostname of an earlier container | It gets the identity of the earlier container: the same node and the same tailnet addresses. |
+| A container starts with the hostname of an earlier container | It gets the identity of the earlier container: the same node and the same tailnet addresses. This is not true if the earlier node was ephemeral, or if the network has a different `tslink.authkey`: tslink deleted the state, and the node is new. |
 
 ## tslink.tags
 

@@ -15,7 +15,7 @@ Select one of two credential models:
 | Model | Credential | Use it when |
 | --- | --- | --- |
 | A: cluster credential | One OAuth client for all stacks, in a file on each host | Each stack needs one tag, `tag:<stack>` |
-| B: OAuth client for each stack | One OAuth client for each stack, in the network of the stack | A stack needs other tags, or you want no credential on the hosts |
+| B: OAuth client for each stack | One OAuth client for each stack, in the network of the stack | A stack needs other tags, or root on a host must not get a credential for the tags of all stacks |
 
 Both models can be used in one cluster. A network with `tslink.authkey` uses its own credential. For the security
 properties of the two models, see [Security model](../explanation/security-model.md).

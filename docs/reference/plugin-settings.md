@@ -37,8 +37,9 @@ host, on tslink networks and on other networks.
 | `false` | Containers can reach the tailnet as the host. Use this value only if containers on the host must use the tailscaled of the host. |
 | Other values | tslink keeps the value `true` and logs a warning. |
 
-The firewall rules stay when the plugin stops. For how they work, see [Isolation](../explanation/architecture.md#isolation).
-For the guarantee that this setting supports, see `G1` in [SECURITY.md](../../SECURITY.md).
+The firewall rules stay when the plugin stops. For how they work, see
+[Isolation](../explanation/architecture.md#isolation). For the guarantee that this setting supports, see `G1` in
+[SECURITY.md](../../SECURITY.md).
 
 ## TSLINK_TAG_SCOPE
 

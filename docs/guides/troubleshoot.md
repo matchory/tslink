@@ -59,7 +59,7 @@ Find the symptom below, then do the checks in the sequence of the table. Before 
 | Cause | Check | Fix |
 | --- | --- | --- |
 | The container stopped | `docker ps -a` | Start the container. |
-| The credential expired | `NeedsLogin` in `tailscaled.log` | Create a new credential. |
+| The key of the node expired | The admin console shows the node as expired | Renew the key of the node in the admin console, or disable its key expiry. A node that is logged in does not use its credential. See [Rotation and revocation](../explanation/security-model.md#rotation-and-revocation). |
 | The host cannot reach the control server | Connection errors in `tailscaled.log` | Permit outbound TCP to port 443. See [Provision a host](provision-a-node.md). |
 
 ## The container cannot reach the tailnet

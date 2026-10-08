@@ -97,9 +97,15 @@ three- and five-node swarms; see [docs/testing.md](docs/testing.md).
 - A `dns-upstreams` warning in the endpoint's status and `tslink diag` when
   tailscaled falls back to resolvers neither the container nor the host
   lists; a later start with resolvers of either clears it.
+- Panics and goroutine dumps name the endpoint of each goroutine that runs
+  its Tailscale: they carry the label `endpoint` with the first 12
+  characters of the endpoint ID.
 
 ### Changed
 
+- Building tslink requires Go 1.27.1 or later.
+- CI reports golangci-lint and govulncheck findings to GitHub code scanning,
+  and test results and per-package coverage in each run's summary.
 - The Go module path is `github.com/matchory/tslink`.
 - Images are published as `ghcr.io/matchory/tslink:<version>-<arch>`. The
   documentation installs the plugin under the alias `tslink`, so networks and
@@ -148,6 +154,8 @@ three- and five-node swarms; see [docs/testing.md](docs/testing.md).
   replaces the file the plugin's `resolv.conf` is a bind mount of, and the
   kernel refuses to mount over a replaced file. tailscaled's mount namespace
   now drops that mount first.
+- Stopping tailscaled waited for its process in two goroutines at once,
+  which `os/exec` does not allow: a data race.
 - tailscaled froze when it wrote a line longer than 64 KiB: the plugin
   stopped reading its output, and tailscaled blocked on the full pipe.
 - After a reboot the plugin failed to start, because it mounted

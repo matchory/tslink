@@ -74,15 +74,18 @@ Each veth pair gets a /30 subnet from `10.200.0.0/16`.
 The container reaches the tailnet only as its own node, not as the host. Routes stop sockets, but not raw frames, and
 the tailscaled of a host accepts forwarded traffic. Thus the host also enforces the isolation with firewall rules:
 
-- **Host isolation.** Containers on the host cannot reach the tailnet through the tailscaled of the host. This applies
-  to all containers, on tslink networks and on other networks. The plugin setting `TSLINK_ISOLATE_HOST_TAILNET`
-  controls it. tslink installs the rules before it accepts requests, restores them when they change, and keeps them
-  when the plugin stops.
-- **Isolation between containers.** Containers cannot reach the veth addresses of other containers. Only the
-  WireGuard traffic of tailscaled passes between them, on UDP port 41641. Thus two nodes on one host keep a direct
-  connection, and do not use a DERP relay.
-
-The guarantee and the conditions that it relies on are `G1` in [SECURITY.md](../../SECURITY.md).
+- **Host isolation.** Containers on the host cannot reach the tailnet through the tailscaled of the host, nor the
+  tailnet addresses of the host. This applies to all containers, on tslink networks and on other networks. The rules
+  match the interface names that Docker uses by default, and the names of bridges that have their own name
+  (`com.docker.network.bridge.name`). tslink gets these names from Docker when it starts, on each watchdog run, and
+  when a network is created. The plugin setting `TSLINK_ISOLATE_HOST_TAILNET` controls host isolation. tslink
+  installs the rules before it accepts requests, restores them when they change, and keeps them when the plugin
+  stops. This is the guarantee `G1` in [SECURITY.md](../../SECURITY.md), with the conditions that it relies on.
+- **Isolation between containers.** The host drops all traffic that it forwards to `10.200.0.0/16`, whatever
+  interface it arrives on. Two kinds of traffic pass: replies on connections that the container opened, and the
+  WireGuard traffic of tailscaled, on UDP port 41641, from the veth pairs of tslink. Thus containers cannot reach the
+  veth addresses of other containers, nor can a host on the LAN that routes `10.200.0.0/16` through the Docker host.
+  Two nodes on one host keep a direct connection, and do not use a DERP relay. This isolation is always on.
 
 ## DNS
 

@@ -45,26 +45,31 @@ with Docker's default capabilities.
 Assumes: E1, E2, E5.
 
 A container cannot reach another container's tslink veth address, by sockets
-or by raw frames, through its own veth or through Docker's gateway, on any
-network. Only UDP to tailscaled's WireGuard port (41641) passes, so nodes on
-one host keep their direct path; WireGuard drops anything not from a peer.
+or by raw frames, through its own veth or through Docker's gateway on
+`docker0`, `docker_gwbridge` or a bridge network with Docker's default `br-`
+interface name. Only UDP to tailscaled's WireGuard port (41641) passes, so
+nodes on one host keep their direct path; WireGuard drops anything not from a
+peer.
 
 ### G4: A stack's nodes get only what its own network grants
 
 Attackers: the author of a stack file that passed review.
 Assumes: E2, E3, E4, E8.
 
-A network that belongs to a stack takes only that stack's tasks. With the
-cluster credential, a stack's nodes get only the tag `tag:<stack>`, with the
-plugin setting `TSLINK_TAG_SCOPE` at its default, `exact`; `prefix` also
-allows `tag:<stack>-*`, which lets a stack claim a longer-named stack's base
-tag. Networks outside a stack cannot use the cluster credential.
+A network that belongs to a stack gives tailnet nodes only to that stack's
+tasks. With the cluster credential, a stack's nodes get only the tag
+`tag:<stack>`, with the plugin setting `TSLINK_TAG_SCOPE` at its default,
+`exact`; `prefix` also allows `tag:<stack>-*`, which lets a stack claim a
+longer-named stack's base tag. Networks outside a stack cannot use the
+cluster credential.
 
 ### G5: Credentials do not leak
 
 Attackers: a process in a container on a tslink network; a tailnet peer; the
 control server.
 Assumes: E2, E3.
+Manual: OAuth client secrets (the cluster credential) are searched for by
+hand on a test tailnet before each release.
 
 Auth keys and OAuth client secrets do not appear in the plugin's log, the
 command lines of tailscale and tailscaled, tailscaled's environment or log,

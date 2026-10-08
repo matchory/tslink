@@ -86,6 +86,7 @@ func TestLoadConfigIsolateHostTailnet(t *testing.T) {
 	}
 }
 
+// Guards: G4
 func TestTagScopeStrict(t *testing.T) {
 	for v, want := range map[string]bool{
 		"": true, "exact": true, "EXACT": true, "prefix": false, "PREFIX": false, "nonsense": true,

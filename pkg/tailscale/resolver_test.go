@@ -258,12 +258,12 @@ func TestTailscaledCommandWarnsAboutFallback(t *testing.T) {
 	}
 }
 
-// tailscaled gets its own resolv.conf even when the plugin's is a bind mount
-// of a file that has since been replaced, as systemd-resolved replaces
-// stub-resolv.conf whenever the host's DNS changes. The kernel refuses to
-// mount over a deleted file (move_mount: ENOENT). Needs root; /etc is a
-// scratch directory in a mount namespace of the test's own.
-func TestTailscaledCommandOverStaleResolvConf(t *testing.T) {
+// runSandboxed runs tailscaled's command as root in a mount namespace of the
+// test's own, with nsenter replaced by a script and tailscaled by show, after
+// setup prepares the namespace. /etc and /run are scratch directories there.
+// It returns what show printed.
+func runSandboxed(t *testing.T, setup, show string) string {
+	t.Helper()
 	if os.Geteuid() != 0 {
 		t.Skip("needs root for mount namespaces")
 	}
@@ -286,7 +286,7 @@ func TestTailscaledCommandOverStaleResolvConf(t *testing.T) {
 	scripts := map[string]string{
 		// nsenter --net=NETNS -- PROGRAM ARGS...
 		"nsenter":    "#!/bin/sh\nshift 2\nexec \"$@\"\n",
-		"tailscaled": "#!/bin/sh\ncat /etc/resolv.conf\n",
+		"tailscaled": "#!/bin/sh\n" + show + "\n",
 	}
 	for name, script := range scripts {
 		// #nosec G306 -- test script
@@ -302,18 +302,10 @@ func TestTailscaledCommandOverStaleResolvConf(t *testing.T) {
 	d.ctx = t.Context()
 	cmd := d.tailscaledCommand(nil)
 
-	// /etc as the plugin sees it after systemd-resolved replaced the file
-	// its resolv.conf is a bind mount of
-	setup := `set -e
-mount --bind "$0/etc" /etc
-touch /etc/resolv.conf
-echo "nameserver 127.0.0.53" >"$0/stub"
-mount --bind "$0/stub" /etc/resolv.conf
-rm "$0/stub"
-grep -q "//deleted /etc/resolv.conf " /proc/self/mountinfo
-exec "$@"`
+	script := "set -e\nmount --bind \"$0/etc\" /etc\ntouch /etc/resolv.conf\n" +
+		"mount -t tmpfs tmpfs /run\n" + setup + "\nexec \"$@\""
 	args := append(
-		[]string{"--mount", "--propagation", "private", "--", "sh", "-c", setup, dir},
+		[]string{"--mount", "--propagation", "private", "--", "sh", "-c", script, dir},
 		cmd.Args...)
 	run := exec.Command("unshare", args...) // #nosec G204 -- the command under test
 	run.Env = []string{"PATH=" + bin + ":/usr/sbin:/usr/bin:/sbin:/bin"}
@@ -321,7 +313,32 @@ exec "$@"`
 	if err != nil {
 		t.Fatalf("%v: %s", err, out)
 	}
-	if string(out) != "nameserver 10.0.0.2\n" {
+	return string(out)
+}
+
+// tailscaled gets its own resolv.conf even when the plugin's is a bind mount
+// of a file that has since been replaced, as systemd-resolved replaces
+// stub-resolv.conf whenever the host's DNS changes. The kernel refuses to
+// mount over a deleted file (move_mount: ENOENT).
+func TestTailscaledCommandOverStaleResolvConf(t *testing.T) {
+	// /etc as the plugin sees it after systemd-resolved replaced the file
+	// its resolv.conf is a bind mount of
+	setup := `echo "nameserver 127.0.0.53" >"$0/stub"
+mount --bind "$0/stub" /etc/resolv.conf
+rm "$0/stub"
+grep -q "//deleted /etc/resolv.conf " /proc/self/mountinfo`
+	if out := runSandboxed(t, setup, "cat /etc/resolv.conf"); out != "nameserver 10.0.0.2\n" {
 		t.Errorf("tailscaled saw %q, want its own resolv.conf", out)
+	}
+}
+
+// tailscaled does not reach the host's system bus, which the plugin sees in
+// the host's /run. Through it, tailscaled would configure the host's
+// systemd-resolved, with DNS settings from the control server, for the host
+// link whose index its tailscale0 has in the container.
+func TestTailscaledCommandHidesSystemBus(t *testing.T) {
+	setup := "mkdir /run/dbus\ntouch /run/dbus/system_bus_socket"
+	if out := runSandboxed(t, setup, "ls -A /run/dbus"); out != "" {
+		t.Errorf("tailscaled sees %q in /run/dbus", out)
 	}
 }

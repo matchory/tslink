@@ -200,6 +200,13 @@ wait_ip e2e-resolver
 retry 60 resolves e2e-resolver 100.100.100.100 || fail "Tailscale's resolver does not forward to the container's"
 resolves e2e-resolver || fail "e2e-resolver cannot resolve $PROBE_NAME"
 
+log "tailscaled does not reach the host's system bus"
+# Through it, tailscaled would configure the host's systemd-resolved with the
+# control server's DNS settings. It pings resolved as it starts.
+if sudo grep -l "resolved-ping=yes" "$DATA"/by-hostname/*/tailscaled.log; then
+	fail "tailscaled reached the host's systemd-resolved"
+fi
+
 log "A plugin restart keeps the containers' identities"
 docker plugin disable -f "$PLUGIN"
 docker plugin enable "$PLUGIN"

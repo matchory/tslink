@@ -205,5 +205,11 @@ three- and five-node swarms; see [docs/testing.md](docs/testing.md).
   all, never through the host's Tailscale.
 - The auth key is passed to `tailscale up` on stdin instead of its command
   line, where it was visible in the host's process list.
+- tailscaled no longer reaches the host's D-Bus system bus, which the plugin
+  sees in the host's `/run`. When tailscaled fell back to the plugin's
+  `resolv.conf` (see Fixed), it configured the host's systemd-resolved, as
+  root, with the control server's DNS settings, for the host link with the
+  index its `tailscale0` has in the container: often the host's primary
+  interface. tailscaled does not start if the bus cannot be hidden.
 
 [Unreleased]: https://github.com/matchory/tslink/compare/v0.1.0...HEAD

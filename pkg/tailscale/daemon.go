@@ -462,6 +462,9 @@ func (d *Daemon) tailscaledCommand(args []string) *exec.Cmd {
 	// refuses to mount over it once the host replaced that file (move_mount:
 	// ENOENT), as systemd-resolved does when the host's DNS changes. The
 	// namespace is tailscaled's own, so it drops that mount and tries again.
+	// tailscaled must not reach the host's system bus, in the host's /run:
+	// with it, it would configure the host's systemd-resolved with the
+	// control server's DNS settings. It does not start if the bus stays.
 	unshareArgs := []string{
 		"--mount",
 		"--propagation",
@@ -474,6 +477,11 @@ func (d *Daemon) tailscaledCommand(args []string) *exec.Cmd {
 	echo "tslink: tailscaled keeps the plugin's resolv.conf" >&2
 b=/etc/resolv.pre-tailscale-backup.conf
 { [ -e $b ] || touch $b; } && mount --bind "$1" $b || echo "tslink: tailscaled shares the plugin's resolv.conf backup" >&2
+for d in /run/dbus /var/run/dbus; do
+	[ ! -d $d ] || mount -t tmpfs -o size=4k,mode=0755 tmpfs $d ||
+		{ echo "tslink: cannot hide the host's system bus from tailscaled" >&2; exit 1; }
+done
+unset DBUS_SYSTEM_BUS_ADDRESS
 netns=$2; shift 2; exec nsenter --net="$netns" -- "$@"`,
 		resolvConf,
 		backup,

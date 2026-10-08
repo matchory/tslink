@@ -2,13 +2,11 @@ package tailscale
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
-	"net/http"
-	"strings"
 	"time"
+
+	"tailscale.com/ipn/ipnstate"
 
 	"github.com/matchory/tslink/pkg/logger"
 )
@@ -46,72 +44,36 @@ func (d *Daemon) getStatus() (*Status, error) {
 	ctx, cancel := context.WithTimeout(d.ctx, 10*time.Second)
 	defer cancel()
 
-	out, err := d.statusJSON(ctx)
+	st, err := d.lc.StatusWithoutPeers(ctx)
 	if err != nil {
-		return nil, fmt.Errorf(
-			"tailscale status failed: %w (output: %s)",
-			err,
-			strings.TrimSpace(out.combined()),
-		)
+		return nil, fmt.Errorf("tailscale status failed: %w", err)
 	}
-
-	var result struct {
-		Self struct {
-			TailscaleIPs []string `json:"TailscaleIPs"`
-			HostName     string   `json:"HostName"`
-			Online       bool     `json:"Online"`
-		} `json:"Self"`
+	status := &Status{}
+	if st.Self != nil {
+		status.Hostname, status.Online = st.Self.HostName, st.Self.Online
+		if len(st.Self.TailscaleIPs) > 0 {
+			status.IP = st.Self.TailscaleIPs[0].String()
+		}
 	}
-
-	if err := json.Unmarshal([]byte(out.stdout), &result); err != nil {
-		return nil, fmt.Errorf("failed to parse status: %w", err)
-	}
-
-	status := &Status{
-		Hostname: result.Self.HostName,
-		Online:   result.Self.Online,
-	}
-
-	if len(result.Self.TailscaleIPs) > 0 {
-		status.IP = result.Self.TailscaleIPs[0]
-	}
-
 	return status, nil
 }
 
 // BackendState returns tailscaled's backend state, such as Running or
-// NeedsLogin, from its LocalAPI: cheaper than running the CLI on every
-// health check.
+// NeedsLogin.
 func (d *Daemon) BackendState() (string, error) {
-	client := &http.Client{
-		Timeout: 5 * time.Second,
-		Transport: &http.Transport{
-			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				var dialer net.Dialer
-				return dialer.DialContext(ctx, "unix", d.socketPath)
-			},
-		},
-	}
-	defer client.CloseIdleConnections()
-
-	req, err := http.NewRequestWithContext(d.ctx, http.MethodGet,
-		"http://local-tailscaled.sock/localapi/v0/status?peers=false", nil)
-	if err != nil {
-		return "", fmt.Errorf("failed to build status request: %w", err)
-	}
-	resp, err := client.Do(req)
+	ctx, cancel := context.WithTimeout(d.ctx, 5*time.Second)
+	defer cancel()
+	st, err := d.lc.StatusWithoutPeers(ctx)
 	if err != nil {
 		return "", fmt.Errorf("failed to query tailscaled: %w", err)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("tailscaled status: %s", resp.Status)
+	return st.BackendState, nil
+}
+
+// magicDNSSuffix returns the tailnet's MagicDNS suffix from a status, or "".
+func magicDNSSuffix(st *ipnstate.Status) string {
+	if st.CurrentTailnet == nil {
+		return ""
 	}
-	var status struct {
-		BackendState string `json:"BackendState"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
-		return "", fmt.Errorf("failed to parse tailscaled status: %w", err)
-	}
-	return status.BackendState, nil
+	return st.CurrentTailnet.MagicDNSSuffix
 }

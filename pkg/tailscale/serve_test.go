@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"tailscale.com/client/local"
 )
 
 func TestServeOptionArgs(t *testing.T) {
@@ -75,8 +77,10 @@ func newTestDaemon(t *testing.T, cli *fakeCLI, service string) *Daemon {
 		},
 		socketPath: testSocket,
 		runCLI:     cli.run,
-		ctx:        ctx,
-		cancel:     cancel,
+		// Nothing listens there: tests that query tailscaled set their own
+		lc:     &local.Client{Socket: testSocket, UseSocketOnly: true},
+		ctx:    ctx,
+		cancel: cancel,
 	}
 }
 

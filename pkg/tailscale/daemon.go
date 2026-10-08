@@ -17,6 +17,8 @@ import (
 	"syscall"
 	"time"
 
+	"tailscale.com/client/local"
+
 	"github.com/matchory/tslink/pkg/logger"
 )
 
@@ -88,6 +90,9 @@ type Daemon struct {
 	// runCLI runs the tailscale CLI and returns its output; tests replace it.
 	// Nil runs config.TailscaleBin.
 	runCLI func(ctx context.Context, c cliCall) (cliOutput, error)
+
+	// lc talks to tailscaled's LocalAPI on its socket
+	lc *local.Client
 }
 
 // NewDaemon creates a new Daemon instance.
@@ -134,6 +139,7 @@ func NewDaemon(cfg DaemonConfig) (*Daemon, error) {
 	return &Daemon{
 		config:     cfg,
 		socketPath: socketPath,
+		lc:         &local.Client{Socket: socketPath, UseSocketOnly: true},
 		ctx:        ctx,
 		cancel:     cancel,
 	}, nil

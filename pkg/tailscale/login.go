@@ -3,7 +3,6 @@ package tailscale
 import (
 	"cmp"
 	"context"
-	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -75,15 +74,8 @@ const defaultControlURL = "https://controlplane.tailscale.com"
 func (d *Daemon) registeredAsConfigured() bool {
 	ctx, cancel := context.WithTimeout(d.ctx, 10*time.Second)
 	defer cancel()
-	out, err := d.runTailscale(
-		ctx,
-		cliCall{args: []string{"--socket=" + d.socketPath, "debug", "prefs"}},
-	)
-	var prefs struct {
-		ControlURL    string   `json:"ControlURL"`
-		AdvertiseTags []string `json:"AdvertiseTags"`
-	}
-	if err != nil || json.Unmarshal([]byte(out.stdout), &prefs) != nil {
+	prefs, err := d.lc.GetPrefs(ctx)
+	if err != nil {
 		return false
 	}
 	want := cmp.Or(d.config.LoginServer, defaultControlURL)
@@ -136,13 +128,9 @@ func (d *Daemon) waitBackendState() string {
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		ctx, cancel := context.WithTimeout(d.ctx, 5*time.Second)
-		out, err := d.statusJSON(ctx)
+		st, err := d.lc.StatusWithoutPeers(ctx)
 		cancel()
-		var st struct {
-			BackendState string `json:"BackendState"`
-		}
-		if err == nil && json.Unmarshal([]byte(out.stdout), &st) == nil &&
-			st.BackendState != "NoState" {
+		if err == nil && st.BackendState != "NoState" {
 			return st.BackendState
 		}
 		if time.Now().After(deadline) {
@@ -214,11 +202,17 @@ func (d *Daemon) Logout() error {
 // is not enough: the control plane may just be unreachable, and the node key
 // still valid.
 func (d *Daemon) LoggedOut() bool {
-	if time.Since(time.Unix(d.nodeNotFound.Load(), 0)) < 30*time.Second {
+	if d.nodeNotFoundRecently() {
 		return true
 	}
 	state, err := d.BackendState()
 	return err == nil && state == needsLogin
+}
+
+// nodeNotFoundRecently reports whether control said in the last 30 seconds
+// that it does not know the node.
+func (d *Daemon) nodeNotFoundRecently() bool {
+	return time.Since(time.Unix(d.nodeNotFound.Load(), 0)) < 30*time.Second
 }
 
 // Reauthenticate logs a node in again with the auth key, as a new device, and

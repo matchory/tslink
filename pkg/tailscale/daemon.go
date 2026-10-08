@@ -81,6 +81,10 @@ type Daemon struct {
 	stdoutPipe io.ReadCloser
 	stderrPipe io.ReadCloser
 
+	// Closed when watchProcess has waited for tailscaled to exit: only one
+	// goroutine may wait for a process
+	exited chan struct{}
+
 	// runCLI runs the tailscale CLI and returns its output; tests replace it.
 	// Nil runs config.TailscaleBin.
 	runCLI func(ctx context.Context, c cliCall) (cliOutput, error)
@@ -315,10 +319,15 @@ func (d *Daemon) watchProcess() {
 	})
 
 	// Monitor for process exit (cancellable via context)
+	exited := make(chan struct{})
+	d.mu.Lock()
+	d.exited = exited
+	d.mu.Unlock()
 	d.wg.Go(func() {
 		done := make(chan error, 1)
 		go func() {
 			done <- d.cmd.Wait()
+			close(exited)
 		}()
 
 		select {
@@ -560,14 +569,21 @@ func (d *Daemon) killProcess(cmd *exec.Cmd) {
 		logger.Warnf("Failed to kill tailscaled: %v", err)
 	}
 
-	// Wait for process with timeout to avoid blocking forever
-	waitDone := make(chan struct{})
-	go func() {
-		if err := cmd.Wait(); err != nil {
-			logger.Debugf("tailscaled process exited: %v", err)
-		}
-		close(waitDone)
-	}()
+	// Wait for process with timeout to avoid blocking forever. If
+	// watchProcess waits for it, wait for that instead
+	d.mu.RLock()
+	waitDone := d.exited
+	d.mu.RUnlock()
+	if waitDone == nil {
+		ch := make(chan struct{})
+		go func() {
+			if err := cmd.Wait(); err != nil {
+				logger.Debugf("tailscaled process exited: %v", err)
+			}
+			close(ch)
+		}()
+		waitDone = ch
+	}
 
 	select {
 	case <-waitDone:

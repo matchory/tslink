@@ -53,7 +53,7 @@ network options and plugin settings; see "Scope".
 ### Environment properties
 
 | ID | Property | Ensured by | `tslink diag --preflight` |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | E1 | Containers on tslink networks are not privileged and have neither `NET_ADMIN` nor `SYS_ADMIN` | stack review, CI policy | checks |
 | E2 | No container on a tslink network bind-mounts Docker's socket, `/run/netns`, Docker's data root (`/var/lib/docker` by default), the plugin's data directory or a directory containing them, or shares the host's PID namespace | stack review, CI policy | checks |
 | E3 | Only operators have Docker API access and root on hosts | operator | does not check |

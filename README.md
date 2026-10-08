@@ -365,6 +365,24 @@ Measured on three- and five-node swarms; see [docs/testing.md](docs/testing.md).
   `/var/lib/docker-plugins/tailscale/status/<endpoint>.json` (`running`,
   `retrying` with the error, or `failed`, and `warnings` such as a blocked
   certificate renewal), and `tslink diag` lists them.
+- **Preflight:** `tslink diag --preflight` checks the environment properties
+  tslink's guarantees rely on ([SECURITY.md](SECURITY.md)) on the host it
+  runs on; run it on every node of a Swarm.
+  `ghcr.io/matchory/tslink:latest` is a Docker plugin tag, not an image
+  `docker run` can pull; build the image from a checkout of the repository
+  instead:
+
+  ```bash
+  docker build -t tslink-diag -f docker/Dockerfile .
+  docker run --rm --network host --cap-add NET_ADMIN \
+    -v /var/run/docker.sock:/var/run/docker.sock \
+    -v /var/lib/docker-plugins/tailscale:/data \
+    --entrypoint /tslink tslink-diag diag --preflight
+  ```
+
+  Add `-v <shared dir>:/shared:ro --shared-dir /shared` to check the shared
+  certificate directory. It exits non-zero if a property is violated, or a
+  check failed to run; unknown does not fail it.
 
 ## Cleanup
 

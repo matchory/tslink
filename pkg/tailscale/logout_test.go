@@ -256,6 +256,7 @@ func writeScript(t *testing.T, dir, name, body string) string {
 	return p
 }
 
+// Guards: G5
 func TestRunLogout(t *testing.T) {
 	// Stand-ins: tailscaled creates its socket after a moment and runs until
 	// killed; the CLI fails until the socket exists, and records its args

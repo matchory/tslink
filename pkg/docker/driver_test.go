@@ -706,6 +706,7 @@ func TestRecoverEndpointsWithoutNetworkSettings(t *testing.T) {
 
 // The plugin applies its isolation setting before it serves requests, so no
 // container joins while the host's tailnet is open to it.
+// Guards: G1
 func TestStartAppliesHostIsolation(t *testing.T) {
 	for _, on := range []bool{true, false} {
 		d := newDriver(&core.Config{DataDir: t.TempDir(), IsolateHostTailnet: on}, newFakeDocker())

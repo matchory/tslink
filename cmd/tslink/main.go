@@ -4,19 +4,24 @@ package main
 
 import (
 	"context"
+	"flag"
+	"io"
 	"log"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"syscall"
 	"time"
 
 	"github.com/docker/go-plugins-helpers/network"
+	dockerclient "github.com/moby/moby/client"
 
 	"github.com/matchory/tslink/pkg/core"
 	"github.com/matchory/tslink/pkg/diag"
 	"github.com/matchory/tslink/pkg/docker"
 	"github.com/matchory/tslink/pkg/logger"
+	"github.com/matchory/tslink/pkg/preflight"
 )
 
 const (
@@ -31,7 +36,7 @@ func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "diag", "diagnose", "status":
-			runDiag()
+			runDiag(os.Args[2:])
 			return
 		case "help", "-h", "--help":
 			printHelp()
@@ -79,10 +84,49 @@ func runPlugin() {
 	}
 }
 
-func runDiag() {
-	if err := diag.Run(core.DataDir(), os.Stdout); err != nil {
+func runDiag(args []string) {
+	flags := flag.NewFlagSet("diag", flag.ExitOnError)
+	check := flags.Bool("preflight", false, "check the environment properties of SECURITY.md")
+	sharedDir := flags.String("shared-dir", "", "the shared certificate directory, as mounted here")
+	if err := flags.Parse(args); err != nil {
 		log.Fatalf("Diagnostic failed: %v", err)
 	}
+	if !*check {
+		if err := diag.Run(core.DataDir(), os.Stdout); err != nil {
+			log.Fatalf("Diagnostic failed: %v", err)
+		}
+		return
+	}
+	client, err := dockerclient.New(dockerclient.FromEnv)
+	if err != nil {
+		log.Fatalf("Preflight failed: %v", err)
+	}
+	env := preflight.Env{
+		Docker: client,
+		Run: func(ctx context.Context, name string, args ...string) ([]byte, error) {
+			return exec.CommandContext(ctx, name, args...).CombinedOutput()
+		},
+		DataDir:   core.DataDir(),
+		SharedDir: *sharedDir,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	code := runPreflight(ctx, env, os.Stdout)
+	cancel()
+	if err := client.Close(); err != nil {
+		log.Printf("Warning: failed to close the Docker client: %v", err)
+	}
+	os.Exit(code)
+}
+
+// runPreflight checks the environment properties, prints the results and
+// returns the exit code: 1 if a property is violated, or a check failed to
+// run; unknown does not fail it.
+func runPreflight(ctx context.Context, env preflight.Env, w io.Writer) int {
+	failed, err := preflight.Write(w, preflight.Check(ctx, env))
+	if err != nil || failed {
+		return 1
+	}
+	return 0
 }
 
 func printHelp() {
@@ -91,19 +135,37 @@ func printHelp() {
 Usage:
   tslink          Start the plugin server
   tslink diag     Run diagnostics on all endpoints
+  tslink diag --preflight [--shared-dir DIR]   Check the environment properties in SECURITY.md
   tslink help     Show this help message
 
 Diagnostics:
   The 'diag' command shows the health status of all Tailscale endpoints.
-  Run it from the host using:
+  ghcr.io/matchory/tslink:latest is a Docker plugin tag, not an image
+  docker run can pull; build the image from a checkout of the repository
+  and run it from the host:
 
+    docker build -t tslink-diag -f docker/Dockerfile .
     docker run --rm -v /var/lib/docker-plugins/tailscale:/data \
-      --entrypoint /tslink \
-      ghcr.io/matchory/tslink:latest diag
+      --entrypoint /tslink tslink-diag diag
 
   Or use the helper script from a checkout of the repository:
 
     ./scripts/tslink-diag.sh
+
+Preflight:
+  'diag --preflight' checks the environment properties tslink's guarantees
+  rely on (SECURITY.md), on the host it runs on: run it on every node of a
+  Swarm. Build the image as for 'diag':
+
+    docker build -t tslink-diag -f docker/Dockerfile .
+    docker run --rm --network host --cap-add NET_ADMIN \
+      -v /var/run/docker.sock:/var/run/docker.sock \
+      -v /var/lib/docker-plugins/tailscale:/data \
+      --entrypoint /tslink tslink-diag diag --preflight
+
+  Add -v <shared dir>:/shared:ro --shared-dir /shared to check the shared
+  certificate directory. It exits non-zero if a property is violated, or a
+  check failed to run; unknown does not fail it.
 
 `)
 }

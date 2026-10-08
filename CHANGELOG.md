@@ -100,6 +100,15 @@ three- and five-node swarms; see [docs/testing.md](docs/testing.md).
 - Panics and goroutine dumps name the endpoint of each goroutine that runs
   its Tailscale: they carry the label `endpoint` with the first 12
   characters of the endpoint ID.
+- SECURITY.md describes tslink's security model: the guarantees it makes and
+  the environment properties they rely on. A test fails if a published
+  guarantee has no test that verifies it.
+- `tslink diag --preflight` checks, on the host it runs on, the environment
+  properties the security model relies on: privileges and mounts of
+  containers on tslink networks, Swarm tasks outside stacks, the host's
+  tailnet isolation (its setting and iptables chains), how the plugin was
+  installed, the shared certificate directory and Tailnet Lock on every
+  node. Run it on every node of a Swarm.
 
 ### Changed
 

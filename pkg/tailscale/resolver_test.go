@@ -261,6 +261,7 @@ func TestTailscaledCommandWarnsAboutFallback(t *testing.T) {
 // tailscaled does not get the plugin's TS_AUTHKEY: it does not need it, and
 // its peerapi serves its environment (/v0/env) to peers that the control
 // server lets debug it.
+// Guards: G5
 func TestTailscaledCommandWithoutAuthKey(t *testing.T) {
 	t.Setenv("TS_AUTHKEY", "tskey-auth-secret")
 	t.Setenv("TSLINK_TEST_KEPT", "1")

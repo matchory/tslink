@@ -11,6 +11,24 @@ tailscaled supervisor, state directories and garbage collection, with
 tailscaled, Docker and the network replaced by fakes. They run on any
 platform and in CI on every pull request.
 
+`pkg/preflight` checks the environment properties of SECURITY.md (`tslink
+diag --preflight`), tested against a fake Docker API.
+
+## Security model
+
+Tests that verify a guarantee of [SECURITY.md](../SECURITY.md) carry its ID:
+`// Guards: G1` in the doc comment of a Go test, `\* Guards: G1` in a TLA+
+model, and `probe G1 ...` for a shell probe. `internal/secmodel` checks, with
+every `go test`, that each published guarantee has at least one, unless its
+section has a `Manual:` line for a check done by hand before releases.
+
+A shell probe is an attack that succeeds if it gets through. It runs through
+`test/security/lib.sh`, which runs it against the defended system, where it
+must fail, and in a control run with the defence turned off, where it must
+get through; a probe whose control run fails is reported as broken, because
+it could not catch a regression. `test/security/lib_test.sh` tests the
+library itself, in CI on every pull request.
+
 ## Network namespace tests
 
 The tests in `pkg/netutil` create network namespaces, veth pairs, routes and
@@ -31,8 +49,9 @@ against a [headscale](https://github.com/juanfont/headscale) control server
 on the same machine, so it needs no Tailscale account. It checks that
 containers reach each other over the tailnet, that the policy refuses what it
 does not grant, that a container keeps its identity across a plugin restart,
-and that an ephemeral node is removed with its container. CI runs it on every
-pull request. Tailscale Services are not covered: headscale does not support
+and that an ephemeral node is removed with its container. Its host isolation
+checks are probes on `test/security/lib.sh`, with control runs. CI runs it on
+every pull request. Tailscale Services are not covered: headscale does not support
 them.
 
 ## Cluster tests
@@ -55,3 +74,13 @@ tests it against a real tailnet, including Tailscale Services; see
 daemon, or resets or powers it off, while callers probe a Tailscale Service,
 and times the recovery. The cluster tests need a Swarm and a tailnet set up
 for them, so they do not run in CI.
+
+## Fuzzing
+
+Fuzz targets check properties of code that handles input from containers,
+stack files and the host: state directory paths, network options, serve
+labels and the `tailscale serve` arguments they become, tailscaled's
+`resolv.conf`, and certificate paths. Their seeds run with every `go test`.
+`fuzz.yml` fuzzes each target for ten minutes every week and on demand, and
+keeps a failing input as an artifact; once fixed, commit it under the
+package's `testdata/fuzz/`, where it becomes a regression test.

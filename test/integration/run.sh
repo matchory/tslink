@@ -319,12 +319,15 @@ raw_send() {
 		python3 /rawsend.py "$ifc" "$src" "$mac" "$2" 9999 "$3"' sh "$1" "${RAW_DST:-$sink_ip}" "$2"
 }
 sink_got() { docker logs e2e-sink 2>&1 | grep -qF "$1"; }
-# raw_arrives IFACE PAYLOAD: sends until the sink has PAYLOAD, for 30 seconds
+# raw_arrives IFACE PREFIX: sends until the sink has a payload unique to this
+# call (PREFIX plus a per-call suffix, fixed across its own retries), for 30
+# seconds; a frame sent by an earlier call cannot satisfy a later one
 raw_arrives() {
+	local p="$2-$SECONDS-$RANDOM"
 	local deadline=$((SECONDS + 30))
-	until sink_got "$2"; do
+	until sink_got "$p"; do
 		[ "$SECONDS" -lt "$deadline" ] || return 1
-		raw_send "$1" "$2"
+		raw_send "$1" "$p"
 		sleep 2
 	done
 }
@@ -337,30 +340,18 @@ set_isolation() {
 
 docker run --rm --network host "$ALPINE" sh -c "timeout 15 nc -w 5 $server_ip 8080 </dev/null" |
 	grep -qx "$MARK" || fail "precondition: the host cannot reach the server"
-if plain_reaches "$server_ip" 8080; then
-	fail "a container on Docker's bridge reached the tailnet through the host"
-fi
-if plain_reaches "$host_ts_ip" 8081; then
-	fail "a container on Docker's bridge reached the host's tailnet address"
-fi
-for ifc in veth eth0; do
-	if raw_arrives "$ifc" "isolated-$ifc"; then
-		fail "raw frames through $ifc reached the tailnet: $(docker logs e2e-sink 2>&1 | tail -n 1)"
-	fi
-done
 
-log "Without the isolation, the same probes get through"
-# Shows that the probes above would catch a leak
-set_isolation false
-retry 60 plain_reaches "$server_ip" 8080 || fail "control: a container on Docker's bridge cannot reach the server"
-plain_reaches "$host_ts_ip" 8081 || fail "control: a container on Docker's bridge cannot reach the host's tailnet address"
+# shellcheck source=../security/lib.sh
+. "$HERE/../security/lib.sh"
+probe_group "host tailnet isolation" "set_isolation false" "set_isolation true" 60
+probe G1 "a container on Docker's bridge reaches the tailnet through the host" \
+	plain_reaches "$server_ip" 8080
+probe G1 "a container on Docker's bridge reaches the host's tailnet address" \
+	plain_reaches "$host_ts_ip" 8081
 for ifc in veth eth0; do
-	raw_arrives "$ifc" "open-$ifc" || fail "control: raw frames through $ifc did not arrive"
+	probe G1 "raw frames through $ifc reach the tailnet" raw_arrives "$ifc" "probe-$ifc"
 done
-set_isolation true
-if plain_reaches "$server_ip" 8080; then
-	fail "the isolation did not come back with the setting"
-fi
+run_probes || fail "host tailnet isolation"
 
 log "Containers do not reach each other through tslink's veths"
 # The host forwards between tslink's veths: without the veth isolation, a

@@ -124,6 +124,12 @@ three- and five-node swarms; see [docs/testing.md](docs/testing.md).
 
 ### Fixed
 
+- After a plugin restart, nodes that were still logged in could stay offline
+  for good against a control server not on port 443, such as headscale on
+  port 8080: `tailscale up` restarted their control client right after
+  tailscaled had dialled control, and tailscaled then dials port 443 only,
+  retry after retry. Such nodes now get their settings with `tailscale set`,
+  and `tailscale up` runs only when their tags or control server changed.
 - tailscaled froze when it wrote a line longer than 64 KiB: the plugin
   stopped reading its output, and tailscaled blocked on the full pipe.
 - After a reboot the plugin failed to start, because it mounted

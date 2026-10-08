@@ -30,7 +30,7 @@ func resolveAuthKey(ctx context.Context, authKey string, tags []string) (string,
 	}
 	baseURL, err := url.Parse(attrs.baseURL)
 	if err != nil {
-		return "", fmt.Errorf("invalid baseURL: %w", err)
+		return "", errors.New("invalid OAuth client secret attribute baseURL")
 	}
 	client := &tsapi.Client{
 		BaseURL:   baseURL,
@@ -55,32 +55,50 @@ type clientSecretAttrs struct {
 	baseURL                  string
 }
 
-// parseClientSecret splits an OAuth client secret from its attributes.
+// The attributes an OAuth client secret may carry.
+const (
+	attrEphemeral     = "ephemeral"
+	attrPreauthorized = "preauthorized"
+	attrBaseURL       = "baseURL"
+)
+
+// parseClientSecret splits an OAuth client secret from its attributes. Its
+// errors quote nothing of s: they end up in the log.
 func parseClientSecret(s string) (string, clientSecretAttrs, error) {
 	secret, query, _ := strings.Cut(s, "?")
-	attrs := clientSecretAttrs{ephemeral: true, baseURL: "https://api.tailscale.com"}
+	attrs := clientSecretAttrs{baseURL: "https://api.tailscale.com"}
 	values, err := url.ParseQuery(query)
 	if err != nil {
-		return "", attrs, fmt.Errorf("invalid OAuth client secret attributes: %w", err)
+		return "", attrs, errors.New("invalid OAuth client secret attributes")
 	}
 	for name := range values {
-		v := values.Get(name)
 		switch name {
-		case "ephemeral", "preauthorized":
-			b, err := strconv.ParseBool(v)
-			if err != nil {
-				return "", attrs, fmt.Errorf("invalid OAuth client secret attribute %s=%q", name, v)
-			}
-			if name == "ephemeral" {
-				attrs.ephemeral = b
-			} else {
-				attrs.preauthorized = b
-			}
-		case "baseURL":
-			attrs.baseURL = v
+		case attrEphemeral, attrPreauthorized, attrBaseURL:
 		default:
-			return "", attrs, fmt.Errorf("unknown OAuth client secret attribute %q", name)
+			return "", attrs, errors.New("unknown OAuth client secret attribute")
 		}
 	}
+	if attrs.ephemeral, err = boolAttr(values, attrEphemeral, true); err != nil {
+		return "", attrs, err
+	}
+	if attrs.preauthorized, err = boolAttr(values, attrPreauthorized, false); err != nil {
+		return "", attrs, err
+	}
+	if v := values.Get(attrBaseURL); v != "" {
+		attrs.baseURL = v
+	}
 	return secret, attrs, nil
+}
+
+// boolAttr returns the boolean attribute name, or def without one.
+func boolAttr(values url.Values, name string, def bool) (bool, error) {
+	v := values.Get(name)
+	if v == "" {
+		return def, nil
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return false, fmt.Errorf("invalid OAuth client secret attribute %s", name)
+	}
+	return b, nil
 }

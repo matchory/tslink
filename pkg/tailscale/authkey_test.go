@@ -128,7 +128,7 @@ func TestResolveAuthKeyRejects(t *testing.T) {
 		want   string
 	}{
 		"no tags":       {"tskey-client-abc", nil, "tags"},
-		"unknown":       {"tskey-client-abc?foo=1", []string{"tag:a"}, "foo"},
+		"unknown":       {"tskey-client-abc?foo=1", []string{"tag:a"}, "unknown"},
 		"not a boolean": {"tskey-client-abc?ephemeral=maybe", []string{"tag:a"}, "ephemeral"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -137,5 +137,22 @@ func TestResolveAuthKeyRejects(t *testing.T) {
 				t.Errorf("error = %v, want one naming %q", err, tt.want)
 			}
 		})
+	}
+}
+
+// Errors about a secret's attributes quote nothing of it: they are logged.
+// Guards: G5
+func TestResolveAuthKeyErrorsQuoteNoSecret(t *testing.T) {
+	for _, secret := range []string{
+		"tskey-client-SECRET?SECRET=1",
+		"tskey-client-SECRET?ephemeral=SECRET",
+		"tskey-client-SECRET?preauthorized=SECRET",
+		"tskey-client-SECRET?baseURL=%zzSECRET",
+		"tskey-client-SECRET?baseURL=:SECRET",
+	} {
+		_, err := resolveAuthKey(t.Context(), secret, []string{"tag:a"})
+		if err == nil || strings.Contains(err.Error(), "SECRET") {
+			t.Errorf("resolveAuthKey(%q) = %v, want an error without it", secret, err)
+		}
 	}
 }

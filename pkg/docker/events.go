@@ -341,6 +341,16 @@ func parseContainerInfo(name string, labels map[string]string) *core.ContainerIn
 		info.Direct = info.Service == ""
 	}
 
+	// tslink.health - serve the readiness endpoint on this loopback port
+	if v, ok := labels[core.HealthLabel]; ok {
+		port, err := strconv.ParseUint(v, 10, 16)
+		if err != nil || port == 0 {
+			logger.Warnf("Container %s: ignoring %s=%q: not a port", name, core.HealthLabel, v)
+		} else {
+			info.HealthPort = int(port)
+		}
+	}
+
 	// Parse serve endpoints from tslink.serve.<port> labels
 	info.Endpoints = parseServeEndpoints(labels)
 

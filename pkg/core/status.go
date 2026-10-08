@@ -121,8 +121,10 @@ func (e *Endpoint) removeStatus() {
 	e.statusMu.Lock()
 	defer e.statusMu.Unlock()
 	e.status = nil
-	err := os.Remove(StatusPath(e.DataDir, e.ID))
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		logger.Warnf("Failed to remove status of endpoint %s: %v", e.ID[:12], err)
+	for _, path := range []string{StatusPath(e.DataDir, e.ID), ReadyPath(e.DataDir, e.ID)} {
+		err := os.Remove(path)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			logger.Warnf("Failed to remove status of endpoint %s: %v", e.ID[:12], err)
+		}
 	}
 }

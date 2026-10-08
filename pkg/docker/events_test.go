@@ -172,3 +172,20 @@ func TestParseContainerInfoDirect(t *testing.T) {
 		}
 	}
 }
+
+// tslink.health turns on the readiness endpoint on that loopback port; a
+// value that is no port leaves it off.
+func TestParseContainerInfoHealth(t *testing.T) {
+	for v, want := range map[string]int{
+		"9002": 9002, "1": 1, "65535": 65535,
+		"": 0, "0": 0, "65536": 0, "-1": 0, "http": 0, "9002x": 0,
+	} {
+		info := parseContainerInfo("web", map[string]string{"tslink.health": v})
+		if info.HealthPort != want {
+			t.Errorf("tslink.health=%q: HealthPort = %d, want %d", v, info.HealthPort, want)
+		}
+	}
+	if info := parseContainerInfo("web", nil); info.HealthPort != 0 {
+		t.Errorf("without the label: HealthPort = %d", info.HealthPort)
+	}
+}

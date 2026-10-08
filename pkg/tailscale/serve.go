@@ -11,6 +11,10 @@ import (
 	"github.com/matchory/tslink/pkg/logger"
 )
 
+// protoTun is the ServeEndpoint protocol that forwards all of a Service's
+// traffic to the node (tailscale serve --tun).
+const protoTun = "tun"
+
 // ServeEndpoint represents a single Tailscale serve configuration.
 // Configured via labels like: tslink.serve.443=https:8080/api.
 type ServeEndpoint struct {
@@ -73,7 +77,7 @@ func serveArgs(ep ServeEndpoint, service string) ([]string, error) {
 		args = append(args, serveOptionArgs(ep)...)
 		return append(args, "tcp://127.0.0.1:"+ep.Target), nil
 
-	case "tun":
+	case protoTun:
 		// L3: --tun, for services only
 		if service == "" {
 			return nil, nil
@@ -251,7 +255,7 @@ func (d *Daemon) configureServeEndpoint(ep ServeEndpoint) error {
 	if err != nil {
 		return err
 	}
-	if ep.Proto == "tun" {
+	if ep.Proto == protoTun {
 		logger.Warnf("L3 (tun) endpoints require additional iptables configuration")
 	}
 	args = append([]string{"--socket=" + d.socketPath}, args...)

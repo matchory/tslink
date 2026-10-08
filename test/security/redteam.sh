@@ -10,24 +10,36 @@ B=$(cd "$(dirname "$0")" && pwd)
 S=$B/testbed/s
 TREE=$(cd "$B/../.." && pwd)
 PROBES=""
-usage() { echo "usage: redteam.sh [--tree DIR] [--probes DIR]" >&2; exit 2; }
+usage() {
+	echo "usage: redteam.sh [--tree DIR] [--probes DIR]" >&2
+	exit 2
+}
 while [ $# -gt 0 ]; do
 	case $1 in
 	--tree)
 		[ $# -ge 2 ] || usage
-		TREE=$(cd "$2" 2>/dev/null && pwd) || { echo "--tree $2: no such directory" >&2; exit 2; }
+		TREE=$(cd "$2" 2>/dev/null && pwd) || {
+			echo "--tree $2: no such directory" >&2
+			exit 2
+		}
 		shift 2
 		;;
 	--probes)
 		[ $# -ge 2 ] || usage
-		PROBES=$(cd "$2" 2>/dev/null && pwd) || { echo "--probes $2: no such directory" >&2; exit 2; }
+		PROBES=$(cd "$2" 2>/dev/null && pwd) || {
+			echo "--probes $2: no such directory" >&2
+			exit 2
+		}
 		shift 2
 		;;
 	*) usage ;;
 	esac
 done
 
-host=$("$S" hostname) || { echo "the testbed does not answer" >&2; exit 2; }
+host=$("$S" hostname) || {
+	echo "the testbed does not answer" >&2
+	exit 2
+}
 if [ "$host" != tslink-security ]; then
 	echo "refusing to run on $host: the testbed is tslink-security" >&2
 	exit 2

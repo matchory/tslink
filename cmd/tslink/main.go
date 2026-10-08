@@ -97,12 +97,12 @@ func runDiag(args []string) {
 		}
 		return
 	}
-	docker, err := dockerclient.New(dockerclient.FromEnv)
+	client, err := dockerclient.New(dockerclient.FromEnv)
 	if err != nil {
 		log.Fatalf("Preflight failed: %v", err)
 	}
 	env := preflight.Env{
-		Docker: docker,
+		Docker: client,
 		Run: func(ctx context.Context, name string, args ...string) ([]byte, error) {
 			return exec.CommandContext(ctx, name, args...).CombinedOutput()
 		},
@@ -112,7 +112,7 @@ func runDiag(args []string) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	code := runPreflight(ctx, env, os.Stdout)
 	cancel()
-	if err := docker.Close(); err != nil {
+	if err := client.Close(); err != nil {
 		log.Printf("Warning: failed to close the Docker client: %v", err)
 	}
 	os.Exit(code)
@@ -140,11 +140,13 @@ Usage:
 
 Diagnostics:
   The 'diag' command shows the health status of all Tailscale endpoints.
-  Run it from the host using:
+  ghcr.io/matchory/tslink:latest is a Docker plugin tag, not an image
+  docker run can pull; build the image from a checkout of the repository
+  and run it from the host:
 
+    docker build -t tslink-diag -f docker/Dockerfile .
     docker run --rm -v /var/lib/docker-plugins/tailscale:/data \
-      --entrypoint /tslink \
-      ghcr.io/matchory/tslink:latest diag
+      --entrypoint /tslink tslink-diag diag
 
   Or use the helper script from a checkout of the repository:
 
@@ -152,15 +154,14 @@ Diagnostics:
 
 Preflight:
   'diag --preflight' checks the environment properties tslink's guarantees
-  rely on (SECURITY.md). ghcr.io/matchory/tslink:latest is a Docker plugin
-  tag, not an image docker run can pull; build the image from a checkout of
-  the repository instead:
+  rely on (SECURITY.md), on the host it runs on: run it on every node of a
+  Swarm. Build the image as for 'diag':
 
-    docker build -t tslink-preflight -f docker/Dockerfile .
+    docker build -t tslink-diag -f docker/Dockerfile .
     docker run --rm --network host --cap-add NET_ADMIN \
       -v /var/run/docker.sock:/var/run/docker.sock \
       -v /var/lib/docker-plugins/tailscale:/data \
-      --entrypoint /tslink tslink-preflight diag --preflight
+      --entrypoint /tslink tslink-diag diag --preflight
 
   Add -v <shared dir>:/shared:ro --shared-dir /shared to check the shared
   certificate directory. It exits non-zero if a property is violated, or a

@@ -34,9 +34,9 @@ const IsolateHostTailnetSetting = "TSLINK_ISOLATE_HOST_TAILNET"
 // claim a longer-named stack's base tag.
 const TagScopeSetting = "TSLINK_TAG_SCOPE"
 
-// tagScopeStrict parses TagScopeSetting. Only "prefix" relaxes the scope; any
+// TagScopeStrict parses TagScopeSetting. Only "prefix" relaxes the scope; any
 // other value, a typo included, keeps the exact match.
-func tagScopeStrict(v string) bool {
+func TagScopeStrict(v string) bool {
 	switch {
 	case strings.EqualFold(v, "prefix"):
 		logger.Warnf(
@@ -114,7 +114,7 @@ func LoadConfig() (*Config, error) {
 		SharedDir: os.Getenv("TS_SHARED_DIR"),
 
 		IsolateHostTailnet: isolateHostTailnet(os.Getenv(IsolateHostTailnetSetting)),
-		StrictTagScope:     tagScopeStrict(os.Getenv(TagScopeSetting)),
+		StrictTagScope:     TagScopeStrict(os.Getenv(TagScopeSetting)),
 	}
 
 	// tslink no longer downloads Tailscale or runs other binaries: an

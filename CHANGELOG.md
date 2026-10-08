@@ -211,6 +211,11 @@ three- and five-node swarms; see [docs/testing.md](docs/testing.md).
 
 ### Security
 
+- The certificate domain, built from the `tslink.service` label and the
+  control server's MagicDNS suffix, is checked to be a DNS name before it
+  names files in the certificate directory. A label or suffix with `..` or a
+  slash could otherwise make the plugin create and delete lease files outside
+  that directory, as root.
 - tailscaled no longer inherits the plugin's `TS_AUTHKEY`. tailscaled does
   not use it, and its peerapi serves its environment to peers that the
   control server grants debug access.

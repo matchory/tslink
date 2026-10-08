@@ -16,6 +16,9 @@ import (
 // node key. BackendState stays Running meanwhile.
 const nodeNotFoundLog = "404: node not found"
 
+// needsLogin is tailscaled's backend state while the node is logged out.
+const needsLogin = "NeedsLogin"
+
 // bringUp runs "tailscale up" with retry logic for state reuse.
 // First attempts with existing state, then wipes and retries on auth failures.
 func (d *Daemon) bringUp() error {
@@ -25,7 +28,7 @@ func (d *Daemon) bringUp() error {
 	// the secret still being valid: a revoked or rotated secret would take
 	// down nodes that have working keys.
 	if StateExists(d.config.StateDir) {
-		if st := d.waitBackendState(); st != "" && st != "NeedsLogin" && st != "NoState" {
+		if st := d.waitBackendState(); st != "" && st != needsLogin && st != "NoState" {
 			if d.registeredAsConfigured() {
 				err := d.applySettings()
 				if err == nil {
@@ -215,7 +218,7 @@ func (d *Daemon) LoggedOut() bool {
 		return true
 	}
 	state, err := d.BackendState()
-	return err == nil && state == "NeedsLogin"
+	return err == nil && state == needsLogin
 }
 
 // Reauthenticate logs a node in again with the auth key, as a new device, and

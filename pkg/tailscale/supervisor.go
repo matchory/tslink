@@ -217,6 +217,21 @@ func (s *DaemonSupervisor) GetDaemon() *Daemon {
 	return s.daemon
 }
 
+// Drained reports whether the node's Service backend has been drained.
+func (s *DaemonSupervisor) Drained() bool {
+	return s.cfg.gate.drained.Load()
+}
+
+// Readiness reports how far the node is from serving what its container asks
+// for. A daemon not started, or restarting, is starting.
+func (s *DaemonSupervisor) Readiness(ctx context.Context) Readiness {
+	daemon := s.GetDaemon()
+	if daemon == nil || !daemon.IsRunning() {
+		return ReadyStarting
+	}
+	return daemon.readiness(ctx)
+}
+
 // WaitForIP waits for the daemon to get a Tailscale IP.
 // Delegates to the underlying daemon.
 func (s *DaemonSupervisor) WaitForIP() (*Status, error) {

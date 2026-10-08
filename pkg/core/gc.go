@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -69,7 +70,8 @@ func CollectGarbage(
 
 	socks, _ := filepath.Glob(filepath.Join(dataDir, "sock", "*.sock"))
 	statuses, _ := filepath.Glob(filepath.Join(dataDir, "status", "*.json"))
-	for _, file := range append(socks, statuses...) {
+	readies, _ := filepath.Glob(filepath.Join(dataDir, "status", "*.ready"))
+	for _, file := range slices.Concat(socks, statuses, readies) {
 		id := strings.TrimSuffix(filepath.Base(file), filepath.Ext(file))
 		if socketsInUse[id] || !stale(file) {
 			continue

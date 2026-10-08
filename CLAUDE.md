@@ -80,6 +80,13 @@ Dependabot updates), and tslink runs only these binaries: it downloads nothing a
 `TS_VERSION`/`TS_PATH` settings with a warning. tailscaled's output goes to a rotated `tailscaled.log`, read by
 `drainLines`, which never stops reading: tailscaled blocks on a full pipe.
 
+**Readiness endpoint**: with the label `tslink.health=<port>`, `Endpoint.startHealth` serves `GET /ready` on that port
+of the container's loopback, from a listener the plugin opens in the container's netns (`netutil.ListenInNetNS`).
+Readiness comes from tailscaled (`DaemonSupervisor.Readiness`: backend state, `serve status --json`, the advertised
+Services in its prefs, and the `service-host` node capability for control's approval), cached for 2 s. Once ready, the
+endpoint latches: `status/<endpoint-id[:12]>.ready` records it, so it answers 200 until the backend is drained or the
+container leaves, also after a plugin restart.
+
 ## Concurrency Notes
 
 **Lock ordering**: Never hold `driver.mu` when calling endpoint methods (they acquire `endpoint.mu`). Always:

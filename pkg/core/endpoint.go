@@ -50,6 +50,9 @@ type Endpoint struct {
 	stopRun context.CancelFunc         // Cancels runCtx
 	startFn func(*ContainerInfo) error // Replaces StartTailscale in tests
 
+	health      *health                                   // Readiness endpoint; nil without tslink.health
+	readinessFn func(context.Context) tailscale.Readiness // Replaces the supervisor's readiness in tests
+
 	statusMu sync.Mutex               // Protects status and warnings; never held with mu
 	status   *EndpointStatusFile      // Last status written; nil before the first, after Leave
 	warnings map[string]StatusWarning // Reported by tailscaled's supervision, by key
@@ -81,6 +84,8 @@ type ContainerInfo struct {
 	NetworkStack string // Network's com.docker.stack.namespace label
 
 	DNS []netip.Addr // DNS servers the container was given, as with docker run --dns
+
+	HealthPort int // tslink.health: loopback port of the readiness endpoint; 0 for none
 }
 
 // StackLabel is the label docker stack deploy puts on a stack's services,
@@ -465,6 +470,9 @@ func (e *Endpoint) RunTailscale(info *ContainerInfo) {
 		e.mu.Unlock()
 	}()
 
+	// Before Tailscale, so the container's healthcheck sees it start, or fail
+	e.startHealth(info)
+
 	delay := startRetryInitial
 	for attempt := 1; ; attempt++ {
 		err := start(info)
@@ -637,6 +645,7 @@ func (e *Endpoint) Leave() error {
 
 	// Stop the Tailscale supervisor first
 	e.stopTailscale()
+	e.stopHealth()
 	e.removeStatus()
 
 	// Clean up NAT rules for this veth
@@ -687,6 +696,7 @@ func (e *Endpoint) Stop() error {
 	e.mu.Unlock()
 	e.cancelRun()
 	defer e.releaseStateDir()
+	e.stopHealth()
 
 	e.mu.Lock()
 	supervisor := e.supervisor

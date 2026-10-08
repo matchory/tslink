@@ -13,6 +13,13 @@ three- and five-node swarms; see [docs/testing.md](docs/testing.md).
 
 ### Added
 
+- `tslink.health=<port>` container label: tslink serves `GET /ready` on that
+  port of the container's loopback, `200` once the node is up, its serve
+  configuration applied and, for a Tailscale Service, the node advertised and
+  approved by control as a backend; `503` with the state otherwise. It lets a
+  Docker healthcheck gate start-first updates on the Service having its new
+  backend. Once ready, a task stays ready until it is drained or leaves, so a
+  plugin restart does not make Swarm replace it.
 - Docker Swarm support. The driver has global scope, so the options of a
   network created on a manager reach every node. A network created by
   `docker stack deploy` serves only that stack's tasks, and stack tasks keep

@@ -180,6 +180,7 @@ Configure per-container Tailscale settings using labels:
 | `tslink.serve.<port>` | Expose port via Tailscale Serve: `<proto>[:<target>][/<path>][?<option>[&<option>]]`, options below | `tslink.serve.443=https:8080` |
 | `tslink.service` | Register as Tailscale Service backend | `tslink.service=svc:my-api` |
 | `tslink.direct` | Also serve the endpoints on the container's own name. Defaults to `true` without `tslink.service`, `false` with it | `tslink.direct=true` |
+| `tslink.health` | Serve a [readiness endpoint](#readiness-for-healthchecks) on this port of the container's loopback | `tslink.health=9002` |
 
 ```bash
 # Example: Container with custom hostname and tags
@@ -264,6 +265,42 @@ Auth keys, including headscale's, do not say whether they are ephemeral, so tsli
 keeps their state and does not log them out when the container stops. Tailscale or headscale removes an ephemeral node
 once it has been offline for a while. With an ephemeral key, set `tslink.ephemeral=true` on the network, and tslink
 logs the node out and deletes its state when the container stops.
+
+### Readiness for Healthchecks
+
+With `tslink.health=<port>`, tslink answers `GET /ready` on
+`127.0.0.1:<port>` inside the container: `200` once the container's node is
+up, its `tslink.serve.*` configuration is applied and, with
+`tslink.service`, control has approved it as the Service's backend; `503`
+until then. The body names the state: `starting`, `logged-out`, `failed`,
+`serving-pending`, `certificate-pending`, `awaiting-approval`, `drained` or
+`ready`. Only the container's own processes reach it, and it holds nothing
+secret, so a busybox healthcheck needs no privileges:
+
+```yaml
+services:
+  proxy:
+    deploy:
+      update_config:
+        order: start-first
+      labels:
+        tslink.service: svc:api
+        tslink.serve.443: https:8081
+        tslink.health: "9002"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:9002/ready"]
+      interval: 10s
+      retries: 3
+```
+
+Swarm then replaces a task only once the new one is a backend of the
+Service, so an update cannot leave the Service without backends while every
+task looks healthy. **Ready is final:** once a task has been ready, it stays
+ready until its backend is drained or the container leaves. It gates
+start-up, and is no liveness check: a task does not turn unhealthy when it
+loses its connection to control, or while the plugin restarts. During a
+plugin restart the endpoint does not answer for a few seconds, so keep
+`interval` × `retries` above that (30 seconds above).
 
 ## Running on Swarm
 

@@ -22,8 +22,8 @@ PROBE_IP=192.0.2.53
 # host, so it must listen on an address other than loopback
 HOST_IP=${HOST_IP:-$(ip -4 route get 1.1.1.1 | awk '{for (i = 1; i < NF; i++) if ($i == "src") print $(i + 1)}')}
 URL=http://$HOST_IP:8080
-CONTAINERS=(e2e-server e2e-client e2e-outsider e2e-ephemeral e2e-late e2e-dns e2e-resolver e2e-sink e2e-raw e2e-hostsvc)
-NETWORKS=(e2e-alice e2e-bob e2e-ephemeral)
+CONTAINERS=(e2e-server e2e-unready e2e-client e2e-outsider e2e-ephemeral e2e-late e2e-dns e2e-resolver e2e-sink e2e-raw e2e-hostsvc)
+NETWORKS=(e2e-alice e2e-bob e2e-ephemeral e2e-nocontrol)
 WORK=$(mktemp -d)
 
 log() { printf '\n=== %s\n' "$*"; }
@@ -172,8 +172,11 @@ network e2e-bob "$(key "$bob")"
 # headscale's keys do not say whether they are ephemeral: the option does
 network e2e-ephemeral "$(key "$alice" --ephemeral)" --opt tslink.ephemeral=true
 
-# The server answers every connection on port 8080 with $MARK
-docker run -d --name e2e-server --network e2e-alice "$ALPINE" sh -c \
+# The server answers every connection on port 8080 with $MARK. It serves a
+# readiness endpoint on 9002, and port 80 on its node, so being ready takes
+# serve config
+docker run -d --name e2e-server --network e2e-alice \
+	--label tslink.health=9002 --label tslink.serve.80=tcp:8080 "$ALPINE" sh -c \
 	"printf '#!/bin/sh\necho $MARK\n' >/reply && chmod +x /reply && exec nc -lk -p 8080 -e /reply"
 docker run -d --name e2e-client --network e2e-alice "$ALPINE" sleep 3600
 docker run -d --name e2e-outsider --network e2e-bob "$ALPINE" sleep 3600
@@ -183,6 +186,28 @@ server_ip=$(wait_ip e2e-server)
 client_ip=$(wait_ip e2e-client)
 echo "server $server_ip, client $client_ip"
 retry 120 reaches e2e-client "$server_ip" || fail "client cannot reach the server"
+
+log "The readiness endpoint tells a container whether its node serves"
+# ready_answer CONTAINER: the raw answer of the readiness endpoint on 9002
+ready_answer() {
+	docker exec "$1" sh -c "printf 'GET /ready HTTP/1.0\r\n\r\n' | nc -w 5 127.0.0.1 9002" 2>/dev/null
+}
+is_ready() { ready_answer "$1" | grep -q '"state":"ready"'; }
+retry 60 is_ready e2e-server || fail "the server is not ready: $(ready_answer e2e-server)"
+ready_answer e2e-server | head -n 1 | grep -q ' 200 ' || fail "ready without 200: $(ready_answer e2e-server)"
+# Opt-in: without tslink.health, nothing listens
+if [ -n "$(ready_answer e2e-client)" ]; then
+	fail "a container without tslink.health has a readiness endpoint"
+fi
+# A node that cannot reach its control server is not ready, and says why
+docker network create --driver "$PLUGIN:latest" --opt tslink.loginserver=http://127.0.0.1:9 \
+	--opt tslink.authkey=tskey-auth-unused e2e-nocontrol >/dev/null
+docker run -d --name e2e-unready --network e2e-nocontrol --label tslink.health=9002 "$ALPINE" sleep 3600
+unready() { ready_answer e2e-unready | grep -qE '"state":"(starting|logged-out)"'; }
+retry 60 unready || fail "an unready node does not say so: $(ready_answer e2e-unready)"
+ready_answer e2e-unready | head -n 1 | grep -q ' 503 ' || fail "unready without 503: $(ready_answer e2e-unready)"
+docker rm -f e2e-unready >/dev/null
+docker network rm e2e-nocontrol >/dev/null
 
 log "A persistent network's state is not marked ephemeral"
 sudo test -s "$DATA/by-hostname/e2e-server/tailscaled.state" || fail "server has no state"
@@ -249,6 +274,8 @@ retry 180 reaches e2e-client "$server_ip" || fail "client cannot reach the serve
 [ "$(tailnet_ip e2e-client)" = "$client_ip" ] || fail "client IP changed: $(tailnet_ip e2e-client)"
 [ "$(nodes_named e2e-server)" = 1 ] || fail "server registered again"
 [ "$(nodes_named e2e-client)" = 1 ] || fail "client registered again"
+# Recovery serves the readiness endpoint again, ready since the server was
+retry 30 is_ready e2e-server || fail "the server is not ready after the restart: $(ready_answer e2e-server)"
 
 log "A network without containers during the restart takes new ones"
 docker run -d --name e2e-late --network e2e-ephemeral "$ALPINE" sleep 3600

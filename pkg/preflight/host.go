@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+
+	"github.com/matchory/tslink/pkg/core"
 )
 
 // Env is what the preflight checks: the Docker API, a way to run host
@@ -26,7 +28,7 @@ type Env struct {
 func Check(ctx context.Context, env Env) []Result {
 	results := checkContainers(ctx, env.Docker)
 	return append(results,
-		checkMangle(ctx, env.Run),
+		checkIsolation(ctx, env.Docker, env.Run),
 		checkPluginDigest(ctx, env.Docker),
 		checkSharedDir(env.SharedDir),
 		Result{
@@ -50,20 +52,53 @@ func Write(w io.Writer, results []Result) (bool, error) {
 	return failed, nil
 }
 
-// checkMangle checks what it can of E5: the mangle table, where tslink keeps
-// containers off the host's tailnet, works for IPv4 and IPv6.
-func checkMangle(
+// isolationChains are the mangle table chains in which the plugin keeps
+// containers off the host's tailnet (pkg/netutil's isolate.go).
+var isolationChains = []string{"TSLINK-ISOLATE-FWD", "TSLINK-ISOLATE-IN"}
+
+// checkIsolation checks what it can of E5: no tslink plugin turns the host's
+// tailnet isolation off, and the plugin's isolation chains are in the mangle
+// table for IPv4 and IPv6.
+func checkIsolation(
 	ctx context.Context,
+	d DockerAPI,
 	run func(context.Context, string, ...string) ([]byte, error),
 ) Result {
+	plugins, err := tslinkPlugins(ctx, d)
+	if err != nil {
+		return Result{Property: "E5", Status: Error, Detail: err.Error()}
+	}
+	if len(plugins) == 0 {
+		return noPlugin("E5")
+	}
 	var violations []string
-	for _, cmd := range []string{"iptables", "ip6tables"} {
-		if out, err := run(ctx, cmd, "-t", "mangle", "-S"); err != nil {
-			violations = append(violations, fmt.Sprintf("%s -t mangle: %v: %s", cmd, err,
-				strings.TrimSpace(string(out))))
+	for _, p := range plugins {
+		if isolationOff(p.Settings.Env) {
+			violations = append(violations, p.Name+": "+core.IsolateHostTailnetSetting+"=false")
 		}
 	}
-	return outcome("E5", violations, "the iptables mangle table works for IPv4 and IPv6")
+	for _, cmd := range []string{"iptables", "ip6tables"} {
+		for _, chain := range isolationChains {
+			if out, err := run(ctx, cmd, "-t", "mangle", "-S", chain); err != nil {
+				violations = append(violations, fmt.Sprintf("%s: chain %s is not in the mangle "+
+					"table: %v: %s", cmd, chain, err, strings.TrimSpace(string(out))))
+			}
+		}
+	}
+	return outcome("E5", violations, "the plugin's isolation chains are in the mangle table "+
+		"for IPv4 and IPv6 on this host, and "+core.IsolateHostTailnetSetting+" is on")
+}
+
+// isolationOff reports whether a plugin's settings turn the host's tailnet
+// isolation off. As in pkg/core's isolateHostTailnet, only "false" does.
+func isolationOff(env []string) bool {
+	for _, kv := range env {
+		k, v, _ := strings.Cut(kv, "=")
+		if k == core.IsolateHostTailnetSetting && strings.EqualFold(v, "false") {
+			return true
+		}
+	}
+	return false
 }
 
 // checkPluginDigest checks E6: every tslink plugin was installed by digest.
@@ -73,7 +108,7 @@ func checkPluginDigest(ctx context.Context, d DockerAPI) Result {
 		return Result{Property: "E6", Status: Error, Detail: err.Error()}
 	}
 	if len(plugins) == 0 {
-		return Result{Property: "E6", Status: Unknown, Detail: "no tslink plugin is enabled"}
+		return noPlugin("E6")
 	}
 	var violations []string
 	for _, p := range plugins {
@@ -87,7 +122,7 @@ func checkPluginDigest(ctx context.Context, d DockerAPI) Result {
 			)
 		}
 	}
-	return outcome("E6", violations, "the tslink plugin was installed by digest")
+	return outcome("E6", violations, "the tslink plugin on this host was installed by digest")
 }
 
 // checkSharedDir checks what it can of E7: the shared certificate directory
@@ -116,11 +151,13 @@ func checkSharedDir(dir string) Result {
 			fmt.Sprintf("%s has mode %04o, want 0700 or stricter", dir, perm),
 		)
 	}
-	return outcome("E7", violations, dir+" is owned by root, mode 0700 or stricter")
+	return outcome("E7", violations, dir+" is owned by root, mode 0700 or stricter, "+
+		"as mounted on this host")
 }
 
-// checkTailnetLock reports E9: whether Tailnet Lock is on, asked of one of
-// the host's tslink nodes.
+// checkTailnetLock reports E9: whether Tailnet Lock is on, asked of every
+// tslink node on this host. A node that does not answer is left out: E9 is a
+// report, not a requirement.
 func checkTailnetLock(
 	ctx context.Context,
 	run func(context.Context, string, ...string) ([]byte, error),
@@ -134,30 +171,50 @@ func checkTailnetLock(
 			Detail:   "no tslink node runs on this host to ask",
 		}
 	}
-	// A node that does not answer leaves E9 unknown: it is a report, not a requirement
-	out, err := run(ctx, "tailscale", "--socket="+sockets[0], "lock", "status", "--json")
-	if err != nil {
-		return Result{
-			Property: "E9",
-			Status:   Unknown,
-			Detail:   fmt.Sprintf("tailscale lock status: %v", err),
+	answered, off := 0, 0
+	var lastErr error
+	for _, sock := range sockets {
+		enabled, err := lockEnabled(ctx, run, sock)
+		if err != nil {
+			lastErr = err
+			continue
 		}
+		answered++
+		if !enabled {
+			off++
+		}
+	}
+	switch {
+	case answered == 0:
+		return Result{
+			Property: "E9", Status: Unknown,
+			Detail: fmt.Sprintf("no tslink node on this host answered: %v", lastErr),
+		}
+	case off > 0:
+		return Result{Property: "E9", Status: Info, Detail: fmt.Sprintf(
+			"Tailnet Lock is off for %d of %d answering tslink nodes on this host: "+
+				"their peer keys depend on the control server", off, answered)}
+	}
+	return Result{Property: "E9", Status: OK, Detail: fmt.Sprintf(
+		"Tailnet Lock is on for every answering tslink node on this host (%d of %d)",
+		answered, len(sockets))}
+}
+
+// lockEnabled asks the tailscaled at sock whether Tailnet Lock is on.
+func lockEnabled(
+	ctx context.Context,
+	run func(context.Context, string, ...string) ([]byte, error),
+	sock string,
+) (bool, error) {
+	out, err := run(ctx, "tailscale", "--socket="+sock, "lock", "status", "--json")
+	if err != nil {
+		return false, fmt.Errorf("tailscale lock status: %w", err)
 	}
 	var status struct {
 		Enabled bool `json:"Enabled"`
 	}
 	if err := json.Unmarshal(out, &status); err != nil {
-		return Result{
-			Property: "E9",
-			Status:   Unknown,
-			Detail:   fmt.Sprintf("tailscale lock status: %v", err),
-		}
+		return false, fmt.Errorf("tailscale lock status: %w", err)
 	}
-	if !status.Enabled {
-		return Result{
-			Property: "E9", Status: Info,
-			Detail: "Tailnet Lock is off: peer keys depend on the control server",
-		}
-	}
-	return Result{Property: "E9", Status: OK, Detail: "Tailnet Lock is on"}
+	return status.Enabled, nil
 }

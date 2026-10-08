@@ -289,3 +289,61 @@ func TestCreatedButNeverStarted(t *testing.T) {
 		t.Errorf("E1 = %+v, want violated by never-started", r)
 	}
 }
+
+// TestNoPluginEnabled covers a host without an enabled tslink plugin: no
+// container is on a tslink network, but that says nothing about the host.
+func TestNoPluginEnabled(t *testing.T) {
+	f := newFakeDocker()
+	f.plugins[0].Enabled = false
+	hc := container.HostConfig{Privileged: true}
+	f.add(container.InspectResponse{ID: "c1", Name: "/web", HostConfig: &hc}, "tn")
+	results := checkContainers(context.Background(), f)
+	for _, p := range []string{"E1", "E2", "E4"} {
+		r := result(t, results, p)
+		if r.Status != Unknown || !strings.Contains(r.Detail, "no tslink plugin is enabled") {
+			t.Errorf("%s = %+v, want unknown: no tslink plugin is enabled", p, r)
+		}
+	}
+}
+
+// TestCustomDataRoot covers a Docker daemon with a data-root other than
+// /var/lib/docker: its own data root is as protected.
+func TestCustomDataRoot(t *testing.T) {
+	for _, tt := range []struct {
+		source string
+		status Status
+	}{
+		{"/srv/docker", Violated},
+		{"/srv/docker/swarm", Violated},
+		{"/srv", Violated},
+		{"/srv/app", OK},
+		{"/var/lib/docker", Violated},
+	} {
+		t.Run(tt.source, func(t *testing.T) {
+			f := newFakeDocker()
+			f.rootDir = "/srv/docker"
+			f.add(container.InspectResponse{
+				ID: "c1", Name: "/web", HostConfig: &container.HostConfig{},
+				Mounts: []container.MountPoint{
+					{Type: mount.TypeBind, Source: tt.source, Destination: "/x"},
+				},
+			}, "tn")
+			r := result(t, checkContainers(context.Background(), f), "E2")
+			if r.Status != tt.status {
+				t.Errorf("E2 = %+v, want %s", r, tt.status)
+			}
+		})
+	}
+}
+
+func TestDockerInfoFails(t *testing.T) {
+	f := newFakeDocker()
+	f.infoErr = errDockerDown
+	f.add(
+		container.InspectResponse{ID: "c1", Name: "/web", HostConfig: &container.HostConfig{}},
+		"tn",
+	)
+	if r := result(t, checkContainers(context.Background(), f), "E2"); r.Status != Error {
+		t.Errorf("E2 = %+v, want error", r)
+	}
+}

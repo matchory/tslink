@@ -8,6 +8,7 @@ import (
 	"github.com/moby/moby/api/types/container"
 	dockernetwork "github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/api/types/plugin"
+	"github.com/moby/moby/api/types/system"
 	"github.com/moby/moby/api/types/volume"
 	dockerclient "github.com/moby/moby/client"
 )
@@ -21,6 +22,8 @@ type fakeDocker struct {
 	stopped    map[string]bool          // container ID -> not currently running
 	pluginErr  error
 	gone       map[string]bool // containers and networks removed after the listing
+	rootDir    string          // Docker's data root
+	infoErr    error
 }
 
 func newFakeDocker() *fakeDocker {
@@ -33,7 +36,17 @@ func newFakeDocker() *fakeDocker {
 		volumes:  map[string]volume.Volume{},
 		stopped:  map[string]bool{},
 		gone:     map[string]bool{},
+		rootDir:  "/var/lib/docker",
 	}
+}
+
+func (f *fakeDocker) Info(
+	context.Context, dockerclient.InfoOptions,
+) (dockerclient.SystemInfoResult, error) {
+	if f.infoErr != nil {
+		return dockerclient.SystemInfoResult{}, f.infoErr
+	}
+	return dockerclient.SystemInfoResult{Info: system.Info{DockerRootDir: f.rootDir}}, nil
 }
 
 func (f *fakeDocker) PluginList(

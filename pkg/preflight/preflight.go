@@ -33,6 +33,10 @@ type Result struct {
 
 // DockerAPI is the part of the Docker client the preflight uses.
 type DockerAPI interface {
+	Info(
+		ctx context.Context,
+		options dockerclient.InfoOptions,
+	) (dockerclient.SystemInfoResult, error)
 	PluginList(
 		ctx context.Context,
 		options dockerclient.PluginListOptions,
@@ -60,11 +64,14 @@ type DockerAPI interface {
 
 var _ DockerAPI = (*dockerclient.Client)(nil)
 
-// outcome is the result of a check that lists what violates property: OK with
-// okDetail if nothing does.
+// outcome is the result of a check that lists what violates property on this
+// host: OK with okDetail if nothing does.
 func outcome(property string, violations []string, okDetail string) Result {
 	if len(violations) > 0 {
-		return Result{Property: property, Status: Violated, Detail: strings.Join(violations, "; ")}
+		return Result{
+			Property: property, Status: Violated,
+			Detail: "on this host: " + strings.Join(violations, "; "),
+		}
 	}
 	return Result{Property: property, Status: OK, Detail: okDetail}
 }
@@ -83,4 +90,13 @@ func tslinkPlugins(ctx context.Context, d DockerAPI) ([]plugin.Plugin, error) {
 		}
 	}
 	return own, nil
+}
+
+// noPlugin is the result of a check that needs an enabled tslink plugin on a
+// host without one.
+func noPlugin(property string) Result {
+	return Result{
+		Property: property, Status: Unknown,
+		Detail: "no tslink plugin is enabled on this host",
+	}
 }

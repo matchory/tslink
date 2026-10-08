@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	cerrdefs "github.com/containerd/errdefs"
@@ -12,16 +13,34 @@ import (
 )
 
 // protectedPaths are host paths no container may bind-mount, nor a directory
-// containing them: Docker's API, network namespaces, Docker's and tslink's state.
+// containing them: Docker's API, network namespaces, Docker's and tslink's
+// state. Docker's data root, if it is not /var/lib/docker, is one of them too.
 var protectedPaths = []string{
 	"/var/run/docker.sock", "/run/docker.sock", "/run/netns", "/var/run/netns",
 	"/var/lib/docker", "/var/lib/docker-plugins/tailscale",
 }
 
-// protectedTrees are host directories no container may bind-mount anything of.
+// protectedTrees are host directories no container may bind-mount anything
+// of. Docker's data root, if it is not /var/lib/docker, is one of them too.
 var protectedTrees = []string{
 	"/run/docker", "/var/run/docker", "/run/netns", "/var/run/netns",
 	"/var/lib/docker", "/var/lib/docker-plugins",
+}
+
+// protected holds the host paths E2 protects on one host.
+type protected struct {
+	paths, trees []string
+}
+
+// protectedOn returns the protected host paths of a Docker daemon whose data
+// root is rootDir.
+func protectedOn(rootDir string) protected {
+	p := protected{paths: protectedPaths, trees: protectedTrees}
+	if rootDir != "" && !slices.Contains(protectedPaths, filepath.Clean(rootDir)) {
+		p.paths = append(slices.Clone(p.paths), filepath.Clean(rootDir))
+		p.trees = append(slices.Clone(p.trees), filepath.Clean(rootDir))
+	}
+	return p
 }
 
 // checkContainers checks E1, E2 and E4 on the containers attached, directly
@@ -36,6 +55,9 @@ func checkContainers(ctx context.Context, d DockerAPI) []Result {
 		}
 		return results
 	}
+	if containers == nil {
+		return []Result{noPlugin("E1"), noPlugin("E2"), noPlugin("E4")}
+	}
 	mounts, err := checkMounts(ctx, d, containers)
 	if err != nil {
 		mounts = Result{Property: "E2", Status: Error, Detail: err.Error()}
@@ -45,11 +67,12 @@ func checkContainers(ctx context.Context, d DockerAPI) []Result {
 
 // tslinkContainers returns the containers attached, directly or through
 // another container's network namespace, to a network of a tslink plugin,
-// in any state (including stopped and created-but-never-started).
+// in any state (including stopped and created-but-never-started): nil if no
+// tslink plugin is enabled, and empty but not nil if none is attached.
 // Containers and networks removed meanwhile are left out.
 func tslinkContainers(ctx context.Context, d DockerAPI) ([]container.InspectResponse, error) {
 	plugins, err := tslinkPlugins(ctx, d)
-	if err != nil {
+	if err != nil || len(plugins) == 0 {
 		return nil, err
 	}
 	own := make(map[string]bool)
@@ -64,7 +87,7 @@ func tslinkContainers(ctx context.Context, d DockerAPI) ([]container.InspectResp
 	if err != nil {
 		return nil, err
 	}
-	var out []container.InspectResponse
+	out := []container.InspectResponse{}
 	for _, c := range list.Items {
 		if !attached[c.ID] {
 			continue
@@ -193,8 +216,8 @@ func checkPrivileges(containers []container.InspectResponse) Result {
 			}
 		}
 	}
-	return outcome("E1", violations,
-		"no container on a tslink network is privileged or has NET_ADMIN or SYS_ADMIN")
+	return outcome("E1", violations, "no container on a tslink network on this host "+
+		"is privileged or has NET_ADMIN or SYS_ADMIN")
 }
 
 // within reports whether path is dir or lies in it.
@@ -204,13 +227,13 @@ func within(path, dir string) bool {
 }
 
 // exposes reports whether bind-mounting source exposes protected host state.
-func exposes(source string) bool {
-	for _, p := range protectedPaths {
-		if within(p, source) {
+func (p protected) exposes(source string) bool {
+	for _, path := range p.paths {
+		if within(path, source) {
 			return true
 		}
 	}
-	for _, tree := range protectedTrees {
+	for _, tree := range p.trees {
 		if within(source, tree) {
 			return true
 		}
@@ -226,11 +249,16 @@ func checkMounts(
 	d DockerAPI,
 	containers []container.InspectResponse,
 ) (Result, error) {
+	info, err := d.Info(ctx, dockerclient.InfoOptions{})
+	if err != nil {
+		return Result{}, fmt.Errorf("failed to read Docker's data root: %w", err)
+	}
+	prot := protectedOn(info.Info.DockerRootDir)
 	var violations []string
 	for _, c := range containers {
 		for _, m := range c.Mounts {
 			switch {
-			case string(m.Type) == "bind" && exposes(m.Source):
+			case string(m.Type) == "bind" && prot.exposes(m.Source):
 				violations = append(
 					violations,
 					fmt.Sprintf("%s: mounts %s", containerName(c), m.Source),
@@ -240,7 +268,7 @@ func checkMounts(
 				if err != nil {
 					return Result{}, err
 				}
-				if device != "" && exposes(device) {
+				if device != "" && prot.exposes(device) {
 					violations = append(violations, fmt.Sprintf(
 						"%s: volume %s mounts %s", containerName(c), m.Name, device,
 					))
@@ -254,7 +282,8 @@ func checkMounts(
 	return outcome(
 		"E2",
 		violations,
-		"no container on a tslink network mounts protected host paths or shares the host's PIDs",
+		"no container on a tslink network on this host mounts protected host paths "+
+			"or shares the host's PIDs",
 	), nil
 }
 
@@ -298,6 +327,6 @@ func checkStackLabels(containers []container.InspectResponse) Result {
 	return Result{
 		Property: "E4",
 		Status:   OK,
-		Detail:   "every Swarm task on a tslink network belongs to a stack",
+		Detail:   "every Swarm task on a tslink network on this host carries a stack label",
 	}
 }

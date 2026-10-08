@@ -59,15 +59,57 @@ func TestCheckOrder(t *testing.T) {
 	}
 }
 
-func TestMangleTable(t *testing.T) {
+func TestHostIsolation(t *testing.T) {
 	env := testEnv(t)
-	if r := result(t, Check(context.Background(), env), "E5"); r.Status != OK {
-		t.Errorf("E5 = %+v, want ok", r)
-	}
-	env.Run = fakeRun(nil, "ip6tables -t mangle")
 	r := result(t, Check(context.Background(), env), "E5")
-	if r.Status != Violated || !strings.Contains(r.Detail, "ip6tables") {
-		t.Errorf("E5 = %+v, want violated by ip6tables", r)
+	if r.Status != OK || !strings.Contains(r.Detail, "on this host") {
+		t.Errorf("E5 = %+v, want ok on this host", r)
+	}
+	for _, missing := range []string{
+		"iptables -t mangle -S TSLINK-ISOLATE-FWD",
+		"iptables -t mangle -S TSLINK-ISOLATE-IN",
+		"ip6tables -t mangle -S TSLINK-ISOLATE-FWD",
+		"ip6tables -t mangle -S TSLINK-ISOLATE-IN",
+	} {
+		env.Run = fakeRun(nil, missing)
+		r := result(t, Check(context.Background(), env), "E5")
+		cmd, chain, _ := strings.Cut(missing, " -t mangle -S ")
+		if r.Status != Violated || !strings.Contains(r.Detail, cmd) ||
+			!strings.Contains(r.Detail, chain) {
+			t.Errorf("%s fails: E5 = %+v, want violated naming %s and %s", missing, r, cmd, chain)
+		}
+	}
+}
+
+func TestHostIsolationSetting(t *testing.T) {
+	for _, tt := range []struct {
+		env    []string
+		status Status
+	}{
+		{nil, OK},
+		{[]string{"TSLINK_ISOLATE_HOST_TAILNET=true"}, OK},
+		{[]string{"TSLINK_ISOLATE_HOST_TAILNET=yes"}, OK}, // the plugin keeps isolating
+		{[]string{"TSLINK_ISOLATE_HOST_TAILNET=false"}, Violated},
+		{[]string{"TS_AUTHKEY=", "TSLINK_ISOLATE_HOST_TAILNET=FALSE"}, Violated},
+	} {
+		env := testEnv(t)
+		f := newFakeDocker()
+		f.plugins[0].Settings.Env = tt.env
+		env.Docker = f
+		r := result(t, Check(context.Background(), env), "E5")
+		if r.Status != tt.status {
+			t.Errorf("settings %v: E5 = %+v, want %s", tt.env, r, tt.status)
+		}
+		if r.Status == Violated && !strings.Contains(r.Detail, "TSLINK_ISOLATE_HOST_TAILNET") {
+			t.Errorf("settings %v: E5 detail %q does not name the setting", tt.env, r.Detail)
+		}
+	}
+	env := testEnv(t)
+	f := newFakeDocker()
+	f.pluginErr = errDockerDown
+	env.Docker = f
+	if r := result(t, Check(context.Background(), env), "E5"); r.Status != Error {
+		t.Errorf("Docker down: E5 = %+v, want error", r)
 	}
 }
 
@@ -137,6 +179,63 @@ func TestTailnetLock(t *testing.T) {
 	env.DataDir = t.TempDir()
 	if r := result(t, Check(context.Background(), env), "E9"); r.Status != Unknown {
 		t.Errorf("no tailscaled: E9 = %+v, want unknown", r)
+	}
+}
+
+// TestTailnetLockEveryNode covers a host with several tslink nodes: each
+// answers for itself.
+func TestTailnetLockEveryNode(t *testing.T) {
+	data := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(data, "sock"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	socks := map[string]string{}
+	for _, name := range []string{"a", "b", "c"} {
+		sock := filepath.Join(data, "sock", name+".sock")
+		if err := os.WriteFile(sock, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		socks[name] = "tailscale --socket=" + sock + " lock status --json"
+	}
+	on, off := `{"Enabled":true}`, `{"Enabled":false}`
+	for _, tt := range []struct {
+		name    string
+		answers map[string]string
+		failing []string
+		status  Status
+		detail  string
+	}{
+		{"all on", map[string]string{socks["a"]: on, socks["b"]: on, socks["c"]: on}, nil, OK, ""},
+		{
+			"one off",
+			map[string]string{socks["a"]: on, socks["b"]: off, socks["c"]: on},
+			nil, Info,
+			"1 of 3",
+		},
+		{
+			"last off",
+			map[string]string{socks["a"]: on, socks["b"]: on, socks["c"]: off},
+			nil, Info,
+			"1 of 3",
+		},
+		{
+			"one silent",
+			map[string]string{socks["b"]: on, socks["c"]: on},
+			[]string{socks["a"]},
+			OK,
+			"",
+		},
+		{"none answers", nil, []string{socks["a"], socks["b"], socks["c"]}, Unknown, ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			env := testEnv(t)
+			env.DataDir = data
+			env.Run = fakeRun(tt.answers, tt.failing...)
+			r := result(t, Check(context.Background(), env), "E9")
+			if r.Status != tt.status || !strings.Contains(r.Detail, tt.detail) {
+				t.Errorf("E9 = %+v, want %s naming %q", r, tt.status, tt.detail)
+			}
+		})
 	}
 }
 

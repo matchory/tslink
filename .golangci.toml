@@ -85,6 +85,11 @@ presets = ["std-error-handling", "common-false-positives"]
 source = "TODO"
 linters = ["godot"]
 
+# "Guards: Gn" markers (SECURITY.md) are a machine-readable directive, not prose.
+[[linters.exclusions.rules]]
+source = "^// Guards: G[0-9]+"
+linters = ["godot"]
+
 [[linters.exclusions.rules]]
 path = "_test\\.go"
 linters = [

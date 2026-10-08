@@ -40,6 +40,7 @@ func TestUpLoginServer(t *testing.T) {
 
 // The auth key goes to the CLI's standard input, never into its arguments,
 // which every process on the host can read.
+// Guards: G5
 func TestUpAuthKeyOnStdin(t *testing.T) {
 	cli := &fakeCLI{}
 	d := newTestDaemon(t, cli, "")

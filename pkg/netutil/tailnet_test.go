@@ -80,6 +80,7 @@ func routeGet(t *testing.T, nsPath string, dst string) error {
 	return getErr
 }
 
+// Guards: G1
 func TestTailnetBlackhole(t *testing.T) {
 	nsPath := newTestNetNS(t)
 

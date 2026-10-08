@@ -9,6 +9,7 @@ import (
 	"github.com/vishvananda/netlink"
 )
 
+// Guards: G1
 func TestBypassRoute(t *testing.T) {
 	// The test netns's main default route goes via dummy0, like an overlay
 	// task's goes via docker_gwbridge; tailscaled's own traffic must use

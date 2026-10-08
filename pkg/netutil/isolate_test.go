@@ -88,6 +88,7 @@ func assertIsolationChain(
 	}
 }
 
+// Guards: G1
 func TestHostIsolationRules(t *testing.T) {
 	nsPath := newTestNetNS(t)
 	for _, f := range isolationFamilies {
@@ -168,6 +169,7 @@ func TestHostIsolationRules(t *testing.T) {
 	}
 }
 
+// Guards: G1
 func TestIsolationRulesCoverEveryContainerInterface(t *testing.T) {
 	for _, f := range isolationFamilies {
 		for _, chain := range []string{isolateForwardChain, isolateInputChain} {

@@ -19,6 +19,51 @@ Vulnerabilities in Tailscale itself go to
 
 Fixes go into the latest release. Older releases are not patched.
 
+## Security model
+
+tslink makes the guarantees below, provided the environment properties after
+them hold. Each guarantee names who it defends against and which properties
+it relies on. Tests that verify a guarantee carry its ID (`Guards: G1`); a
+check in the test suite fails if a guarantee listed here has none. Models of
+tslink's state machines verify their design, not the code.
+
+### G1: A container reaches the tailnet only as its own node
+
+Attackers: a process in a container on a tslink network, as root inside it,
+with Docker's default capabilities.
+Assumes: E1, E5.
+
+A container cannot reach the tailnet through the host's own Tailscale, by
+sockets or by raw frames, through tslink's veth or through Docker's gateway.
+This holds with the plugin setting `TSLINK_ISOLATE_HOST_TAILNET` at its
+default, `true`.
+
+### G5: Credentials do not leak
+
+Attackers: a process in a container on a tslink network; a tailnet peer; the
+control server.
+Assumes: E3.
+Manual: a search for canary credentials on the test hosts before each release.
+
+Auth keys and OAuth client secrets do not appear in the plugin's log,
+tailscaled's command line, environment or log, status files or `tslink diag`
+output. Docker API holders can read them in network options and plugin
+settings; see "Scope".
+
+### Environment properties
+
+| ID | Property | Ensured by | `tslink diag --preflight` |
+|---|---|---|---|
+| E1 | Containers on tslink networks are not privileged and have neither `NET_ADMIN` nor `SYS_ADMIN` | stack review, CI policy | checks |
+| E2 | No container on a tslink network bind-mounts Docker's socket, `/run/netns`, `/var/lib/docker`, the plugin's data directory or a directory containing them, or shares the host's PID namespace | stack review, CI policy | checks |
+| E3 | Only operators have Docker API access and root on hosts | operator | does not check |
+| E4 | Stacks are deployed with `docker stack deploy`, which sets `com.docker.stack.namespace` | operator, CI | lists Swarm tasks outside stacks |
+| E5 | The host supports the iptables mangle table for IPv4 and IPv6, and the plugin runs with the privileges of its `config.json` | operator | checks the mangle table |
+| E6 | The plugin is installed from a release image pinned by digest | operator | checks |
+| E7 | The shared certificate directory is owned by root, mode 0700 or stricter, and reachable only by the cluster's hosts | operator | checks owner and mode, with `--shared-dir` |
+| E8 | The cluster credential owns only stack-prefixed tags, and stack names follow tslink's rules | operator, tailnet policy | does not check |
+| E9 | Tailnet Lock is on where peer identity must not depend on the control server | operator | reports whether it is on |
+
 ## Scope
 
 tslink is privileged by design. Keep this in mind when judging the impact of a

@@ -49,6 +49,9 @@ miss() { echo "MISSING $*"; }
 	else
 		sed 's/^/    /' "$latest/summary.md"
 		case $latest in *-"$short") ;; *) miss "the newest red-team report is not for $short" ;; esac
+		if grep -qF '(with uncommitted changes)' "$latest/summary.md"; then
+			miss "the red team ran on uncommitted changes, not on $short alone"
+		fi
 		if grep -qE '^ *(FAIL|BROKEN|ERROR)' "$latest/summary.md"; then
 			miss "the red-team run has failures"
 		fi

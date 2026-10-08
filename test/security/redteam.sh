@@ -48,7 +48,12 @@ commit=$(git -C "$TREE" rev-parse --short HEAD)
 dirty=$(git -C "$TREE" status --porcelain | head -c1)
 OUT=$TSLINK_TEST_DIR/reports/redteam-$(date -u +%Y%m%dT%H%M%SZ)-$commit
 mkdir -p "$OUT"
-"$B/testbed/sync.sh" "$TREE"
+# A failed sync would leave the previous tree on the testbed, and the report
+# would credit its results to this commit
+if ! "$B/testbed/sync.sh" "$TREE"; then
+	echo "could not copy $TREE to the testbed" >&2
+	exit 2
+fi
 
 # reset: what an interrupted run may have left on the testbed. Single-quoted:
 # this is a script for the remote shell, and must not expand locally.

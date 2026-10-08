@@ -189,3 +189,97 @@ func TestIsolationRulesCoverEveryContainerInterface(t *testing.T) {
 		}
 	}
 }
+
+// Veth isolation keeps containers from reaching each other through tslink's
+// veths: from any container interface to 10.200.0.0/16, only tailscaled's
+// WireGuard port passes, so colocated nodes keep their direct path.
+func TestVethIsolationRules(t *testing.T) {
+	nsPath := newTestNetNS(t)
+	const port = 41641
+	list := func(chain string) []string {
+		t.Helper()
+		var rules []string
+		if err := inNetNS(nsPath, func() error {
+			ipt, err := iptables.New()
+			if err != nil {
+				return err
+			}
+			exists, err := ipt.ChainExists("mangle", chain)
+			if err != nil || !exists {
+				return err
+			}
+			rules, err = ipt.List("mangle", chain)
+			return err
+		}); err != nil {
+			t.Fatalf("list %s: %v", chain, err)
+		}
+		return rules
+	}
+	setupVeth := func() {
+		t.Helper()
+		if err := inNetNS(nsPath, func() error { return SetupVethIsolation(port) }); err != nil {
+			t.Fatalf("SetupVethIsolation: %v", err)
+		}
+	}
+	setupHost := func() {
+		t.Helper()
+		if err := inNetNS(nsPath, SetupHostIsolation); err != nil {
+			t.Fatalf("SetupHostIsolation: %v", err)
+		}
+	}
+
+	setupVeth()
+	setupVeth()
+	var want []string
+	for _, ifc := range containerInterfaces {
+		want = append(want,
+			"-A "+vethIsolateChain+" -d 10.200.0.0/16 -i "+ifc+
+				" -p udp -m udp --dport 41641 -j RETURN",
+			"-A "+vethIsolateChain+" -d 10.200.0.0/16 -i "+ifc+" -j DROP",
+		)
+	}
+	assertRules(t, vethIsolateChain, list(vethIsolateChain),
+		append([]string{"-N " + vethIsolateChain}, want...))
+
+	// With the host's tailnet isolation too, both jumps lead FORWARD, and
+	// setting either up again moves neither: the watchdog repeats both
+	jumpVeth := "-A FORWARD -j " + vethIsolateChain
+	jumpHost := "-A FORWARD -j " + isolateForwardChain
+	setupHost()
+	first := list("FORWARD")
+	if len(first) < 3 || !slices.Contains(first[1:3], jumpVeth) ||
+		!slices.Contains(first[1:3], jumpHost) {
+		t.Fatalf("FORWARD does not start with both jumps: %q", first)
+	}
+	for range 3 {
+		setupVeth()
+		setupHost()
+	}
+	assertRules(t, "FORWARD after repeated setups", list("FORWARD"), first)
+
+	// A rule another program puts ahead of the jumps is moved behind them
+	if err := inNetNS(nsPath, func() error {
+		ipt, err := iptables.New()
+		if err != nil {
+			return err
+		}
+		return ipt.Insert("mangle", "FORWARD", 1, "-i", "dummy0", "-j", "ACCEPT")
+	}); err != nil {
+		t.Fatal(err)
+	}
+	setupVeth()
+	setupHost()
+	got := list("FORWARD")
+	if len(got) < 4 || !slices.Contains(got[1:3], jumpVeth) ||
+		!slices.Contains(got[1:3], jumpHost) {
+		t.Errorf("jumps not restored ahead of the other rule: %q", got)
+	}
+
+	// Removing the host's isolation leaves the veth isolation in place
+	if err := inNetNS(nsPath, RemoveHostIsolation); err != nil {
+		t.Fatal(err)
+	}
+	if got := list("FORWARD"); !slices.Contains(got, jumpVeth) || slices.Contains(got, jumpHost) {
+		t.Errorf("after RemoveHostIsolation: %q", got)
+	}
+}

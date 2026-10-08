@@ -217,6 +217,14 @@ three- and five-node swarms; see [docs/testing.md](docs/testing.md).
   host's disk. A read-only mount in tailscaled's own mount namespace now
   refuses them, files received before are deleted when tailscaled starts, and
   tailscaled does not start if the mount fails.
+- Containers no longer reach each other through tslink's veths. The host
+  forwards between the veths' subnets, so a container reached any tslink
+  container's veth address, on any network, past Docker's network isolation
+  and the tailnet's ACLs: with an ordinary socket through its Docker gateway,
+  or with raw frames through its veth. Only tailscaled's WireGuard port passes
+  between them now, so colocated nodes keep their direct connection rather
+  than falling back to DERP; tailscaled listens on the fixed port 41641 for
+  this. The rules are always on and stay when the plugin stops.
 - A stack using the cluster credential is now confined to the exact tag
   `tag:<stack>`, not `tag:<stack>-*`. The prefix form let a stack claim a
   longer-named stack's base tag: stack `a` could register `tag:a-b`, stack

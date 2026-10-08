@@ -368,25 +368,24 @@ plain_send() {
 socket.socket(socket.AF_INET, socket.SOCK_DGRAM).sendto(sys.argv[2].encode(), (sys.argv[1], 9999))' \
 		"$sink_veth" "$1"
 }
+# plain_arrives PREFIX: sends with plain_send until the sink has a payload
+# unique to this call, for 30 seconds
 plain_arrives() {
+	local p="$1-$SECONDS-$RANDOM"
 	local deadline=$((SECONDS + 30))
-	until sink_got "$1"; do
+	until sink_got "$p"; do
 		[ "$SECONDS" -lt "$deadline" ] || return 1
-		plain_send "$1"
+		plain_send "$p"
 		sleep 2
 	done
 }
-veth_probes_blocked() {
-	if plain_arrives "$1-plain"; then
-		fail "an ordinary socket reached another container's veth: $(docker logs e2e-sink 2>&1 | tail -n 1)"
-	fi
-	for ifc in veth eth0; do
-		if RAW_DST=$sink_veth raw_arrives "$ifc" "$1-raw-$ifc"; then
-			fail "raw frames through $ifc reached another container's veth"
-		fi
-	done
+veth_raw_arrives() { RAW_DST=$sink_veth raw_arrives "$@"; }
+veth_isolation_off() { sudo iptables -t mangle -D FORWARD -j TSLINK-VETH-FWD; }
+# The watchdog puts the isolation back
+veth_isolation_restored() {
+	retry 150 sudo iptables -t mangle -C FORWARD -j TSLINK-VETH-FWD ||
+		fail "the watchdog did not restore the veth isolation"
 }
-veth_probes_blocked veth-isolated
 
 # Co-located nodes keep their direct path: tailscaled's WireGuard port passes
 client_ts() {
@@ -396,18 +395,20 @@ client_ts() {
 direct() { client_ts ping --c=10 "$server_ip" 2>&1 | grep -qE 'via [0-9.]+:41641 '; }
 retry 60 direct || fail "client and server are not directly connected: $(client_ts ping --c=3 "$server_ip" 2>&1)"
 
-log "Without the veth isolation, the same probes get through"
-# Shows that the probes above would catch a leak
-sudo iptables -t mangle -D FORWARD -j TSLINK-VETH-FWD
-plain_arrives veth-open-plain || fail "control: an ordinary socket did not reach the sink's veth"
+probe_group "veth isolation" veth_isolation_off veth_isolation_restored 60
+probe G2 "an ordinary socket reaches another container's veth" plain_arrives veth-plain
 for ifc in veth eth0; do
-	RAW_DST=$sink_veth raw_arrives "$ifc" "veth-open-raw-$ifc" ||
-		fail "control: raw frames through $ifc did not reach the sink's veth"
+	probe G2 "raw frames through $ifc reach another container's veth" \
+		veth_raw_arrives "$ifc" "veth-raw-$ifc"
 done
-# The watchdog puts the isolation back
-retry 150 sudo iptables -t mangle -C FORWARD -j TSLINK-VETH-FWD ||
-	fail "the watchdog did not restore the veth isolation"
-veth_probes_blocked veth-restored
+run_probes || fail "veth isolation"
+# run_probes checks the first attack again once the isolation is back; the
+# raw frames too
+for ifc in veth eth0; do
+	if veth_raw_arrives "$ifc" "veth-restored-raw-$ifc"; then
+		fail "raw frames through $ifc reached another container's veth after the restore"
+	fi
+done
 
 log "A container cannot store Taildrop files on the host"
 # The sink's node is untagged, so its own container may send it files. They

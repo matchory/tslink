@@ -39,7 +39,7 @@ The value has this syntax:
 
 | Part | Value |
 | --- | --- |
-| `<protocol>` | `http`, `https`, `tcp` or `tls-terminated-tcp` |
+| `<protocol>` | `http`, `https`, `tcp`, `tls-terminated-tcp` or `tun` |
 | `<target>` | The port in the container. The default is `<port>`. |
 | `<path>` | For `http` and `https`: the path to serve, for example `/api` |
 | `<option>` | See [Serve options](#serve-options) |
@@ -49,6 +49,7 @@ The value has this syntax:
 | `tslink.serve.443=https:8080` | HTTPS on port 443, to port 8080 in the container |
 | `tslink.serve.80=http:3000/api` | HTTP on port 80 at `/api`, to port 3000 |
 | `tslink.serve.5432=tcp` | TCP on port 5432, to port 5432 |
+| `tslink.serve.0=tun` | All traffic to the Service, see [Layer 3 forwarding](#layer-3-forwarding) |
 
 tslink ignores a rule with an incorrect option, and logs a warning. It also ignores a rule with an unknown protocol,
 and logs this only at the debug level.
@@ -56,6 +57,17 @@ and logs this only at the debug level.
 > [!NOTE]
 > Tailscale gets a Let's Encrypt certificate for each name that it serves HTTP on, also for plain HTTP. See
 > [HTTPS certificates](../explanation/https-certificates.md).
+
+### Layer 3 forwarding
+
+With `tun`, Tailscale forwards all traffic to the addresses of the container's Service to its Tailscale interface,
+whatever the port (`tailscale serve --tun`). The application must receive this traffic there, for example through
+firewall rules in the container: tslink adds none.
+
+- `tun` needs [`tslink.service`](#tslinkservice). Without one, tslink ignores the rule and logs this only at the debug
+  level.
+- `<port>` must be a number, but tslink ignores it, the target and the path.
+- Serve options are not allowed: tslink ignores a `tun` rule with an option and logs a warning.
 
 ### Serve options
 

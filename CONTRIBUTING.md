@@ -98,6 +98,19 @@ shellcheck scripts/*.sh
 asynchronous Tailscale start, routing, self-healing, draining), and `specs/`
 holds the design history.
 
+## Scope
+
+- tslink is for anyone running Docker with Tailscale. Keep code, docs and
+  tests free of assumptions about a particular organisation, cloud provider
+  or configuration tool; state what a host needs as a requirement instead.
+  Docs install the plugin with `--alias tslink` and use `driver: tslink:latest`.
+- Tailscale's control server comes first. headscale is supported on a
+  best-effort basis: the end-to-end test runs against it, but a change
+  should not trade Tailscale behaviour for headscale behaviour.
+- Tests that verify a guarantee in [SECURITY.md](SECURITY.md) name it, and
+  security probes need a control run; see
+  [docs/testing.md](docs/testing.md#security-model).
+
 ## Pull requests
 
 - Keep changes focused, with tests for new behaviour and fixed bugs.

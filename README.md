@@ -462,6 +462,11 @@ docker run --rm -v /var/lib/docker-plugins/tailscale:/data alpine \
   then, connections to tailnet addresses fail immediately with "host unreachable"; they never fall back to the host's
   own Tailscale. Applications that need the tailnet at startup should retry.
 
+- **headscale**: tslink is built and tested for Tailscale's control server. Other control servers such as headscale
+  work through `tslink.loginserver` and run the end-to-end test, but are supported on a best-effort basis: features
+  headscale lacks, such as Tailscale Services, are not available there, and issues that only affect headscale are
+  fixed when they can be.
+
 ## Development
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). The end-to-end test, `test/integration/run.sh`, runs

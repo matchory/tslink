@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime/pprof"
 	"slices"
 	"strings"
 	"sync"
@@ -581,9 +582,14 @@ func (d *Driver) onContainerInfo(endpointID string, info *core.ContainerInfo) {
 
 // startTailscale starts Tailscale for the endpoint in the background, and
 // records that it was asked to, so recovery leaves the endpoint to this start.
+// The goroutines of the run, its supervisor and tailscaled carry the endpoint
+// ID as a label, which tracebacks show.
 func (d *Driver) startTailscale(endpoint *core.Endpoint, info *core.ContainerInfo) {
 	endpoint.MarkStartRequested()
-	d.wg.Go(func() { d.runTailscale(endpoint, info) })
+	labels := pprof.Labels("endpoint", endpoint.ID[:12])
+	d.wg.Go(func() {
+		pprof.Do(d.ctx, labels, func(context.Context) { d.runTailscale(endpoint, info) })
+	})
 }
 
 // gcMinAge protects state that an endpoint still starting may be using.

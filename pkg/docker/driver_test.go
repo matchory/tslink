@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -181,8 +182,12 @@ func TestJoinDoesNotBlockOnTailscale(t *testing.T) {
 		t.Fatal(err)
 	}
 	// runTailscale blocks until the test ends: Join returned before it finished
-	if r := td.nextRun(t); r.endpointID != epID || r.info != info {
+	r := td.nextRun(t)
+	if r.endpointID != epID || r.info != info {
 		t.Errorf("started %+v, want endpoint %s with the cached info", r, epID[:12])
+	}
+	if !strings.Contains(r.traceback, "endpoint: "+epID[:12]) {
+		t.Errorf("traceback %q does not name the endpoint", r.traceback)
 	}
 	ep, _ := td.endpoint(epID)
 	if ep.GetSandboxKey() != sandbox {

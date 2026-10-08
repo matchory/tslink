@@ -113,6 +113,9 @@ docker run --rm -it --privileged --pid=host alpine nsenter -t 1 -m -u -n -i sh
 # Then: journalctl -u docker -f
 ```
 
+Goroutines of an endpoint's Tailscale run, its supervisor and tailscaled carry the label `endpoint` (the first 12
+characters of its ID), which panics and goroutine dumps show in each goroutine's header.
+
 ## Project Structure
 
 ```text
@@ -122,7 +125,12 @@ pkg/
 ├── tailscale/  # Daemon lifecycle (daemon.go, supervisor.go, binary.go)
 ├── netutil/    # Linux networking (veth.go - veth, routing, NAT)
 └── logger/     # Structured logging
+internal/
+└── leakcheck/  # TestMain helper: fails a package's tests if they leak goroutines
 ```
+
+`pkg/core`, `pkg/docker` and `pkg/tailscale` run their tests through `leakcheck.Main`, which reads Go's `goroutineleak`
+profile after the tests: goroutines blocked forever on a channel or lock nothing else can reach fail the package.
 
 **Key paths at runtime:**
 

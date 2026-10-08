@@ -194,9 +194,20 @@ three- and five-node swarms; see [docs/testing.md](docs/testing.md).
 
 ### Security
 
+- Containers no longer reach the tailnet through the host's own tailscaled.
+  On a host running tailscaled, any container reached the tailnet with the
+  host's identity: one on Docker's bridges with an ordinary socket, and one on
+  tslink with raw frames (`CAP_NET_RAW`, granted by default) past the
+  unreachable routes in its namespace, through its veth or `docker_gwbridge`.
+  tslink now drops traffic from container interfaces to `tailscale*` and to the
+  host's tailnet addresses, in the host's mangle table, where containers cannot
+  change it. DNS to `100.100.100.100` stays allowed. This applies to all
+  containers on the host; `TSLINK_ISOLATE_HOST_TAILNET=false` turns it off.
+
 - Tailnet ranges are unreachable in the container's main routing table, so
-  tailnet traffic leaves through the container's own tailscaled or not at
-  all, never through the host's Tailscale.
+  a socket's tailnet traffic leaves through the container's own tailscaled or
+  not at all, never through the host's Tailscale. The host isolation above
+  covers raw frames.
 - The auth key is passed to `tailscale up` on stdin instead of its command
   line, where it was visible in the host's process list.
 

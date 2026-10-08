@@ -160,6 +160,7 @@ Set with `docker plugin set` while the plugin is disabled.
 | --------- | ------------- | --------- |
 | `TS_AUTHKEY` | Default auth key for networks without `tslink.authkey` | None |
 | `shared.source` | Directory holding HTTPS certificates, in `certs/`; point it at a volume shared between hosts so a Tailscale Service's certificate is issued once for the cluster | The data directory |
+| `TSLINK_ISOLATE_HOST_TAILNET` | Keep every container on the host, tslink's or not, from reaching the tailnet through the host's own tailscaled: tslink drops traffic from Docker's bridges and veths to `tailscale*` and to the host's tailnet addresses, DNS to `100.100.100.100` excepted. The rules stay when the plugin stops. Set `false` only if containers on the host must use the host's tailscaled; any other value keeps the isolation | `true` |
 | `TS_DEBUG_ACME_DIRECTORY_URL`, `SSL_CERT_FILE` | For tests: another ACME directory, such as Let's Encrypt's staging environment, and a root certificate bundle that trusts it | None |
 
 The plugin image ships the Tailscale it runs, so each tslink release pins

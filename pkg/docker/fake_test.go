@@ -256,6 +256,7 @@ func newTestDriver(t *testing.T, fake *fakeDocker) *testDriver {
 	t.Helper()
 	cfg := &core.Config{AuthKey: "tskey-auth-plugin", DataDir: t.TempDir()}
 	td := &testDriver{Driver: newDriver(cfg, fake), fake: fake, runs: make(chan tsRun, 16)}
+	td.hostIsolation = func(bool) error { return nil }
 	release := make(chan struct{})
 
 	// Nothing else reads the sandbox key while Join or recovery runs: events

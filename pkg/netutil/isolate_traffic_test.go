@@ -251,3 +251,52 @@ func serveTCP(t *testing.T, ns, addr string) {
 
 // WireGuardTestPort is tailscaled's WireGuard port in these tests.
 const WireGuardTestPort = 41641
+
+// A container reaches no service on the host's own tailnet address, however
+// its bridge is named, once Docker reports the bridge's name.
+// Guards: G1
+func TestHostIsolationBlocksEveryBridge(t *testing.T) {
+	for i, tt := range []struct {
+		name, bridge string
+		isolate      bool
+		bridges      []string // The bridge names Docker reports
+		reach        bool
+	}{
+		// Control: without the isolation, the host's tailnet address answers
+		{"control", "custombr0", false, nil, true},
+		{"docker-named bridge", "br-0123456789ab", true, nil, false},
+		{"custom-named bridge", "custombr0", true, []string{"custombr0"}, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			hostNS, bridgedNS, _ := vethTopology(t, "h"+strconv.Itoa(i), tt.bridge)
+			// The host's tailscaled: its interface and tailnet address
+			if err := inNetNS(hostNS, func() error {
+				ts := &netlink.Dummy{Name: "tailscale0"}
+				if err := netlink.LinkAdd(ts); err != nil {
+					return err
+				}
+				addr, err := netlink.ParseAddr("100.64.0.1/32")
+				if err != nil {
+					return err
+				}
+				if err := netlink.AddrAdd(ts, addr); err != nil {
+					return err
+				}
+				return netlink.LinkSetUp(ts)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if tt.isolate {
+				if err := inNetNS(hostNS, func() error {
+					return SetupHostIsolation(tt.bridges)
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			serveTCP(t, hostNS, "100.64.0.1:8080")
+			if got := reaches(t, bridgedNS, "100.64.0.1:8080"); got != tt.reach {
+				t.Errorf("reached the host's tailnet address: %v, want %v", got, tt.reach)
+			}
+		})
+	}
+}

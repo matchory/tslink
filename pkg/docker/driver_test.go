@@ -366,7 +366,7 @@ func TestDeleteEndpointDoesNotHoldDriverLock(t *testing.T) {
 func TestShutdownClosesClient(t *testing.T) {
 	fake := newFakeDocker()
 	d := newDriver(&core.Config{DataDir: t.TempDir()}, fake)
-	d.hostIsolation = func(bool) error { return nil }
+	d.hostIsolation = func(bool, []string) error { return nil }
 	d.start()
 	if err := d.Shutdown(t.Context()); err != nil {
 		t.Fatal(err)
@@ -711,7 +711,7 @@ func TestStartAppliesHostIsolation(t *testing.T) {
 	for _, on := range []bool{true, false} {
 		d := newDriver(&core.Config{DataDir: t.TempDir(), IsolateHostTailnet: on}, newFakeDocker())
 		var calls []bool
-		d.hostIsolation = func(on bool) error {
+		d.hostIsolation = func(on bool, _ []string) error {
 			calls = append(calls, on)
 			return nil
 		}

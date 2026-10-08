@@ -35,10 +35,12 @@ func fakeID(name string) string {
 // fakeDocker is an in-memory Docker API: plugins, networks and containers,
 // and an event stream the test feeds.
 type fakeDocker struct {
-	mu         sync.Mutex
-	plugins    []plugin.Plugin
-	networks   map[string]dockernetwork.Inspect
-	containers []container.InspectResponse
+	mu             sync.Mutex
+	networkLists   []dockerclient.NetworkListOptions // NetworkList's calls
+	networkListErr error                             // What NetworkList fails with
+	plugins        []plugin.Plugin
+	networks       map[string]dockernetwork.Inspect
+	containers     []container.InspectResponse
 
 	pluginErrs     []error       // returned by successive PluginList calls, then nil
 	pluginCalls    chan struct{} // receives on each PluginList call, if set
@@ -153,6 +155,23 @@ func (f *fakeDocker) NetworkInspect(
 	return dockerclient.NetworkInspectResult{Network: n}, nil
 }
 
+func (f *fakeDocker) NetworkList(
+	_ context.Context,
+	options dockerclient.NetworkListOptions,
+) (dockerclient.NetworkListResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.networkLists = append(f.networkLists, options)
+	if f.networkListErr != nil {
+		return dockerclient.NetworkListResult{}, f.networkListErr
+	}
+	var res dockerclient.NetworkListResult
+	for _, n := range f.networks {
+		res.Items = append(res.Items, dockernetwork.Summary{Network: n.Network})
+	}
+	return res, nil
+}
+
 func (f *fakeDocker) Events(
 	_ context.Context,
 	options dockerclient.EventsListOptions,
@@ -259,7 +278,7 @@ func newTestDriver(t *testing.T, fake *fakeDocker) *testDriver {
 	t.Helper()
 	cfg := &core.Config{AuthKey: "tskey-auth-plugin", DataDir: t.TempDir()}
 	td := &testDriver{Driver: newDriver(cfg, fake), fake: fake, runs: make(chan tsRun, 16)}
-	td.hostIsolation = func(bool) error { return nil }
+	td.hostIsolation = func(bool, []string) error { return nil }
 	release := make(chan struct{})
 
 	// Nothing else reads the sandbox key while Join or recovery runs: events
@@ -306,7 +325,8 @@ func (td *testDriver) watch(handled chan<- string, stopped chan<- string) {
 				if stopped != nil {
 					stopped <- containerID
 				}
-			})
+			},
+			td.applyHostIsolation)
 	})
 }
 
@@ -390,6 +410,18 @@ func connectEvent(netID, netName, containerID string) events.Message {
 				"name":      netName,
 				"type":      pluginName,
 			},
+		},
+	}
+}
+
+// createEvent is the event Docker sends when a network is created.
+func createEvent(netID, netName, driver string) events.Message {
+	return events.Message{
+		Type:   events.NetworkEventType,
+		Action: events.ActionCreate,
+		Actor: events.Actor{
+			ID:         netID,
+			Attributes: map[string]string{"name": netName, "type": driver},
 		},
 	}
 }

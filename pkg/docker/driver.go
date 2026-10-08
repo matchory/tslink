@@ -41,8 +41,14 @@ type Driver struct {
 	leaveEndpoint  func(e *core.Endpoint) error
 	stopEndpoint   func(e *core.Endpoint) error
 
-	// Installs (true) or removes (false) the host's tailnet isolation
-	hostIsolation func(on bool) error
+	// Installs (true) or removes (false) the host's tailnet isolation, given
+	// the interface names of Docker's bridge networks
+	hostIsolation func(on bool, bridges []string) error
+
+	// Serializes applyHostIsolation, which keeps the bridge names it last
+	// got from Docker in bridges
+	isolationMu sync.Mutex
+	bridges     []string
 
 	// Serializes RecoverEndpoints
 	recoverMu sync.Mutex
@@ -481,7 +487,8 @@ func (d *Driver) start() {
 	// Start event watcher in background (tracked by waitgroup)
 	// Pass callback to trigger Tailscale setup when container info arrives
 	d.wg.Go(func() {
-		WatchEvents(ctx, d.docker, d.cache, d.ownsNetwork, d.onContainerInfo, d.onContainerStop)
+		WatchEvents(ctx, d.docker, d.cache, d.ownsNetwork, d.onContainerInfo, d.onContainerStop,
+			d.applyHostIsolation)
 	})
 
 	// Recover orphaned endpoints from previous plugin instance (host reboot, plugin restart)
@@ -646,23 +653,62 @@ func (d *Driver) collectGarbage(ctx context.Context) {
 // applyHostIsolation installs the veth isolation, and installs or removes the
 // host's tailnet isolation, as the plugin's settings say. Both stay in place
 // when the plugin stops, so a restart or an upgrade never opens the host's
-// tailnet, or other containers, to containers.
+// tailnet, or other containers, to containers. The isolation covers the
+// bridges of Docker's bridge networks by name: a stack file may name one
+// otherwise than Docker would. If Docker cannot list them, it keeps those it
+// listed last.
 func (d *Driver) applyHostIsolation() {
-	if err := d.hostIsolation(d.config.IsolateHostTailnet); err != nil {
+	d.isolationMu.Lock()
+	defer d.isolationMu.Unlock()
+	if d.config.IsolateHostTailnet {
+		bridges, err := bridgeNames(d.ctx, d.docker)
+		if err != nil {
+			logger.Warnf(
+				"Host tailnet isolation: Docker's bridges unknown, using the last list: %v",
+				err,
+			)
+		} else {
+			d.bridges = bridges
+		}
+	}
+	if err := d.hostIsolation(d.config.IsolateHostTailnet, d.bridges); err != nil {
 		logger.Errorf("Host tailnet isolation (%s=%t): %v",
 			core.IsolateHostTailnetSetting, d.config.IsolateHostTailnet, err)
 	}
 }
 
+// bridgeNameOption is the driver option of a bridge network that names its
+// bridge. Without it, Docker names the bridge br-<network ID>.
+const bridgeNameOption = "com.docker.network.bridge.name"
+
+// bridgeNames returns the bridge names Docker's bridge networks set, the
+// default network's docker0 among them.
+func bridgeNames(ctx context.Context, cli dockerAPI) ([]string, error) {
+	res, err := cli.NetworkList(ctx, dockerclient.NetworkListOptions{
+		Filters: dockerclient.Filters{}.Add("driver", "bridge"),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list networks: %w", err)
+	}
+	var names []string
+	for _, n := range res.Items {
+		if name := n.Options[bridgeNameOption]; n.Driver == "bridge" && name != "" {
+			names = append(names, name)
+		}
+	}
+	slices.Sort(names)
+	return names, nil
+}
+
 // applyHostIsolation is the default Driver.hostIsolation. The veth isolation
 // is always on: TSLINK_ISOLATE_HOST_TAILNET concerns the host's tailnet only.
-func applyHostIsolation(on bool) error {
+func applyHostIsolation(on bool, bridges []string) error {
 	veth := netutil.SetupVethIsolation(tailscale.WireGuardPort)
 	if veth != nil {
 		veth = fmt.Errorf("veth isolation: %w", veth)
 	}
 	if on {
-		return errors.Join(veth, netutil.SetupHostIsolation())
+		return errors.Join(veth, netutil.SetupHostIsolation(bridges))
 	}
 	return errors.Join(veth, netutil.RemoveHostIsolation())
 }

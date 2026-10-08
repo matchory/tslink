@@ -3,12 +3,15 @@
 package netutil
 
 import (
+	"maps"
+	"net/netip"
 	"os"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/coreos/go-iptables/iptables"
+	"github.com/vishvananda/netlink"
 )
 
 // natRules lists the iptables rules SetupNAT and the cleanup functions
@@ -174,4 +177,49 @@ func TestNATRules(t *testing.T) {
 		r.postrouting,
 		[]string{"-P POSTROUTING ACCEPT"},
 	)
+}
+
+// UsedVethSubnets lists the /30s in tslink's range on any link of the
+// namespace, and VethIPv4 reads a link's address back.
+func TestUsedVethSubnets(t *testing.T) {
+	nsPath := newTestNetNS(t)
+	if err := inNetNS(nsPath, func() error {
+		for name, addr := range map[string]string{
+			"dummy1": "10.200.1.5/30", "dummy2": "10.200.2.9/30", "dummy3": "192.168.0.1/24",
+		} {
+			link := &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: name}}
+			if err := netlink.LinkAdd(link); err != nil {
+				return err
+			}
+			a, _ := netlink.ParseAddr(addr)
+			if err := netlink.AddrAdd(link, a); err != nil {
+				return err
+			}
+		}
+		used, err := UsedVethSubnets()
+		if err != nil {
+			return err
+		}
+		want := map[netip.Prefix]bool{
+			netip.MustParsePrefix("10.200.1.4/30"): true,
+			netip.MustParsePrefix("10.200.2.8/30"): true,
+		}
+		if !maps.Equal(used, want) {
+			t.Errorf("used = %v, want %v", used, want)
+		}
+		ip, err := VethIPv4("dummy2")
+		if err != nil || ip != "10.200.2.9" {
+			t.Errorf("VethIPv4 = %q, %v", ip, err)
+		}
+		// The address is the host side's: a second link may not get it
+		if err := SetupHostRouting("dummy3", "10.200.1.5"); err != nil {
+			t.Errorf("SetupHostRouting on a free link: %v", err)
+		}
+		if err := SetupHostRouting("dummy3", "10.200.1.5"); err == nil {
+			t.Error("SetupHostRouting did not fail adding an address the link has")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 }

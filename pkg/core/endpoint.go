@@ -118,30 +118,71 @@ func NewEndpoint(
 	}, nil
 }
 
-// generateVethIPs generates unique IP addresses for a veth pair based on endpoint ID.
-// Uses 10.200.0.0/16 range, with each endpoint getting a /30 subnet.
-// Returns (hostIP, containerIP).
-func generateVethIPs(endpointID string) (string, string) {
-	// Use first 4 bytes of endpoint ID to generate a unique subnet
-	// Each /30 has 4 IPs: network, host, container, broadcast
-	// So we can have 65536/4 = 16384 unique subnets
+// vethSlots is the number of /30 subnets for veth pairs in 10.200.0.0/16,
+// leaving out the first and the last few.
+const vethSlots = 16380
+
+// vethSlot returns the endpoint's preferred subnet, 1 to vethSlots, from the
+// first 8 characters of its ID.
+func vethSlot(endpointID string) int {
 	var hash uint16
 	for i := 0; i < len(endpointID) && i < 8; i++ {
 		hash = hash*31 + uint16(endpointID[i])
 	}
+	return int(hash%vethSlots) + 1
+}
 
-	// Ensure we don't use .0 or .255 subnets
-	subnetNum := (hash % 16380) + 1 // 1 to 16380
-	baseIP := subnetNum * 4         // Each /30 uses 4 IPs
+// vethSlotIPs returns the host and container addresses of a subnet.
+func vethSlotIPs(slot int) (netip.Addr, netip.Addr) {
+	base := slot * 4 // Each /30 has 4 IPs: network, host, container, broadcast
+	//nolint:gosec // base is at most vethSlots*4, so both bytes fit
+	host := netip.AddrFrom4([4]byte{10, 200, byte(base / 256), byte(base%256 + 1)})
+	return host, host.Next()
+}
 
-	// 10.200.x.y where x.y comes from baseIP
-	thirdOctet := baseIP / 256
-	fourthOctet := baseIP % 256
+// generateVethIPs returns the addresses of the endpoint's preferred subnet.
+func generateVethIPs(endpointID string) (string, string) {
+	host, ctr := vethSlotIPs(vethSlot(endpointID))
+	return host.String(), ctr.String()
+}
 
-	hostIP := fmt.Sprintf("10.200.%d.%d", thirdOctet, fourthOctet+1)
-	containerIP := fmt.Sprintf("10.200.%d.%d", thirdOctet, fourthOctet+2)
+// pickVethSubnet returns the addresses of the first subnet, from the
+// endpoint's preferred one on, that used does not contain. The preferred
+// subnets of about 150 endpoints on one host collide with even odds, and
+// with one subnet on two host veths, the host routes the second container's
+// traffic to the first.
+func pickVethSubnet(endpointID string, used map[netip.Prefix]bool) (netip.Addr, netip.Addr, error) {
+	start := vethSlot(endpointID)
+	for i := range vethSlots {
+		host, ctr := vethSlotIPs((start-1+i)%vethSlots + 1)
+		if !used[netip.PrefixFrom(host, 30).Masked()] {
+			return host, ctr, nil
+		}
+	}
+	return netip.Addr{}, netip.Addr{}, errors.New("no free veth subnet in 10.200.0.0/16")
+}
 
-	return hostIP, containerIP
+// vethAllocMu makes choosing a veth subnet and assigning it to the host veth
+// one step, so concurrent Joins do not pick the same one.
+var vethAllocMu sync.Mutex
+
+// assignVethSubnet picks a subnet no host link uses and assigns its host
+// address to vethHost.
+func assignVethSubnet(endpointID, vethHost string) (string, string, error) {
+	vethAllocMu.Lock()
+	defer vethAllocMu.Unlock()
+	used, err := netutil.UsedVethSubnets()
+	if err != nil {
+		return "", "", err
+	}
+	host, ctr, err := pickVethSubnet(endpointID, used)
+	if err != nil {
+		return "", "", err
+	}
+	if err := netutil.SetupHostRouting(vethHost, host.String()); err != nil {
+		return "", "", err
+	}
+	return host.String(), ctr.String(), nil
 }
 
 // Join is called when a container joins the network.
@@ -154,10 +195,6 @@ func (e *Endpoint) Join(sandboxKey string) (*network.JoinResponse, error) {
 	// We only lock briefly to read/write state.
 
 	logger.Infof("Endpoint %s joining with sandbox %s", e.ID, sandboxKey)
-
-	// Generate unique IPs for this endpoint's veth pair (uses only e.ID which is immutable)
-	hostVethIP, containerVethIP := generateVethIPs(e.ID)
-	logger.Infof("Using veth IPs: host=%s container=%s", hostVethIP, containerVethIP)
 
 	// Create veth pair (blocking network operation - no lock held)
 	vethHost, vethContainer, err := netutil.CreateVethPair(e.ID[:8], e.Network.MTU)
@@ -176,12 +213,14 @@ func (e *Endpoint) Join(sandboxKey string) (*network.JoinResponse, error) {
 	}
 
 	// Set up host side of veth with IP
-	if err := netutil.SetupHostRouting(vethHost, hostVethIP); err != nil {
+	hostVethIP, containerVethIP, err := assignVethSubnet(e.ID, vethHost)
+	if err != nil {
 		if cleanupErr := netutil.DeleteVeth(vethHost); cleanupErr != nil {
 			logger.Warnf("failed to cleanup veth %s after error: %v", vethHost, cleanupErr)
 		}
 		return nil, fmt.Errorf("failed to set up host routing: %w", err)
 	}
+	logger.Infof("Using veth IPs: host=%s container=%s", hostVethIP, containerVethIP)
 
 	// Set up container side with IP, bring it up, and add default route
 	if err := netutil.SetupInterfaceInNS(sandboxKey, vethContainer, ""); err != nil {
@@ -554,7 +593,11 @@ func (e *Endpoint) GetSandboxKey() string {
 // have.
 func (e *Endpoint) Recover(sandboxKey string) error {
 	vethHost, vethContainer := "veth"+e.ID[:8], "veth"+e.ID[:8]+"c"
-	hostVethIP, _ := generateVethIPs(e.ID)
+	// Join may have picked another subnet than the preferred one
+	hostVethIP, err := netutil.VethIPv4(vethHost)
+	if err != nil {
+		return fmt.Errorf("failed to read the address of %s: %w", vethHost, err)
+	}
 
 	e.mu.Lock()
 	e.SandboxKey = sandboxKey

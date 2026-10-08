@@ -1,6 +1,7 @@
 package core
 
 import (
+	"net/netip"
 	"strings"
 	"testing"
 )
@@ -73,5 +74,54 @@ func TestSocketPathForFitsSunPath(t *testing.T) {
 	}
 	if got := socketPathFor("/data", id); got != "/data/sock/aaaaaaaaaaaa.sock" {
 		t.Errorf("socketPathFor = %q", got)
+	}
+}
+
+// Two endpoints whose IDs hash to the same /30 get different ones: with the
+// same subnet on two host veths, the host routes the second container's
+// traffic to the first.
+func TestPickVethSubnetSkipsUsed(t *testing.T) {
+	const id = "0123456789abcdef"
+	host, ctr, err := pickVethSubnet(id, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Unused: the subnet the hash names, as before, so recovered endpoints
+	// of older versions keep theirs
+	wantHost, wantCtr := generateVethIPs(id)
+	if host.String() != wantHost || ctr.String() != wantCtr {
+		t.Errorf("got %s %s, want %s %s", host, ctr, wantHost, wantCtr)
+	}
+	if netip.PrefixFrom(host, 30).Masked() != netip.PrefixFrom(ctr, 30).Masked() {
+		t.Errorf("%s and %s are not in one /30", host, ctr)
+	}
+
+	used := map[netip.Prefix]bool{netip.PrefixFrom(host, 30).Masked(): true}
+	host2, ctr2, err := pickVethSubnet(id, used)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if used[netip.PrefixFrom(host2, 30).Masked()] || host2.Next() != ctr2 {
+		t.Errorf("got %s %s, used %v", host2, ctr2, used)
+	}
+}
+
+// The last slot wraps to the first, and a full range is an error.
+func TestPickVethSubnetFull(t *testing.T) {
+	used := map[netip.Prefix]bool{}
+	for slot := 1; slot <= vethSlots; slot++ {
+		host, _ := vethSlotIPs(slot)
+		used[netip.PrefixFrom(host, 30).Masked()] = true
+	}
+	free, _ := vethSlotIPs(1)
+	delete(used, netip.PrefixFrom(free, 30).Masked())
+	// Any ID: only slot 1 is free
+	host, _, err := pickVethSubnet("ffffffffffff", used)
+	if err != nil || host != free {
+		t.Errorf("got %s, %v; want %s", host, err, free)
+	}
+	used[netip.PrefixFrom(free, 30).Masked()] = true
+	if _, _, err := pickVethSubnet("ffffffffffff", used); err == nil {
+		t.Error("no error with every subnet in use")
 	}
 }

@@ -150,7 +150,12 @@ retry 60 curl -fsS -o /dev/null "$URL/health" || fail "headscale did not come up
 alice=$(hs users create alice -o json | jq -r .id)
 bob=$(hs users create bob -o json | jq -r .id)
 host=$(hs users create host -o json | jq -r .id)
-key() { hs preauthkeys create --user "$1" --reusable --expiration 1h "${@:2}" | tail -n 1; }
+# key USER [FLAGS]: a new pre-auth key for USER, also recorded in $WORK/keys,
+# which the credential scan looks for
+key() {
+	hs preauthkeys create --user "$1" --reusable --expiration 1h "${@:2}" | tail -n 1 |
+		tee -a "$WORK/keys"
+}
 
 log "Starting the host's own tailscaled"
 # Like a cluster node's: on the tailnet, and granted access to alice's
@@ -432,5 +437,33 @@ case $put in 2*) fail "Taildrop accepted a file from the container ($put)" ;; es
 if sudo grep -rqs tslink-e2e-taildrop "$DATA"; then
 	fail "a Taildrop file reached the host: $(sudo grep -rls tslink-e2e-taildrop "$DATA")"
 fi
+
+log "Auth keys stay out of logs, state, processes, diagnostics and containers"
+# creds_found: whether an auth key the test created appears where tslink must
+# keep it out: its data directory (logs, status, state), the command lines and
+# environments of the plugin and its tailscaleds, tslink diag, and the
+# containers. Network options and plugin settings, which Docker API holders
+# can read anyway, are not searched, nor is headscale, which issued the keys.
+creds_found() {
+	local pid c
+	sudo grep -rqsF -f "$WORK/keys" "$DATA" && return 0
+	for pid in $(pgrep -x tailscaled) $(pgrep -x tslink); do
+		sudo cat "/proc/$pid/cmdline" "/proc/$pid/environ" 2>/dev/null | tr '\0' '\n' |
+			grep -qF -f "$WORK/keys" && return 0
+	done
+	docker run --rm -v "$DATA:/data:ro" --entrypoint /tslink tslink:rootfs diag 2>&1 |
+		grep -qF -f "$WORK/keys" && return 0
+	for c in $(docker ps --format '{{.Names}}' --filter name=^e2e- | grep -vx e2e-headscale); do
+		docker exec "$c" sh -c 'tr "\0" "\n" </proc/1/environ
+			find /etc /root /tmp /var /home /opt /srv -xdev -type f -size -2048k \
+				-exec cat {} + 2>/dev/null' | grep -qF -f "$WORK/keys" && return 0
+	done
+	return 1
+}
+plant_key() { head -n 1 "$WORK/keys" | sudo tee "$DATA/e2e-canary" >/dev/null; }
+unplant_key() { sudo rm -f "$DATA/e2e-canary"; }
+probe_group "credentials" plant_key unplant_key 0
+probe G5 "an auth key appears outside network options and plugin settings" creds_found
+run_probes || fail "credentials"
 
 log "All end-to-end tests passed"

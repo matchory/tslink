@@ -65,7 +65,6 @@ tag. Networks outside a stack cannot use the cluster credential.
 Attackers: a process in a container on a tslink network; a tailnet peer; the
 control server.
 Assumes: E2, E3.
-Manual: a search for canary credentials on the test hosts before each release.
 
 Auth keys and OAuth client secrets do not appear in the plugin's log, the
 command lines of tailscale and tailscaled, tailscaled's environment or log,

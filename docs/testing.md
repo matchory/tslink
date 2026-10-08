@@ -50,9 +50,11 @@ on the same machine, so it needs no Tailscale account. It checks that
 containers reach each other over the tailnet, that the policy refuses what it
 does not grant, that a container keeps its identity across a plugin restart,
 and that an ephemeral node is removed with its container. Its host isolation
-checks are probes on `test/security/lib.sh`, with control runs. CI runs it on
-every pull request. Tailscale Services are not covered: headscale does not support
-them.
+checks are probes on `test/security/lib.sh`, with control runs. It also
+searches the plugin's data directory, the plugin's and tailscaleds' command
+lines and environments, `tslink diag` and the containers for every auth key it
+created, with a planted key as its control. CI runs it on every pull request.
+Tailscale Services are not covered: headscale does not support them.
 
 ## Cluster tests
 

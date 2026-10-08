@@ -4,14 +4,14 @@ package diag
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"tailscale.com/client/local"
 )
 
 // EndpointStatus represents the health status of a single endpoint.
@@ -232,61 +232,24 @@ type tailscaleStatusResult struct {
 // error rather than hanging the report.
 var statusTimeout = 5 * time.Second
 
-// getTailscaleStatus queries tailscale status via the socket.
+// getTailscaleStatus asks the tailscaled on socketPath for its status.
 func getTailscaleStatus(socketPath string) (*tailscaleStatusResult, error) {
-	// Find tailscale binary - check common locations
-	tailscaleBin := findTailscaleBinary()
-	if tailscaleBin == "" {
-		return nil, errors.New("tailscale binary not found")
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), statusTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, tailscaleBin, "--socket="+socketPath, "status", "--json")
-	output, err := cmd.Output()
+	lc := &local.Client{Socket: socketPath, UseSocketOnly: true}
+	st, err := lc.StatusWithoutPeers(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("tailscale status failed: %w", err)
 	}
 
-	var result struct {
-		Self struct {
-			TailscaleIPs []string `json:"TailscaleIPs"`
-			HostName     string   `json:"HostName"`
-			Online       bool     `json:"Online"`
-		} `json:"Self"`
-		BackendState string `json:"BackendState"`
-	}
-
-	if err := json.Unmarshal(output, &result); err != nil {
-		return nil, fmt.Errorf("failed to parse status: %w", err)
-	}
-
-	status := &tailscaleStatusResult{
-		Hostname:     result.Self.HostName,
-		Online:       result.Self.Online,
-		BackendState: result.BackendState,
-	}
-
-	if len(result.Self.TailscaleIPs) > 0 {
-		status.IP = result.Self.TailscaleIPs[0]
-	}
-
-	return status, nil
-}
-
-// findTailscaleBinary looks for the tailscale binary in common locations.
-func findTailscaleBinary() string {
-	paths := []string{
-		"/usr/bin/tailscale",
-		"/usr/local/bin/tailscale",
-	}
-	for _, p := range paths {
-		if _, err := os.Stat(p); err == nil {
-			return p
+	status := &tailscaleStatusResult{BackendState: st.BackendState}
+	if st.Self != nil {
+		status.Hostname, status.Online = st.Self.HostName, st.Self.Online
+		if len(st.Self.TailscaleIPs) > 0 {
+			status.IP = st.Self.TailscaleIPs[0].String()
 		}
 	}
-
-	return ""
+	return status, nil
 }
 
 func outputResult(result *Result, w io.Writer) error {

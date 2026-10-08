@@ -17,6 +17,7 @@ import (
 	"github.com/matchory/tslink/pkg/core"
 	"github.com/matchory/tslink/pkg/logger"
 	"github.com/matchory/tslink/pkg/netutil"
+	"github.com/matchory/tslink/pkg/tailscale"
 )
 
 // Driver implements the Docker network plugin interface.
@@ -636,9 +637,10 @@ func (d *Driver) collectGarbage(ctx context.Context) {
 	core.CollectGarbage(ctx, d.config, d.claims, state, sockets, gcMinAge)
 }
 
-// applyHostIsolation installs or removes the host's tailnet isolation, as the
-// plugin's settings say. It stays in place when the plugin stops, so a
-// restart or an upgrade never opens the host's tailnet to containers.
+// applyHostIsolation installs the veth isolation, and installs or removes the
+// host's tailnet isolation, as the plugin's settings say. Both stay in place
+// when the plugin stops, so a restart or an upgrade never opens the host's
+// tailnet, or other containers, to containers.
 func (d *Driver) applyHostIsolation() {
 	if err := d.hostIsolation(d.config.IsolateHostTailnet); err != nil {
 		logger.Errorf("Host tailnet isolation (%s=%t): %v",
@@ -646,12 +648,17 @@ func (d *Driver) applyHostIsolation() {
 	}
 }
 
-// applyHostIsolation is the default Driver.hostIsolation.
+// applyHostIsolation is the default Driver.hostIsolation. The veth isolation
+// is always on: TSLINK_ISOLATE_HOST_TAILNET concerns the host's tailnet only.
 func applyHostIsolation(on bool) error {
-	if on {
-		return netutil.SetupHostIsolation()
+	veth := netutil.SetupVethIsolation(tailscale.WireGuardPort)
+	if veth != nil {
+		veth = fmt.Errorf("veth isolation: %w", veth)
 	}
-	return netutil.RemoveHostIsolation()
+	if on {
+		return errors.Join(veth, netutil.SetupHostIsolation())
+	}
+	return errors.Join(veth, netutil.RemoveHostIsolation())
 }
 
 // runWatchdog periodically scans for orphaned endpoints and recovers them,

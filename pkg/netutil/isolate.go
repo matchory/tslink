@@ -3,6 +3,9 @@ package netutil
 import (
 	"errors"
 	"fmt"
+	"slices"
+	"strconv"
+	"strings"
 
 	"github.com/coreos/go-iptables/iptables"
 
@@ -27,6 +30,23 @@ const (
 	isolateForwardChain = "TSLINK-ISOLATE-FWD"
 	isolateInputChain   = "TSLINK-ISOLATE-IN"
 )
+
+// Veth isolation keeps containers from reaching each other through tslink's
+// veths. The host forwards between the veths' /30s in vethRange, so without
+// it a container reaches another tslink container's veth address, past
+// Docker's network isolation and past the tailnet's ACLs, with an ordinary
+// socket through its Docker gateway or with raw frames through its veth. Only
+// tailscaled's WireGuard port passes, so colocated nodes keep their direct
+// path instead of falling back to DERP; WireGuard drops what is not from a
+// peer. It does not depend on TSLINK_ISOLATE_HOST_TAILNET.
+const vethIsolateChain = "TSLINK-VETH-FWD"
+
+// dropTarget is the target of the isolation rules that drop traffic.
+const dropTarget = "DROP"
+
+// tslinkChains are the chains tslink jumps to first from a built-in chain;
+// any order among them counts as first.
+var tslinkChains = []string{vethIsolateChain, isolateForwardChain, isolateInputChain}
 
 // containerInterfaces are the host interfaces container traffic arrives on:
 // Docker's bridges, and the host ends of veth pairs, tslink's among them.
@@ -64,9 +84,9 @@ func (f isolationFamily) rules(chain string) [][]string {
 					"-p", proto, "--dport", "53", "-j", "RETURN",
 				})
 			}
-			rules = append(rules, []string{"-i", ifc, "-o", tailscaleInterfaces, "-j", "DROP"})
+			rules = append(rules, []string{"-i", ifc, "-o", tailscaleInterfaces, "-j", dropTarget})
 		case isolateInputChain:
-			rules = append(rules, []string{"-i", ifc, "-d", f.tailnet, "-j", "DROP"})
+			rules = append(rules, []string{"-i", ifc, "-d", f.tailnet, "-j", dropTarget})
 		}
 	}
 	return rules
@@ -156,9 +176,16 @@ func ensureFirstJump(ipt *iptables.IPTables, from, chain string) error {
 	if err != nil {
 		return fmt.Errorf("failed to list chain %s: %w", from, err)
 	}
-	jump := "-A " + from + " -j " + chain
-	if len(listed) > 1 && listed[1] == jump { // after "-P <chain> <policy>"
-		return nil
+	// After "-P <chain> <policy>", the leading rules may be jumps to any of
+	// tslink's chains, so two of them do not keep pushing each other down
+	for _, rule := range listed[min(1, len(listed)):] {
+		target, ok := strings.CutPrefix(rule, "-A "+from+" -j ")
+		if !ok || !slices.Contains(tslinkChains, target) {
+			break
+		}
+		if target == chain {
+			return nil
+		}
 	}
 	if err := ipt.DeleteIfExists("mangle", from, "-j", chain); err != nil {
 		return fmt.Errorf("failed to move jump to %s: %w", chain, err)
@@ -167,6 +194,41 @@ func ensureFirstJump(ipt *iptables.IPTables, from, chain string) error {
 		return fmt.Errorf("failed to add jump to %s: %w", chain, err)
 	}
 	return nil
+}
+
+// SetupVethIsolation installs the veth isolation, or restores it, letting
+// only UDP to port through between containers and tslink's veths. IPv4 only:
+// the veths have no other addresses than link-local IPv6 ones. It changes
+// nothing that is in place, so it can run periodically.
+func SetupVethIsolation(port int) error {
+	ipt, err := iptables.NewWithProtocol(iptables.ProtocolIPv4)
+	if err != nil {
+		return fmt.Errorf("failed to initialize iptables: %w", err)
+	}
+	dst := vethRange.String()
+	var rules [][]string
+	for _, ifc := range containerInterfaces {
+		rules = append(
+			rules,
+			[]string{
+				"-i",
+				ifc,
+				"-d",
+				dst,
+				"-p",
+				"udp",
+				"--dport",
+				strconv.Itoa(port),
+				"-j",
+				"RETURN",
+			},
+			[]string{"-i", ifc, "-d", dst, "-j", dropTarget},
+		)
+	}
+	if err := ensureChain(ipt, vethIsolateChain, rules); err != nil {
+		return err
+	}
+	return ensureFirstJump(ipt, "FORWARD", vethIsolateChain)
 }
 
 // RemoveHostIsolation removes the host's tailnet isolation, and tolerates its

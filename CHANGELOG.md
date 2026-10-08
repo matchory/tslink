@@ -112,6 +112,11 @@ three- and five-node swarms; see [docs/testing.md](docs/testing.md).
 
 ### Changed
 
+- Documentation restructured into a tutorial, task guides, a reference and
+  explanations under `docs/` (index in [docs/README.md](docs/README.md)),
+  written to a style guide based on ASD-STE100 ([docs/STYLE.md](docs/STYLE.md)).
+  The readme is now a short landing page. `docs/credentials.md` and
+  `docs/node-provisioning.md` point to the new pages.
 - tslink reads tailscaled's status, preferences and serve config through
   its LocalAPI instead of the `tailscale` CLI, with a client of the bundled
   Tailscale's version. `tslink diag` no longer needs a `tailscale` binary.

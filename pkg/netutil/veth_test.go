@@ -187,7 +187,7 @@ func TestUsedVethSubnets(t *testing.T) {
 		for name, addr := range map[string]string{
 			"dummy1": "10.200.1.5/30", "dummy2": "10.200.2.9/30", "dummy3": "192.168.0.1/24",
 		} {
-			link := &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: name}}
+			link := &netlink.Dummy{Name: name}
 			if err := netlink.LinkAdd(link); err != nil {
 				return err
 			}

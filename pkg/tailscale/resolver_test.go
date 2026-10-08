@@ -257,3 +257,71 @@ func TestTailscaledCommandWarnsAboutFallback(t *testing.T) {
 		t.Errorf("warning kept after a start with the host's resolvers: %q", got)
 	}
 }
+
+// tailscaled gets its own resolv.conf even when the plugin's is a bind mount
+// of a file that has since been replaced, as systemd-resolved replaces
+// stub-resolv.conf whenever the host's DNS changes. The kernel refuses to
+// mount over a deleted file (move_mount: ENOENT). Needs root; /etc is a
+// scratch directory in a mount namespace of the test's own.
+func TestTailscaledCommandOverStaleResolvConf(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("needs root for mount namespaces")
+	}
+	dir := t.TempDir()
+	host := filepath.Join(dir, "host-resolv.conf")
+	if err := os.WriteFile(host, []byte("nameserver 10.0.0.2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	oldHost, oldResolved := hostResolvConfPath, resolvedResolvConfPath
+	hostResolvConfPath, resolvedResolvConfPath = host, filepath.Join(dir, "absent")
+	t.Cleanup(func() { hostResolvConfPath, resolvedResolvConfPath = oldHost, oldResolved })
+
+	stateDir := filepath.Join(dir, "state")
+	bin := filepath.Join(dir, "bin")
+	for _, d := range []string{stateDir, bin, filepath.Join(dir, "etc")} {
+		if err := os.Mkdir(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	scripts := map[string]string{
+		// nsenter --net=NETNS -- PROGRAM ARGS...
+		"nsenter":    "#!/bin/sh\nshift 2\nexec \"$@\"\n",
+		"tailscaled": "#!/bin/sh\ncat /etc/resolv.conf\n",
+	}
+	for name, script := range scripts {
+		// #nosec G306 -- test script
+		if err := os.WriteFile(filepath.Join(bin, name), []byte(script), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	d := &Daemon{config: DaemonConfig{
+		StateDir:      stateDir,
+		NetNSPath:     "/run/netns/x",
+		TailscaledBin: filepath.Join(bin, "tailscaled"),
+	}}
+	d.ctx = t.Context()
+	cmd := d.tailscaledCommand(nil)
+
+	// /etc as the plugin sees it after systemd-resolved replaced the file
+	// its resolv.conf is a bind mount of
+	setup := `set -e
+mount --bind "$0/etc" /etc
+touch /etc/resolv.conf
+echo "nameserver 127.0.0.53" >"$0/stub"
+mount --bind "$0/stub" /etc/resolv.conf
+rm "$0/stub"
+grep -q "//deleted /etc/resolv.conf " /proc/self/mountinfo
+exec "$@"`
+	args := append(
+		[]string{"--mount", "--propagation", "private", "--", "sh", "-c", setup, dir},
+		cmd.Args...)
+	run := exec.Command("unshare", args...) // #nosec G204 -- the command under test
+	run.Env = []string{"PATH=" + bin + ":/usr/sbin:/usr/bin:/sbin:/bin"}
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%v: %s", err, out)
+	}
+	if string(out) != "nameserver 10.0.0.2\n" {
+		t.Errorf("tailscaled saw %q, want its own resolv.conf", out)
+	}
+}

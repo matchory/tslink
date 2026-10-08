@@ -89,6 +89,10 @@ cleanup() {
 	docker network rm "${NETWORKS[@]}" >/dev/null 2>&1 || true
 	docker plugin disable -f "$PLUGIN" >/dev/null 2>&1 || true
 	docker plugin rm -f "$PLUGIN" >/dev/null 2>&1 || true
+	if [ -n "${DNS_IFACE:-}" ]; then
+		# shellcheck disable=SC2086 # one argument per domain
+		sudo resolvectl domain "$DNS_IFACE" ${DNS_DOMAINS:-""} || true
+	fi
 	sudo rm -rf "$WORK"
 	exit "$status"
 }
@@ -181,6 +185,14 @@ docker run -d --name e2e-dns --network host "$ALPINE" sh -c \
 	"apk add --no-cache dnsmasq >/dev/null && exec dnsmasq --keep-in-foreground --log-facility=- --log-queries \
 	--no-resolv --no-hosts --bind-interfaces --listen-address=$HOST_IP --address=/$PROBE_NAME/$PROBE_IP"
 retry 60 resolves e2e-dns "$HOST_IP" || fail "dnsmasq does not answer"
+# A change of the host's DNS: systemd-resolved then replaces the file the
+# plugin's resolv.conf is a bind mount of, and tailscaled's must still go over it
+if systemctl is-active --quiet systemd-resolved; then
+	DNS_IFACE=$(ip -4 route get 1.1.1.1 | awk '{for (i = 1; i < NF; i++) if ($i == "dev") print $(i + 1)}')
+	DNS_DOMAINS=$(resolvectl domain "$DNS_IFACE" | sed 's/^[^:]*:[[:space:]]*//')
+	# shellcheck disable=SC2086 # one argument per domain
+	sudo resolvectl domain "$DNS_IFACE" $DNS_DOMAINS e2e.invalid
+fi
 docker run -d --name e2e-resolver --network e2e-alice --dns 100.100.100.100 --dns "$HOST_IP" "$ALPINE" sleep 3600
 wait_ip e2e-resolver
 # Asking 100.100.100.100 itself rules out Docker trying the second server

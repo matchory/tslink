@@ -124,6 +124,12 @@ three- and five-node swarms; see [docs/testing.md](docs/testing.md).
 
 ### Fixed
 
+- On hosts with systemd-resolved, tailscaled fell back to the plugin's
+  `resolv.conf` after any change of the host's DNS, so Tailscale's resolver
+  stopped forwarding to the container's other DNS servers: systemd-resolved
+  replaces the file the plugin's `resolv.conf` is a bind mount of, and the
+  kernel refuses to mount over a replaced file. tailscaled's mount namespace
+  now drops that mount first.
 - tailscaled froze when it wrote a line longer than 64 KiB: the plugin
   stopped reading its output, and tailscaled blocked on the full pipe.
 - After a reboot the plugin failed to start, because it mounted

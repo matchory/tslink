@@ -102,6 +102,7 @@ cleanup() {
 		sudo kill "$canary_pid" 2>/dev/null || true
 		while sudo kill -0 "$canary_pid" 2>/dev/null; do sleep 1; done
 	fi
+	sudo rm -f "$DATA/e2e-canary" "$DATA/status/e2ecanary000.json" || true
 	# The isolation outlives the plugin, so a restart never opens a window
 	for ipt in iptables ip6tables; do
 		for c in FORWARD:TSLINK-ISOLATE-FWD INPUT:TSLINK-ISOLATE-IN FORWARD:TSLINK-VETH-FWD; do
@@ -469,23 +470,27 @@ log "Auth keys stay out of logs, state, processes, diagnostics and containers"
 # creds_in_*: whether an auth key the test created appears where tslink must
 # keep it out. Network options and plugin settings, which Docker API holders
 # can read anyway, are not searched, nor is headscale, which issued the keys.
-# Each scan reads its producer to EOF instead of grep -q: under
-# set -o pipefail, a grep that quits at the first match sends its producer
-# SIGPIPE, which can turn a found match into a failing pipeline.
+# Each scan reads its producer to EOF instead of grep -q, and runs in a
+# subshell without pipefail: under it, a producer that fails, from grep -q's
+# SIGPIPE, a process that exited or a find that could not read one file,
+# turns a found match into a failing pipeline.
 creds_in_data() { sudo grep -rqsF -f "$WORK/keys" "$DATA"; } # logs, status, state
-creds_in_processes() {
+creds_in_processes() (
+	set +o pipefail
 	local pid
 	for pid in $(pgrep -x tailscaled) $(pgrep -x tslink); do
 		sudo cat "/proc/$pid/cmdline" "/proc/$pid/environ" 2>/dev/null | tr '\0' '\n' |
 			grep -F -f "$WORK/keys" >/dev/null && return 0
 	done
 	return 1
-}
-creds_in_diag() {
+)
+creds_in_diag() (
+	set +o pipefail
 	docker run --rm -v "$DATA:/data:ro" --entrypoint /tslink tslink:rootfs diag 2>&1 |
 		grep -F -f "$WORK/keys" >/dev/null
-}
-creds_in_containers() {
+)
+creds_in_containers() (
+	set +o pipefail
 	local c
 	for c in $(docker ps --format '{{.Names}}' --filter name=^e2e- | grep -vx e2e-headscale); do
 		docker exec "$c" sh -c 'tr "\0" "\n" </proc/1/environ
@@ -493,7 +498,7 @@ creds_in_containers() {
 				-exec cat {} + 2>/dev/null' | grep -F -f "$WORK/keys" >/dev/null && return 0
 	done
 	return 1
-}
+)
 # canary_key is the first key in $WORK/keys, planted in all four places so
 # each probe above has its own thing to find; canary_pid is a process named
 # and run as tailscaled would be, with the key in its environment, not a real

@@ -54,7 +54,7 @@ peer.
 ### G4: A stack's nodes get only what its own network grants
 
 Attackers: the author of a stack file that passed review.
-Assumes: E2, E3, E4, E8.
+Assumes: E1, E2, E3, E4, E8.
 
 A network that belongs to a stack gives tailnet nodes only to that stack's
 tasks. With the cluster credential, a stack's nodes get only the tag

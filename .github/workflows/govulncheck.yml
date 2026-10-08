@@ -1,0 +1,55 @@
+name: Vulnerabilities
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  # New advisories appear without a change to the code
+  schedule:
+    - cron: "15 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  govulncheck:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Upload the findings to code scanning
+      security-events: write
+      # only required in private repositories
+      actions: read
+
+    steps:
+      - name: Checkout
+        id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: "false"
+
+      - name: Setup Go
+        id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v6
+        with:
+          go-version-file: go.mod
+
+      # With -format sarif, govulncheck reports findings without failing;
+      # code scanning tracks them. The version is pinned in go.mod's tool block.
+      - name: Run govulncheck
+        id: govulncheck
+        run: go tool govulncheck -format sarif ./... > govulncheck.sarif
+
+      # Pull requests from forks get no security-events permission
+      - name: Upload findings
+        id: upload-sarif
+        if: >-
+          github.event_name != 'pull_request' || !github.event.pull_request.head.repo.fork
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          sarif_file: govulncheck.sarif
+          category: govulncheck

@@ -40,6 +40,7 @@ lists where each container's `tailscaled.log` is.
 
 ```bash
 go test -race -cover ./...
+go tool govulncheck ./...
 ```
 
 The network namespace tests in `pkg/netutil` need `CAP_NET_ADMIN` and skip

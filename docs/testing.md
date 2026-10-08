@@ -11,6 +11,9 @@ tailscaled supervisor, state directories and garbage collection, with
 tailscaled, Docker and the network replaced by fakes. They run on any
 platform and in CI on every pull request.
 
+`pkg/preflight` checks the environment properties of SECURITY.md (`tslink
+diag --preflight`), tested against a fake Docker API.
+
 ## Network namespace tests
 
 The tests in `pkg/netutil` create network namespaces, veth pairs, routes and

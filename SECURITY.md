@@ -45,10 +45,10 @@ control server.
 Assumes: E3.
 Manual: a search for canary credentials on the test hosts before each release.
 
-Auth keys and OAuth client secrets do not appear in the plugin's log,
-tailscaled's command line, environment or log, status files or `tslink diag`
-output. Docker API holders can read them in network options and plugin
-settings; see "Scope".
+Auth keys and OAuth client secrets do not appear in the plugin's log, the
+command lines of tailscale and tailscaled, tailscaled's environment or log,
+status files or `tslink diag` output. Docker API holders can read them in
+network options and plugin settings; see "Scope".
 
 ### Environment properties
 
@@ -63,6 +63,9 @@ settings; see "Scope".
 | E7 | The shared certificate directory is owned by root, mode 0700 or stricter, and reachable only by the cluster's hosts | operator | checks owner and mode, with `--shared-dir` |
 | E8 | The cluster credential owns only stack-prefixed tags, and stack names follow tslink's rules | operator, tailnet policy | does not check |
 | E9 | Tailnet Lock is on where peer identity must not depend on the control server | operator | reports whether it is on |
+
+Run `tslink diag --preflight` on a host to check the properties it can see;
+`README.md` shows how.
 
 ## Scope
 

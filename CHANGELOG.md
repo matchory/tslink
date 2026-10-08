@@ -7,9 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Changes since upstream [aaomidi/tslink](https://github.com/aaomidi/tslink)
-v0.1.0, of which this project is a fork. The Swarm features were tested on
-three- and five-node swarms; see [docs/testing.md](docs/testing.md).
+## [0.2.0] - 2026-10-09
+
+The first release of this fork. Changes since upstream
+[aaomidi/tslink](https://github.com/aaomidi/tslink) v0.1.0. The Swarm
+features were tested on three- and five-node swarms; see
+[docs/testing.md](docs/testing.md).
 
 ### Added
 
@@ -319,4 +322,5 @@ three- and five-node swarms; see [docs/testing.md](docs/testing.md).
   index its `tailscale0` has in the container: often the host's primary
   interface. tailscaled does not start if the bus cannot be hidden.
 
-[Unreleased]: https://github.com/matchory/tslink/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/matchory/tslink/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/matchory/tslink/compare/v0.1.0...v0.2.0

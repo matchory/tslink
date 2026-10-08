@@ -323,7 +323,7 @@ raw_send() {
 		mac=$(awk -v ip="$gw" "\$1 == ip {print \$4}" /proc/net/arp)
 		python3 /rawsend.py "$ifc" "$src" "$mac" "$2" 9999 "$3"' sh "$1" "${RAW_DST:-$sink_ip}" "$2"
 }
-sink_got() { docker logs e2e-sink 2>&1 | grep -qF "$1"; }
+sink_got() { docker logs e2e-sink 2>&1 | grep -F -- "$1" >/dev/null; }
 # raw_arrives IFACE PREFIX: sends until the sink has a payload unique to this
 # call (PREFIX plus a per-call suffix, fixed across its own retries), for 30
 # seconds; a frame sent by an earlier call cannot satisfy a later one
@@ -439,31 +439,66 @@ if sudo grep -rqs tslink-e2e-taildrop "$DATA"; then
 fi
 
 log "Auth keys stay out of logs, state, processes, diagnostics and containers"
-# creds_found: whether an auth key the test created appears where tslink must
-# keep it out: its data directory (logs, status, state), the command lines and
-# environments of the plugin and its tailscaleds, tslink diag, and the
-# containers. Network options and plugin settings, which Docker API holders
+# creds_in_*: whether an auth key the test created appears where tslink must
+# keep it out. Network options and plugin settings, which Docker API holders
 # can read anyway, are not searched, nor is headscale, which issued the keys.
-creds_found() {
-	local pid c
-	sudo grep -rqsF -f "$WORK/keys" "$DATA" && return 0
+# Each scan reads its producer to EOF instead of grep -q: under
+# set -o pipefail, a grep that quits at the first match sends its producer
+# SIGPIPE, which can turn a found match into a failing pipeline.
+creds_in_data() { sudo grep -rqsF -f "$WORK/keys" "$DATA"; } # logs, status, state
+creds_in_processes() {
+	local pid
 	for pid in $(pgrep -x tailscaled) $(pgrep -x tslink); do
 		sudo cat "/proc/$pid/cmdline" "/proc/$pid/environ" 2>/dev/null | tr '\0' '\n' |
-			grep -qF -f "$WORK/keys" && return 0
-	done
-	docker run --rm -v "$DATA:/data:ro" --entrypoint /tslink tslink:rootfs diag 2>&1 |
-		grep -qF -f "$WORK/keys" && return 0
-	for c in $(docker ps --format '{{.Names}}' --filter name=^e2e- | grep -vx e2e-headscale); do
-		docker exec "$c" sh -c 'tr "\0" "\n" </proc/1/environ
-			find /etc /root /tmp /var /home /opt /srv -xdev -type f -size -2048k \
-				-exec cat {} + 2>/dev/null' | grep -qF -f "$WORK/keys" && return 0
+			grep -F -f "$WORK/keys" >/dev/null && return 0
 	done
 	return 1
 }
-plant_key() { head -n 1 "$WORK/keys" | sudo tee "$DATA/e2e-canary" >/dev/null; }
-unplant_key() { sudo rm -f "$DATA/e2e-canary"; }
-probe_group "credentials" plant_key unplant_key 0
-probe G5 "an auth key appears outside network options and plugin settings" creds_found
+creds_in_diag() {
+	docker run --rm -v "$DATA:/data:ro" --entrypoint /tslink tslink:rootfs diag 2>&1 |
+		grep -F -f "$WORK/keys" >/dev/null
+}
+creds_in_containers() {
+	local c
+	for c in $(docker ps --format '{{.Names}}' --filter name=^e2e- | grep -vx e2e-headscale); do
+		docker exec "$c" sh -c 'tr "\0" "\n" </proc/1/environ
+			find /etc /root /tmp /var /home /opt /srv -xdev -type f -size -2048k \
+				-exec cat {} + 2>/dev/null' | grep -F -f "$WORK/keys" >/dev/null && return 0
+	done
+	return 1
+}
+# canary_key is the first key in $WORK/keys, planted in all four places so
+# each probe above has its own thing to find; canary_pid is a process named
+# and run as tailscaled would be, with the key in its environment, not a real
+# tailscaled.
+canary_key=""
+canary_pid=""
+plant_canaries() {
+	canary_key=$(head -n 1 "$WORK/keys")
+	echo "$canary_key" | sudo tee "$DATA/e2e-canary" >/dev/null
+	sudo mkdir -p "$DATA/status"
+	printf '{"endpoint":"e2ecanary000","hostname":"e2e-canary","state":"failed",' \
+		>"$WORK/canary.json"
+	printf '"attempts":1,"updated":"2026-01-01T00:00:00Z","error":"%s"}' "$canary_key" \
+		>>"$WORK/canary.json"
+	sudo cp "$WORK/canary.json" "$DATA/status/e2ecanary000.json"
+	mkdir -p "$WORK/canary"
+	cp "$(command -v sleep)" "$WORK/canary/tailscaled"
+	sudo env TSLINK_E2E_CANARY="$canary_key" "$WORK/canary/tailscaled" 600 &
+	canary_pid=$!
+	printf '%s' "$canary_key" | docker exec -i e2e-client sh -c 'cat >/tmp/e2e-canary'
+}
+unplant_canaries() {
+	sudo rm -f "$DATA/e2e-canary" "$DATA/status/e2ecanary000.json"
+	docker exec e2e-client rm -f /tmp/e2e-canary
+	sudo kill "$canary_pid" 2>/dev/null || true
+	while sudo kill -0 "$canary_pid" 2>/dev/null; do sleep 1; done
+}
+probe_group "credentials" plant_canaries unplant_canaries 0
+probe G5 "an auth key appears in the plugin's data directory" creds_in_data
+probe G5 "an auth key appears in a process's command line or environment" creds_in_processes
+probe G5 "an auth key appears in tslink diag output" creds_in_diag
+probe G5 "an auth key appears in a container" creds_in_containers
 run_probes || fail "credentials"
 
 log "All end-to-end tests passed"

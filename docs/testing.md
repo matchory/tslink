@@ -53,7 +53,8 @@ and that an ephemeral node is removed with its container. Its host isolation
 checks are probes on `test/security/lib.sh`, with control runs. It also
 searches the plugin's data directory, the plugin's and tailscaleds' command
 lines and environments, `tslink diag` and the containers for every auth key it
-created, with a planted key as its control. CI runs it on every pull request.
+created, with a planted key of its own in each place as that place's control.
+CI runs it on every pull request.
 Tailscale Services are not covered: headscale does not support them.
 
 ## Cluster tests

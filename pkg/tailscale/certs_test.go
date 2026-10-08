@@ -282,3 +282,24 @@ func TestServiceDomain(t *testing.T) {
 		t.Errorf("without MagicDNS: err = %v, want an error naming MagicDNS", err)
 	}
 }
+
+// The domain names files in the certificate directory, which the plugin
+// writes and deletes as root. A Service name from a label or a MagicDNS
+// suffix from control that is not a DNS name must not name a path elsewhere.
+func TestServiceDomainRejectsNonDNSNames(t *testing.T) {
+	for _, c := range []struct{ service, suffix string }{
+		{"svc:x/../../../run/x", "example.ts.net"},
+		{"svc:..", "example.ts.net"},
+		{"svc:api", "x/../../../run"},
+		{"svc:api", "example.ts.net/.."},
+		{"svc:api", ".."},
+		{"svc:a b", "example.ts.net"},
+		{"svc:", "example.ts.net"},
+	} {
+		cli := &fakeCLI{out: `{"MagicDNSSuffix":"` + c.suffix + `"}`}
+		d := newTestDaemon(t, cli, c.service)
+		if got, err := d.serviceDomain(); err == nil {
+			t.Errorf("serviceDomain() for %q in %q = %q, want an error", c.service, c.suffix, got)
+		}
+	}
+}

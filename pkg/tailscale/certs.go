@@ -14,6 +14,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -405,5 +406,16 @@ func (d *Daemon) serviceDomain() (string, error) {
 	if status.MagicDNSSuffix == "" {
 		return "", errors.New("tailscale status has no MagicDNS suffix: HTTPS needs MagicDNS")
 	}
-	return strings.TrimPrefix(d.config.Service, "svc:") + "." + status.MagicDNSSuffix, nil
+	domain := strings.TrimPrefix(d.config.Service, "svc:") + "." + status.MagicDNSSuffix
+	// The domain names files the plugin writes and deletes as root: the
+	// Service name comes from a label, the suffix from control
+	if !dnsName.MatchString(domain) {
+		return "", fmt.Errorf("certificate domain %q is not a DNS name", domain)
+	}
+	return domain, nil
 }
+
+// dnsName matches DNS names of at least two labels.
+var dnsName = regexp.MustCompile(
+	`^(?i)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$`,
+)

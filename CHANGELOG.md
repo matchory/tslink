@@ -199,5 +199,10 @@ three- and five-node swarms; see [docs/testing.md](docs/testing.md).
   all, never through the host's Tailscale.
 - The auth key is passed to `tailscale up` on stdin instead of its command
   line, where it was visible in the host's process list.
+- The certificate domain, built from the `tslink.service` label and the
+  control server's MagicDNS suffix, is checked to be a DNS name before it
+  names files in the certificate directory. A label or suffix with `..` or a
+  slash could otherwise make the plugin create and delete lease files outside
+  that directory, as root.
 
 [Unreleased]: https://github.com/matchory/tslink/compare/v0.1.0...HEAD

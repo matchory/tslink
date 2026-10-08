@@ -53,8 +53,13 @@ that no container uses.
 
 ## headscale
 
-tslink works with [headscale](https://github.com/juanfont/headscale) as the control server, but headscale does not
-support Tailscale Services.
+tslink is built and tested for the control server of Tailscale. It also works with
+[headscale](https://github.com/juanfont/headscale) through `tslink.loginserver`, and the end-to-end test runs against
+headscale. Support for headscale is best-effort:
+
+- Features that headscale does not have, such as Tailscale Services, are not available.
+- A change does not make tslink worse with Tailscale to make it better with headscale.
+- Issues that occur only with headscale are fixed when possible.
 
 ## Workload identity federation
 

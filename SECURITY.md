@@ -38,6 +38,24 @@ sockets or by raw frames, through tslink's veth or through Docker's gateway.
 This holds with the plugin setting `TSLINK_ISOLATE_HOST_TAILNET` at its
 default, `true`.
 
+### G2: Containers do not reach each other through tslink's veths
+
+Attackers: a process in any container on the host, on a tslink network or
+any other, as root inside it, with Docker's default capabilities; a host on
+the LAN that routes tslink's veth range through the Docker host.
+Assumes: E1, E2, E3, and of E5 the mangle table and the plugin's privileges:
+this isolation is on whatever `TSLINK_ISOLATE_HOST_TAILNET` says.
+
+Each tslink container's tailscaled has a veth pair in `10.200.0.0/16`, and
+the host forwards between them. Nobody reaches a tslink container's veth
+address through that, by sockets or by raw frames, past Docker's network
+isolation and the tailnet's ACLs, whatever interface the traffic comes from,
+a bridge with its own name included. The host forwards to tslink's veths only
+replies on connections their container opened, and WireGuard (UDP 41641)
+from other tslink veths, so colocated nodes keep their direct path. That UDP
+port is open to tslink's other containers: WireGuard drops what is not from a
+peer.
+
 ### G5: Credentials do not leak
 
 Attackers: a process in a container on a tslink network; a tailnet peer; the

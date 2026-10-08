@@ -45,7 +45,7 @@ func newTestNetNS(t *testing.T) string {
 		}
 	})
 
-	dummy := &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: "dummy0"}}
+	dummy := &netlink.Dummy{Name: "dummy0"}
 	setup := func() error {
 		if err := netlink.LinkAdd(dummy); err != nil {
 			return err

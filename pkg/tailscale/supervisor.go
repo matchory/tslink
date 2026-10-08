@@ -24,14 +24,13 @@ const (
 	StatusCrashLoop SupervisorStatus = "crash_loop"
 )
 
-// Backoff configuration.
-const (
+// Backoff configuration; variables, so tests can shorten them.
+var (
 	initialBackoff = 100 * time.Millisecond
 	maxBackoff     = 30 * time.Second
 
-	// Crash loop detection: 5 crashes in 30 seconds.
-	crashLoopWindow    = 30 * time.Second
-	crashLoopThreshold = 5
+	// Crash loop detection: crashLoopThreshold crashes in crashLoopWindow.
+	crashLoopWindow = 30 * time.Second
 
 	// Pause after a crash loop before trying again; the container keeps
 	// running, so giving up would leave it without its identity for good.
@@ -46,6 +45,8 @@ const (
 	// Startup jitter to prevent thundering herd on host reboot (0-500ms).
 	maxStartupJitter = 500 * time.Millisecond
 )
+
+const crashLoopThreshold = 5
 
 // needsLoginChecks is how many health checks in a row must find the node
 // logged out, as when its device was deleted or expired, before it logs in
@@ -110,6 +111,9 @@ type DaemonSupervisor struct {
 	// Channel to signal initial startup complete (protected by Once)
 	startupDone     chan error
 	startupDoneOnce sync.Once
+
+	// start starts a daemon; tests replace it.
+	start func(*Daemon) error
 }
 
 // NewDaemonSupervisor creates a new supervisor for managing a tailscaled daemon.
@@ -123,6 +127,7 @@ func NewDaemonSupervisor(cfg DaemonConfig) *DaemonSupervisor {
 		status:      StatusStopped,
 		crashTimes:  make([]time.Time, 0),
 		startupDone: make(chan error, 1),
+		start:       (*Daemon).Start,
 	}
 }
 
@@ -400,7 +405,7 @@ func (s *DaemonSupervisor) startDaemon() error {
 		return fmt.Errorf("failed to create daemon: %w", err)
 	}
 
-	if err := daemon.Start(); err != nil {
+	if err := s.start(daemon); err != nil {
 		return fmt.Errorf("failed to start daemon: %w", err)
 	}
 

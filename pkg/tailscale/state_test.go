@@ -1,8 +1,12 @@
 package tailscale
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 )
 
@@ -60,5 +64,60 @@ func TestBundledBinaries(t *testing.T) {
 	if err != nil || ts != filepath.Join(dir, "tailscale") ||
 		tsd != filepath.Join(dir, "tailscaled") {
 		t.Errorf("BundledBinaries = %q, %q, %v", ts, tsd, err)
+	}
+}
+
+func TestCheckAuthKeyMatch(t *testing.T) {
+	dir := t.TempDir()
+	// State from before the hash was stored keeps its identity
+	if !CheckAuthKeyMatch(dir, "tskey-auth-a") {
+		t.Error("no stored hash must count as a match")
+	}
+	if err := SaveAuthKeyHash(dir, "tskey-auth-a"); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := os.ReadFile(filepath.Join(dir, authKeyHashFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(stored), "tskey-auth-a") {
+		t.Error("the key itself was stored")
+	}
+	if !CheckAuthKeyMatch(dir, "tskey-auth-a") {
+		t.Error("the same key must match")
+	}
+	if CheckAuthKeyMatch(dir, "tskey-auth-b") {
+		t.Error("a changed key must not match")
+	}
+}
+
+func TestWipeState(t *testing.T) {
+	dir := t.TempDir()
+	wiped := []string{"tailscaled.state", "tailscaled.sock", "debug.log", authKeyHashFile}
+	kept := []string{"tailscaled.log", ephemeralMarker}
+	for _, f := range slices.Concat(wiped, kept) {
+		if err := os.WriteFile(filepath.Join(dir, f), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := WipeState(dir); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range wiped {
+		if _, err := os.Stat(filepath.Join(dir, f)); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("%s not wiped: %v", f, err)
+		}
+	}
+	for _, f := range kept {
+		if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
+			t.Errorf("%s removed: %v", f, err)
+		}
+	}
+	if StateExists(dir) {
+		t.Error("state still exists after the wipe")
+	}
+	// Wiping again, with nothing left to remove, is no error
+	if err := WipeState(dir); err != nil {
+		t.Errorf("second wipe: %v", err)
 	}
 }

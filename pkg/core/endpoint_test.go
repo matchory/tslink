@@ -2,8 +2,12 @@ package core
 
 import (
 	"net/netip"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/matchory/tslink/pkg/tailscale"
 )
 
 func TestValidHostname(t *testing.T) {
@@ -123,5 +127,40 @@ func TestPickVethSubnetFull(t *testing.T) {
 	used[netip.PrefixFrom(free, 30).Masked()] = true
 	if _, _, err := pickVethSubnet("ffffffffffff", used); err == nil {
 		t.Error("no error with every subnet in use")
+	}
+}
+
+func TestWipeStateOnKeyChange(t *testing.T) {
+	// newState returns a state directory registered with key
+	newState := func(t *testing.T, key string) string {
+		t.Helper()
+		dir := t.TempDir()
+		state := filepath.Join(dir, "tailscaled.state")
+		if err := os.WriteFile(state, []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := tailscale.SaveAuthKeyHash(dir, key); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	tests := []struct {
+		name    string
+		network *Network
+		wiped   bool
+	}{
+		{"same key", &Network{AuthKey: "tskey-auth-a"}, false},
+		{"changed key", &Network{AuthKey: "tskey-auth-b"}, true},
+		// The cluster credential is read at each login, not hashed
+		{"cluster credential", &Network{}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := newState(t, "tskey-auth-a")
+			wipeStateOnKeyChange(dir, tt.network)
+			if got := !tailscale.StateExists(dir); got != tt.wiped {
+				t.Errorf("wiped = %v, want %v", got, tt.wiped)
+			}
+		})
 	}
 }

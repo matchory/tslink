@@ -6,7 +6,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"net/netip"
+	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -239,6 +241,7 @@ func (f *fakeDocker) networkInspects() int {
 type tsRun struct {
 	endpointID string
 	info       *core.ContainerInfo
+	traceback  string // Header line of the run goroutine's traceback
 }
 
 // testDriver is a driver on a fake Docker whose endpoint operations need
@@ -273,7 +276,9 @@ func newTestDriver(t *testing.T, fake *fakeDocker) *testDriver {
 		return nil
 	}
 	td.runTailscale = func(e *core.Endpoint, info *core.ContainerInfo) {
-		td.runs <- tsRun{e.ID, info}
+		buf := make([]byte, 512)
+		header, _, _ := strings.Cut(string(buf[:runtime.Stack(buf, false)]), "\n")
+		td.runs <- tsRun{e.ID, info, header}
 		<-release
 	}
 

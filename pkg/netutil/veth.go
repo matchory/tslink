@@ -40,10 +40,8 @@ func CreateVethPair(baseName string, mtu int) (string, string, error) {
 	}
 
 	veth := &netlink.Veth{
-		LinkAttrs: netlink.LinkAttrs{
-			Name: hostName,
-			MTU:  mtu,
-		},
+		Name:     hostName,
+		MTU:      mtu,
 		PeerName: containerName,
 	}
 

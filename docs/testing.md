@@ -17,6 +17,13 @@ The tests in `pkg/netutil` create network namespaces, veth pairs, routes and
 rules, so they need Linux and `CAP_NET_ADMIN`; without it they skip. CI runs
 them a second time as root.
 
+## In CI
+
+Test failures appear as annotations on the pull request, and each run's
+summary lists coverage per package, merged across both runs; the profile and
+an HTML report are kept as the `coverage` artifact. Coverage has no
+threshold. Lint and govulncheck findings go to GitHub code scanning.
+
 ## End-to-end test
 
 `test/integration/run.sh` builds the plugin, installs it and runs containers

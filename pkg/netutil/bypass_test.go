@@ -15,7 +15,7 @@ func TestBypassRoute(t *testing.T) {
 	// the tslink veth instead, here dummy1.
 	nsPath := newTestNetNS(t)
 	if err := inNetNS(nsPath, func() error {
-		veth := &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: "dummy1"}}
+		veth := &netlink.Dummy{Name: "dummy1"}
 		if err := netlink.LinkAdd(veth); err != nil {
 			return err
 		}

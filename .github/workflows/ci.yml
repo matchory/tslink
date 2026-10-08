@@ -15,6 +15,12 @@ jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Upload the findings to code scanning
+      security-events: write
+      # only required in private repositories
+      actions: read
 
     steps:
       - name: Checkout
@@ -36,6 +42,19 @@ jobs:
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
         with:
           version: v2.14.0
+          # The text output keeps the annotations; SARIF goes to code scanning
+          args: --output.text.path=stdout --output.sarif.path=golangci-lint.sarif
+
+      # Pull requests from forks get no security-events permission
+      - name: Upload lint findings
+        id: upload-sarif
+        if: >-
+          !cancelled() && hashFiles('golangci-lint.sarif') != '' &&
+          (github.event_name != 'pull_request' || !github.event.pull_request.head.repo.fork)
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          sarif_file: golangci-lint.sarif
+          category: golangci-lint
 
   test:
     name: Go Tests
@@ -54,16 +73,66 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # Coverage goes to GOCOVERDIR-style directories, which go tool covdata
+      # merges across both runs; JUnit reports become annotations
       - name: Test
         id: go-test
-        run: go test -race -cover ./...
+        run: |
+          mkdir -p "${RUNNER_TEMP}/cover/unit" "${RUNNER_TEMP}/cover/netns" "${RUNNER_TEMP}/junit"
+          go tool gotestsum --format github-actions --junitfile "${RUNNER_TEMP}/junit/unit.xml" -- \
+            -race -cover ./... -args -test.gocoverdir="${RUNNER_TEMP}/cover/unit"
 
       # The network and mount namespace tests need root and skip without it.
       # Build as the runner user, run as root.
       - name: Test network namespaces
         id: go-test-netns
+        if: ${{ !cancelled() }}
         run: |
-          go test -c -o "${RUNNER_TEMP}/netutil.test" ./pkg/netutil
-          sudo "${RUNNER_TEMP}/netutil.test" -test.v -test.count=1
-          go test -c -o "${RUNNER_TEMP}/tailscale.test" ./pkg/tailscale
-          sudo "${RUNNER_TEMP}/tailscale.test" -test.v -test.count=1 -test.run 'OverStale|SystemBus|Taildrop'
+          go test -c -cover -covermode=atomic -o "${RUNNER_TEMP}/netutil.test" ./pkg/netutil
+          go tool gotestsum --format github-actions --junitfile "${RUNNER_TEMP}/junit/netns.xml" \
+            --raw-command -- go tool test2json -t -p github.com/matchory/tslink/pkg/netutil \
+            sudo "${RUNNER_TEMP}/netutil.test" -test.v=test2json -test.count=1 \
+            -test.gocoverdir="${RUNNER_TEMP}/cover/netns"
+          go test -c -cover -covermode=atomic -o "${RUNNER_TEMP}/tailscale.test" ./pkg/tailscale
+          go tool gotestsum --format github-actions --junitfile "${RUNNER_TEMP}/junit/mountns.xml" \
+            --raw-command -- go tool test2json -t -p github.com/matchory/tslink/pkg/tailscale \
+            sudo "${RUNNER_TEMP}/tailscale.test" -test.v=test2json -test.count=1 \
+            -test.run 'OverStale|SystemBus|Taildrop' -test.gocoverdir="${RUNNER_TEMP}/cover/netns"
+
+      - name: Report test results
+        id: junit
+        if: ${{ !cancelled() }}
+        uses: mikepenz/action-junit-report@b7b80d7ac5b1da46d6aaff9fb57ad50d8453bcb3 # v6.6.0
+        with:
+          report_paths: ${{ runner.temp }}/junit/*.xml
+          # Annotations and the job summary need no checks permission
+          annotate_only: true
+          check_name: Go Tests
+
+      # Informational only: no threshold
+      - name: Coverage
+        id: coverage
+        if: ${{ !cancelled() }}
+        run: |
+          dirs="${RUNNER_TEMP}/cover/unit,${RUNNER_TEMP}/cover/netns"
+          go tool covdata textfmt -i="$dirs" -o coverage.out
+          go tool cover -html=coverage.out -o coverage.html
+          total=$(go tool cover -func=coverage.out | awk 'END { print $NF }')
+          {
+            echo "### Coverage: ${total}"
+            echo
+            echo "| Package | Statements |"
+            echo "| --- | ---: |"
+            go tool covdata percent -i="$dirs" |
+              awk '{ sub("github.com/matchory/tslink/", "", $1); print "| `" $1 "` | " $3 " |" }'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage
+        id: upload-coverage
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage
+          path: |
+            coverage.out
+            coverage.html

@@ -262,18 +262,31 @@ func writeScript(t *testing.T, dir, name, body string) string {
 // Guards: G5
 func TestRunLogout(t *testing.T) {
 	// Stand-in: tailscaled records its arguments and environment and runs
-	// until killed; the test serves its LocalAPI
+	// until killed; the test serves its LocalAPI, which answers once the
+	// stand-in has recorded them, as tailscaled's once it has started
 	dir := shortTempDir(t)
 	log := filepath.Join(dir, "args")
 	tailscaled := writeScript(t, dir, "tailscaled", `
 echo "$@" >"`+log+`.daemon"
 env >"`+log+`.env"
+touch "`+log+`.ready"
 exec sleep 60
 `)
 	t.Setenv("TS_AUTHKEY", "tskey-auth-secret")
 	socket := filepath.Join(dir, "gc.sock")
 	api := serveFakeLocalAPI(t, socket)
-	api.loggedIn(ipn.Prefs{})
+	started := make(chan struct{})
+	go func() {
+		defer close(started)
+		for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); {
+			if _, err := os.Stat(log + ".ready"); err == nil {
+				api.loggedIn(ipn.Prefs{})
+				return
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}()
+	t.Cleanup(func() { <-started })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

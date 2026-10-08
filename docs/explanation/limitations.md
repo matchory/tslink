@@ -85,5 +85,5 @@ The trust boundary stays the same: a person who can deploy into a stack, or who 
 stack, acts as that stack. The costs are a new component, a public URL, and a dependency on the issuer when tasks
 start. The tag rules and the stack check stay the same. Only the source of the credential changes.
 
-Before this is built, it must be proved from end to end: a minimal issuer, one federated credential, and one
+Before this is built, it must be proved end-to-end: a minimal issuer, one federated credential, and one
 `tailscale up --id-token` from a task.

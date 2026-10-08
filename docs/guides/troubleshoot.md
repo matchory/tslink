@@ -41,7 +41,7 @@ Find the symptom below, then do the checks in the sequence of the table. Before 
 | --- | --- | --- |
 | The data directory does not exist | `ls -d /var/lib/docker-plugins/tailscale` | Create it: `sudo install -d -m 0755 /var/lib/docker-plugins/tailscale` |
 
-## docker network create fails
+## `docker network create` fails
 
 | Cause | Check | Fix |
 | --- | --- | --- |
@@ -58,7 +58,7 @@ Find the symptom below, then do the checks in the sequence of the table. Before 
 | The credential is not valid, or it expired | `NeedsLogin` in `tailscaled.log`, or `retrying` in the status file | Create a new credential, and recreate the network or replace the cluster credential. |
 | A tag is not permitted for the stack | `failed` in the status file, with `outside stack` in the error | Use `tag:<stack>`. See [Tag rules](../reference/credentials.md#tag-rules). |
 | The container is not in the stack of the network | `failed` in the status file, with `does not match network stack` in the error | Deploy the container in the same stack as the network. |
-| Another container on the host uses the host name | `tslink.hostname` of the containers on the host | Wait until the other container leaves, or give each container its own host name. |
+| Another container on the host uses the hostname | `tslink.hostname` of the containers on the host | Wait until the other container leaves, or give each container its own hostname. |
 
 ## The node is offline in the admin console
 
@@ -89,9 +89,9 @@ Find the symptom below, then do the checks in the sequence of the table. Before 
 | --- | --- | --- |
 | An earlier node with the same name is still in the tailnet | The admin console shows an offline node with the name | tslink logs out ephemeral nodes that no container uses. For other nodes, remove the old node in the admin console. |
 
-## Get a new identity for a host name
+## Get a new identity for a hostname
 
-A container keeps the identity of the earlier container with the same host name. To get a new identity, stop the
+A container keeps the identity of the earlier container with the same hostname. To get a new identity, stop the
 container and delete the state directory:
 
 ```bash

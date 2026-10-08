@@ -35,7 +35,7 @@ If no source is set, `docker network create` fails.
 ## Ephemeral nodes
 
 When the container of an ephemeral node stops, tslink logs the node out and deletes its state directory. The node is
-then removed from the tailnet, and its host name is free. When the container of another node stops, tslink keeps the
+then removed from the tailnet, and its hostname is free. When the container of another node stops, tslink keeps the
 state directory, and the node stays in the tailnet, offline.
 
 | Credential | The node is ephemeral if |

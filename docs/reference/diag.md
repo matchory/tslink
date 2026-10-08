@@ -7,7 +7,7 @@ properties that the guarantees in [SECURITY.md](../../SECURITY.md) rely on.
 
 | Command | Effect |
 | --- | --- |
-| `tslink diag` | Shows each endpoint with its state directory, tailnet address, host name, backend state and status file |
+| `tslink diag` | Shows each endpoint with its state directory, tailnet address, hostname, backend state and status file |
 | `tslink diag --preflight` | Checks the environment properties on the host where it runs |
 | `tslink diag --preflight --shared-dir <dir>` | Also checks the shared certificate directory, mounted at `<dir>` |
 | `tslink help` | Shows the usage |

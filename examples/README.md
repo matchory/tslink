@@ -1,31 +1,37 @@
 # Examples
 
+These Compose files need the plugin with the alias `tslink`. See
+[Install and upgrade tslink](../docs/guides/install-and-upgrade.md).
+
 ## docker-compose.yml
 
-Basic example: a single web server with HTTPS via Tailscale Serve.
+One web server, served over HTTPS with Tailscale Serve.
 
 ```bash
-export TS_AUTHKEY=tskey-auth-xxx
-docker-compose up -d
+export TS_AUTHKEY=tskey-auth-…
+docker compose up -d
 ```
 
-Access at `https://web-server.<your-tailnet>.ts.net`
+Open `https://web-server.<tailnet>.ts.net` from a device in the tailnet.
 
 ## docker-compose-services.yml
 
-Load-balanced backends using [Tailscale Services](https://tailscale.com/kb/1438/services).
+More than one backend for one [Tailscale Service](https://tailscale.com/kb/1438/services).
 
-**Setup:**
+1. In the [admin console](https://login.tailscale.com/admin/services), create a Service with the name `my-app`.
+2. Use an auth key with tags. A Service needs tagged backends.
+3. Start the backends:
 
-1. Create a service named `my-app` in the [Tailscale admin console](https://login.tailscale.com/admin/services)
-2. Use a tag-based auth key (required for services)
+   ```bash
+   export TS_AUTHKEY=tskey-auth-…
+   docker compose -f docker-compose-services.yml up -d
+   ```
 
-```bash
-export TS_AUTHKEY=tskey-auth-xxx
-docker-compose -f docker-compose-services.yml up -d
+4. To start three backends, scale the service:
 
-# Scale to multiple backends
-docker-compose -f docker-compose-services.yml up -d --scale backend=3
-```
+   ```bash
+   docker compose -f docker-compose-services.yml up -d --scale backend=3
+   ```
 
-Access via the TailVIP shown in the admin console.
+Open the Service at the address that the admin console shows. For more, see
+[Expose a service](../docs/guides/expose-a-service.md).

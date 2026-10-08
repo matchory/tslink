@@ -58,7 +58,7 @@ tslink writes `status/<endpoint>.json` while the endpoint exists.
 | Field | Type | Content |
 | --- | --- | --- |
 | `endpoint` | string | The endpoint ID |
-| `hostname` | string | The host name of the node |
+| `hostname` | string | The hostname of the node |
 | `stack` | string | The stack name. The field is absent outside a stack. |
 | `state` | string | `running`, `retrying` or `failed` |
 | `error` | string | The last error. The field is absent without an error. |

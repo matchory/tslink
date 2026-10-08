@@ -7,7 +7,7 @@
 #   export TS_AUTHKEY=tskey-auth-xxx
 #   docker-compose up -d
 #
-# Requires the plugin installed under the alias tslink (see README)
+# Needs the plugin with the alias tslink (see docs/guides/install-and-upgrade.md)
 
 networks:
   tailnet:

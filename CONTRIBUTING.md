@@ -6,11 +6,11 @@ Report security issues privately, as described in [SECURITY.md](SECURITY.md).
 
 ## Prerequisites
 
-- Go, at the version in [go.mod](go.mod) or newer
-- Docker on Linux, or in a Linux VM (OrbStack, Docker Desktop)
+- Go, at the version in [go.mod](go.mod) or newer.
+- Docker on Linux, or in a Linux VM such as OrbStack or Docker Desktop.
 - A Tailscale auth key from <https://login.tailscale.com/admin/settings/keys>,
-  to try the plugin against a tailnet
-- [golangci-lint](https://golangci-lint.run/), the version CI pins (see below)
+  to try the plugin against a tailnet.
+- [golangci-lint](https://golangci-lint.run/), at the version that CI pins (see below).
 
 ## Build and run locally
 
@@ -94,15 +94,17 @@ shellcheck scripts/*.sh
   `endpoint.mu`; and keep network syscalls, downloads and logins
   outside locks.
 
-[CLAUDE.md](CLAUDE.md) explains the main design decisions (state directories,
-asynchronous Tailscale start, routing, self-healing, draining), and `specs/`
-holds the design history.
+[Architecture](docs/explanation/architecture.md) explains the main design
+decisions for operators. [CLAUDE.md](CLAUDE.md) adds the details for
+developers, and `specs/` holds the design history.
 
 ## Pull requests
 
 - Keep changes focused, with tests for new behaviour and fixed bugs.
-- Update the readme and docs when behaviour changes, and add an entry under
-  `Unreleased` in [CHANGELOG.md](CHANGELOG.md).
+- When behavior changes, update the documentation. Follow the
+  [style guide](docs/STYLE.md). A new option or label goes in
+  `docs/reference/`, and a new task in `docs/guides/`.
+- Add an entry under `Unreleased` in [CHANGELOG.md](CHANGELOG.md).
 - Dependency updates come from Dependabot.
 
 By contributing, you agree that your contributions are licensed under the

@@ -60,7 +60,7 @@ keys and headscale's keys.
 ## tslink.loginserver
 
 The URL of a control server other than Tailscale's, for example [headscale](https://github.com/juanfont/headscale).
-tailscaled logs in to this server. The URL must use `http` or `https` and must have a host name.
+tailscaled logs in to this server. The URL must use `http` or `https` and must have a hostname.
 
 ## com.docker.network.driver.mtu
 

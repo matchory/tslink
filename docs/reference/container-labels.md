@@ -6,7 +6,7 @@ service (`deploy.labels`).
 
 | Label | Value | Default |
 | --- | --- | --- |
-| [`tslink.hostname`](#tslinkhostname) | A host name | From the container name |
+| [`tslink.hostname`](#tslinkhostname) | A hostname | From the container name |
 | [`tslink.tags`](#tslinktags) | Comma-separated ACL tags | None |
 | [`tslink.serve.<port>`](#tslinkserveport) | A serve rule | None |
 | [`tslink.service`](#tslinkservice) | `svc:<name>` | None |
@@ -15,13 +15,13 @@ service (`deploy.labels`).
 
 ## tslink.hostname
 
-The host name of the node in the tailnet, for example `my-api`.
+The hostname of the node in the tailnet, for example `my-api`.
 
 | Condition | Effect |
 | --- | --- |
 | The label is not set | tslink uses the container name. It replaces each character that is not a letter or a digit with `-`, and uses the first 63 characters. |
-| Two containers on one host use the same host name | The second container waits without a node until the first container leaves. |
-| A container starts with the host name of an earlier container | It gets the identity of the earlier container: the same node and the same tailnet addresses. |
+| Two containers on one host use the same hostname | The second container waits without a node until the first container leaves. |
+| A container starts with the hostname of an earlier container | It gets the identity of the earlier container: the same node and the same tailnet addresses. |
 
 ## tslink.tags
 
@@ -83,12 +83,12 @@ tags.
 
 ## tslink.direct
 
-Also serves the `tslink.serve.<port>` rules on the host name of the container.
+Also serves the `tslink.serve.<port>` rules on the hostname of the container.
 
 | Value | Effect |
 | --- | --- |
 | `false`, `0` or `no` | Serves only on the Service |
-| Other values | Serves on the Service and on the host name |
+| Other values | Serves on the Service and on the hostname |
 | Not set | `true` without `tslink.service`, `false` with it |
 
 ## tslink.health

@@ -31,7 +31,7 @@ the host.
 ## State directories are in the directory of the stack
 
 The state directory of a stack container is `by-stack/<stack>/<hostname>`. Thus a container cannot use or delete the
-state of another stack when it selects a host name.
+state of another stack when it selects a hostname.
 
 ## Where credentials are visible
 
@@ -68,7 +68,7 @@ unavailable for 14 seconds, from `docker stack rm` until the new stack answered 
 
 | Alternative | Why tslink does not use it |
 | --- | --- |
-| A policy file on each host that maps stacks to credentials | It makes cluster deployments depend on host provisioning. The cluster credential file names no stack, so it does not. |
+| A policy file on each host that maps stacks to credentials | It makes cluster deployments depend on host provisioning. The cluster credential file contains no stack name, so it does not. |
 | Docker secrets | Swarm gives a secret only to the tasks that mount it. tslink would read the secret from the application container. A compromised application would then have a credential that does not expire, and that can create keys for its tags on any host. |
 | Plugin settings (`docker plugin set`) | They apply to one host, and a change requires that you disable the plugin. |
 

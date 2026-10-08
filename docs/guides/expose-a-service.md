@@ -2,7 +2,7 @@
 
 ## Goal
 
-Make an HTTPS service in a container available in the tailnet: first on the host name of the container, then as a
+Make an HTTPS service in a container available in the tailnet: first on the hostname of the container, then as a
 Tailscale Service with more than one backend.
 
 ## Prerequisites
@@ -13,7 +13,7 @@ Tailscale Service with more than one backend.
 
 ## Steps
 
-1. Serve the container on its own host name. Give it a host name and a serve rule:
+1. Serve the container on its own hostname. Give it a hostname and a serve rule:
 
    ```bash
    docker run -d --network my-tailnet \
@@ -79,7 +79,7 @@ Tailscale Service with more than one backend.
 
 ## Verify
 
-1. From a device in the tailnet, connect to the host name of step 1:
+1. From a device in the tailnet, connect to the hostname of step 1:
 
    ```bash
    curl https://web.<tailnet>.ts.net

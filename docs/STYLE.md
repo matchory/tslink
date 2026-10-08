@@ -89,6 +89,7 @@ More rules:
 | credential | An auth key or an OAuth client secret | secret (alone) |
 | cluster credential | The OAuth client secret in the file `oauth-client.secret` | shared secret |
 | Service | A Tailscale Service (`svc:<name>`) | VIP service; *service* in lowercase, except for a Swarm service |
+| hostname | The name of a node in the tailnet, set by `tslink.hostname` | `host name` |
 | data directory | `/var/lib/docker-plugins/tailscale` on the host | state dir, plugin dir |
 | state directory | The directory of one node's Tailscale state in the data directory | state dir |
 | endpoint | The Docker endpoint of a container; use the term only in reference pages | — |

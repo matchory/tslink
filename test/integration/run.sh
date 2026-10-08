@@ -98,6 +98,10 @@ cleanup() {
 		sudo kill "$HOST_TS_PID" 2>/dev/null || true
 		while sudo kill -0 "$HOST_TS_PID" 2>/dev/null; do sleep 1; done
 	fi
+	if [ -n "${veth_hold_pid:-}" ]; then
+		sudo kill "$veth_hold_pid" 2>/dev/null || true
+		while sudo kill -0 "$veth_hold_pid" 2>/dev/null; do sleep 1; done
+	fi
 	if [ -n "${canary_pid:-}" ]; then
 		sudo kill "$canary_pid" 2>/dev/null || true
 		while sudo kill -0 "$canary_pid" 2>/dev/null; do sleep 1; done
@@ -391,9 +395,26 @@ plain_arrives() {
 	done
 }
 veth_raw_arrives() { RAW_DST=$sink_veth raw_arrives "$@"; }
-veth_isolation_off() { sudo iptables -t mangle -D FORWARD -j TSLINK-VETH-FWD; }
+# veth_isolation_off keeps the jump into the isolation out until
+# veth_isolation_restored: the watchdog restores it every minute, which would
+# block the control run if it came in its middle
+veth_hold_pid=""
+veth_isolation_off() {
+	sudo sh -c 'while :; do
+		iptables -t mangle -D FORWARD -j TSLINK-VETH-FWD 2>/dev/null
+		sleep 0.5
+	done' &
+	veth_hold_pid=$!
+}
+stop_veth_hold() {
+	[ -n "$veth_hold_pid" ] || return 0
+	sudo kill "$veth_hold_pid" 2>/dev/null || true
+	while sudo kill -0 "$veth_hold_pid" 2>/dev/null; do sleep 1; done
+	veth_hold_pid=""
+}
 # The watchdog puts the isolation back
 veth_isolation_restored() {
+	stop_veth_hold
 	retry 150 sudo iptables -t mangle -C FORWARD -j TSLINK-VETH-FWD ||
 		fail "the watchdog did not restore the veth isolation"
 }
@@ -461,9 +482,14 @@ done
 # A plugin created from a directory is not pinned by digest
 grep -qE '^E6 +violated ' <<<"$out" || fail "preflight: E6 does not report the local build"
 # Without the jump into the isolation, E5 is violated until the watchdog
-# puts it back
-sudo iptables -t mangle -D INPUT -j TSLINK-ISOLATE-IN
-preflight_says E5 violated || fail "preflight: E5 ok without the jump into TSLINK-ISOLATE-IN"
+# puts it back. Removed again on each try: the watchdog may restore it before
+# the preflight looks.
+input_jump_off_violates_e5() {
+	sudo iptables -t mangle -D INPUT -j TSLINK-ISOLATE-IN 2>/dev/null || true
+	preflight_says E5 violated
+}
+retry 10 input_jump_off_violates_e5 ||
+	fail "preflight: E5 ok without the jump into TSLINK-ISOLATE-IN"
 retry 150 preflight_says E5 ok || fail "preflight: E5 not ok after the watchdog restored the isolation"
 
 log "Auth keys stay out of logs, state, processes, diagnostics and containers"

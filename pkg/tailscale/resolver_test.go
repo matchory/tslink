@@ -279,7 +279,8 @@ func TestTailscaledCommandWithoutAuthKey(t *testing.T) {
 
 // runSandboxed runs tailscaled's command as root in a mount namespace of the
 // test's own, with nsenter replaced by a script and tailscaled by show, after
-// setup prepares the namespace. /etc and /run are scratch directories there.
+// setup prepares the namespace. /etc and /run are scratch directories there;
+// $STATE is the daemon's state directory.
 // It returns what show printed.
 func runSandboxed(t *testing.T, setup, show string) string {
 	t.Helper()
@@ -327,7 +328,7 @@ func runSandboxed(t *testing.T, setup, show string) string {
 		[]string{"--mount", "--propagation", "private", "--", "sh", "-c", script, dir},
 		cmd.Args...)
 	run := exec.Command("unshare", args...) // #nosec G204 -- the command under test
-	run.Env = []string{"PATH=" + bin + ":/usr/sbin:/usr/bin:/sbin:/bin"}
+	run.Env = []string{"PATH=" + bin + ":/usr/sbin:/usr/bin:/sbin:/bin", "STATE=" + stateDir}
 	out, err := run.CombinedOutput()
 	if err != nil {
 		t.Fatalf("%v: %s", err, out)
@@ -359,5 +360,38 @@ func TestTailscaledCommandHidesSystemBus(t *testing.T) {
 	setup := "mkdir /run/dbus\ntouch /run/dbus/system_bus_socket"
 	if out := runSandboxed(t, setup, "ls -A /run/dbus"); out != "" {
 		t.Errorf("tailscaled sees %q in /run/dbus", out)
+	}
+}
+
+// tailscaled cannot store Taildrop files: they would go to its state
+// directory on the host, where a peer the control server lets send files, or
+// the untagged node's own container, could fill the host's disk, and no
+// container ever sees them.
+func TestTailscaledCommandRefusesTaildropFiles(t *testing.T) {
+	show := `mkdir -p "$STATE/files/user" 2>/dev/null && touch "$STATE/files/user/x" 2>/dev/null &&
+	echo writable || echo refused`
+	if out := runSandboxed(t, "", show); out != "refused\n" {
+		t.Errorf("tailscaled's Taildrop directory: %q, want refused", out)
+	}
+}
+
+// Files received before are deleted when tailscaled starts.
+func TestTailscaledCommandDeletesTaildropFiles(t *testing.T) {
+	d := &Daemon{config: DaemonConfig{StateDir: t.TempDir(), TailscaledBin: "/tailscaled"}}
+	d.ctx = t.Context()
+	files := filepath.Join(d.config.StateDir, "files", "alice-uid-1")
+	if err := os.MkdirAll(files, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(files, "x"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d.tailscaledCommand(nil)
+	entries, err := os.ReadDir(filepath.Join(d.config.StateDir, "files"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("files left: %v", entries)
 	}
 }

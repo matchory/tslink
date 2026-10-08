@@ -211,6 +211,12 @@ three- and five-node swarms; see [docs/testing.md](docs/testing.md).
 
 ### Security
 
+- tailscaled no longer stores Taildrop files. They went to its state
+  directory on the host, where no container sees them: a peer the control
+  server lets send files, or an untagged node's own container, could fill the
+  host's disk. A read-only mount in tailscaled's own mount namespace now
+  refuses them, files received before are deleted when tailscaled starts, and
+  tailscaled does not start if the mount fails.
 - A stack using the cluster credential is now confined to the exact tag
   `tag:<stack>`, not `tag:<stack>-*`. The prefix form let a stack claim a
   longer-named stack's base tag: stack `a` could register `tag:a-b`, stack

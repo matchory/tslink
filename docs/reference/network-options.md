@@ -16,14 +16,13 @@ with `driver_opts` in a Compose or stack file. You cannot change an option after
 The credential that the nodes of the network register with: an auth key (`tskey-auth-…`) or an OAuth client secret
 (`tskey-client-…`).
 
+If the option is not set, tslink uses the cluster credential or `TS_AUTHKEY`. See
+[Precedence](credentials.md#precedence).
+
 | Condition | Effect |
 | --- | --- |
-| The option is not set, and the host has a cluster credential | The nodes register with the cluster credential. `tslink.tags` is then required. |
-| The option is not set, and the plugin setting `TS_AUTHKEY` is set | The nodes register with `TS_AUTHKEY`. |
-| None of the three is set | `docker network create` fails. |
+| No credential is available | `docker network create` fails. |
 | The credential is an auth key with parameters appended (`?…`) | `docker network create` fails. Only OAuth client secrets take parameters. |
-
-For the credential types and the sequence of the sources, see [Credentials](credentials.md).
 
 ## tslink.tags
 
@@ -38,12 +37,7 @@ The ACL tags of all nodes on the network, separated by commas, for example `tag:
 ## tslink.ephemeral
 
 Tells tslink if the nodes of the network are ephemeral. Use it for credentials that do not tell tslink, such as auth
-keys and headscale's keys.
-
-| Value | Effect when the container stops |
-| --- | --- |
-| `true` | tslink logs the node out and deletes its state directory. The node and its identity are removed. |
-| `false` | tslink keeps the state directory. The node stays in the tailnet, offline. |
+keys and headscale's keys. For the effect, see [Ephemeral nodes](credentials.md#ephemeral-nodes).
 
 | Condition | Effect |
 | --- | --- |
@@ -51,11 +45,10 @@ keys and headscale's keys.
 | The credential is an OAuth client secret without an `ephemeral` parameter | tslink appends `?ephemeral=<value>` to it. |
 | The OAuth client secret has an `ephemeral` parameter with a different value | `docker network create` fails. |
 | The network uses the cluster credential, and the value is `false` | `docker network create` fails. |
-| The option is not set | See [Ephemeral nodes](credentials.md#ephemeral-nodes). |
 
 > [!WARNING]
 > Set `true` only with a credential that creates ephemeral nodes. With `true`, tslink deletes the state of a node
-> when its container stops.
+> when its container stops, and the node loses its identity.
 
 ## tslink.loginserver
 

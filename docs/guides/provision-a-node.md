@@ -22,6 +22,8 @@ The host needs no inbound firewall rule, no Tailscale package, and no access to 
 runs its own tailscaled, containers do not use it. Without outbound UDP, traffic goes through DERP relays and is
 slower. See [Throughput](../explanation/architecture.md#throughput).
 
+Steps 7 and 8 need a clone of the tslink repository, at the tag of the release that you install.
+
 ## Steps
 
 1. If the MTU of the host network is below 1500, set the MTU for Docker. Put the value in
@@ -88,27 +90,17 @@ slower. See [Throughput](../explanation/architecture.md#throughput).
    docker plugin enable tslink
    ```
 
-   tslink then gets the certificate of a Service once for the cluster, and not once for each host.
+   For the effect, see [shared.source](../reference/plugin-settings.md#sharedsource).
 
    > [!WARNING]
    > The directory holds the private key of each Service. Make it owned by root, with mode `0700`, and make it
-   > available only to the hosts of the cluster.
+   > available only to the hosts of the cluster (property `E7` in [SECURITY.md](../../SECURITY.md)).
 
 7. Install the drain drop-in for Docker. See
    [Install the drain drop-in](zero-downtime-updates.md#install-the-drain-drop-in).
 
-8. Check the environment properties:
-
-   ```bash
-   docker build -t tslink-diag -f docker/Dockerfile .
-   docker run --rm --network host --cap-add NET_ADMIN \
-     -v /var/run/docker.sock:/var/run/docker.sock \
-     -v /var/lib/docker-plugins/tailscale:/data \
-     --entrypoint /tslink tslink-diag diag --preflight
-   ```
-
-   Run the build in a clone of the repository. For the shared directory, add `-v <shared directory>:/shared:ro` and
-   `--shared-dir /shared`. See [tslink diag](../reference/diag.md).
+8. Check the environment properties with the preflight check. See
+   [Run tslink diag](../reference/diag.md#run-tslink-diag).
 
 9. Set up monitoring. See [Monitor tslink](monitor.md).
 

@@ -90,8 +90,8 @@ properties of the two models, see [Security model](../explanation/security-model
   secret. The stack is unavailable for some seconds. To prevent this, deploy the stack under a new stack name with
   the new secret, and remove the old stack when the new stack serves.
 
-OAuth client secrets do not expire. If you revoke a secret, the running nodes stay online. New containers cannot
-register until the network has a valid secret.
+For what happens to running nodes when you revoke a secret, see
+[Rotation and revocation](../explanation/security-model.md#rotation-and-revocation).
 
 ## Verify
 

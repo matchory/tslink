@@ -17,7 +17,8 @@ plugin, the data directory is `/data`. An endpoint is the connection of one cont
 └── plugin.log                       plugin log
 ```
 
-`<endpoint>` is the first 12 characters of the Docker endpoint ID. `<hostname>` and `<stack>` must start with a
+`<endpoint>` is the first 12 characters of the Docker endpoint ID. The sockets are in `sock/`, not in the state
+directories, because a Unix socket path can have only 108 bytes. `<hostname>` and `<stack>` must start with a
 letter or a digit, and contain only letters, digits, `.`, `_` and `-`.
 
 The data directory must exist before you install the plugin. Do not delete it while the plugin is installed.
@@ -37,19 +38,14 @@ Each node has one state directory. One endpoint at a time can use a state direct
 > A person who can read `tailscaled.state` can use the identity of the node. Restrict access to the data directory to
 > root.
 
-## Sockets
-
-The socket of each endpoint is in `sock/`, not in the state directory, because a Unix socket path can have only 108
-bytes.
-
 ## Logs
 
-| Log | Size of one file | Copies |
-| --- | --- | --- |
-| `<state directory>/tailscaled.log` | 10 MB | The current file and one rotated file |
-| `plugin.log` | 50 MB | The current file and one rotated file |
+tslink rotates each log at a fixed size, and keeps one rotated file.
 
-Thus each endpoint uses up to 20 MB for logs, and the plugin log uses up to 100 MB.
+| Log | Rotated at | Maximum on disk |
+| --- | --- | --- |
+| `<state directory>/tailscaled.log` | 10 MB | 20 MB for each endpoint |
+| `plugin.log` | 50 MB | 100 MB |
 
 ## Status files
 

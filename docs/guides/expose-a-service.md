@@ -33,24 +33,8 @@ Tailscale Service with more than one backend.
 2. To serve more than one container under one name, create a Tailscale Service. In the admin console, open
    [Services](https://login.tailscale.com/admin/services) and create the Service, for example `svc:my-app`.
 
-3. Make the containers backends of the Service. Add `tslink.service` to the labels of the service in the Compose or
-   stack file:
-
-   ```yaml
-   services:
-     backend:
-       image: nginx:alpine
-       networks:
-         - tailnet
-       labels:
-         tslink.service: svc:my-app
-         tslink.serve.443: https:80
-   ```
-
-   Put the labels in `labels`, not in `deploy.labels`. tslink reads only the labels of the container.
-
-4. Add a healthcheck with the readiness endpoint. Then Swarm replaces a task only when the new task is a backend of the
-   Service:
+3. Make the containers backends of the Service, with a readiness healthcheck. With the healthcheck, Swarm replaces a
+   task only when the new task is a backend of the Service:
 
    ```yaml
    services:
@@ -71,10 +55,13 @@ Tailscale Service with more than one backend.
            order: start-first
    ```
 
-   The endpoint does not answer for some seconds during a plugin restart. Keep `interval` × `retries` above this
-   period. In this example, it is 30 seconds. For the states, see [Readiness endpoint](../reference/readiness-endpoint.md).
+   Put the labels in `labels`, not in `deploy.labels`. tslink reads only the labels of the container.
 
-5. If the application needs the identity of the caller, add a serve option. For example, `?proxy-protocol=2` sends
+   The readiness endpoint does not answer for some seconds during a plugin restart. Keep `interval` × `retries`
+   above this period. In this example, it is 30 seconds. For the states, see
+   [Readiness endpoint](../reference/readiness-endpoint.md).
+
+4. If the application needs the identity of the caller, add a serve option. For example, `?proxy-protocol=2` sends
    the address of the caller to a TCP service. See [Serve options](../reference/container-labels.md#serve-options).
 
 ## Verify

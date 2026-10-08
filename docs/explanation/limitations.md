@@ -24,9 +24,6 @@ has no other DNS server, tailscaled uses the DNS servers of the host. See [DNS](
 
 Docker sends each query to the first server and accepts its answer. Thus `100.100.100.100` must be first.
 
-tslink reads only the `dns` setting of the container or the service. It does not read the `dns` setting in
-`/etc/docker/daemon.json`.
-
 ## Start-up delay
 
 Docker gives the plugin no way to identify a container while it starts. Thus tslink starts Tailscale after the

@@ -37,21 +37,13 @@ host, on tslink networks and on other networks.
 | `false` | Containers can reach the tailnet as the host. Use this value only if containers on the host must use the tailscaled of the host. |
 | Other values | tslink keeps the value `true` and logs a warning. |
 
-tslink installs the firewall rules for this setting before it accepts requests from Docker. The rules stay when the
-plugin stops. For the guarantee that this setting supports, see `G1` in [SECURITY.md](../../SECURITY.md).
-
-Independent of this setting, tslink's veth interfaces pass only tailscaled's WireGuard traffic (UDP port 41641)
-between containers.
+The firewall rules stay when the plugin stops. For how they work, see [Isolation](../explanation/architecture.md#isolation).
+For the guarantee that this setting supports, see `G1` in [SECURITY.md](../../SECURITY.md).
 
 ## TSLINK_TAG_SCOPE
 
-Sets which tags a stack can use with the cluster credential.
-
-| Value | A stack named `<stack>` can use |
-| --- | --- |
-| `exact` | `tag:<stack>` only |
-| `prefix` | `tag:<stack>` and `tag:<stack>-*` |
-| Other values | `tag:<stack>` only. tslink logs a warning. |
+Sets which tags a stack can use with the cluster credential: `exact` or `prefix`. For the permitted tags, see
+[Tag rules](credentials.md#tag-rules). For other values, tslink uses `exact` and logs a warning.
 
 > [!WARNING]
 > With `prefix`, a stack can use the base tag of a stack with a longer name. For example, stack `a` can use
@@ -70,8 +62,7 @@ of Let's Encrypt. `SSL_CERT_FILE` sets a root certificate bundle that trusts it.
 | `TS_VERSION` | tslink ignores every value other than `bundled` and logs a warning. |
 | `TS_PATH` | tslink ignores the setting and logs a warning. |
 
-The plugin image contains the Tailscale binaries that tslink runs. Each tslink release pins one Tailscale version.
-To upgrade Tailscale, upgrade the plugin.
+tslink runs only the Tailscale binaries in the plugin image. See [Binaries](../explanation/architecture.md#binaries).
 
 ## Internal settings
 

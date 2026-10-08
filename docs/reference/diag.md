@@ -30,20 +30,14 @@ clone of the repository:
 docker build -t tslink-diag -f docker/Dockerfile .
 ```
 
-Then run the command:
-
-| Command | Container options |
-| --- | --- |
-| `diag` | `-v /var/lib/docker-plugins/tailscale:/data` |
-| `diag --preflight` | `--network host --cap-add NET_ADMIN -v /var/run/docker.sock:/var/run/docker.sock -v /var/lib/docker-plugins/tailscale:/data` |
-| `diag --preflight --shared-dir /shared` | The options of `diag --preflight`, and `-v <shared directory>:/shared:ro` |
-
-For example:
+Then run `diag`:
 
 ```bash
 docker run --rm -v /var/lib/docker-plugins/tailscale:/data \
   --entrypoint /tslink tslink-diag diag
 ```
+
+Or run the preflight check:
 
 ```bash
 docker run --rm --network host --cap-add NET_ADMIN \
@@ -51,6 +45,10 @@ docker run --rm --network host --cap-add NET_ADMIN \
   -v /var/lib/docker-plugins/tailscale:/data \
   --entrypoint /tslink tslink-diag diag --preflight
 ```
+
+To check the shared certificate directory, add `-v <shared directory>:/shared:ro` and `--shared-dir /shared`.
+
+To check more than one host, build the image once and copy it to each host with `docker save` and `docker load`.
 
 ## scripts/tslink-diag.sh
 

@@ -53,8 +53,9 @@ During the start, the container has no node. Connections to tailnet addresses fa
 tslink keeps the state of a node by hostname, not by container ID. When a container starts with the hostname of an
 earlier container, it gets the earlier identity: the same node and the same tailnet addresses.
 
-The state directory of a container in a stack is `by-stack/<stack>/<hostname>`. Thus a stack cannot use or delete the
-state of another stack when it selects a hostname. One endpoint at a time can use a state directory.
+Containers in a stack have their state directories in the directory of the stack. See
+[State directories](security-model.md#state-directories-are-in-the-directory-of-the-stack). One endpoint at a time can
+use a state directory.
 
 ## Routing
 

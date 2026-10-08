@@ -32,11 +32,10 @@ Docker reports a container as healthy when its tailscaled is not running. Thus m
    ```bash
    #!/bin/sh
    out=/var/lib/node_exporter/textfile/tslink.prom
-   for f in /var/lib/docker-plugins/tailscale/status/*.json; do
-     [ -e "$f" ] || continue
-     jq -r '"tslink_endpoint_running{hostname=\"\(.hostname)\",stack=\"\(.stack)\"} " +
-       (if .state == "running" then "1" else "0" end)' "$f"
-   done >"$out.tmp" && mv "$out.tmp" "$out"
+   set -- /var/lib/docker-plugins/tailscale/status/*.json
+   [ -e "$1" ] || set --
+   jq -r '"tslink_endpoint_running{hostname=\"\(.hostname)\",stack=\"\(.stack // "")\"} " +
+     (if .state == "running" then "1" else "0" end)' "$@" </dev/null >"$out.tmp" && mv "$out.tmp" "$out"
    ```
 
    Run it each minute, for example with this line in `/etc/cron.d/tslink-metrics`:

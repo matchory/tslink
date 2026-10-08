@@ -10,8 +10,6 @@ Install the tslink plugin on a host, upgrade it, and change its settings.
 - Root access on the host.
 - Access to `ghcr.io`, or to a registry that mirrors `ghcr.io/matchory/tslink`.
 
-For a production host, first do the steps in [Provision a host](provision-a-node.md).
-
 ## Steps
 
 1. Create the data directory:
@@ -92,20 +90,20 @@ docker run --rm --privileged -v /var/lib:/var/lib alpine mkdir -p /var/lib/docke
    docker node update --availability active <node>
    ```
 
-Each tslink release contains one Tailscale version. To upgrade Tailscale, upgrade the plugin.
+To upgrade Tailscale, upgrade tslink. See [Binaries](../explanation/architecture.md#binaries).
 
 ### Change a setting
 
-1. Disable the plugin, set the value and enable the plugin:
+Disable the plugin, set the values and enable the plugin. `docker plugin set` accepts more than one `KEY=VALUE`:
 
-   ```bash
-   docker plugin disable tslink
-   docker plugin set tslink TS_AUTHKEY=tskey-auth-…
-   docker plugin enable tslink
-   ```
+```bash
+docker plugin disable tslink
+docker plugin set tslink TS_AUTHKEY=tskey-auth-…
+docker plugin enable tslink
+```
 
-   If containers use the plugin, `docker plugin disable` fails. Stop the containers first, or use
-   `docker plugin disable -f`.
+If containers use the plugin, `docker plugin disable` fails. Stop the containers first, or use
+`docker plugin disable -f`.
 
 For all settings, see [Plugin settings](../reference/plugin-settings.md).
 

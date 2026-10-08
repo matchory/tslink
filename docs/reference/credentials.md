@@ -1,7 +1,7 @@
 # Credentials
 
 A credential lets a node register in the tailnet. tslink accepts an auth key or an OAuth client secret, from three
-sources. This page gives the types, the sources and the rules for ephemeral nodes and tags.
+sources.
 
 ## Credential types
 
@@ -44,10 +44,7 @@ If the network has `tslink.ephemeral`, its value decides. Otherwise the credenti
 | --- | --- |
 | Cluster credential | Always. The network cannot have `tslink.ephemeral=false`. |
 | OAuth client secret | The secret has no `ephemeral` parameter, or it has `?ephemeral=true` |
-| Auth key | Never, because tslink cannot know it from the key |
-
-An auth key does not tell tslink if it creates ephemeral nodes. Thus tslink keeps the state of its nodes, unless the
-network has `tslink.ephemeral=true`. The control server removes an ephemeral node some time after it goes offline.
+| Auth key | Never. An auth key does not tell tslink if it creates ephemeral nodes. |
 
 ## Cluster credential
 

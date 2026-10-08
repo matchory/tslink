@@ -25,9 +25,9 @@ Update a Tailscale Service, restart Docker and upgrade tslink while the callers 
    The default of Docker is 10 seconds.
 
 2. Use the readiness healthcheck with `order: start-first`. Then Swarm stops an old task only when the new task is a
-   backend. See step 4 of [Expose a service](expose-a-service.md).
+   backend. See step 3 of [Expose a service](expose-a-service.md).
 
-3. Install the drain drop-in on each host, as described in [Install the drain drop-in](#install-the-drain-drop-in).
+3. Install the drain drop-in on each host. See [Install the drain drop-in](#install-the-drain-drop-in).
 
 4. Before planned maintenance on a Swarm node, drain the node:
 
@@ -37,12 +37,8 @@ Update a Tailscale Service, restart Docker and upgrade tslink while the callers 
 
    Swarm moves the tasks of the node to other nodes.
 
-5. Before you roll out a new tslink version, run `test/cluster/regress.sh` against it. See
-   [Testing](../testing.md#cluster-tests).
-
-6. To upgrade tslink, follow [Upgrade](install-and-upgrade.md#upgrade). Each tailscaled on the host restarts, and
-   the containers keep their nodes. Drain the node first, because the tailnet traffic of its containers stops for
-   some seconds.
+5. To upgrade tslink, follow [Upgrade](install-and-upgrade.md#upgrade). It drains the node first, because tailnet
+   traffic stops for some seconds while each tailscaled restarts.
 
 ### Install the drain drop-in
 

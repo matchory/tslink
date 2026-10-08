@@ -41,8 +41,7 @@ state of another stack when it selects a hostname.
 | Plugin settings (`docker plugin inspect`) | Persons with access to the Docker API |
 | The Raft store of the Swarm managers | Persons with root access on a manager |
 | `oauth-client.secret` | Root on each host |
-| The application container | Never |
-| Logs, status files and the output of `tslink diag` | Never |
+| The application container, logs, status files and the output of `tslink diag` | Never. See `G5` in [SECURITY.md](../../SECURITY.md). |
 
 ## Cluster credential and OAuth clients for each stack
 

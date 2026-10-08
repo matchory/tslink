@@ -4,11 +4,7 @@ Find the symptom below, then do the checks in the sequence of the table. Before 
 
 ## Collect information
 
-1. Show the status of each endpoint:
-
-   ```bash
-   jq -r '[.hostname, .state, (.error // "")] | @tsv' /var/lib/docker-plugins/tailscale/status/*.json
-   ```
+1. Run `tslink diag`. It shows the state of each endpoint. See [tslink diag](../reference/diag.md).
 
 2. Show the end of the tailscaled log of each node:
 
@@ -19,21 +15,19 @@ Find the symptom below, then do the checks in the sequence of the table. Before 
      done'
    ```
 
-3. Show the plugin log. On Linux:
+3. Show the plugin log of the last hour. On Linux:
 
    ```bash
-   journalctl -u docker -f | grep -i tailscale
+   journalctl -u docker --since -1h | grep -i tailscale
    ```
 
-   On macOS with OrbStack, open a shell in the Linux VM first, then run `journalctl -u docker -f`:
+   On macOS with OrbStack, open a shell in the Linux VM first, then run the same command:
 
    ```bash
    docker run --rm -it --privileged --pid=host alpine nsenter -t 1 -m -u -n -i sh
    ```
 
    The plugin also writes `plugin.log` in the data directory.
-
-4. Run `tslink diag`. See [tslink diag](../reference/diag.md).
 
 ## The plugin does not enable
 

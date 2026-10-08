@@ -14,12 +14,7 @@ reach it.
 
 ## Response
 
-| Status code | Meaning |
-| --- | --- |
-| `200` | The state is `ready`. |
-| `503` | The state is not `ready`. |
-
-The body is a JSON object:
+The status code is `200` if the state is `ready`, and `503` for all other states. The body is a JSON object:
 
 ```json
 {"state": "awaiting-approval", "service": "svc:api"}
@@ -64,7 +59,5 @@ tslink records the latch in `status/<endpoint>.ready` in the data directory, so 
 restart. Thus the endpoint controls when a container becomes healthy, but it is not a liveness check. A container
 does not become unhealthy when it loses its connection to the control server, or during a plugin restart.
 
-> [!NOTE]
-> During a plugin restart, the endpoint does not answer for some seconds. Set `interval` × `retries` of the
-> healthcheck to more than this period. For an example, see
-> [Expose a service](../guides/expose-a-service.md).
+During a plugin restart, the endpoint does not answer for some seconds. For a healthcheck that allows for this, see
+[Expose a service](../guides/expose-a-service.md).

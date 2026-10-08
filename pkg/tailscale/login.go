@@ -1,9 +1,11 @@
 package tailscale
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -24,6 +26,13 @@ func (d *Daemon) bringUp() error {
 	// down nodes that have working keys.
 	if StateExists(d.config.StateDir) {
 		if st := d.waitBackendState(); st != "" && st != "NeedsLogin" && st != "NoState" {
+			if d.registeredAsConfigured() {
+				err := d.applySettings()
+				if err == nil {
+					return nil
+				}
+				logger.Warnf("tailscale set failed, using tailscale up: %v", err)
+			}
 			err := d.tryBringUp(false)
 			if err == nil {
 				return nil
@@ -51,6 +60,55 @@ func (d *Daemon) bringUp() error {
 	}
 
 	return err
+}
+
+// defaultControlURL is the control server tailscaled names in its prefs when
+// none is set.
+const defaultControlURL = "https://controlplane.tailscale.com"
+
+// registeredAsConfigured reports whether the node's prefs name the configured
+// control server and tags, so that only settings "tailscale set" changes may
+// differ. Other tags or another server need "tailscale up".
+func (d *Daemon) registeredAsConfigured() bool {
+	ctx, cancel := context.WithTimeout(d.ctx, 10*time.Second)
+	defer cancel()
+	out, err := d.runTailscale(
+		ctx,
+		cliCall{args: []string{"--socket=" + d.socketPath, "debug", "prefs"}},
+	)
+	var prefs struct {
+		ControlURL    string   `json:"ControlURL"`
+		AdvertiseTags []string `json:"AdvertiseTags"`
+	}
+	if err != nil || json.Unmarshal([]byte(out.stdout), &prefs) != nil {
+		return false
+	}
+	want := cmp.Or(d.config.LoginServer, defaultControlURL)
+	return strings.TrimSuffix(prefs.ControlURL, "/") == strings.TrimSuffix(want, "/") &&
+		slices.Equal(slices.Sorted(slices.Values(prefs.AdvertiseTags)),
+			slices.Sorted(slices.Values(d.config.Tags)))
+}
+
+// applySettings applies the settings "tailscale up" would to a node that is
+// logged in, with "tailscale set". Unlike "up", it leaves the control client
+// running: tailscaled dials control as it starts, and a client restarted
+// within 2 minutes of a dial dials port 443 only, retry after retry,
+// whatever the login server's port.
+func (d *Daemon) applySettings() error {
+	ctx, cancel := context.WithTimeout(d.ctx, 60*time.Second)
+	defer cancel()
+	args := append([]string{"--socket=" + d.socketPath, "set"}, d.settingArgs()...)
+	out, err := d.runTailscale(ctx, cliCall{prefix: "set", args: args})
+	if err != nil {
+		return fmt.Errorf("tailscale set failed: %w (output: %s)", err, out.combined())
+	}
+	return nil
+}
+
+// settingArgs returns the settings that "tailscale up" and "tailscale set"
+// both take. Netfilter is off: the plugin handles routing via veth pairs.
+func (d *Daemon) settingArgs() []string {
+	return []string{"--hostname=" + d.config.Hostname, "--accept-routes", "--netfilter-mode=off"}
 }
 
 // isStateError checks if the error indicates stale/invalid state that should trigger a retry.
@@ -98,14 +156,7 @@ func (d *Daemon) tryBringUp(withKey bool, extraArgs ...string) error {
 
 	// The tailscale CLI communicates with tailscaled via the socket.
 	// Since the socket is on the host filesystem, we don't need nsenter.
-	// Disable netfilter mode since our plugin handles routing via veth pairs and NAT
-	args := []string{
-		"--socket=" + d.socketPath,
-		"up",
-		"--hostname=" + d.config.Hostname,
-		"--accept-routes",
-		"--netfilter-mode=off",
-	}
+	args := append([]string{"--socket=" + d.socketPath, "up"}, d.settingArgs()...)
 	if withKey {
 		// From stdin: arguments are visible to every process on the host
 		args = append(args, "--authkey=file:/dev/stdin")

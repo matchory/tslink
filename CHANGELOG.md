@@ -124,6 +124,23 @@ three- and five-node swarms; see [docs/testing.md](docs/testing.md).
 
 ### Fixed
 
+- Two containers on one host could get the same veth subnet, with even
+  odds at about 150 tslink containers per host, and 1% at about 18. The host
+  then sent the second container's Tailscale traffic to the first, and the
+  second stayed offline. A container now gets the first subnet, from the one
+  its endpoint ID names, that no host interface uses.
+- After a plugin restart, nodes that were still logged in could stay offline
+  for good against a control server not on port 443, such as headscale on
+  port 8080: `tailscale up` restarted their control client right after
+  tailscaled had dialled control, and tailscaled then dials port 443 only,
+  retry after retry. Such nodes now get their settings with `tailscale set`,
+  and `tailscale up` runs only when their tags or control server changed.
+- On hosts with systemd-resolved, tailscaled fell back to the plugin's
+  `resolv.conf` after any change of the host's DNS, so Tailscale's resolver
+  stopped forwarding to the container's other DNS servers: systemd-resolved
+  replaces the file the plugin's `resolv.conf` is a bind mount of, and the
+  kernel refuses to mount over a replaced file. tailscaled's mount namespace
+  now drops that mount first.
 - tailscaled froze when it wrote a line longer than 64 KiB: the plugin
   stopped reading its output, and tailscaled blocked on the full pipe.
 - After a reboot the plugin failed to start, because it mounted
@@ -194,15 +211,24 @@ three- and five-node swarms; see [docs/testing.md](docs/testing.md).
 
 ### Security
 
-- Tailnet ranges are unreachable in the container's main routing table, so
-  tailnet traffic leaves through the container's own tailscaled or not at
-  all, never through the host's Tailscale.
-- The auth key is passed to `tailscale up` on stdin instead of its command
-  line, where it was visible in the host's process list.
 - The certificate domain, built from the `tslink.service` label and the
   control server's MagicDNS suffix, is checked to be a DNS name before it
   names files in the certificate directory. A label or suffix with `..` or a
   slash could otherwise make the plugin create and delete lease files outside
   that directory, as root.
+- tailscaled no longer inherits the plugin's `TS_AUTHKEY`. tailscaled does
+  not use it, and its peerapi serves its environment to peers that the
+  control server grants debug access.
+- Tailnet ranges are unreachable in the container's main routing table, so
+  tailnet traffic leaves through the container's own tailscaled or not at
+  all, never through the host's Tailscale.
+- The auth key is passed to `tailscale up` on stdin instead of its command
+  line, where it was visible in the host's process list.
+- tailscaled no longer reaches the host's D-Bus system bus, which the plugin
+  sees in the host's `/run`. When tailscaled fell back to the plugin's
+  `resolv.conf` (see Fixed), it configured the host's systemd-resolved, as
+  root, with the control server's DNS settings, for the host link with the
+  index its `tailscale0` has in the container: often the host's primary
+  interface. tailscaled does not start if the bus cannot be hidden.
 
 [Unreleased]: https://github.com/matchory/tslink/compare/v0.1.0...HEAD

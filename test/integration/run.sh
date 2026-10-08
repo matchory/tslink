@@ -22,8 +22,8 @@ PROBE_IP=192.0.2.53
 # host, so it must listen on an address other than loopback
 HOST_IP=${HOST_IP:-$(ip -4 route get 1.1.1.1 | awk '{for (i = 1; i < NF; i++) if ($i == "src") print $(i + 1)}')}
 URL=http://$HOST_IP:8080
-CONTAINERS=(e2e-server e2e-unready e2e-client e2e-outsider e2e-ephemeral e2e-late e2e-dns e2e-resolver e2e-sink e2e-raw e2e-hostsvc)
-NETWORKS=(e2e-alice e2e-bob e2e-ephemeral e2e-nocontrol)
+CONTAINERS=(e2e-server e2e-unready e2e-client e2e-outsider e2e-ephemeral e2e-late e2e-dns e2e-resolver e2e-sink e2e-raw e2e-hostsvc e2e-custombr)
+NETWORKS=(e2e-alice e2e-bob e2e-ephemeral e2e-nocontrol e2e-custombr)
 WORK=$(mktemp -d)
 
 log() { printf '\n=== %s\n' "$*"; }
@@ -361,10 +361,16 @@ log "Containers do not reach each other through tslink's veths"
 sink_veth=$(docker exec e2e-sink sh -c \
 	'ip -4 -o addr show | awk "\$2 ~ /^veth/ {split(\$4, a, \"/\"); print a[1]}"')
 echo "sink veth $sink_veth"
-# plain_send PAYLOAD: e2e-raw sends PAYLOAD to the sink's veth address with an
-# ordinary socket, which leaves through its Docker gateway
+# A container on a bridge network whose bridge the stack file named: the
+# isolation must not depend on interface names
+docker network create -o com.docker.network.bridge.name=tslinkcust0 e2e-custombr >/dev/null
+# Not on tslink: it gets no tailnet IP to wait for
+docker run -d --name e2e-custombr --network e2e-custombr "$PYTHON" sleep 3600 >/dev/null
+# plain_send PAYLOAD [CONTAINER]: CONTAINER (e2e-raw) sends PAYLOAD to the
+# sink's veth address with an ordinary socket, which leaves through its
+# Docker gateway
 plain_send() {
-	docker exec e2e-raw python3 -c 'import socket, sys
+	docker exec "${2:-e2e-raw}" python3 -c 'import socket, sys
 socket.socket(socket.AF_INET, socket.SOCK_DGRAM).sendto(sys.argv[2].encode(), (sys.argv[1], 9999))' \
 		"$sink_veth" "$1"
 }
@@ -372,13 +378,16 @@ plain_arrives() {
 	local deadline=$((SECONDS + 30))
 	until sink_got "$1"; do
 		[ "$SECONDS" -lt "$deadline" ] || return 1
-		plain_send "$1"
+		plain_send "$1" "${2:-}"
 		sleep 2
 	done
 }
 veth_probes_blocked() {
 	if plain_arrives "$1-plain"; then
 		fail "an ordinary socket reached another container's veth: $(docker logs e2e-sink 2>&1 | tail -n 1)"
+	fi
+	if plain_arrives "$1-custombr" e2e-custombr; then
+		fail "a container behind a custom-named bridge reached another container's veth"
 	fi
 	for ifc in veth eth0; do
 		if RAW_DST=$sink_veth raw_arrives "$ifc" "$1-raw-$ifc"; then
@@ -400,6 +409,8 @@ log "Without the veth isolation, the same probes get through"
 # Shows that the probes above would catch a leak
 sudo iptables -t mangle -D FORWARD -j TSLINK-VETH-FWD
 plain_arrives veth-open-plain || fail "control: an ordinary socket did not reach the sink's veth"
+plain_arrives veth-open-custombr e2e-custombr ||
+	fail "control: the container behind a custom-named bridge did not reach the sink's veth"
 for ifc in veth eth0; do
 	RAW_DST=$sink_veth raw_arrives "$ifc" "veth-open-raw-$ifc" ||
 		fail "control: raw frames through $ifc did not reach the sink's veth"

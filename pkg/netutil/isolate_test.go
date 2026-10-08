@@ -232,13 +232,11 @@ func TestVethIsolationRules(t *testing.T) {
 
 	setupVeth()
 	setupVeth()
-	var want []string
-	for _, ifc := range containerInterfaces {
-		want = append(want,
-			"-A "+vethIsolateChain+" -d 10.200.0.0/16 -i "+ifc+
-				" -p udp -m udp --dport 41641 -j RETURN",
-			"-A "+vethIsolateChain+" -d 10.200.0.0/16 -i "+ifc+" -j DROP",
-		)
+	want := []string{
+		"-A " + vethIsolateChain +
+			" -d 10.200.0.0/16 -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN",
+		"-A " + vethIsolateChain + " -d 10.200.0.0/16 -i veth+ -p udp -m udp --dport 41641 -j RETURN",
+		"-A " + vethIsolateChain + " -d 10.200.0.0/16 -j DROP",
 	}
 	assertRules(t, vethIsolateChain, list(vethIsolateChain),
 		append([]string{"-N " + vethIsolateChain}, want...))

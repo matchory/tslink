@@ -58,6 +58,13 @@ func NewNetwork(id string, opts NetworkOptions, cfg *Config) (*Network, error) {
 	if err := n.resolveCredential(cfg); err != nil {
 		return nil, err
 	}
+	source := "tslink.authkey"
+	if opts.AuthKey == "" {
+		source = "TS_AUTHKEY"
+	}
+	if err := n.checkKeyParams(source); err != nil {
+		return nil, err
+	}
 	if err := n.checkEphemeral(); err != nil {
 		return nil, err
 	}
@@ -85,9 +92,13 @@ func (n *Network) Ephemeral() bool {
 	}
 }
 
-// keyEphemeralParam returns the ephemeral parameter appended to a key, as in
-// "tskey-client-...?ephemeral=false", and whether there is one.
+// keyEphemeralParam returns the ephemeral parameter appended to an OAuth
+// client secret, as in "tskey-client-...?ephemeral=false", and whether there
+// is one. Other keys take no parameters, so they never have one.
 func keyEphemeralParam(key string) (bool, bool) {
+	if !strings.HasPrefix(key, "tskey-client-") {
+		return false, false
+	}
 	_, query, _ := strings.Cut(key, "?")
 	params, err := url.ParseQuery(query)
 	if err != nil || !params.Has("ephemeral") {
@@ -103,9 +114,7 @@ func keyEphemeralParam(key string) (bool, bool) {
 func (n *Network) Credential(dataDir string) (string, error) {
 	if !n.UsesClusterCredential() {
 		key := n.AuthKey
-		if _, ok := keyEphemeralParam(
-			key,
-		); n.ephemeral != nil && !ok &&
+		if _, ok := keyEphemeralParam(key); n.ephemeral != nil && !ok &&
 			strings.HasPrefix(key, "tskey-client-") {
 			sep := "?"
 			if strings.Contains(key, "?") {
@@ -158,10 +167,25 @@ func (n *Network) resolveCredential(cfg *Config) error {
 	return nil
 }
 
+// checkKeyParams refuses parameters appended to a key that is not an OAuth
+// client secret: tailscale up parses them for OAuth client secrets only and
+// passes any other key to control unchanged, where it is invalid. The error
+// names where the key came from, never the key.
+func (n *Network) checkKeyParams(source string) error {
+	if n.UsesClusterCredential() || strings.HasPrefix(n.AuthKey, "tskey-client-") ||
+		!strings.Contains(n.AuthKey, "?") {
+		return nil
+	}
+	return fmt.Errorf(
+		"%s has parameters appended (?...), which only OAuth client secrets "+
+			"(tskey-client-...) take: remove them",
+		source,
+	)
+}
+
 // checkEphemeral refuses a tslink.ephemeral option the credential contradicts:
 // the cluster credential registers ephemeral nodes only, and an OAuth client
-// secret may say otherwise in its own ephemeral parameter. A parameter appended
-// to any other key is not read by tailscale up, so it contradicts nothing.
+// secret may say otherwise in its own ephemeral parameter.
 func (n *Network) checkEphemeral() error {
 	if n.ephemeral == nil {
 		return nil
@@ -175,9 +199,6 @@ func (n *Network) checkEphemeral() error {
 			)
 		}
 		return nil
-	}
-	if !strings.HasPrefix(n.AuthKey, "tskey-client-") {
-		return nil // only OAuth client secrets take parameters
 	}
 	if v, ok := keyEphemeralParam(n.AuthKey); ok && v != *n.ephemeral {
 		return fmt.Errorf("%s=%t contradicts ephemeral=%t in tslink.authkey: remove one of them",

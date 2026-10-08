@@ -113,6 +113,9 @@ three- and five-node swarms; see [docs/testing.md](docs/testing.md).
   name ([tailscale/tailscale#21693](https://github.com/tailscale/tailscale/issues/21693)).
 - CI moved to GitHub Actions with golangci-lint, super-linter and CodeQL;
   dependency updates come from Dependabot instead of Renovate.
+- Network creation fails when `tslink.authkey` or `TS_AUTHKEY` is a key other
+  than an OAuth client secret with parameters (`?...`) appended: `tailscale
+  up` would pass them to control as part of the key, which is then invalid.
 
 ### Removed
 

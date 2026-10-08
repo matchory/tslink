@@ -221,7 +221,7 @@ func (e *Endpoint) Join(sandboxKey string) (*network.JoinResponse, error) {
 
 	// Set up NAT/MASQUERADE for internet access
 	if err := netutil.SetupNAT(vethHost); err != nil {
-		logger.Infof("Warning: failed to set up NAT: %v", err)
+		logger.Warnf("Failed to set up NAT: %v", err)
 		// Continue anyway - tailscaled might still work via DERP
 	}
 
@@ -599,20 +599,20 @@ func (e *Endpoint) Leave() error {
 	// Clean up NAT rules for this veth
 	if vethName != "" {
 		if err := netutil.CleanupNAT(vethName); err != nil {
-			logger.Infof("Warning: failed to cleanup NAT for %s: %v", vethName, err)
+			logger.Warnf("Failed to cleanup NAT for %s: %v", vethName, err)
 		}
 	}
 
 	if sandboxKey != "" {
 		if err := netutil.CleanupTailnetBlackhole(sandboxKey); err != nil {
-			logger.Infof("Warning: failed to remove tailnet blackhole routes: %v", err)
+			logger.Warnf("Failed to remove tailnet blackhole routes: %v", err)
 		}
 	}
 
 	// Clean up veth (this also removes the container-side interface)
 	if vethName != "" {
 		if err := netutil.DeleteVeth(vethName); err != nil {
-			logger.Infof("Warning: failed to delete veth %s: %v", vethName, err)
+			logger.Warnf("Failed to delete veth %s: %v", vethName, err)
 		}
 	}
 
@@ -655,7 +655,7 @@ func (e *Endpoint) Stop() error {
 
 	if supervisor != nil {
 		if err := supervisor.Stop(); err != nil {
-			logger.Infof("Warning: failed to stop supervisor: %v", err)
+			logger.Warnf("Failed to stop supervisor: %v", err)
 		}
 	}
 

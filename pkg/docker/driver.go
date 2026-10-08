@@ -217,7 +217,7 @@ func (d *Driver) DeleteEndpoint(req *network.DeleteEndpointRequest) error {
 	}
 
 	if err := d.stopEndpoint(endpoint); err != nil {
-		logger.Infof("Warning: failed to stop endpoint: %v", err)
+		logger.Warnf("Failed to stop endpoint: %v", err)
 	}
 	return nil
 }
@@ -304,7 +304,7 @@ func (d *Driver) Leave(req *network.LeaveRequest) error {
 	}
 
 	if err := d.leaveEndpoint(endpoint); err != nil {
-		logger.Infof("Warning: failed to leave: %v", err)
+		logger.Warnf("Failed to leave: %v", err)
 	}
 
 	return nil

@@ -8,14 +8,15 @@ import (
 	"log/slog"
 	"os"
 	"sync"
+	"sync/atomic"
 )
 
 // maxLogBytes caps the plugin log; one rotated copy is kept.
 const maxLogBytes = 50 << 20
 
 var (
-	logger *slog.Logger
-	once   sync.Once
+	current atomic.Pointer[slog.Logger]
+	once    sync.Once
 )
 
 // Init initializes the global logger with file and stdout output.
@@ -32,18 +33,18 @@ func initLogger(logPath string) error {
 	file, err := OpenRotating(logPath, maxLogBytes)
 	if err != nil {
 		// Fall back to stdout only
-		logger = slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		current.Store(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 			Level: slog.LevelDebug,
-		}))
+		})))
 		return err
 	}
 
 	// Create multi-writer for both file and stdout
 	multiWriter := io.MultiWriter(file, os.Stdout)
 
-	logger = slog.New(slog.NewTextHandler(multiWriter, &slog.HandlerOptions{
+	current.Store(slog.New(slog.NewTextHandler(multiWriter, &slog.HandlerOptions{
 		Level: slog.LevelDebug,
-	}))
+	})))
 
 	return nil
 }
@@ -54,7 +55,13 @@ func Get() *slog.Logger {
 		// Default initialization to /data/plugin.log
 		_ = initLogger("/data/plugin.log")
 	})
-	return logger
+	return current.Load()
+}
+
+// SetOutput sends the log to w instead, for tests.
+func SetOutput(w io.Writer) {
+	once.Do(func() {})
+	current.Store(slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: slog.LevelDebug})))
 }
 
 // Debugf logs at debug level with printf-style formatting.

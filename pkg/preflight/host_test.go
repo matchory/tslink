@@ -145,11 +145,12 @@ func TestWrite(t *testing.T) {
 	failed, err := Write(&buf, []Result{
 		{Property: "E1", Status: OK, Detail: "fine"},
 		{Property: "E9", Status: Info, Detail: "off"},
+		{Property: "E7", Status: Unknown, Detail: "cannot check"},
 	})
 	if err != nil || failed {
 		t.Fatalf("Write = %v, %v; want not failed", failed, err)
 	}
-	if want := "E1  ok        fine\nE9  info      off\n"; buf.String() != want {
+	if want := "E1  ok        fine\nE9  info      off\nE7  unknown   cannot check\n"; buf.String() != want {
 		t.Errorf("Write printed %q, want %q", buf.String(), want)
 	}
 	for _, s := range []Status{Violated, Error} {

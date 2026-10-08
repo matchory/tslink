@@ -119,7 +119,8 @@ func runDiag(args []string) {
 }
 
 // runPreflight checks the environment properties, prints the results and
-// returns the exit code: 1 if a property is violated or could not be checked.
+// returns the exit code: 1 if a property is violated, or a check failed to
+// run; unknown does not fail it.
 func runPreflight(ctx context.Context, env preflight.Env, w io.Writer) int {
 	failed, err := preflight.Write(w, preflight.Check(ctx, env))
 	if err != nil || failed {
@@ -151,16 +152,19 @@ Diagnostics:
 
 Preflight:
   'diag --preflight' checks the environment properties tslink's guarantees
-  rely on (SECURITY.md). It needs the Docker API and the host's network:
+  rely on (SECURITY.md). ghcr.io/matchory/tslink:latest is a Docker plugin
+  tag, not an image docker run can pull; build the image from a checkout of
+  the repository instead:
 
+    docker build -t tslink-preflight -f docker/Dockerfile .
     docker run --rm --network host --cap-add NET_ADMIN \
       -v /var/run/docker.sock:/var/run/docker.sock \
       -v /var/lib/docker-plugins/tailscale:/data \
-      --entrypoint /tslink ghcr.io/matchory/tslink:latest diag --preflight
+      --entrypoint /tslink tslink-preflight diag --preflight
 
   Add -v <shared dir>:/shared:ro --shared-dir /shared to check the shared
-  certificate directory. It exits non-zero if a property is violated or
-  could not be checked.
+  certificate directory. It exits non-zero if a property is violated, or a
+  check failed to run; unknown does not fail it.
 
 `)
 }

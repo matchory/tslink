@@ -24,8 +24,9 @@ var protectedTrees = []string{
 	"/var/lib/docker", "/var/lib/docker-plugins",
 }
 
-// checkContainers checks E1, E2 and E4 on the running containers attached to
-// a tslink network.
+// checkContainers checks E1, E2 and E4 on the containers attached, directly
+// or through another container's network namespace, to a network of a
+// tslink plugin.
 func checkContainers(ctx context.Context, d DockerAPI) []Result {
 	containers, err := tslinkContainers(ctx, d)
 	if err != nil {
@@ -35,15 +36,17 @@ func checkContainers(ctx context.Context, d DockerAPI) []Result {
 		}
 		return results
 	}
-	return []Result{
-		checkPrivileges(containers),
-		checkMounts(containers),
-		checkStackLabels(containers),
+	mounts, err := checkMounts(ctx, d, containers)
+	if err != nil {
+		mounts = Result{Property: "E2", Status: Error, Detail: err.Error()}
 	}
+	return []Result{checkPrivileges(containers), mounts, checkStackLabels(containers)}
 }
 
-// tslinkContainers returns the running containers attached to a network of a
-// tslink plugin. Containers and networks removed meanwhile are left out.
+// tslinkContainers returns the containers attached, directly or through
+// another container's network namespace, to a network of a tslink plugin,
+// in any state (including stopped and created-but-never-started).
+// Containers and networks removed meanwhile are left out.
 func tslinkContainers(ctx context.Context, d DockerAPI) ([]container.InspectResponse, error) {
 	plugins, err := tslinkPlugins(ctx, d)
 	if err != nil {
@@ -53,18 +56,17 @@ func tslinkContainers(ctx context.Context, d DockerAPI) ([]container.InspectResp
 	for _, p := range plugins {
 		own[p.Name] = true
 	}
-	list, err := d.ContainerList(ctx, dockerclient.ContainerListOptions{})
+	list, err := d.ContainerList(ctx, dockerclient.ContainerListOptions{All: true})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list containers: %w", err)
 	}
-	drivers := make(map[string]string)
+	attached, err := attachedIDs(ctx, d, list.Items, own)
+	if err != nil {
+		return nil, err
+	}
 	var out []container.InspectResponse
 	for _, c := range list.Items {
-		attached, err := onTslink(ctx, d, c, own, drivers)
-		if err != nil {
-			return nil, err
-		}
-		if !attached {
+		if !attached[c.ID] {
 			continue
 		}
 		res, err := d.ContainerInspect(ctx, c.ID, dockerclient.ContainerInspectOptions{})
@@ -79,9 +81,60 @@ func tslinkContainers(ctx context.Context, d DockerAPI) ([]container.InspectResp
 	return out, nil
 }
 
-// onTslink reports whether c is attached to a network whose driver is in own.
-// drivers caches the driver of each network ID.
-func onTslink(
+// attachedIDs returns, for every container in items, whether it is attached
+// to a network whose driver is in own: directly, or by sharing the network
+// namespace of a container that is (as --network container:<ref> does).
+func attachedIDs(
+	ctx context.Context, d DockerAPI, items []container.Summary, own map[string]bool,
+) (map[string]bool, error) {
+	drivers := make(map[string]string)
+	attached := make(map[string]bool, len(items))
+	for _, c := range items {
+		onNet, err := onTslinkNetwork(ctx, d, c, own, drivers)
+		if err != nil {
+			return nil, err
+		}
+		attached[c.ID] = onNet
+	}
+	byName := make(map[string]string, len(items)) // container name (no slash) -> ID
+	for _, c := range items {
+		for _, name := range c.Names {
+			byName[strings.TrimPrefix(name, "/")] = c.ID
+		}
+	}
+	// Propagate through network_mode: container:<ref>, to a fixed point: a
+	// chain of such references, however unusual, resolves fully.
+	for range items {
+		changed := false
+		for _, c := range items {
+			if attached[c.ID] {
+				continue
+			}
+			mode := container.NetworkMode(c.HostConfig.NetworkMode)
+			if !mode.IsContainer() {
+				continue
+			}
+			targetID := mode.ConnectedContainer()
+			if id, ok := byName[targetID]; ok {
+				targetID = id
+			}
+			if attached[targetID] {
+				attached[c.ID] = true
+				changed = true
+			}
+		}
+		if !changed {
+			break
+		}
+	}
+	return attached, nil
+}
+
+// onTslinkNetwork reports whether c is directly attached to a network whose
+// driver is in own. drivers caches the driver of each network ID. A
+// container created but never started reports no network ID of its own, so
+// the network's name (the map key) identifies it instead.
+func onTslinkNetwork(
 	ctx context.Context,
 	d DockerAPI,
 	c container.Summary,
@@ -92,21 +145,25 @@ func onTslink(
 		return false, nil
 	}
 	attached := false
-	for _, ep := range c.NetworkSettings.Networks {
+	for name, ep := range c.NetworkSettings.Networks {
 		if ep == nil {
 			continue
 		}
-		driver, ok := drivers[ep.NetworkID]
+		id := ep.NetworkID
+		if id == "" {
+			id = name
+		}
+		driver, ok := drivers[id]
 		if !ok {
-			res, err := d.NetworkInspect(ctx, ep.NetworkID, dockerclient.NetworkInspectOptions{})
+			res, err := d.NetworkInspect(ctx, id, dockerclient.NetworkInspectOptions{})
 			switch {
 			case cerrdefs.IsNotFound(err):
 			case err != nil:
-				return false, fmt.Errorf("failed to inspect network %s: %w", ep.NetworkID, err)
+				return false, fmt.Errorf("failed to inspect network %s: %w", id, err)
 			default:
 				driver = res.Network.Driver
 			}
-			drivers[ep.NetworkID] = driver
+			drivers[id] = driver
 		}
 		attached = attached || own[driver]
 	}
@@ -161,25 +218,62 @@ func exposes(source string) bool {
 	return false
 }
 
-// checkMounts checks E2: no container bind-mounts protected host state or
-// shares the host's PID namespace.
-func checkMounts(containers []container.InspectResponse) Result {
+// checkMounts checks E2: no container bind-mounts protected host state,
+// directly or through a bind-backed local volume, or shares the host's PID
+// namespace.
+func checkMounts(
+	ctx context.Context,
+	d DockerAPI,
+	containers []container.InspectResponse,
+) (Result, error) {
 	var violations []string
 	for _, c := range containers {
 		for _, m := range c.Mounts {
-			if string(m.Type) == "bind" && exposes(m.Source) {
+			switch {
+			case string(m.Type) == "bind" && exposes(m.Source):
 				violations = append(
 					violations,
 					fmt.Sprintf("%s: mounts %s", containerName(c), m.Source),
 				)
+			case string(m.Type) == "volume" && m.Driver == "local":
+				device, err := bindVolumeDevice(ctx, d, m.Name)
+				if err != nil {
+					return Result{}, err
+				}
+				if device != "" && exposes(device) {
+					violations = append(violations, fmt.Sprintf(
+						"%s: volume %s mounts %s", containerName(c), m.Name, device,
+					))
+				}
 			}
 		}
 		if c.HostConfig != nil && string(c.HostConfig.PidMode) == "host" {
 			violations = append(violations, containerName(c)+": shares the host's PID namespace")
 		}
 	}
-	return outcome("E2", violations,
-		"no container on a tslink network mounts protected host paths or shares the host's PIDs")
+	return outcome(
+		"E2",
+		violations,
+		"no container on a tslink network mounts protected host paths or shares the host's PIDs",
+	), nil
+}
+
+// bindVolumeDevice returns the host path a local-driver volume bind-mounts
+// (`docker volume create -o type=none -o o=bind -o device=...`), or "" if it
+// is not bind-backed. A volume removed meanwhile is treated the same as one
+// that is not bind-backed.
+func bindVolumeDevice(ctx context.Context, d DockerAPI, name string) (string, error) {
+	res, err := d.VolumeInspect(ctx, name, dockerclient.VolumeInspectOptions{})
+	if cerrdefs.IsNotFound(err) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("failed to inspect volume %s: %w", name, err)
+	}
+	if res.Volume.Driver != "local" || !strings.Contains(res.Volume.Options["o"], "bind") {
+		return "", nil
+	}
+	return res.Volume.Options["device"], nil
 }
 
 // checkStackLabels checks what it can of E4: Swarm tasks without a stack

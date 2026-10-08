@@ -38,7 +38,7 @@ func Check(ctx context.Context, env Env) []Result {
 }
 
 // Write prints one line per result and reports whether any property is
-// violated or could not be checked.
+// violated, or a check failed to run; unknown does not fail it.
 func Write(w io.Writer, results []Result) (bool, error) {
 	failed := false
 	for _, r := range results {

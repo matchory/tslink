@@ -8,6 +8,7 @@ import (
 	"github.com/moby/moby/api/types/container"
 	dockernetwork "github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/api/types/plugin"
+	"github.com/moby/moby/api/types/volume"
 	dockerclient "github.com/moby/moby/client"
 )
 
@@ -15,7 +16,9 @@ import (
 type fakeDocker struct {
 	plugins    []plugin.Plugin
 	containers []container.InspectResponse
-	networks   map[string]string // network ID -> driver
+	networks   map[string]string        // network ID -> driver
+	volumes    map[string]volume.Volume // volume name -> volume
+	stopped    map[string]bool          // container ID -> not currently running
 	pluginErr  error
 	gone       map[string]bool // containers and networks removed after the listing
 }
@@ -27,6 +30,8 @@ func newFakeDocker() *fakeDocker {
 			Config: plugin.Config{Entrypoint: []string{"/tslink"}},
 		}},
 		networks: map[string]string{"tn": "tslink:latest", "bridge": "bridge"},
+		volumes:  map[string]volume.Volume{},
+		stopped:  map[string]bool{},
 		gone:     map[string]bool{},
 	}
 }
@@ -41,16 +46,24 @@ func (f *fakeDocker) PluginList(
 }
 
 func (f *fakeDocker) ContainerList(
-	context.Context, dockerclient.ContainerListOptions,
+	_ context.Context, opts dockerclient.ContainerListOptions,
 ) (dockerclient.ContainerListResult, error) {
 	var res dockerclient.ContainerListResult
 	for _, c := range f.containers {
-		res.Items = append(res.Items, container.Summary{
-			ID: c.ID,
+		if f.stopped[c.ID] && !opts.All {
+			continue
+		}
+		summary := container.Summary{
+			ID:    c.ID,
+			Names: []string{c.Name},
 			NetworkSettings: &container.NetworkSettingsSummary{
 				Networks: c.NetworkSettings.Networks,
 			},
-		})
+		}
+		if c.HostConfig != nil {
+			summary.HostConfig.NetworkMode = string(c.HostConfig.NetworkMode)
+		}
+		res.Items = append(res.Items, summary)
 	}
 	return res, nil
 }
@@ -82,7 +95,19 @@ func (f *fakeDocker) NetworkInspect(
 	}, nil
 }
 
-// add adds a running container on the networks with the given IDs.
+func (f *fakeDocker) VolumeInspect(
+	_ context.Context, name string, _ dockerclient.VolumeInspectOptions,
+) (dockerclient.VolumeInspectResult, error) {
+	v, ok := f.volumes[name]
+	if !ok {
+		return dockerclient.VolumeInspectResult{}, cerrdefs.ErrNotFound.WithMessage(
+			"no such volume",
+		)
+	}
+	return dockerclient.VolumeInspectResult{Volume: v}, nil
+}
+
+// add adds a container on the networks with the given IDs.
 func (f *fakeDocker) add(c container.InspectResponse, networks ...string) {
 	c.NetworkSettings = &container.NetworkSettings{
 		Networks: map[string]*dockernetwork.EndpointSettings{},

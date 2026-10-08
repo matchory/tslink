@@ -51,6 +51,11 @@ type DockerAPI interface {
 		networkID string,
 		options dockerclient.NetworkInspectOptions,
 	) (dockerclient.NetworkInspectResult, error)
+	VolumeInspect(
+		ctx context.Context,
+		volumeID string,
+		options dockerclient.VolumeInspectOptions,
+	) (dockerclient.VolumeInspectResult, error)
 }
 
 var _ DockerAPI = (*dockerclient.Client)(nil)

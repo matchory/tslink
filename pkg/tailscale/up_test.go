@@ -78,14 +78,12 @@ func bringUpCommands(t *testing.T, cfg DaemonConfig, prefs string) [][]string {
 	); err != nil {
 		t.Fatal(err)
 	}
+	api := newFakeLocalAPI(t)
+	api.set(statusPath, `{"BackendState":"Running"}`)
+	api.set(prefsPath, prefs)
+	d.lc = api.client()
 	var cmds [][]string
 	d.runCLI = func(_ context.Context, c cliCall) (cliOutput, error) {
-		switch c.args[1] {
-		case "status":
-			return cliOutput{stdout: `{"BackendState":"Running"}`}, nil
-		case "debug":
-			return cliOutput{stdout: prefs}, nil
-		}
 		cmds = append(cmds, c.args[1:])
 		return cliOutput{}, nil
 	}

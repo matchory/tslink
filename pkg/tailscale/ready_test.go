@@ -1,34 +1,28 @@
 package tailscale
 
 import (
-	"context"
-	"errors"
 	"testing"
+
+	"tailscale.com/client/local"
 )
 
-// readinessCLI answers the queries readiness makes as tailscaled would, with
-// the given status, serve config and prefs; an empty status fails.
-func readinessCLI(status, serve, prefs string) func(context.Context, cliCall) (cliOutput, error) {
-	return func(_ context.Context, c cliCall) (cliOutput, error) {
-		switch c.args[1] {
-		case "status":
-			if status == "" {
-				return cliOutput{}, errors.New("tailscaled is not running")
-			}
-			return cliOutput{stdout: status}, nil
-		case "serve":
-			return cliOutput{stdout: serve}, nil
-		case "debug":
-			return cliOutput{stdout: prefs}, nil
-		}
-		return cliOutput{}, errors.New("unexpected command")
-	}
+// readinessAPI answers the queries readiness makes as tailscaled would, with
+// the given status, serve config and prefs; an empty one fails.
+func readinessAPI(t *testing.T, status, serve, prefs string) *local.Client {
+	t.Helper()
+	f := newFakeLocalAPI(t)
+	f.set(statusPath, status)
+	f.set(servePath, serve)
+	f.set(prefsPath, prefs)
+	return f.client()
 }
 
 func TestReadiness(t *testing.T) {
 	const (
-		running  = `{"BackendState":"Running","MagicDNSSuffix":"example.ts.net"}`
-		approved = `{"BackendState":"Running","MagicDNSSuffix":"example.ts.net",` +
+		running = `{"BackendState":"Running",` +
+			`"CurrentTailnet":{"MagicDNSSuffix":"example.ts.net"}}`
+		approved = `{"BackendState":"Running",` +
+			`"CurrentTailnet":{"MagicDNSSuffix":"example.ts.net"},` +
 			`"Self":{"CapMap":{"service-host":[{"svc:other":["100.65.0.2"]},{"svc:ai":["100.65.0.1"]}]}}}`
 		advertised = `{"AdvertiseServices":["svc:ai"]}`
 		serviceTCP = `{"Services":{"svc:ai":{"TCP":{"443":{"HTTPS":true}}}}}`
@@ -125,7 +119,7 @@ func TestReadiness(t *testing.T) {
 			d := newTestDaemon(t, &fakeCLI{}, tt.service)
 			d.config.Endpoints, d.config.Direct = tt.endpoints, tt.direct
 			d.config.CertsDir = t.TempDir()
-			d.runCLI = readinessCLI(tt.status, tt.serve, tt.prefs)
+			d.lc = readinessAPI(t, tt.status, tt.serve, tt.prefs)
 			d.config.gate.drained.Store(tt.drained)
 			if got := d.readiness(t.Context()); got != tt.want {
 				t.Errorf("readiness = %q, want %q", got, tt.want)

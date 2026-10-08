@@ -78,7 +78,10 @@ certificate exists. Each state directory serves one endpoint at a time (`ClaimSt
 **Binaries**: the plugin image ships a pinned Tailscale (from the `tailscale/tailscale` stage of the Dockerfile, which
 Dependabot updates), and tslink runs only these binaries: it downloads nothing at runtime and ignores the old
 `TS_VERSION`/`TS_PATH` settings with a warning. tailscaled's output goes to a rotated `tailscaled.log`, read by
-`drainLines`, which never stops reading: tailscaled blocks on a full pipe.
+`drainLines`, which never stops reading: tailscaled blocks on a full pipe. tslink reads tailscaled's status, prefs and
+serve config through its LocalAPI (`tailscale.com/client/local`, `Daemon.lc`), whose module must be the bundled
+Tailscale's version: `TestLocalAPIClientMatchesBundledTailscale` fails until Dependabot's Dockerfile and Go module
+updates agree. Changes to tailscaled still go through the CLI.
 
 **Readiness endpoint**: with the label `tslink.health=<port>`, `Endpoint.startHealth` serves `GET /ready` on that port
 of the container's loopback, from a listener the plugin opens in the container's netns (`netutil.ListenInNetNS`).

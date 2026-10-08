@@ -94,15 +94,6 @@ func (d *Daemon) runTailscale(ctx context.Context, c cliCall) (cliOutput, error)
 	return execCLI(ctx, d.config.TailscaleBin, c)
 }
 
-// statusJSON runs "tailscale status --json". Its output is not logged: it
-// lists every peer.
-func (d *Daemon) statusJSON(ctx context.Context) (cliOutput, error) {
-	return d.runTailscale(
-		ctx,
-		cliCall{args: []string{"--socket=" + d.socketPath, "status", "--json"}},
-	)
-}
-
 // tailscale runs the tailscale CLI with args, logging its output under prefix,
 // and returns its standard output followed by its standard error.
 func (d *Daemon) tailscale(ctx context.Context, prefix string, args ...string) (string, error) {

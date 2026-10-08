@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strconv"
 	"time"
+
+	"tailscale.com/tailcfg"
 )
 
 // Readiness is how far a node is from serving what its container asks for.
@@ -39,19 +41,12 @@ func (d *Daemon) readiness(ctx context.Context) Readiness {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	out, err := d.statusJSON(ctx)
-	var status struct {
-		BackendState   string `json:"BackendState"`
-		MagicDNSSuffix string `json:"MagicDNSSuffix"`
-		Self           struct {
-			CapMap map[string][]json.RawMessage `json:"CapMap"`
-		} `json:"Self"`
-	}
-	if err != nil || json.Unmarshal([]byte(out.stdout), &status) != nil {
+	status, err := d.lc.StatusWithoutPeers(ctx)
+	if err != nil {
 		return ReadyStarting
 	}
 	switch {
-	case status.BackendState == needsLogin || d.LoggedOut():
+	case status.BackendState == needsLogin || d.nodeNotFoundRecently():
 		return ReadyLoggedOut
 	case status.BackendState != "Running":
 		return ReadyStarting
@@ -59,7 +54,7 @@ func (d *Daemon) readiness(ctx context.Context) Readiness {
 
 	service, direct := d.serveApplied(ctx)
 	if !service || (d.config.Service != "" && !d.advertised(ctx)) {
-		return d.pendingService(status.MagicDNSSuffix)
+		return d.pendingService(magicDNSSuffix(status))
 	}
 	if !direct {
 		return ReadyServingPending
@@ -67,9 +62,12 @@ func (d *Daemon) readiness(ctx context.Context) Readiness {
 	if d.config.Service == "" {
 		return Ready
 	}
+	if status.Self == nil {
+		return ReadyAwaitingApproval
+	}
 	for _, raw := range status.Self.CapMap[serviceHostCap] {
 		var services map[string]json.RawMessage
-		if json.Unmarshal(raw, &services) == nil && services[d.config.Service] != nil {
+		if json.Unmarshal([]byte(raw), &services) == nil && services[d.config.Service] != nil {
 			return Ready
 		}
 	}
@@ -97,54 +95,32 @@ func (d *Daemon) serveApplied(ctx context.Context) (bool, bool) {
 	if len(d.config.Endpoints) == 0 {
 		return true, true
 	}
-	out, err := d.runTailscale(ctx, cliCall{
-		args: []string{"--socket=" + d.socketPath, "serve", "status", "--json"},
-	})
-	var config struct {
-		TCP      map[string]json.RawMessage `json:"TCP"`
-		Services map[string]struct {
-			TCP map[string]json.RawMessage `json:"TCP"`
-			Tun bool                       `json:"Tun"`
-		} `json:"Services"`
-	}
-	if err != nil || json.Unmarshal([]byte(out.stdout), &config) != nil {
+	config, err := d.lc.GetServeConfig(ctx)
+	if err != nil {
 		return false, false
 	}
 	service, direct := true, true
 	for _, ep := range d.config.Endpoints {
+		port, err := strconv.ParseUint(ep.Port, 10, 16)
+		if err != nil {
+			return false, false
+		}
 		if d.config.Service != "" {
-			svc, ok := config.Services[d.config.Service]
-			if !ok || (ep.Proto == protoTun && !svc.Tun) ||
-				(ep.Proto != protoTun && svc.TCP[portKey(ep.Port)] == nil) {
+			svc := config.Services[tailcfg.ServiceName(d.config.Service)]
+			if svc == nil || (ep.Proto == protoTun && !svc.Tun) ||
+				(ep.Proto != protoTun && svc.TCP[uint16(port)] == nil) {
 				service = false
 			}
 		}
-		if d.config.Direct && ep.Proto != protoTun && config.TCP[portKey(ep.Port)] == nil {
+		if d.config.Direct && ep.Proto != protoTun && config.TCP[uint16(port)] == nil {
 			direct = false
 		}
 	}
 	return service, direct
 }
 
-// portKey normalizes a port as the serve config's JSON keys write it.
-func portKey(port string) string {
-	n, err := strconv.ParseUint(port, 10, 16)
-	if err != nil {
-		return port
-	}
-	return strconv.FormatUint(n, 10)
-}
-
 // advertised reports whether the node's prefs advertise its Service.
 func (d *Daemon) advertised(ctx context.Context) bool {
-	out, err := d.runTailscale(ctx, cliCall{
-		args: []string{"--socket=" + d.socketPath, "debug", "prefs"},
-	})
-	var prefs struct {
-		AdvertiseServices []string `json:"AdvertiseServices"`
-	}
-	if err != nil || json.Unmarshal([]byte(out.stdout), &prefs) != nil {
-		return false
-	}
-	return slices.Contains(prefs.AdvertiseServices, d.config.Service)
+	prefs, err := d.lc.GetPrefs(ctx)
+	return err == nil && slices.Contains(prefs.AdvertiseServices, d.config.Service)
 }

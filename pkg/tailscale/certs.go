@@ -7,7 +7,6 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -393,20 +392,15 @@ func servesWeb(endpoints []ServeEndpoint) bool {
 func (d *Daemon) serviceDomain() (string, error) {
 	ctx, cancel := context.WithTimeout(d.ctx, 10*time.Second)
 	defer cancel()
-	out, err := d.statusJSON(ctx)
+	st, err := d.lc.StatusWithoutPeers(ctx)
 	if err != nil {
 		return "", fmt.Errorf("tailscale status failed: %w", err)
 	}
-	var status struct {
-		MagicDNSSuffix string `json:"MagicDNSSuffix"`
-	}
-	if err := json.Unmarshal([]byte(out.stdout), &status); err != nil {
-		return "", fmt.Errorf("failed to parse status: %w", err)
-	}
-	if status.MagicDNSSuffix == "" {
+	suffix := magicDNSSuffix(st)
+	if suffix == "" {
 		return "", errors.New("tailscale status has no MagicDNS suffix: HTTPS needs MagicDNS")
 	}
-	domain := strings.TrimPrefix(d.config.Service, "svc:") + "." + status.MagicDNSSuffix
+	domain := strings.TrimPrefix(d.config.Service, "svc:") + "." + suffix
 	// The domain names files the plugin writes and deletes as root: the
 	// Service name comes from a label, the suffix from control
 	if !dnsName.MatchString(domain) {

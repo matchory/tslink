@@ -22,8 +22,8 @@ PROBE_IP=192.0.2.53
 # host, so it must listen on an address other than loopback
 HOST_IP=${HOST_IP:-$(ip -4 route get 1.1.1.1 | awk '{for (i = 1; i < NF; i++) if ($i == "src") print $(i + 1)}')}
 URL=http://$HOST_IP:8080
-CONTAINERS=(e2e-server e2e-unready e2e-client e2e-outsider e2e-ephemeral e2e-late e2e-dns e2e-resolver e2e-sink e2e-raw e2e-hostsvc)
-NETWORKS=(e2e-alice e2e-bob e2e-ephemeral e2e-nocontrol)
+CONTAINERS=(e2e-server e2e-unready e2e-client e2e-outsider e2e-ephemeral e2e-late e2e-dns e2e-resolver e2e-sink e2e-raw e2e-hostsvc e2e-custombr)
+NETWORKS=(e2e-alice e2e-bob e2e-ephemeral e2e-nocontrol e2e-custombr)
 WORK=$(mktemp -d)
 
 log() { printf '\n=== %s\n' "$*"; }
@@ -310,10 +310,15 @@ host_ts_ip=$(host_ts ip -4)
 docker run -d --name e2e-hostsvc --network host "$ALPINE" sh -c \
 	"printf '#!/bin/sh\necho $MARK\n' >/reply && chmod +x /reply && exec nc -lk -s $host_ts_ip -p 8081 -e /reply"
 
-# plain_reaches IP PORT: whether a container on Docker's default bridge, not
-# on tslink, gets the answer of the service at IP:PORT on the tailnet
+# A bridge network whose bridge the stack file named: the isolation must not
+# depend on interface names
+docker network create -o com.docker.network.bridge.name=tslinkcust0 e2e-custombr >/dev/null
+# plain_reaches IP PORT [NETWORK]: whether a container on Docker's default
+# bridge, or on NETWORK, not on tslink, gets the answer of the service at
+# IP:PORT on the tailnet
 plain_reaches() {
-	[ "$(docker run --rm "$ALPINE" sh -c "timeout 15 nc -w 5 $1 $2 </dev/null" 2>/dev/null)" = "$MARK" ]
+	[ "$(docker run --rm --network "${3:-bridge}" "$ALPINE" \
+		sh -c "timeout 15 nc -w 5 $1 $2 </dev/null" 2>/dev/null)" = "$MARK" ]
 }
 # raw_send IFACE PAYLOAD: e2e-raw sends PAYLOAD to the sink as a raw frame to
 # the gateway of IFACE: "veth" for tslink's, eth0 for docker_gwbridge. The
@@ -363,6 +368,10 @@ probe G1 "a container on Docker's bridge reaches the tailnet through the host" \
 	plain_reaches "$server_ip" 8080
 probe G1 "a container on Docker's bridge reaches the host's tailnet address" \
 	plain_reaches "$host_ts_ip" 8081
+probe G1 "a container on a custom-named bridge reaches the tailnet through the host" \
+	plain_reaches "$server_ip" 8080 e2e-custombr
+probe G1 "a container on a custom-named bridge reaches the host's tailnet address" \
+	plain_reaches "$host_ts_ip" 8081 e2e-custombr
 for ifc in veth eth0; do
 	probe G1 "raw frames through $ifc reach the tailnet" raw_arrives "$ifc" "probe-$ifc"
 done
@@ -376,21 +385,25 @@ log "Containers do not reach each other through tslink's veths"
 sink_veth=$(docker exec e2e-sink sh -c \
 	'ip -4 -o addr show | awk "\$2 ~ /^veth/ {split(\$4, a, \"/\"); print a[1]}"')
 echo "sink veth $sink_veth"
-# plain_send PAYLOAD: e2e-raw sends PAYLOAD to the sink's veth address with an
-# ordinary socket, which leaves through its Docker gateway
+# A container on the custom-named bridge network. Not on tslink: it gets no
+# tailnet IP to wait for
+docker run -d --name e2e-custombr --network e2e-custombr "$PYTHON" sleep 3600 >/dev/null
+# plain_send PAYLOAD [CONTAINER]: CONTAINER (e2e-raw) sends PAYLOAD to the
+# sink's veth address with an ordinary socket, which leaves through its
+# Docker gateway
 plain_send() {
-	docker exec e2e-raw python3 -c 'import socket, sys
+	docker exec "${2:-e2e-raw}" python3 -c 'import socket, sys
 socket.socket(socket.AF_INET, socket.SOCK_DGRAM).sendto(sys.argv[2].encode(), (sys.argv[1], 9999))' \
 		"$sink_veth" "$1"
 }
-# plain_arrives PREFIX: sends with plain_send until the sink has a payload
-# unique to this call, for 30 seconds
+# plain_arrives PREFIX [CONTAINER]: sends with plain_send from CONTAINER
+# until the sink has a payload unique to this call, for 30 seconds
 plain_arrives() {
 	local p="$1-$SECONDS-$RANDOM"
 	local deadline=$((SECONDS + 30))
 	until sink_got "$p"; do
 		[ "$SECONDS" -lt "$deadline" ] || return 1
-		plain_send "$p"
+		plain_send "$p" "${2:-}"
 		sleep 2
 	done
 }
@@ -429,6 +442,8 @@ retry 60 direct || fail "client and server are not directly connected: $(client_
 
 probe_group "veth isolation" veth_isolation_off veth_isolation_restored 60
 probe G2 "an ordinary socket reaches another container's veth" plain_arrives veth-plain
+probe G2 "a container behind a custom-named bridge reaches another container's veth" \
+	plain_arrives veth-custombr e2e-custombr
 for ifc in veth eth0; do
 	probe G2 "raw frames through $ifc reach another container's veth" \
 		veth_raw_arrives "$ifc" "veth-raw-$ifc"

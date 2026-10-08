@@ -6,6 +6,8 @@ import (
 	"slices"
 	"strconv"
 	"testing"
+
+	"tailscale.com/ipn"
 )
 
 // tailscaled exits by itself after "tailscale down" or a logout: killing it
@@ -26,20 +28,26 @@ func TestKillErrorIgnoresExitedProcess(t *testing.T) {
 // Stopping takes the node down before killing tailscaled, and kills it even
 // if that fails, as it does when tailscaled has crashed.
 func TestKillProcessTakesNodeDown(t *testing.T) {
-	for _, cliErr := range []error{nil, errors.New("exit status 1")} {
-		cli := &fakeCLI{err: cliErr}
-		d := newTestDaemon(t, cli, "")
+	for _, crashed := range []bool{false, true} {
+		d := newTestDaemon(t, &fakeCLI{}, "")
+		api := newFakeLocalAPI(t)
+		api.loggedIn(ipn.Prefs{WantRunning: true})
+		if !crashed {
+			d.lc = api.client()
+		}
 		cmd := exec.Command("sleep", "30")
 		if err := cmd.Start(); err != nil {
 			t.Fatal(err)
 		}
 		d.killProcess(cmd)
-		want := []string{"--socket=" + testSocket, "down"}
-		if len(cli.calls) != 1 || !slices.Equal(cli.calls[0], want) {
-			t.Errorf("calls = %q, want %q", cli.calls, want)
+		api.mu.Lock()
+		running := api.prefs.WantRunning
+		api.mu.Unlock()
+		if running == !crashed {
+			t.Errorf("crashed %v: WantRunning = %v", crashed, running)
 		}
 		if cmd.ProcessState == nil {
-			t.Errorf("with down error %v: tailscaled was not killed", cliErr)
+			t.Errorf("crashed %v: tailscaled was not killed", crashed)
 		}
 	}
 }

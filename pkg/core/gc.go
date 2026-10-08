@@ -244,11 +244,11 @@ var logoutNode = func(ctx context.Context, dataDir, dir string) error {
 	if !tailscale.StateExists(dir) {
 		return nil
 	}
-	tailscaleBin, tailscaledBin, err := tailscale.BundledBinaries()
+	_, tailscaledBin, err := tailscale.BundledBinaries()
 	if err != nil {
 		return err
 	}
 	sum := sha256.Sum256([]byte(dir))
 	socket := filepath.Join(dataDir, "sock", "gc-"+hex.EncodeToString(sum[:6])+".sock")
-	return tailscale.LogoutState(ctx, tailscaleBin, tailscaledBin, dir, socket)
+	return tailscale.LogoutState(ctx, tailscaledBin, dir, socket)
 }

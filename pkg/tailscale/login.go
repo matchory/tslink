@@ -3,11 +3,16 @@ package tailscale
 import (
 	"cmp"
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
 	"time"
+
+	"tailscale.com/client/local"
+	"tailscale.com/ipn"
+	"tailscale.com/types/key"
+	"tailscale.com/types/opt"
 
 	"github.com/matchory/tslink/pkg/logger"
 )
@@ -19,14 +24,15 @@ const nodeNotFoundLog = "404: node not found"
 // needsLogin is tailscaled's backend state while the node is logged out.
 const needsLogin = "NeedsLogin"
 
-// bringUp runs "tailscale up" with retry logic for state reuse.
-// First attempts with existing state, then wipes and retries on auth failures.
+// bringUp logs the node in, or brings a node that is still logged in up
+// with its settings. With existing state it first tries without the auth key,
+// then wipes the state and retries on auth failures.
 func (d *Daemon) bringUp() error {
-	// A node that is still logged in comes up without the auth key. The CLI
-	// exchanges an OAuth client secret for a key before it looks at the
-	// node, so passing it would make every restart depend on the API and on
-	// the secret still being valid: a revoked or rotated secret would take
-	// down nodes that have working keys.
+	// A node that is still logged in comes up without the auth key. An OAuth
+	// client secret is exchanged for a key through Tailscale's API, so
+	// using it would make every restart depend on the API and on the secret
+	// still being valid: a revoked or rotated secret would take down nodes
+	// that have working keys.
 	if StateExists(d.config.StateDir) {
 		if st := d.waitBackendState(); st != "" && st != needsLogin && st != "NoState" {
 			if d.registeredAsConfigured() {
@@ -34,18 +40,18 @@ func (d *Daemon) bringUp() error {
 				if err == nil {
 					return nil
 				}
-				logger.Warnf("tailscale set failed, using tailscale up: %v", err)
+				logger.Warnf("Applying settings failed, logging in again: %v", err)
 			}
-			err := d.tryBringUp(false)
+			err := d.logIn(false, false)
 			if err == nil {
 				return nil
 			}
-			logger.Warnf("tailscale up with existing login failed, using the auth key: %v", err)
+			logger.Warnf("Logging in with the existing login failed, using the auth key: %v", err)
 		}
 	}
 
 	// First attempt with existing state
-	err := d.tryBringUp(true)
+	err := d.logIn(true, false)
 	if err == nil {
 		return nil
 	}
@@ -58,8 +64,8 @@ func (d *Daemon) bringUp() error {
 		}
 
 		// Second attempt with fresh state
-		logger.Infof("Retrying tailscale up with fresh state...")
-		return d.tryBringUp(true)
+		logger.Infof("Retrying the login with fresh state...")
+		return d.logIn(true, false)
 	}
 
 	return err
@@ -70,20 +76,13 @@ func (d *Daemon) bringUp() error {
 const defaultControlURL = "https://controlplane.tailscale.com"
 
 // registeredAsConfigured reports whether the node's prefs name the configured
-// control server and tags, so that only settings "tailscale set" changes may
-// differ. Other tags or another server need "tailscale up".
+// control server and tags, so that only its settings may differ. Other tags
+// or another server need a new login.
 func (d *Daemon) registeredAsConfigured() bool {
 	ctx, cancel := context.WithTimeout(d.ctx, 10*time.Second)
 	defer cancel()
-	out, err := d.runTailscale(
-		ctx,
-		cliCall{args: []string{"--socket=" + d.socketPath, "debug", "prefs"}},
-	)
-	var prefs struct {
-		ControlURL    string   `json:"ControlURL"`
-		AdvertiseTags []string `json:"AdvertiseTags"`
-	}
-	if err != nil || json.Unmarshal([]byte(out.stdout), &prefs) != nil {
+	prefs, err := d.lc.GetPrefs(ctx)
+	if err != nil {
 		return false
 	}
 	want := cmp.Or(d.config.LoginServer, defaultControlURL)
@@ -92,26 +91,52 @@ func (d *Daemon) registeredAsConfigured() bool {
 			slices.Sorted(slices.Values(d.config.Tags)))
 }
 
-// applySettings applies the settings "tailscale up" would to a node that is
-// logged in, with "tailscale set". Unlike "up", it leaves the control client
-// running: tailscaled dials control as it starts, and a client restarted
-// within 2 minutes of a dial dials port 443 only, retry after retry,
-// whatever the login server's port.
+// settings returns the node's settings as tailscaled's config file states
+// them, the way the Kubernetes operator configures its proxies. Netfilter is
+// off: the plugin handles routing via veth pairs.
+func (d *Daemon) settings() *ipn.ConfigVAlpha {
+	return &ipn.ConfigVAlpha{
+		Version:             "alpha0",
+		ServerURL:           new(cmp.Or(d.config.LoginServer, defaultControlURL)),
+		Hostname:            new(d.config.Hostname),
+		AcceptDNS:           opt.NewBool(true),
+		AcceptRoutes:        opt.NewBool(true),
+		NetfilterMode:       new("off"),
+		NoStatefulFiltering: opt.NewBool(true),
+	}
+}
+
+// settingsPrefs returns the prefs edit the settings make, as tailscaled would
+// apply them from its config file, but leaving the node's Services alone: the
+// config file always sets them, and tslink's serve configuration advertises
+// them instead.
+func (d *Daemon) settingsPrefs() (*ipn.MaskedPrefs, error) {
+	mp, err := d.settings().ToPrefs()
+	if err != nil {
+		return nil, fmt.Errorf("invalid settings: %w", err)
+	}
+	mp.AdvertiseServicesSet = false
+	mp.RelayServerPortSet = false
+	mp.RelayServerStaticEndpointsSet = false
+	return &mp, nil
+}
+
+// applySettings applies the settings to a node that is logged in. Unlike a
+// new login, editing prefs leaves the control client running: tailscaled
+// dials control as it starts, and a client restarted within 2 minutes of a
+// dial dials port 443 only, retry after retry, whatever the login server's
+// port.
 func (d *Daemon) applySettings() error {
 	ctx, cancel := context.WithTimeout(d.ctx, 60*time.Second)
 	defer cancel()
-	args := append([]string{"--socket=" + d.socketPath, "set"}, d.settingArgs()...)
-	out, err := d.runTailscale(ctx, cliCall{prefix: "set", args: args})
+	mp, err := d.settingsPrefs()
 	if err != nil {
-		return fmt.Errorf("tailscale set failed: %w (output: %s)", err, out.combined())
+		return err
+	}
+	if _, err := d.lc.EditPrefs(ctx, mp); err != nil {
+		return fmt.Errorf("failed to apply settings: %w", err)
 	}
 	return nil
-}
-
-// settingArgs returns the settings that "tailscale up" and "tailscale set"
-// both take. Netfilter is off: the plugin handles routing via veth pairs.
-func (d *Daemon) settingArgs() []string {
-	return []string{"--hostname=" + d.config.Hostname, "--accept-routes", "--netfilter-mode=off"}
 }
 
 // isStateError checks if the error indicates stale/invalid state that should trigger a retry.
@@ -136,13 +161,9 @@ func (d *Daemon) waitBackendState() string {
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		ctx, cancel := context.WithTimeout(d.ctx, 5*time.Second)
-		out, err := d.statusJSON(ctx)
+		st, err := d.lc.StatusWithoutPeers(ctx)
 		cancel()
-		var st struct {
-			BackendState string `json:"BackendState"`
-		}
-		if err == nil && json.Unmarshal([]byte(out.stdout), &st) == nil &&
-			st.BackendState != "NoState" {
+		if err == nil && st.BackendState != "NoState" {
 			return st.BackendState
 		}
 		if time.Now().After(deadline) {
@@ -152,49 +173,108 @@ func (d *Daemon) waitBackendState() string {
 	}
 }
 
-// tryBringUp runs "tailscale up" to connect to the network (single attempt).
-// Without withKey, it relies on the node still being logged in.
-func (d *Daemon) tryBringUp(withKey bool, extraArgs ...string) error {
+// loginTimeout bounds a login, from the settings to a running node.
+var loginTimeout = 60 * time.Second
+
+// logIn logs the node in as "tailscale up" does: it applies the settings and
+// tags, starts tailscaled's login and waits until the node runs. Without
+// withKey, it relies on the node still having its node key. With
+// forceReauth, the node logs in as a new device, with a new node key.
+//
+// The auth key reaches tailscaled over its socket, never through arguments,
+// the environment or a file. An OAuth client secret is first exchanged for a
+// single-use key with the node's tags.
+func (d *Daemon) logIn(withKey, forceReauth bool) error {
 	logger.Infof("Bringing up Tailscale for endpoint %s", d.config.EndpointID)
-
-	// The tailscale CLI communicates with tailscaled via the socket.
-	// Since the socket is on the host filesystem, we don't need nsenter.
-	args := append([]string{"--socket=" + d.socketPath, "up"}, d.settingArgs()...)
-	if withKey {
-		// From stdin: arguments are visible to every process on the host
-		args = append(args, "--authkey=file:/dev/stdin")
-	}
-	if d.config.LoginServer != "" {
-		args = append(args, "--login-server="+d.config.LoginServer)
-	}
-	args = append(args, extraArgs...)
-
-	// Add tags if configured (required for Services)
-	if len(d.config.Tags) > 0 {
-		tagsArg := strings.Join(d.config.Tags, ",")
-		args = append(args, "--advertise-tags="+tagsArg)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(d.ctx, loginTimeout)
 	defer cancel()
 
-	call := cliCall{prefix: "up", args: args}
+	// Watch first, or the notifications the login causes may be missed
+	watcher, err := d.lc.WatchIPNBus(ctx, 0)
+	if err != nil {
+		return fmt.Errorf("failed to watch tailscaled: %w", err)
+	}
+	defer func() {
+		if err := watcher.Close(); err != nil {
+			logger.Debugf("Closing the IPN bus watch failed: %v", err)
+		}
+	}()
+
+	st, err := d.lc.StatusWithoutPeers(ctx)
+	if err != nil {
+		return fmt.Errorf("tailscale status failed: %w", err)
+	}
+	var oldKey key.NodePublic
+	if st.Self != nil {
+		oldKey = st.Self.PublicKey
+	}
+
+	mp, err := d.settingsPrefs()
+	if err != nil {
+		return err
+	}
+	mp.AdvertiseTags, mp.AdvertiseTagsSet = d.config.Tags, true
+	if _, err := d.lc.EditPrefs(ctx, mp); err != nil {
+		return fmt.Errorf("failed to apply settings: %w", err)
+	}
+
+	var authKey string
 	if withKey {
-		key, err := d.config.AuthKey()
+		secret, err := d.config.AuthKey()
 		if err != nil {
 			return err
 		}
-		call.stdin = key
+		if authKey, err = resolveAuthKey(ctx, secret, d.config.Tags); err != nil {
+			return err
+		}
 	}
-	out, err := d.runTailscale(ctx, call)
-	output := out.combined()
-	if err != nil {
-		logger.Errorf("tailscale up failed with output: %s", output)
-		return fmt.Errorf("tailscale up failed: %w (output: %s)", err, output)
+	if err := d.lc.Start(ctx, ipn.Options{AuthKey: authKey}); err != nil {
+		return fmt.Errorf("failed to start the login: %w", err)
+	}
+	if forceReauth || !st.HaveNodeKey {
+		if err := d.lc.StartLoginInteractive(ctx); err != nil {
+			return fmt.Errorf("failed to start the login: %w", err)
+		}
 	}
 
-	logger.Infof("tailscale up succeeded: %s", output)
+	if err := waitRunning(ctx, watcher, oldKey, forceReauth); err != nil {
+		logger.Errorf("Login for endpoint %s failed: %v", d.config.EndpointID, err)
+		return err
+	}
+	logger.Infof("Tailscale is up for endpoint %s", d.config.EndpointID)
 	return nil
+}
+
+// waitRunning waits on the IPN bus until the node runs and, with newKey, has
+// a node key other than oldKey. An error tailscaled reports fails the login.
+func waitRunning(
+	ctx context.Context,
+	watcher *local.IPNBusWatcher,
+	oldKey key.NodePublic,
+	newKey bool,
+) error {
+	running := false
+	for {
+		n, err := watcher.Next()
+		if err != nil {
+			if ctx.Err() != nil {
+				return errors.New("timeout waiting for Tailscale to run")
+			}
+			return fmt.Errorf("lost tailscaled's IPN bus: %w", err)
+		}
+		if n.ErrMessage != nil {
+			return fmt.Errorf("login failed: %s", *n.ErrMessage)
+		}
+		if n.State != nil {
+			running = *n.State == ipn.Running
+		}
+		if n.SelfChange != nil && n.SelfChange.Key != oldKey {
+			newKey = false
+		}
+		if running && !newKey {
+			return nil
+		}
+	}
 }
 
 // Logout logs the node out, which deletes an ephemeral node from the tailnet.
@@ -202,9 +282,8 @@ func (d *Daemon) Logout() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	out, err := d.tailscale(ctx, "logout", "--socket="+d.socketPath, "logout")
-	if err != nil {
-		return fmt.Errorf("tailscale logout failed: %w (output: %s)", err, strings.TrimSpace(out))
+	if err := d.lc.Logout(ctx); err != nil {
+		return fmt.Errorf("tailscale logout failed: %w", err)
 	}
 	return nil
 }
@@ -214,17 +293,23 @@ func (d *Daemon) Logout() error {
 // is not enough: the control plane may just be unreachable, and the node key
 // still valid.
 func (d *Daemon) LoggedOut() bool {
-	if time.Since(time.Unix(d.nodeNotFound.Load(), 0)) < 30*time.Second {
+	if d.nodeNotFoundRecently() {
 		return true
 	}
 	state, err := d.BackendState()
 	return err == nil && state == needsLogin
 }
 
+// nodeNotFoundRecently reports whether control said in the last 30 seconds
+// that it does not know the node.
+func (d *Daemon) nodeNotFoundRecently() bool {
+	return time.Since(time.Unix(d.nodeNotFound.Load(), 0)) < 30*time.Second
+}
+
 // Reauthenticate logs a node in again with the auth key, as a new device, and
 // restores what it serves.
 func (d *Daemon) Reauthenticate() error {
-	if err := d.tryBringUp(true, "--force-reauth"); err != nil {
+	if err := d.logIn(true, true); err != nil {
 		return err
 	}
 	d.nodeNotFound.Store(0)

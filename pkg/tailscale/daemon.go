@@ -17,6 +17,9 @@ import (
 	"syscall"
 	"time"
 
+	"tailscale.com/client/local"
+	"tailscale.com/ipn"
+
 	"github.com/matchory/tslink/pkg/logger"
 )
 
@@ -88,6 +91,9 @@ type Daemon struct {
 	// runCLI runs the tailscale CLI and returns its output; tests replace it.
 	// Nil runs config.TailscaleBin.
 	runCLI func(ctx context.Context, c cliCall) (cliOutput, error)
+
+	// lc talks to tailscaled's LocalAPI on its socket
+	lc *local.Client
 }
 
 // NewDaemon creates a new Daemon instance.
@@ -134,6 +140,7 @@ func NewDaemon(cfg DaemonConfig) (*Daemon, error) {
 	return &Daemon{
 		config:     cfg,
 		socketPath: socketPath,
+		lc:         &local.Client{Socket: socketPath, UseSocketOnly: true},
 		ctx:        ctx,
 		cancel:     cancel,
 	}, nil
@@ -560,8 +567,10 @@ func (d *Daemon) killProcess(cmd *exec.Cmd) {
 	// it anyway
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if out, err := d.tailscale(ctx, "down", "--socket="+d.socketPath, "down"); err != nil {
-		logger.Debugf("tailscale down failed: %v (output: %s)", err, strings.TrimSpace(out))
+	if _, err := d.lc.EditPrefs(ctx, &ipn.MaskedPrefs{
+		WantRunningSet: true,
+	}); err != nil {
+		logger.Debugf("tailscale down failed: %v", err)
 	}
 
 	// Kill the process

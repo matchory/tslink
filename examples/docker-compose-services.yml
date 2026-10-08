@@ -6,16 +6,16 @@
 # Prerequisites:
 #   1. Create a service named "my-app" in Tailscale admin console:
 #      https://login.tailscale.com/admin/services
-#   2. Use a tag-based auth key (required for services)
+#   2. Use an auth key with tags: a Service needs tagged backends
 #
 # Usage:
 #   export TS_AUTHKEY=tskey-auth-xxx
 #   docker-compose -f docker-compose-services.yml up -d
 #   docker-compose -f docker-compose-services.yml up -d --scale backend=3
 #
-# Access via the TailVIP assigned in the admin console.
+# Open the Service at the address that the admin console shows.
 #
-# Requires the plugin installed under the alias tslink (see README)
+# Needs the plugin with the alias tslink (see docs/guides/install-and-upgrade.md)
 
 networks:
   tailnet:

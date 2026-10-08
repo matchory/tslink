@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"tailscale.com/ipn"
 )
 
 const (
@@ -169,10 +171,10 @@ func TestLogoutStateDir(t *testing.T) {
 	var workDir string
 	saved := runLogout
 	t.Cleanup(func() { runLogout = saved })
-	runLogout = func(_ context.Context, tailscaleBin, tailscaledBin, dir, sock string) error {
+	runLogout = func(_ context.Context, tailscaledBin, dir, sock string) error {
 		workDir = dir
-		if tailscaleBin != "ts" || tailscaledBin != "tsd" || sock != socket {
-			t.Errorf("runLogout(%q, %q, _, %q)", tailscaleBin, tailscaledBin, sock)
+		if tailscaledBin != "tsd" || sock != socket {
+			t.Errorf("runLogout(%q, _, %q)", tailscaledBin, sock)
 		}
 		// tailscaled runs on a sanitized copy, never on the node's own state
 		raw, err := os.ReadFile(filepath.Join(dir, "tailscaled.state"))
@@ -198,7 +200,7 @@ func TestLogoutStateDir(t *testing.T) {
 		return errors.New("404 node not found")
 	}
 
-	err := LogoutState(context.Background(), "ts", "tsd", stateDir, socket)
+	err := LogoutState(context.Background(), "tsd", stateDir, socket)
 	if err == nil || !strings.Contains(err.Error(), "node not found") {
 		t.Errorf("err = %v, want the logout's", err)
 	}
@@ -217,7 +219,7 @@ func TestLogoutStateDir(t *testing.T) {
 func TestLogoutStateDirWithoutNode(t *testing.T) {
 	saved := runLogout
 	t.Cleanup(func() { runLogout = saved })
-	runLogout = func(context.Context, string, string, string, string) error {
+	runLogout = func(context.Context, string, string, string) error {
 		t.Error("runLogout called without a node to log out")
 		return nil
 	}
@@ -225,7 +227,6 @@ func TestLogoutStateDirWithoutNode(t *testing.T) {
 	// A start that failed before tailscaled wrote any state
 	if err := LogoutState(
 		context.Background(),
-		"ts",
 		"tsd",
 		t.TempDir(),
 		"unused.sock",
@@ -241,7 +242,7 @@ func TestLogoutStateDirWithoutNode(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	if err := LogoutState(context.Background(), "ts", "tsd", stateDir, "unused.sock"); err != nil {
+	if err := LogoutState(context.Background(), "tsd", stateDir, "unused.sock"); err != nil {
 		t.Errorf("never registered: %v", err)
 	}
 }
@@ -256,37 +257,45 @@ func writeScript(t *testing.T, dir, name, body string) string {
 	return p
 }
 
+// tailscaled runs on the copy with userspace networking and without the auth
+// key, and the node logs out over its LocalAPI.
 // Guards: G5
 func TestRunLogout(t *testing.T) {
-	// Stand-ins: tailscaled creates its socket after a moment and runs until
-	// killed; the CLI fails until the socket exists, and records its args
-	dir := t.TempDir()
+	// Stand-in: tailscaled records its arguments and environment and runs
+	// until killed; the test serves its LocalAPI, which answers once the
+	// stand-in has recorded them, as tailscaled's once it has started
+	dir := shortTempDir(t)
 	log := filepath.Join(dir, "args")
 	tailscaled := writeScript(t, dir, "tailscaled", `
-for a; do case $a in --socket=*) sock=${a#--socket=};; esac; done
 echo "$@" >"`+log+`.daemon"
 env >"`+log+`.env"
-sleep 0.3; touch "$sock"; exec sleep 60
-`)
-	tailscale := writeScript(t, dir, "tailscale", `
-[ -e "${1#--socket=}" ] || exit 1
-echo "$@" >>"`+log+`"
+touch "`+log+`.ready"
+exec sleep 60
 `)
 	t.Setenv("TS_AUTHKEY", "tskey-auth-secret")
+	socket := filepath.Join(dir, "gc.sock")
+	api := serveFakeLocalAPI(t, socket)
+	started := make(chan struct{})
+	go func() {
+		defer close(started)
+		for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); {
+			if _, err := os.Stat(log + ".ready"); err == nil {
+				api.loggedIn(ipn.Prefs{})
+				return
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}()
+	t.Cleanup(func() { <-started })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	socket := filepath.Join(dir, "gc.sock")
-	if err := runLogout(ctx, tailscale, tailscaled, dir, socket); err != nil {
+	if err := runLogout(ctx, tailscaled, dir, socket); err != nil {
 		t.Fatal(err)
 	}
 
-	calls, err := os.ReadFile(log)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.HasSuffix(strings.TrimSpace(string(calls)), "--socket="+socket+" logout") {
-		t.Errorf("CLI calls:\n%s", calls)
+	if st := api.status().BackendState; st != needsLogin {
+		t.Errorf("backend state = %s, want logged out", st)
 	}
 	daemonArgs, err := os.ReadFile(log + ".daemon")
 	if err != nil {
@@ -306,14 +315,13 @@ echo "$@" >>"`+log+`"
 }
 
 func TestRunLogoutDaemonExits(t *testing.T) {
-	dir := t.TempDir()
+	dir := shortTempDir(t)
 	tailscaled := writeScript(t, dir, "tailscaled", "exit 1\n")
-	tailscale := writeScript(t, dir, "tailscale", "exit 1\n")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	start := time.Now()
-	err := runLogout(ctx, tailscale, tailscaled, dir, filepath.Join(dir, "gc.sock"))
+	err := runLogout(ctx, tailscaled, dir, filepath.Join(dir, "gc.sock"))
 	if err == nil || ctx.Err() != nil {
 		t.Errorf("err = %v after %v, want an early error", err, time.Since(start))
 	}
@@ -321,19 +329,33 @@ func TestRunLogoutDaemonExits(t *testing.T) {
 
 func TestRunLogoutFails(t *testing.T) {
 	// Control answers 404 node not found when the node is already gone
-	dir := t.TempDir()
-	tailscaled := writeScript(t, dir, "tailscaled", `
-for a; do case $a in --socket=*) touch "${a#--socket=}";; esac; done
-exec sleep 60
-`)
-	tailscale := writeScript(t, dir, "tailscale", `
-case $2 in logout) echo "404 node not found" >&2; exit 1;; esac
-`)
+	dir := shortTempDir(t)
+	tailscaled := writeScript(t, dir, "tailscaled", "exec sleep 60\n")
+	socket := filepath.Join(dir, "gc.sock")
+	api := serveFakeLocalAPI(t, socket)
+	api.loggedIn(ipn.Prefs{})
+	api.logoutErr = "404 node not found"
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	err := runLogout(ctx, tailscale, tailscaled, dir, filepath.Join(dir, "gc.sock"))
+	err := runLogout(ctx, tailscaled, dir, socket)
 	if err == nil || !strings.Contains(err.Error(), "node not found") {
-		t.Errorf("err = %v, want the CLI's output", err)
+		t.Errorf("err = %v, want tailscaled's", err)
 	}
+}
+
+// shortTempDir returns a temporary directory short enough for a Unix socket.
+func shortTempDir(t *testing.T) string {
+	t.Helper()
+	//nolint:usetesting // t.TempDir is too long for a socket path
+	dir, err := os.MkdirTemp("", "logout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(dir); err != nil {
+			t.Error(err)
+		}
+	})
+	return dir
 }

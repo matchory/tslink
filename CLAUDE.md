@@ -49,15 +49,19 @@ sockets with `0x80000`, and a rule at priority 5200 sends that mark to table 520
 ranges are `unreachable` in the main table, so tailnet traffic leaves through the container's tailscaled (table 52) or
 not at all. Those routes stop sockets, not raw frames, and the host's tailscaled accepts all forwarded traffic, so the
 host enforces it too: `netutil.SetupHostIsolation` drops traffic from Docker's bridges and veths to `tailscale+` and to
-the host's tailnet addresses in the mangle table (`TSLINK_ISOLATE_HOST_TAILNET`), for every container on the host. The
-plugin installs it before serving, the watchdog restores it, and it stays when the plugin stops. The host also forwards
-between tslink's veths, so `netutil.SetupVethIsolation` (always on) lets only tailscaled's WireGuard port, the fixed
-`--port=41641` (`tailscale.WireGuardPort`), through from container interfaces to `10.200.0.0/16`: containers cannot
-reach each other's veth addresses, and colocated nodes keep their direct path instead of falling back to DERP.
+the host's tailnet addresses in the mangle table (`TSLINK_ISOLATE_HOST_TAILNET`), for every container on the host. It
+matches Docker's default interface names and the bridge names Docker's bridge networks set
+(`com.docker.network.bridge.name`), which the driver lists at start, on every watchdog run and on a network `create`
+event, keeping the last list if Docker cannot answer. The plugin installs it before serving, the watchdog restores it,
+and it stays when the plugin stops. The host also forwards between tslink's veths, so `netutil.SetupVethIsolation`
+(always on) drops everything forwarded to `10.200.0.0/16`, whatever interface it arrives on, except replies on
+connections the container opened and tailscaled's WireGuard port, the fixed `--port=41641` (`tailscale.WireGuardPort`),
+from tslink's veths: containers cannot reach each other's veth addresses, and colocated nodes keep their direct path
+instead of falling back to DERP.
 
 **Self-healing**: `Endpoint.RunTailscale` retries a failed start with backoff until the endpoint leaves, unless the
 error is a `permanentError` (wrong stack, invalid hostname). The supervisor restarts a crashed tailscaled, resumes after
-a crash-loop cooldown, and logs a node in again with `--force-reauth` when control answers 404 node not found. After a
+a crash-loop cooldown, and logs a node in again, as a new device, when control answers 404 node not found. After a
 plugin restart, recovery adopts running containers' endpoints, and a node still logged in comes up without the auth
 key, so a rotated or revoked secret does not take it down. Garbage collection then removes ephemeral state (marked by
 an `ephemeral` file), sockets and status files no endpoint uses. It first logs each such ephemeral node out, which
@@ -78,7 +82,17 @@ certificate exists. Each state directory serves one endpoint at a time (`ClaimSt
 **Binaries**: the plugin image ships a pinned Tailscale (from the `tailscale/tailscale` stage of the Dockerfile, which
 Dependabot updates), and tslink runs only these binaries: it downloads nothing at runtime and ignores the old
 `TS_VERSION`/`TS_PATH` settings with a warning. tailscaled's output goes to a rotated `tailscaled.log`, read by
-`drainLines`, which never stops reading: tailscaled blocks on a full pipe.
+`drainLines`, which never stops reading: tailscaled blocks on a full pipe. tslink talks to tailscaled through its
+LocalAPI (`tailscale.com/client/local`, `Daemon.lc`), whose module must be the bundled Tailscale's version:
+`TestLocalAPIClientMatchesBundledTailscale` fails until Dependabot's Dockerfile and Go module updates agree. Only
+`tailscale serve` and `tailscale cert` still run the CLI.
+
+**Login**: `Daemon.logIn` does what `tailscale up` does, over the LocalAPI. The node's settings are an
+`ipn.ConfigVAlpha`, the format of tailscaled's config file (as the Kubernetes operator configures its proxies),
+applied as the prefs edit tailscaled would make of it, minus Services: the config file would set those on every start.
+The tags go in the same edit, and the auth key only into the LocalAPI's start request, never into arguments, the
+environment or a file. An OAuth client secret first becomes a single-use key with the tags (`resolveAuthKey`, Tailscale's
+API). The login waits on the IPN bus for Running, and when logging in as a new device for a new node key.
 
 **Readiness endpoint**: with the label `tslink.health=<port>`, `Endpoint.startHealth` serves `GET /ready` on that port
 of the container's loopback, from a listener the plugin opens in the container's netns (`netutil.ListenInNetNS`).
@@ -92,7 +106,7 @@ container leaves, also after a plugin restart.
 **Lock ordering**: Never hold `driver.mu` when calling endpoint methods (they acquire `endpoint.mu`). Always:
 driver.mu → endpoint.mu, never reversed.
 
-**Long operations outside locks**: Network syscalls and `tailscale up` can block for
+**Long operations outside locks**: Network syscalls and logins can block for
 seconds. Don't hold locks during these.
 
 ## Debugging

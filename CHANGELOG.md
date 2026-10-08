@@ -118,6 +118,19 @@ three- and five-node swarms; see [docs/testing.md](docs/testing.md).
 
 ### Changed
 
+- Documentation restructured into a tutorial, task guides, a reference and
+  explanations under `docs/` (index in [docs/README.md](docs/README.md)),
+  written to a style guide based on ASD-STE100 ([docs/STYLE.md](docs/STYLE.md)).
+  The readme is now a short landing page. `docs/credentials.md` and
+  `docs/node-provisioning.md` point to the new pages.
+- tslink reads tailscaled's status, preferences and serve config through
+  its LocalAPI instead of the `tailscale` CLI, with a client of the bundled
+  Tailscale's version. `tslink diag` no longer needs a `tailscale` binary.
+- tslink logs nodes in and out and takes them down through tailscaled's
+  LocalAPI, as `tailscale up` would, instead of running the CLI. The auth
+  key goes to tailscaled only over its socket, and the plugin itself
+  exchanges an OAuth client secret for a single-use key with the node's
+  tags, through Tailscale's API.
 - Building tslink requires Go 1.27.1 or later.
 - CI reports golangci-lint and govulncheck findings to GitHub code scanning,
   and test results and per-package coverage in each run's summary.
@@ -241,6 +254,23 @@ three- and five-node swarms; see [docs/testing.md](docs/testing.md).
 
 ### Security
 
+- OpenTelemetry, which the Docker client pulls in, is at v1.42.0, with fixes
+  for GO-2026-5506, whose vulnerable code tslink called, and GO-2026-5158.
+- The host's tailnet isolation now covers bridges with their own names
+  too. It matched Docker's default interface names only, so a container on
+  a bridge network whose bridge a stack file named
+  (`com.docker.network.bridge.name`), or on a default bridge renamed in
+  `daemon.json`, reached the tailnet through the host's tailscaled and the
+  host's own tailnet address. tslink takes the names from Docker, at start,
+  on every watchdog run and when a bridge network is created.
+- A container on a bridge network whose bridge has its own name
+  (`com.docker.network.bridge.name`, which a stack file may set) reached
+  any port of a tslink container's veth address: the veth isolation matched
+  Docker's interface names only. It now drops everything forwarded to
+  tslink's veths that answers no connection the container opened, except
+  WireGuard from a colocated node's tailscaled, whatever interface it
+  arrives on. That also stops a LAN host that routes `10.200.0.0/16`
+  through the Docker host.
 - tailscaled no longer stores Taildrop files. They went to its state
   directory on the host, where no container sees them: a peer the control
   server lets send files, or an untagged node's own container, could fill the

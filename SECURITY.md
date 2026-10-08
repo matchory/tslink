@@ -40,15 +40,20 @@ default, `true`.
 
 ### G2: Containers do not reach each other through tslink's veths
 
-Attackers: a process in a container on a tslink network, as root inside it,
-with Docker's default capabilities.
-Assumes: E1, E2, E5.
+Attackers: a process in any container on the host, on a tslink network or
+any other, as root inside it, with Docker's default capabilities; a host on
+the LAN that routes tslink's veth range through the Docker host.
+Assumes: E1, E2, E3, and of E5 the mangle table and the plugin's privileges:
+this isolation is on whatever `TSLINK_ISOLATE_HOST_TAILNET` says.
 
-A container cannot reach another container's tslink veth address, by sockets
-or by raw frames, through its own veth or through Docker's gateway on
-`docker0`, `docker_gwbridge` or a bridge network with Docker's default `br-`
-interface name. Only UDP to tailscaled's WireGuard port (41641) passes, so
-nodes on one host keep their direct path; WireGuard drops anything not from a
+Each tslink container's tailscaled has a veth pair in `10.200.0.0/16`, and
+the host forwards between them. Nobody reaches a tslink container's veth
+address through that, by sockets or by raw frames, past Docker's network
+isolation and the tailnet's ACLs, whatever interface the traffic comes from,
+a bridge with its own name included. The host forwards to tslink's veths only
+replies on connections their container opened, and WireGuard (UDP 41641)
+from other tslink veths, so colocated nodes keep their direct path. That UDP
+port is open to tslink's other containers: WireGuard drops what is not from a
 peer.
 
 ### G4: A stack's nodes get only what its own network grants
@@ -71,10 +76,16 @@ Assumes: E2, E3.
 Manual: OAuth client secrets (the cluster credential) are searched for by
 hand on a test tailnet before each release.
 
-Auth keys and OAuth client secrets do not appear in the plugin's log, the
-command lines of tailscale and tailscaled, tailscaled's environment or log,
-status files or `tslink diag` output. Docker API holders can read them in
-network options and plugin settings; see "Scope".
+Auth keys and OAuth client secrets do not appear in these places:
+
+- the plugin log;
+- the command lines of tailscale and tailscaled;
+- the environment and the log of tailscaled;
+- status files;
+- the output of `tslink diag`.
+
+Persons with access to the Docker API can read them in network options and
+plugin settings. See "Scope".
 
 ### Environment properties
 
@@ -90,13 +101,13 @@ network options and plugin settings; see "Scope".
 | E8 | The cluster credential owns only stack-prefixed tags, stack names follow tslink's rules, and the plugin setting `TSLINK_TAG_SCOPE` is at its default, `exact` | operator, tailnet policy | checks the tag scope setting |
 | E9 | Tailnet Lock is on where peer identity must not depend on the control server | operator | reports whether it is on |
 
-Run `tslink diag --preflight` on every host, each node of a Swarm included,
-to check the properties it can see there: it checks only the host it runs on.
-`README.md` shows how.
+Run `tslink diag --preflight` on each host, and on each node of a Swarm. It
+checks only the properties that it can see on the host where it runs.
+[tslink diag](docs/reference/diag.md) shows how.
 
 ## Scope
 
-tslink is privileged by design. Keep this in mind when judging the impact of a
+tslink is privileged by design. Think of this when you assess the impact of a
 finding:
 
 - **The plugin runs as root on the host** with host networking,
@@ -105,18 +116,19 @@ finding:
   network namespaces and changes interfaces, routes and firewall rules. A flaw
   that lets a container or a tailnet peer influence what the plugin does on
   the host is in scope.
-- **Credentials are visible to Docker API holders.** Tailscale auth keys and
-  OAuth client secrets passed as network options (`tslink.authkey`) or plugin
-  settings (`TS_AUTHKEY`) can be read with `docker network inspect` or
-  `docker plugin inspect`, and on Swarm they are stored in the managers' raft
-  store. Access to the Docker API is root on the node, so this is expected,
-  not a vulnerability. See [docs/credentials.md](docs/credentials.md).
-  Credentials that leak elsewhere, for example into logs, the host's process
-  list or the application container, are in scope.
-- **Isolation between containers and stacks is in scope**: a container
-  reaching the tailnet through the host's or another container's Tailscale, a
-  task choosing tags or an identity its network does not grant it, or a stack
-  using another stack's network or state.
+- **Credentials are visible to persons with access to the Docker API.**
+  `docker network inspect` shows the network option `tslink.authkey`, and
+  `docker plugin inspect` shows the plugin setting `TS_AUTHKEY`. On a Swarm,
+  the Raft store of the managers keeps them. Access to the Docker API is root
+  on the host, so this is expected and not a vulnerability. See
+  [Where credentials are visible](docs/explanation/security-model.md#where-credentials-are-visible).
+  A credential that leaks to another place is in scope, for example to a log,
+  the process list of the host or the application container.
+- **Isolation between containers and stacks is in scope.** Examples:
+  - A container reaches the tailnet through the Tailscale of the host or of
+    another container.
+  - A task gets tags or an identity that its network does not give it.
+  - A stack uses the network or the state of another stack.
 - **State on disk**: `/var/lib/docker-plugins/tailscale` holds each node's
   Tailscale state (its private keys). Anyone who can read it can impersonate
   those nodes.

@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"tailscale.com/client/local"
+
 	"github.com/matchory/tslink/pkg/logger"
 )
 
@@ -29,7 +31,7 @@ const (
 // sanitized, with userspace networking and its socket at socket, so the node
 // does not come up: it contacts control only to log out. A state without a
 // registered node is nothing to log out.
-func LogoutState(ctx context.Context, tailscaleBin, tailscaledBin, stateDir, socket string) error {
+func LogoutState(ctx context.Context, tailscaledBin, stateDir, socket string) error {
 	raw, err := os.ReadFile(filepath.Join(stateDir, "tailscaled.state"))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -63,7 +65,7 @@ func LogoutState(ctx context.Context, tailscaleBin, tailscaledBin, stateDir, soc
 			logger.Warnf("Failed to remove %s: %v", socket, err)
 		}
 	}()
-	return runLogout(ctx, tailscaleBin, tailscaledBin, workDir, socket)
+	return runLogout(ctx, tailscaledBin, workDir, socket)
 }
 
 // logoutState returns a copy of a tailscaled state file with only what
@@ -118,9 +120,9 @@ func logoutState(raw []byte) ([]byte, error) {
 	})
 }
 
-// runLogout runs tailscaled on the state in workDir until `tailscale logout`
-// has run, or ctx ends. It is a variable so tests can replace it.
-var runLogout = func(ctx context.Context, tailscaleBin, tailscaledBin, workDir, socket string) error {
+// runLogout runs tailscaled on the state in workDir until it has logged out,
+// or ctx ends. It is a variable so tests can replace it.
+var runLogout = func(ctx context.Context, tailscaledBin, workDir, socket string) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -149,13 +151,10 @@ var runLogout = func(ctx context.Context, tailscaleBin, tailscaledBin, workDir, 
 		<-exited
 	}()
 
-	cli := func(args ...string) ([]byte, error) {
-		return exec.CommandContext(ctx, tailscaleBin, append([]string{"--socket=" + socket}, args...)...).
-			CombinedOutput()
-	}
-	// The local API answers once the backend has started
+	lc := &local.Client{Socket: socket, UseSocketOnly: true}
+	// The LocalAPI answers once the backend has started
 	for {
-		if _, err := cli("status", "--json"); err == nil {
+		if _, err := lc.StatusWithoutPeers(ctx); err == nil {
 			break
 		}
 		select {
@@ -166,12 +165,8 @@ var runLogout = func(ctx context.Context, tailscaleBin, tailscaledBin, workDir, 
 		case <-time.After(200 * time.Millisecond):
 		}
 	}
-	if out, err := cli("logout"); err != nil {
-		return fmt.Errorf(
-			"tailscale logout failed: %w (output: %s)",
-			err,
-			strings.TrimSpace(string(out)),
-		)
+	if err := lc.Logout(ctx); err != nil {
+		return fmt.Errorf("tailscale logout failed: %w", err)
 	}
 	return nil
 }

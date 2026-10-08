@@ -6,11 +6,11 @@ Report security issues privately, as described in [SECURITY.md](SECURITY.md).
 
 ## Prerequisites
 
-- Go, at the version in [go.mod](go.mod) or newer
-- Docker on Linux, or in a Linux VM (OrbStack, Docker Desktop)
+- Go, at the version in [go.mod](go.mod) or newer.
+- Docker on Linux, or in a Linux VM such as OrbStack or Docker Desktop.
 - A Tailscale auth key from <https://login.tailscale.com/admin/settings/keys>,
-  to try the plugin against a tailnet
-- [golangci-lint](https://golangci-lint.run/), the version CI pins (see below)
+  to try the plugin against a tailnet.
+- [golangci-lint](https://golangci-lint.run/), at the version that CI pins (see below).
 
 ## Build and run locally
 
@@ -33,7 +33,7 @@ docker run --rm --network tailnet alpine sh -c "ip addr && ping -c 2 8.8.8.8"
 docker network rm tailnet
 ```
 
-`make logs` shows the plugin's output. The [readme](README.md#troubleshooting)
+`make logs` shows the plugin's output. The [troubleshooting guide](docs/guides/troubleshoot.md)
 lists where each container's `tailscaled.log` is.
 
 ## Tests
@@ -91,18 +91,33 @@ shellcheck scripts/*.sh
 - Handle every error; log cleanup failures instead of discarding them.
 - Compare errors with `errors.Is` and `errors.As`, and wrap them with `%w`.
 - Never hold `driver.mu` while calling endpoint methods, which take
-  `endpoint.mu`; and keep network syscalls, downloads and `tailscale up`
+  `endpoint.mu`; and keep network syscalls, downloads and logins
   outside locks.
 
-[CLAUDE.md](CLAUDE.md) explains the main design decisions (state directories,
-asynchronous Tailscale start, routing, self-healing, draining), and `specs/`
-holds the design history.
+[Architecture](docs/explanation/architecture.md) explains the main design
+decisions for operators. [CLAUDE.md](CLAUDE.md) adds the details for
+developers, and `specs/` holds the design history.
+
+## Scope
+
+- tslink is for anyone running Docker with Tailscale. Keep code, docs and
+  tests free of assumptions about a particular organisation, cloud provider
+  or configuration tool; state what a host needs as a requirement instead.
+  Docs install the plugin with `--alias tslink` and use `driver: tslink:latest`.
+- Tailscale's control server comes first. headscale is supported on a
+  best-effort basis: the end-to-end test runs against it, but a change
+  should not trade Tailscale behaviour for headscale behaviour.
+- Tests that verify a guarantee in [SECURITY.md](SECURITY.md) name it, and
+  security probes need a control run; see
+  [docs/testing.md](docs/testing.md#security-model).
 
 ## Pull requests
 
 - Keep changes focused, with tests for new behaviour and fixed bugs.
-- Update the readme and docs when behaviour changes, and add an entry under
-  `Unreleased` in [CHANGELOG.md](CHANGELOG.md).
+- When behavior changes, update the documentation. Follow the
+  [style guide](docs/STYLE.md). A new option or label goes in
+  `docs/reference/`, and a new task in `docs/guides/`.
+- Add an entry under `Unreleased` in [CHANGELOG.md](CHANGELOG.md).
 - Dependency updates come from Dependabot.
 
 By contributing, you agree that your contributions are licensed under the

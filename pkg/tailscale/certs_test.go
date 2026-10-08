@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"math/big"
@@ -265,19 +266,19 @@ func TestRequestCertRunsCLI(t *testing.T) {
 }
 
 func TestServiceDomain(t *testing.T) {
-	cli := &fakeCLI{out: `{"MagicDNSSuffix":"example.ts.net"}`}
-	d := newTestDaemon(t, cli, "svc:api")
+	api := newFakeLocalAPI(t)
+	api.set(statusPath, `{"CurrentTailnet":{"MagicDNSSuffix":"example.ts.net"}}`)
+	d := newTestDaemon(t, &fakeCLI{}, "svc:api")
+	d.lc = api.client()
 	got, err := d.serviceDomain()
 	if err != nil || got != "api.example.ts.net" {
 		t.Errorf("serviceDomain() = %q, %v, want api.example.ts.net", got, err)
 	}
-	if want := [][]string{{"status", "--json"}}; !slices.EqualFunc(
-		cli.snapshot(), want, slices.Equal,
-	) {
-		t.Errorf("calls = %q, want %q", cli.snapshot(), want)
+	if want := []string{"GET " + statusPath + "?peers=false"}; !slices.Equal(api.paths(), want) {
+		t.Errorf("requests = %q, want %q", api.paths(), want)
 	}
 
-	cli.out = `{"MagicDNSSuffix":""}`
+	api.set(statusPath, `{"CurrentTailnet":{"MagicDNSSuffix":""}}`)
 	if _, err := d.serviceDomain(); err == nil || !strings.Contains(err.Error(), "MagicDNS") {
 		t.Errorf("without MagicDNS: err = %v, want an error naming MagicDNS", err)
 	}
@@ -296,10 +297,26 @@ func TestServiceDomainRejectsNonDNSNames(t *testing.T) {
 		{"svc:a b", "example.ts.net"},
 		{"svc:", "example.ts.net"},
 	} {
-		cli := &fakeCLI{out: `{"MagicDNSSuffix":"` + c.suffix + `"}`}
-		d := newTestDaemon(t, cli, c.service)
+		suffix, err := json.Marshal(c.suffix)
+		if err != nil {
+			t.Fatal(err)
+		}
+		api := newFakeLocalAPI(t)
+		api.set(statusPath, `{"CurrentTailnet":{"MagicDNSSuffix":`+string(suffix)+`}}`)
+		d := newTestDaemon(t, &fakeCLI{}, c.service)
+		d.lc = api.client()
 		if got, err := d.serviceDomain(); err == nil {
 			t.Errorf("serviceDomain() for %q in %q = %q, want an error", c.service, c.suffix, got)
 		}
+	}
+
+	// Control: the same setup accepts a DNS name, so the cases above fail on
+	// the name alone
+	api := newFakeLocalAPI(t)
+	api.set(statusPath, `{"CurrentTailnet":{"MagicDNSSuffix":"example.ts.net"}}`)
+	d := newTestDaemon(t, &fakeCLI{}, "svc:api")
+	d.lc = api.client()
+	if _, err := d.serviceDomain(); err != nil {
+		t.Errorf("control: serviceDomain() = %v", err)
 	}
 }

@@ -63,7 +63,7 @@ func assertIsolationChain(
 	listed []string,
 ) {
 	t.Helper()
-	want := f.rules(chain)
+	want := f.rules(chain, containerInterfaces)
 	if len(listed) != len(want)+1 {
 		t.Errorf("%s: got %d rules, want %d:\n %q", what, len(listed)-1, len(want), listed)
 		return
@@ -107,7 +107,10 @@ func TestHostIsolationRules(t *testing.T) {
 			}
 			setup := func() {
 				t.Helper()
-				if err := inNetNS(nsPath, SetupHostIsolation); err != nil {
+				if err := inNetNS(
+					nsPath,
+					func() error { return SetupHostIsolation(nil) },
+				); err != nil {
 					t.Fatalf("SetupHostIsolation: %v", err)
 				}
 			}
@@ -143,7 +146,10 @@ func TestHostIsolationRules(t *testing.T) {
 				); err != nil {
 					return err
 				}
-				return i.Delete("mangle", isolateForwardChain, f.rules(isolateForwardChain)[0]...)
+				return i.Delete(
+					"mangle",
+					isolateForwardChain,
+					f.rules(isolateForwardChain, containerInterfaces)[0]...)
 			})
 			setup()
 			s = listIsolation(t, nsPath, f.proto)
@@ -174,7 +180,7 @@ func TestIsolationRulesCoverEveryContainerInterface(t *testing.T) {
 	for _, f := range isolationFamilies {
 		for _, chain := range []string{isolateForwardChain, isolateInputChain} {
 			var drops []string
-			for _, rule := range f.rules(chain) {
+			for _, rule := range f.rules(chain, containerInterfaces) {
 				if rule[len(rule)-1] == "DROP" {
 					drops = append(drops, rule[1])
 				}
@@ -227,20 +233,18 @@ func TestVethIsolationRules(t *testing.T) {
 	}
 	setupHost := func() {
 		t.Helper()
-		if err := inNetNS(nsPath, SetupHostIsolation); err != nil {
+		if err := inNetNS(nsPath, func() error { return SetupHostIsolation(nil) }); err != nil {
 			t.Fatalf("SetupHostIsolation: %v", err)
 		}
 	}
 
 	setupVeth()
 	setupVeth()
-	var want []string
-	for _, ifc := range containerInterfaces {
-		want = append(want,
-			"-A "+vethIsolateChain+" -d 10.200.0.0/16 -i "+ifc+
-				" -p udp -m udp --dport 41641 -j RETURN",
-			"-A "+vethIsolateChain+" -d 10.200.0.0/16 -i "+ifc+" -j DROP",
-		)
+	want := []string{
+		"-A " + vethIsolateChain +
+			" -d 10.200.0.0/16 -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN",
+		"-A " + vethIsolateChain + " -d 10.200.0.0/16 -i veth+ -p udp -m udp --dport 41641 -j RETURN",
+		"-A " + vethIsolateChain + " -d 10.200.0.0/16 -j DROP",
 	}
 	assertRules(t, vethIsolateChain, list(vethIsolateChain),
 		append([]string{"-N " + vethIsolateChain}, want...))
@@ -285,5 +289,28 @@ func TestVethIsolationRules(t *testing.T) {
 	}
 	if got := list("FORWARD"); !slices.Contains(got, jumpVeth) || slices.Contains(got, jumpHost) {
 		t.Errorf("after RemoveHostIsolation: %q", got)
+	}
+}
+
+// The host's tailnet isolation also covers bridges named otherwise than
+// Docker's defaults, which Docker reports: a stack file names a bridge with
+// com.docker.network.bridge.name. Names its patterns match are not repeated,
+// and names that are no interface name, such as iptables patterns, are left
+// out.
+func TestIsolatedInterfaces(t *testing.T) {
+	got := isolatedInterfaces([]string{
+		"custombr0",
+		"docker0",
+		"br-0123456789ab",
+		"vethabc",
+		"e+",
+		"a b",
+		"",
+		"abcdefghijklmnop",
+		"lan.1",
+	})
+	want := append(slices.Clone(containerInterfaces), "custombr0", "lan.1")
+	if !slices.Equal(got, want) {
+		t.Errorf("isolatedInterfaces = %q, want %q", got, want)
 	}
 }

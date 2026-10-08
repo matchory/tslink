@@ -211,6 +211,14 @@ three- and five-node swarms; see [docs/testing.md](docs/testing.md).
 
 ### Security
 
+- Containers no longer reach each other through tslink's veths. The host
+  forwards between the veths' subnets, so a container reached any tslink
+  container's veth address, on any network, past Docker's network isolation
+  and the tailnet's ACLs: with an ordinary socket through its Docker gateway,
+  or with raw frames through its veth. Only tailscaled's WireGuard port passes
+  between them now, so co-located nodes keep their direct connection rather
+  than falling back to DERP; tailscaled listens on the fixed port 41641 for
+  this. The rules are always on and stay when the plugin stops.
 - Containers no longer reach the tailnet through the host's own tailscaled.
   On a host running tailscaled, any container reached the tailnet with the
   host's identity: one on Docker's bridges with an ordinary socket, and one on

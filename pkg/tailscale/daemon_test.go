@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os/exec"
 	"slices"
+	"strconv"
 	"testing"
 )
 
@@ -40,5 +41,16 @@ func TestKillProcessTakesNodeDown(t *testing.T) {
 		if cmd.ProcessState == nil {
 			t.Errorf("with down error %v: tailscaled was not killed", cliErr)
 		}
+	}
+}
+
+// tailscaled listens on a fixed WireGuard port: the host lets only that port
+// through between tslink's veths, so co-located nodes keep a direct path.
+func TestTailscaledArgsFixedPort(t *testing.T) {
+	d := &Daemon{config: DaemonConfig{StateDir: "/s"}, socketPath: "/sock"}
+	args := d.tailscaledArgs()
+	want := "--port=" + strconv.Itoa(WireGuardPort)
+	if !slices.Contains(args, want) {
+		t.Errorf("args %q lack %s", args, want)
 	}
 }

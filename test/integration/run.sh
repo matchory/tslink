@@ -100,8 +100,10 @@ cleanup() {
 	fi
 	# The isolation outlives the plugin, so a restart never opens a window
 	for ipt in iptables ip6tables; do
-		for c in FORWARD:TSLINK-ISOLATE-FWD INPUT:TSLINK-ISOLATE-IN; do
+		for c in FORWARD:TSLINK-ISOLATE-FWD INPUT:TSLINK-ISOLATE-IN FORWARD:TSLINK-VETH-FWD; do
 			sudo "$ipt" -t mangle -D "${c%%:*}" -j "${c#*:}" 2>/dev/null || true
+			# -X deletes only an empty chain
+			sudo "$ipt" -t mangle -F "${c#*:}" 2>/dev/null || true
 			sudo "$ipt" -t mangle -X "${c#*:}" 2>/dev/null || true
 		done
 	done
@@ -272,7 +274,8 @@ plain_reaches() {
 	[ "$(docker run --rm "$ALPINE" sh -c "timeout 15 nc -w 5 $1 $2 </dev/null" 2>/dev/null)" = "$MARK" ]
 }
 # raw_send IFACE PAYLOAD: e2e-raw sends PAYLOAD to the sink as a raw frame to
-# the gateway of IFACE: "veth" for tslink's, eth0 for docker_gwbridge
+# the gateway of IFACE: "veth" for tslink's, eth0 for docker_gwbridge. The
+# sink's tailnet address, or RAW_DST
 raw_send() {
 	docker exec e2e-raw sh -c '
 		if [ "$1" = veth ]; then
@@ -286,7 +289,7 @@ raw_send() {
 		fi
 		ping -c 1 -W 1 "$gw" >/dev/null 2>&1
 		mac=$(awk -v ip="$gw" "\$1 == ip {print \$4}" /proc/net/arp)
-		python3 /rawsend.py "$ifc" "$src" "$mac" "$2" 9999 "$3"' sh "$1" "$sink_ip" "$2"
+		python3 /rawsend.py "$ifc" "$src" "$mac" "$2" 9999 "$3"' sh "$1" "${RAW_DST:-$sink_ip}" "$2"
 }
 sink_got() { docker logs e2e-sink 2>&1 | grep -qF "$1"; }
 # raw_arrives IFACE PAYLOAD: sends until the sink has PAYLOAD, for 30 seconds
@@ -331,5 +334,61 @@ set_isolation true
 if plain_reaches "$server_ip" 8080; then
 	fail "the isolation did not come back with the setting"
 fi
+
+log "Containers do not reach each other through tslink's veths"
+# The host forwards between tslink's veths: without the veth isolation, a
+# container reaches another tslink container's veth address, on any network,
+# past Docker's network isolation and the tailnet's ACLs. e2e-raw is on
+# e2e-bob, the sink on e2e-alice.
+sink_veth=$(docker exec e2e-sink sh -c \
+	'ip -4 -o addr show | awk "\$2 ~ /^veth/ {split(\$4, a, \"/\"); print a[1]}"')
+echo "sink veth $sink_veth"
+# plain_send PAYLOAD: e2e-raw sends PAYLOAD to the sink's veth address with an
+# ordinary socket, which leaves through its Docker gateway
+plain_send() {
+	docker exec e2e-raw python3 -c 'import socket, sys
+socket.socket(socket.AF_INET, socket.SOCK_DGRAM).sendto(sys.argv[2].encode(), (sys.argv[1], 9999))' \
+		"$sink_veth" "$1"
+}
+plain_arrives() {
+	local deadline=$((SECONDS + 30))
+	until sink_got "$1"; do
+		[ "$SECONDS" -lt "$deadline" ] || return 1
+		plain_send "$1"
+		sleep 2
+	done
+}
+veth_probes_blocked() {
+	if plain_arrives "$1-plain"; then
+		fail "an ordinary socket reached another container's veth: $(docker logs e2e-sink 2>&1 | tail -n 1)"
+	fi
+	for ifc in veth eth0; do
+		if RAW_DST=$sink_veth raw_arrives "$ifc" "$1-raw-$ifc"; then
+			fail "raw frames through $ifc reached another container's veth"
+		fi
+	done
+}
+veth_probes_blocked veth-isolated
+
+# Co-located nodes keep their direct path: tailscaled's WireGuard port passes
+client_ts() {
+	sudo "$WORK/plugin/rootfs/usr/local/bin/tailscale" \
+		--socket="$DATA/by-hostname/e2e-client/tailscaled.sock" "$@"
+}
+direct() { client_ts ping --c=10 "$server_ip" 2>&1 | grep -qE 'via [0-9.]+:41641 '; }
+retry 60 direct || fail "client and server are not directly connected: $(client_ts ping --c=3 "$server_ip" 2>&1)"
+
+log "Without the veth isolation, the same probes get through"
+# Shows that the probes above would catch a leak
+sudo iptables -t mangle -D FORWARD -j TSLINK-VETH-FWD
+plain_arrives veth-open-plain || fail "control: an ordinary socket did not reach the sink's veth"
+for ifc in veth eth0; do
+	RAW_DST=$sink_veth raw_arrives "$ifc" "veth-open-raw-$ifc" ||
+		fail "control: raw frames through $ifc did not reach the sink's veth"
+done
+# The watchdog puts the isolation back
+retry 150 sudo iptables -t mangle -C FORWARD -j TSLINK-VETH-FWD ||
+	fail "the watchdog did not restore the veth isolation"
+veth_probes_blocked veth-restored
 
 log "All end-to-end tests passed"

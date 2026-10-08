@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -142,22 +143,12 @@ func (d *Daemon) Start() error {
 		d.config.NetNSPath,
 	)
 
-	statePath := filepath.Join(d.config.StateDir, "tailscaled.state")
 	if err := LinkCertsDir(d.config.StateDir, d.config.CertsDir); err != nil {
 		return err
 	}
 	d.noteSurvivingState()
 
-	// Build tailscaled arguments
-	// Use a real tun device (tailscale0) so containers can use Tailscale networking directly
-	tailscaledArgs := []string{
-		"--state=" + statePath,
-		"--socket=" + d.socketPath,
-		"--tun=tailscale0",
-		"--statedir=" + d.config.StateDir,
-	}
-
-	d.cmd = d.tailscaledCommand(tailscaledArgs)
+	d.cmd = d.tailscaledCommand(d.tailscaledArgs())
 
 	// Set up streaming output - logs each line as it arrives
 	stdoutPipe, err := d.cmd.StdoutPipe()
@@ -414,6 +405,24 @@ func (d *Daemon) servicesFetches() (int64, <-chan struct{}) {
 		d.fetched = make(chan struct{})
 	}
 	return d.fetches, d.fetched
+}
+
+// WireGuardPort is the UDP port every tslink tailscaled listens on, each in
+// its container's namespace. The host lets only this port through between
+// tslink's veths (netutil.SetupVethIsolation), so co-located nodes keep a
+// direct path while containers cannot reach each other's other ports.
+const WireGuardPort = 41641
+
+// tailscaledArgs returns tailscaled's arguments. It uses a real tun device
+// (tailscale0), so containers use Tailscale networking directly.
+func (d *Daemon) tailscaledArgs() []string {
+	return []string{
+		"--state=" + filepath.Join(d.config.StateDir, "tailscaled.state"),
+		"--socket=" + d.socketPath,
+		"--tun=tailscale0",
+		"--statedir=" + d.config.StateDir,
+		"--port=" + strconv.Itoa(WireGuardPort),
+	}
 }
 
 // tailscaledCommand returns the command running tailscaled with args in the

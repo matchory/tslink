@@ -39,8 +39,9 @@ container restarts with the same name, it keeps its Tailscale identity and IP.
 2. Docker event watcher detects container start, gets container name
 3. Tailscale setup runs async in background goroutine
 
-**Veth IP allocation**: Each container gets a unique /30 subnet from 10.200.0.0/16, derived by hashing the endpoint
-ID. This avoids IP conflicts without coordination.
+**Veth IP allocation**: Each container gets a /30 subnet from 10.200.0.0/16: the one its endpoint ID hashes to, or
+the first one after it that no host interface uses, chosen and assigned under one lock. Recovery reads the address back
+from the host veth.
 
 **Routing**: Docker gives the container its usual gateway (`docker_gwbridge` on Swarm); without one, its embedded DNS
 server refuses to resolve public names. tslink's veth carries only tailscaled's own traffic: tailscaled marks its
@@ -49,7 +50,10 @@ ranges are `unreachable` in the main table, so tailnet traffic leaves through th
 not at all. Those routes stop sockets, not raw frames, and the host's tailscaled accepts all forwarded traffic, so the
 host enforces it too: `netutil.SetupHostIsolation` drops traffic from Docker's bridges and veths to `tailscale+` and to
 the host's tailnet addresses in the mangle table (`TSLINK_ISOLATE_HOST_TAILNET`), for every container on the host. The
-plugin installs it before serving, the watchdog restores it, and it stays when the plugin stops.
+plugin installs it before serving, the watchdog restores it, and it stays when the plugin stops. The host also forwards
+between tslink's veths, so `netutil.SetupVethIsolation` (always on) lets only tailscaled's WireGuard port, the fixed
+`--port=41641` (`tailscale.WireGuardPort`), through from container interfaces to `10.200.0.0/16`: containers cannot
+reach each other's veth addresses, and co-located nodes keep their direct path instead of falling back to DERP.
 
 **Self-healing**: `Endpoint.RunTailscale` retries a failed start with backoff until the endpoint leaves, unless the
 error is a `permanentError` (wrong stack, invalid hostname). The supervisor restarts a crashed tailscaled, resumes after

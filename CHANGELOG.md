@@ -211,6 +211,9 @@ three- and five-node swarms; see [docs/testing.md](docs/testing.md).
 
 ### Security
 
+- tailscaled no longer inherits the plugin's `TS_AUTHKEY`. tailscaled does
+  not use it, and its peerapi serves its environment to peers that the
+  control server grants debug access.
 - Tailnet ranges are unreachable in the container's main routing table, so
   tailnet traffic leaves through the container's own tailscaled or not at
   all, never through the host's Tailscale.

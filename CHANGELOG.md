@@ -243,6 +243,8 @@ three- and five-node swarms; see [docs/testing.md](docs/testing.md).
 
 ### Security
 
+- OpenTelemetry, which the Docker client pulls in, is at v1.42.0, with fixes
+  for GO-2026-5506, whose vulnerable code tslink called, and GO-2026-5158.
 - tailscaled no longer stores Taildrop files. They went to its state
   directory on the host, where no container sees them: a peer the control
   server lets send files, or an untagged node's own container, could fill the

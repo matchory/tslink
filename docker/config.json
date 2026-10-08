@@ -102,6 +102,12 @@
 			"value": "true"
 		},
 		{
+			"name": "TSLINK_TAG_SCOPE",
+			"description": "How strictly a cluster-credential stack is confined to its tags: exact (only tag:<stack>) or prefix (also tag:<stack>-*, which lets a stack claim a longer-named stack's base tag)",
+			"settable": ["value"],
+			"value": "exact"
+		},
+		{
 			"name": "TS_VERSION",
 			"description": "Only bundled (shipped in the plugin image) is supported; other values are ignored",
 			"settable": ["value"],

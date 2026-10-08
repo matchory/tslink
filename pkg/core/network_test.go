@@ -273,20 +273,54 @@ func TestCheckTagScope(t *testing.T) {
 	tests := []struct {
 		stack   string
 		tags    []string
+		strict  bool // exact match; false is the prefix opt-out
 		wantErr bool
 	}{
+		// Exact match (the default): a stack uses only tag:<stack>.
+		{stack: "billing", tags: []string{"tag:billing"}, strict: true},
+		{stack: "billing", tags: []string{"tag:billing-api"}, strict: true, wantErr: true},
+		{
+			stack:   "billing",
+			tags:    []string{"tag:billing-api", "tag:billing"},
+			strict:  true,
+			wantErr: true,
+		},
+		{stack: "billing", tags: []string{"tag:shop"}, strict: true, wantErr: true},
+		{stack: "billing", tags: []string{"tag:billingx"}, strict: true, wantErr: true},
+		// The L4 overlap: stack "a" must not claim stack "a-b"'s base tag.
+		{stack: "a", tags: []string{"tag:a-b"}, strict: true, wantErr: true},
+		{stack: "", tags: []string{"tag:billing"}, strict: true, wantErr: true},
+
+		// Prefix opt-out (TSLINK_TAG_SCOPE=prefix): tag:<stack> or tag:<stack>-*.
 		{stack: "billing", tags: []string{"tag:billing"}},
 		{stack: "billing", tags: []string{"tag:billing-api", "tag:billing"}},
 		{stack: "billing", tags: []string{"tag:shop"}, wantErr: true},
-		{stack: "billing", tags: []string{"tag:billing", "tag:shop"}, wantErr: true},
 		{stack: "billing", tags: []string{"tag:billingx"}, wantErr: true},
 		{stack: "bill", tags: []string{"tag:billing"}, wantErr: true},
 		{stack: "", tags: []string{"tag:billing"}, wantErr: true},
+		// The overlap is reachable only in this opt-out mode.
+		{stack: "a", tags: []string{"tag:a-b"}},
 	}
 	for _, tt := range tests {
-		err := CheckTagScope(tt.stack, tt.tags)
+		err := CheckTagScope(tt.stack, tt.tags, tt.strict)
 		if (err != nil) != tt.wantErr {
-			t.Errorf("CheckTagScope(%q, %v) = %v, wantErr %v", tt.stack, tt.tags, err, tt.wantErr)
+			t.Errorf("CheckTagScope(%q, %v, strict=%v) = %v, wantErr %v",
+				tt.stack, tt.tags, tt.strict, err, tt.wantErr)
+		}
+	}
+}
+
+// NewNetwork carries the plugin's tag-scope mode onto the network, so the
+// scope check sees the operator's setting.
+func TestNewNetworkCarriesTagScope(t *testing.T) {
+	for _, strict := range []bool{true, false} {
+		cfg := &Config{DataDir: t.TempDir(), AuthKey: "tskey-auth-x", StrictTagScope: strict}
+		n, err := NewNetwork("net", NetworkOptions{AuthKey: "tskey-auth-x"}, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n.StrictTagScope != strict {
+			t.Errorf("StrictTagScope = %v, want %v", n.StrictTagScope, strict)
 		}
 	}
 }

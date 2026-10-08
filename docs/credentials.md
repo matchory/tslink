@@ -16,9 +16,12 @@ network's `tslink.authkey` takes precedence over the file.
 
 The cluster client owns every stack's tags, so Tailscale no longer stops a
 stack from declaring another stack's tags. tslink does instead: with the
-cluster credential, a stack's tags must be `tag:<stack>` or start with
-`tag:<stack>-`, where `<stack>` is the network's
-`com.docker.stack.namespace`, and networks outside a stack cannot use it. The
+cluster credential, a stack's tags must be exactly `tag:<stack>`, where
+`<stack>` is the network's `com.docker.stack.namespace`, and networks outside
+a stack cannot use it. The plugin setting `TSLINK_TAG_SCOPE=prefix` relaxes
+this to also allow `tag:<stack>-*`, the old behaviour, which lets a stack
+claim a longer-named stack's base tag (stack `a` could take `tag:a-b`); prefer
+a per-stack `tslink.authkey` when a stack needs several tags. The
 boundary stays where it was: whoever can deploy a stack under a name acts as
 that stack. What changes is breadth: root on any node can read a credential
 for every stack's tags, not only those of the stacks running there.

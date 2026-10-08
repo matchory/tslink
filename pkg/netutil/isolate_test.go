@@ -110,8 +110,8 @@ func TestHostIsolationRules(t *testing.T) {
 					t.Fatalf("SetupHostIsolation: %v", err)
 				}
 			}
-			jumpFwd := "-A FORWARD -j " + isolateForwardChain
-			jumpIn := "-A INPUT -j " + isolateInputChain
+			jumpForward := "-A FORWARD -j " + isolateForwardChain
+			jumpInput := "-A INPUT -j " + isolateInputChain
 			other := "-A FORWARD -i dummy0 -j ACCEPT"
 
 			// A rule already in FORWARD, so the jump's position shows
@@ -123,8 +123,8 @@ func TestHostIsolationRules(t *testing.T) {
 			setup()
 			setup()
 			s := listIsolation(t, nsPath, f.proto)
-			assertRules(t, "FORWARD", s.forward, []string{"-P FORWARD ACCEPT", jumpFwd, other})
-			assertRules(t, "INPUT", s.input, []string{"-P INPUT ACCEPT", jumpIn})
+			assertRules(t, "FORWARD", s.forward, []string{"-P FORWARD ACCEPT", jumpForward, other})
+			assertRules(t, "INPUT", s.input, []string{"-P INPUT ACCEPT", jumpInput})
 			assertIsolationChain(t, isolateForwardChain, nsPath, f, isolateForwardChain, s.fwdChain)
 			assertIsolationChain(t, isolateInputChain, nsPath, f, isolateInputChain, s.inChain)
 
@@ -147,7 +147,7 @@ func TestHostIsolationRules(t *testing.T) {
 			setup()
 			s = listIsolation(t, nsPath, f.proto)
 			assertRules(t, "FORWARD after tampering", s.forward,
-				[]string{"-P FORWARD ACCEPT", jumpFwd, other, other})
+				[]string{"-P FORWARD ACCEPT", jumpForward, other, other})
 			assertIsolationChain(t, isolateForwardChain+" after tampering", nsPath, f,
 				isolateForwardChain, s.fwdChain)
 

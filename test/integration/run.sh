@@ -126,12 +126,12 @@ cp "$ROOT/docker/config.json" "$WORK/plugin/"
 id=$(docker create tslink:rootfs)
 docker export "$id" | sudo tar -x -C "$WORK/plugin/rootfs"
 docker rm "$id" >/dev/null
+sudo mkdir -p "$DATA"
 # The CLI packs the rootfs, which is root's like in the image
 sudo docker plugin create "$PLUGIN" "$WORK/plugin"
 # Docker creates /var/run/docker/netns with the first container
 docker run --rm "$ALPINE" true
 docker plugin enable "$PLUGIN"
-sudo mkdir -p "$DATA"
 
 log "Starting headscale at $URL"
 docker run -d --name e2e-headscale --network host \
@@ -150,6 +150,7 @@ log "Starting the host's own tailscaled"
 # Like a cluster node's: on the tailnet, and granted access to alice's
 # containers, so a container using the host's tailscaled would get through
 mkdir -p "$WORK/host-ts"
+# shellcheck disable=SC2024 # the log is ours, the daemon root's
 sudo "$WORK/plugin/rootfs/usr/local/bin/tailscaled" --state="$WORK/host-ts/state" \
 	--socket="$WORK/host-ts/sock" --tun=tailscale-e2e --port=0 >"$WORK/host-ts/log" 2>&1 &
 HOST_TS_PID=$!

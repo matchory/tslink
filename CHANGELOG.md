@@ -245,6 +245,14 @@ three- and five-node swarms; see [docs/testing.md](docs/testing.md).
 
 - OpenTelemetry, which the Docker client pulls in, is at v1.42.0, with fixes
   for GO-2026-5506, whose vulnerable code tslink called, and GO-2026-5158.
+- A container on a bridge network whose bridge has its own name
+  (`com.docker.network.bridge.name`, which a stack file may set) reached
+  any port of a tslink container's veth address: the veth isolation matched
+  Docker's interface names only. It now drops everything forwarded to
+  tslink's veths that answers no connection the container opened, except
+  WireGuard from a colocated node's tailscaled, whatever interface it
+  arrives on. That also stops a LAN host that routes `10.200.0.0/16`
+  through the Docker host.
 - tailscaled no longer stores Taildrop files. They went to its state
   directory on the host, where no container sees them: a peer the control
   server lets send files, or an untagged node's own container, could fill the

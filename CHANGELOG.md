@@ -124,6 +124,11 @@ three- and five-node swarms; see [docs/testing.md](docs/testing.md).
 
 ### Fixed
 
+- Two containers on one host could get the same veth subnet, with even
+  odds at about 150 tslink containers per host, and 1% at about 18. The host
+  then sent the second container's Tailscale traffic to the first, and the
+  second stayed offline. A container now gets the first subnet, from the one
+  its endpoint ID names, that no host interface uses.
 - tailscaled froze when it wrote a line longer than 64 KiB: the plugin
   stopped reading its output, and tailscaled blocked on the full pipe.
 - After a reboot the plugin failed to start, because it mounted

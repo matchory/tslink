@@ -5,6 +5,7 @@ package netutil
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"runtime"
 	"strings"
@@ -249,11 +250,48 @@ func SetupHostRouting(vethHost string, hostIP string) error {
 	}
 
 	if err := netlink.AddrAdd(link, addr); err != nil {
-		// Ignore if already exists
-		logger.Debugf("Warning: failed to add IP to host veth (may already exist): %v", err)
+		return fmt.Errorf("failed to add %s to %s: %w", addr, vethHost, err)
 	}
 
 	return nil
+}
+
+// vethRange holds the subnets of tslink's veth pairs.
+var vethRange = netip.MustParsePrefix("10.200.0.0/16")
+
+// UsedVethSubnets returns the /30 subnets in tslink's veth range that links
+// of the current network namespace have addresses in.
+func UsedVethSubnets() (map[netip.Prefix]bool, error) {
+	addrs, err := netlink.AddrList(nil, syscall.AF_INET)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list addresses: %w", err)
+	}
+	used := map[netip.Prefix]bool{}
+	for _, a := range addrs {
+		ip, ok := netip.AddrFromSlice(a.IP.To4())
+		if ok && vethRange.Contains(ip) {
+			used[netip.PrefixFrom(ip, 30).Masked()] = true
+		}
+	}
+	return used, nil
+}
+
+// VethIPv4 returns the IPv4 address in tslink's veth range of the link name.
+func VethIPv4(name string) (string, error) {
+	link, err := netlink.LinkByName(name)
+	if err != nil {
+		return "", fmt.Errorf("failed to get %s: %w", name, err)
+	}
+	addrs, err := netlink.AddrList(link, syscall.AF_INET)
+	if err != nil {
+		return "", fmt.Errorf("failed to list addresses of %s: %w", name, err)
+	}
+	for _, a := range addrs {
+		if ip, ok := netip.AddrFromSlice(a.IP.To4()); ok && vethRange.Contains(ip) {
+			return ip.String(), nil
+		}
+	}
+	return "", fmt.Errorf("%s has no address in %s", name, vethRange)
 }
 
 // SetupContainerRouting sets up routing inside the container namespace.

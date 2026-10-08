@@ -211,6 +211,7 @@ fi
 # A node that cannot reach its control server is not ready, and says why
 docker network create --driver "$PLUGIN:latest" --opt tslink.loginserver=http://127.0.0.1:9 \
 	--opt tslink.authkey=tskey-auth-unused e2e-nocontrol >/dev/null
+echo tskey-auth-unused >>"$WORK/keys"
 docker run -d --name e2e-unready --network e2e-nocontrol --label tslink.health=9002 "$ALPINE" sleep 3600
 unready() { ready_answer e2e-unready | grep -qE '"state":"(starting|logged-out)"'; }
 retry 60 unready || fail "an unready node does not say so: $(ready_answer e2e-unready)"

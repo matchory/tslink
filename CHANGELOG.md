@@ -109,6 +109,9 @@ three- and five-node swarms; see [docs/testing.md](docs/testing.md).
   tailnet isolation (its setting and iptables chains), how the plugin was
   installed, the shared certificate directory and Tailnet Lock on every
   node. Run it on every node of a Swarm.
+- SECURITY.md publishes two more guarantees: containers do not reach each
+  other through tslink's veths (G2), and a stack's nodes get only what its
+  own network grants (G4).
 
 ### Changed
 

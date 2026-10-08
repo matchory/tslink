@@ -38,6 +38,28 @@ sockets or by raw frames, through tslink's veth or through Docker's gateway.
 This holds with the plugin setting `TSLINK_ISOLATE_HOST_TAILNET` at its
 default, `true`.
 
+### G2: Containers do not reach each other through tslink's veths
+
+Attackers: a process in a container on a tslink network, as root inside it,
+with Docker's default capabilities.
+Assumes: E1, E2, E5.
+
+A container cannot reach another container's tslink veth address, by sockets
+or by raw frames, through its own veth or through Docker's gateway, on any
+network. Only UDP to tailscaled's WireGuard port (41641) passes, so nodes on
+one host keep their direct path; WireGuard drops anything not from a peer.
+
+### G4: A stack's nodes get only what its own network grants
+
+Attackers: the author of a stack file that passed review.
+Assumes: E2, E3, E4, E8.
+
+A network that belongs to a stack takes only that stack's tasks. With the
+cluster credential, a stack's nodes get only the tag `tag:<stack>`, with the
+plugin setting `TSLINK_TAG_SCOPE` at its default, `exact`; `prefix` also
+allows `tag:<stack>-*`, which lets a stack claim a longer-named stack's base
+tag. Networks outside a stack cannot use the cluster credential.
+
 ### G5: Credentials do not leak
 
 Attackers: a process in a container on a tslink network; a tailnet peer; the
@@ -61,7 +83,7 @@ network options and plugin settings; see "Scope".
 | E5 | The host supports the iptables mangle table for IPv4 and IPv6, the plugin runs with the privileges of its `config.json`, and its setting `TSLINK_ISOLATE_HOST_TAILNET` is at its default, `true` | operator | checks the setting and the plugin's isolation chains |
 | E6 | The plugin is installed from a release image pinned by digest | operator | checks the digest pin |
 | E7 | The shared certificate directory is owned by root, mode 0700 or stricter, and reachable only by the cluster's hosts | operator | checks owner and mode, with `--shared-dir` |
-| E8 | The cluster credential owns only stack-prefixed tags, and stack names follow tslink's rules | operator, tailnet policy | does not check |
+| E8 | The cluster credential owns only stack-prefixed tags, stack names follow tslink's rules, and the plugin setting `TSLINK_TAG_SCOPE` is at its default, `exact` | operator, tailnet policy | does not check |
 | E9 | Tailnet Lock is on where peer identity must not depend on the control server | operator | reports whether it is on |
 
 Run `tslink diag --preflight` on every host, each node of a Swarm included,

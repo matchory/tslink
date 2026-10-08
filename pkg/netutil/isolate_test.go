@@ -195,6 +195,8 @@ func TestIsolationRulesCoverEveryContainerInterface(t *testing.T) {
 // Veth isolation keeps containers from reaching each other through tslink's
 // veths: from any container interface to 10.200.0.0/16, only tailscaled's
 // WireGuard port passes, so colocated nodes keep their direct path.
+//
+// Guards: G2
 func TestVethIsolationRules(t *testing.T) {
 	nsPath := newTestNetNS(t)
 	const port = 41641

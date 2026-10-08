@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 
@@ -31,10 +32,7 @@ func Check(ctx context.Context, env Env) []Result {
 		checkIsolation(ctx, env.Docker, env.Run),
 		checkPluginDigest(ctx, env.Docker),
 		checkSharedDir(env.SharedDir),
-		Result{
-			Property: "E8", Status: Unknown,
-			Detail: "the credential's tag ownership is set in the tailnet policy, not on the host",
-		},
+		checkTagScope(ctx, env.Docker),
 		checkTailnetLock(ctx, env.Run, env.DataDir),
 	)
 }
@@ -52,13 +50,95 @@ func Write(w io.Writer, results []Result) (bool, error) {
 	return failed, nil
 }
 
-// isolationChains are the mangle table chains in which the plugin keeps
-// containers off the host's tailnet (pkg/netutil's isolate.go).
-var isolationChains = []string{"TSLINK-ISOLATE-FWD", "TSLINK-ISOLATE-IN"}
+// The chains tslink jumps to first from a built-in chain, and the built-in
+// chains themselves (pkg/netutil's isolate.go).
+const (
+	vethFwdChain    = "TSLINK-VETH-FWD"
+	isolateFwdChain = "TSLINK-ISOLATE-FWD"
+	isolateInChain  = "TSLINK-ISOLATE-IN"
+	forwardBuiltin  = "FORWARD"
+	inputBuiltin    = "INPUT"
+	iptablesCmd     = "iptables"
+	ip6tablesCmd    = "ip6tables"
+)
+
+// tslinkChains are the chains tslink jumps to first from a built-in chain;
+// its jumps lead their chain in any order.
+var tslinkChains = []string{vethFwdChain, isolateFwdChain, isolateInChain}
+
+// isolationJump is a jump the isolation needs at the head of a built-in chain.
+type isolationJump struct {
+	cmd, from, to string
+	always        bool // the veth isolation does not depend on the setting
+}
+
+var isolationJumps = []isolationJump{
+	{iptablesCmd, forwardBuiltin, vethFwdChain, true},
+	{iptablesCmd, forwardBuiltin, isolateFwdChain, false},
+	{iptablesCmd, inputBuiltin, isolateInChain, false},
+	{ip6tablesCmd, forwardBuiltin, isolateFwdChain, false},
+	{ip6tablesCmd, inputBuiltin, isolateInChain, false},
+}
+
+// leadingJumps returns the chains of the leading run of tslink jumps in the
+// listing of a built-in chain (iptables -S).
+func leadingJumps(listing, from string) []string {
+	var jumps []string
+	for line := range strings.SplitSeq(strings.TrimSpace(listing), "\n") {
+		if strings.HasPrefix(line, "-P ") {
+			continue
+		}
+		target, ok := strings.CutPrefix(strings.TrimSpace(line), "-A "+from+" -j ")
+		if !ok || !slices.Contains(tslinkChains, target) {
+			break
+		}
+		jumps = append(jumps, target)
+	}
+	return jumps
+}
+
+// missingJumps returns the isolation's jumps that are not at the head of
+// their chains; with off, only those that do not depend on the setting. A
+// chain whose listing fails is reported once, not once per jump.
+func missingJumps(
+	ctx context.Context,
+	run func(context.Context, string, ...string) ([]byte, error),
+	off bool,
+) []string {
+	var missing []string
+	listings := make(map[string][]string)
+	failed := make(map[string]bool)
+	for _, j := range isolationJumps {
+		if off && !j.always {
+			continue
+		}
+		key := j.cmd + " " + j.from
+		if failed[key] {
+			continue
+		}
+		jumps, listed := listings[key]
+		if !listed {
+			out, err := run(ctx, j.cmd, "-t", "mangle", "-S", j.from)
+			if err != nil {
+				missing = append(missing, fmt.Sprintf("%s -t mangle -S %s: %v: %s",
+					j.cmd, j.from, err, strings.TrimSpace(string(out))))
+				failed[key] = true
+				continue
+			}
+			jumps = leadingJumps(string(out), j.from)
+			listings[key] = jumps
+		}
+		if !slices.Contains(jumps, j.to) {
+			missing = append(missing, fmt.Sprintf("%s: %s does not jump to %s first",
+				j.cmd, j.from, j.to))
+		}
+	}
+	return missing
+}
 
 // checkIsolation checks what it can of E5: no tslink plugin turns the host's
-// tailnet isolation off, and the plugin's isolation chains are in the mangle
-// table for IPv4 and IPv6.
+// tailnet isolation off, and tslink's isolation chains lead the mangle
+// table's FORWARD and INPUT chains for IPv4 and IPv6.
 func checkIsolation(
 	ctx context.Context,
 	d DockerAPI,
@@ -72,21 +152,17 @@ func checkIsolation(
 		return noPlugin("E5")
 	}
 	var violations []string
+	off := false
 	for _, p := range plugins {
 		if isolationOff(p.Settings.Env) {
 			violations = append(violations, p.Name+": "+core.IsolateHostTailnetSetting+"=false")
+			off = true
 		}
 	}
-	for _, cmd := range []string{"iptables", "ip6tables"} {
-		for _, chain := range isolationChains {
-			if out, err := run(ctx, cmd, "-t", "mangle", "-S", chain); err != nil {
-				violations = append(violations, fmt.Sprintf("%s: chain %s is not in the mangle "+
-					"table: %v: %s", cmd, chain, err, strings.TrimSpace(string(out))))
-			}
-		}
-	}
-	return outcome("E5", violations, "the plugin's isolation chains are in the mangle table "+
-		"for IPv4 and IPv6 on this host, and "+core.IsolateHostTailnetSetting+" is on")
+	violations = append(violations, missingJumps(ctx, run, off)...)
+	return outcome("E5", violations, "tslink's isolation chains lead the mangle table's "+
+		"FORWARD and INPUT chains for IPv4 and IPv6 on this host, and "+
+		core.IsolateHostTailnetSetting+" is on")
 }
 
 // isolationOff reports whether a plugin's settings turn the host's tailnet
@@ -123,6 +199,32 @@ func checkPluginDigest(ctx context.Context, d DockerAPI) Result {
 		}
 	}
 	return outcome("E6", violations, "the tslink plugin on this host was installed by digest")
+}
+
+// checkTagScope checks what it can of E8: no tslink plugin widens a
+// cluster-credential stack's tags beyond tag:<stack>. The tailnet policy,
+// which decides which tags the credential owns, is not visible from the host.
+func checkTagScope(ctx context.Context, d DockerAPI) Result {
+	plugins, err := tslinkPlugins(ctx, d)
+	if err != nil {
+		return Result{Property: "E8", Status: Error, Detail: err.Error()}
+	}
+	var violations []string
+	for _, p := range plugins {
+		for _, kv := range p.Settings.Env {
+			k, v, _ := strings.Cut(kv, "=")
+			if k == core.TagScopeSetting && !core.TagScopeStrict(v) {
+				violations = append(violations, p.Name+": "+kv)
+			}
+		}
+	}
+	if len(violations) > 0 {
+		return outcome("E8", violations, "")
+	}
+	return Result{
+		Property: "E8", Status: Unknown,
+		Detail: "the credential's tag ownership is set in the tailnet policy, not on the host",
+	}
 }
 
 // checkSharedDir checks what it can of E7: the shared certificate directory

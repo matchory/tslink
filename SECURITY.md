@@ -56,12 +56,25 @@ from other tslink veths, so colocated nodes keep their direct path. That UDP
 port is open to tslink's other containers: WireGuard drops what is not from a
 peer.
 
+### G4: A stack's nodes get only what its own network grants
+
+Attackers: the author of a stack file that passed review.
+Assumes: E1, E2, E3, E4, E8.
+
+A network that belongs to a stack gives tailnet nodes only to that stack's
+tasks. With the cluster credential, a stack's nodes get only the tag
+`tag:<stack>`, with the plugin setting `TSLINK_TAG_SCOPE` at its default,
+`exact`; `prefix` also allows `tag:<stack>-*`, which lets a stack claim a
+longer-named stack's base tag. Networks outside a stack cannot use the
+cluster credential.
+
 ### G5: Credentials do not leak
 
 Attackers: a process in a container on a tslink network; a tailnet peer; the
 control server.
 Assumes: E2, E3.
-Manual: a search for canary credentials on the test hosts before each release.
+Manual: OAuth client secrets (the cluster credential) are searched for by
+hand on a test tailnet before each release.
 
 Auth keys and OAuth client secrets do not appear in these places:
 
@@ -82,10 +95,10 @@ plugin settings. See "Scope".
 | E2 | No container on a tslink network bind-mounts Docker's socket, `/run/netns`, Docker's data root (`/var/lib/docker` by default), the plugin's data directory or a directory containing them, or shares the host's PID namespace | stack review, CI policy | checks |
 | E3 | Only operators have Docker API access and root on hosts | operator | does not check |
 | E4 | Stacks are deployed with `docker stack deploy`, which sets `com.docker.stack.namespace` | operator, CI | lists Swarm tasks outside stacks |
-| E5 | The host supports the iptables mangle table for IPv4 and IPv6, the plugin runs with the privileges of its `config.json`, and its setting `TSLINK_ISOLATE_HOST_TAILNET` is at its default, `true` | operator | checks the setting and the plugin's isolation chains |
+| E5 | The host supports the iptables mangle table for IPv4 and IPv6, the plugin runs with the privileges of its `config.json`, and its setting `TSLINK_ISOLATE_HOST_TAILNET` is at its default, `true` | operator | checks the setting, and that tslink's isolation chains lead FORWARD and INPUT |
 | E6 | The plugin is installed from a release image pinned by digest | operator | checks the digest pin |
 | E7 | The shared certificate directory is owned by root, mode 0700 or stricter, and reachable only by the cluster's hosts | operator | checks owner and mode, with `--shared-dir` |
-| E8 | The cluster credential owns only stack-prefixed tags, and stack names follow tslink's rules | operator, tailnet policy | does not check |
+| E8 | The cluster credential owns only stack-prefixed tags, stack names follow tslink's rules, and the plugin setting `TSLINK_TAG_SCOPE` is at its default, `exact` | operator, tailnet policy | checks the tag scope setting |
 | E9 | Tailnet Lock is on where peer identity must not depend on the control server | operator | reports whether it is on |
 
 Run `tslink diag --preflight` on each host, and on each node of a Swarm. It

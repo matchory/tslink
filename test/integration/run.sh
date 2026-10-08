@@ -98,6 +98,15 @@ cleanup() {
 		sudo kill "$HOST_TS_PID" 2>/dev/null || true
 		while sudo kill -0 "$HOST_TS_PID" 2>/dev/null; do sleep 1; done
 	fi
+	if [ -n "${veth_hold_pid:-}" ]; then
+		sudo kill "$veth_hold_pid" 2>/dev/null || true
+		while sudo kill -0 "$veth_hold_pid" 2>/dev/null; do sleep 1; done
+	fi
+	if [ -n "${canary_pid:-}" ]; then
+		sudo kill "$canary_pid" 2>/dev/null || true
+		while sudo kill -0 "$canary_pid" 2>/dev/null; do sleep 1; done
+	fi
+	sudo rm -f "$DATA/e2e-canary" "$DATA/status/e2ecanary000.json" || true
 	# The isolation outlives the plugin, so a restart never opens a window
 	for ipt in iptables ip6tables; do
 		for c in FORWARD:TSLINK-ISOLATE-FWD INPUT:TSLINK-ISOLATE-IN FORWARD:TSLINK-VETH-FWD; do
@@ -150,7 +159,12 @@ retry 60 curl -fsS -o /dev/null "$URL/health" || fail "headscale did not come up
 alice=$(hs users create alice -o json | jq -r .id)
 bob=$(hs users create bob -o json | jq -r .id)
 host=$(hs users create host -o json | jq -r .id)
-key() { hs preauthkeys create --user "$1" --reusable --expiration 1h "${@:2}" | tail -n 1; }
+# key USER [FLAGS]: a new pre-auth key for USER, also recorded in $WORK/keys,
+# which the credential scan looks for
+key() {
+	hs preauthkeys create --user "$1" --reusable --expiration 1h "${@:2}" | tail -n 1 |
+		tee -a "$WORK/keys"
+}
 
 log "Starting the host's own tailscaled"
 # Like a cluster node's: on the tailnet, and granted access to alice's
@@ -202,6 +216,7 @@ fi
 # A node that cannot reach its control server is not ready, and says why
 docker network create --driver "$PLUGIN:latest" --opt tslink.loginserver=http://127.0.0.1:9 \
 	--opt tslink.authkey=tskey-auth-unused e2e-nocontrol >/dev/null
+echo tskey-auth-unused >>"$WORK/keys"
 docker run -d --name e2e-unready --network e2e-nocontrol --label tslink.health=9002 "$ALPINE" sleep 3600
 unready() { ready_answer e2e-unready | grep -qE '"state":"(starting|logged-out)"'; }
 retry 60 unready || fail "an unready node does not say so: $(ready_answer e2e-unready)"
@@ -323,7 +338,7 @@ raw_send() {
 		mac=$(awk -v ip="$gw" "\$1 == ip {print \$4}" /proc/net/arp)
 		python3 /rawsend.py "$ifc" "$src" "$mac" "$2" 9999 "$3"' sh "$1" "${RAW_DST:-$sink_ip}" "$2"
 }
-sink_got() { docker logs e2e-sink 2>&1 | grep -qF "$1"; }
+sink_got() { docker logs e2e-sink 2>&1 | grep -F -- "$1" >/dev/null; }
 # raw_arrives IFACE PREFIX: sends until the sink has a payload unique to this
 # call (PREFIX plus a per-call suffix, fixed across its own retries), for 30
 # seconds; a frame sent by an earlier call cannot satisfy a later one
@@ -381,28 +396,41 @@ plain_send() {
 socket.socket(socket.AF_INET, socket.SOCK_DGRAM).sendto(sys.argv[2].encode(), (sys.argv[1], 9999))' \
 		"$sink_veth" "$1"
 }
+# plain_arrives PREFIX [CONTAINER]: sends with plain_send from CONTAINER
+# until the sink has a payload unique to this call, for 30 seconds
 plain_arrives() {
+	local p="$1-$SECONDS-$RANDOM"
 	local deadline=$((SECONDS + 30))
-	until sink_got "$1"; do
+	until sink_got "$p"; do
 		[ "$SECONDS" -lt "$deadline" ] || return 1
-		plain_send "$1" "${2:-}"
+		plain_send "$p" "${2:-}"
 		sleep 2
 	done
 }
-veth_probes_blocked() {
-	if plain_arrives "$1-plain"; then
-		fail "an ordinary socket reached another container's veth: $(docker logs e2e-sink 2>&1 | tail -n 1)"
-	fi
-	if plain_arrives "$1-custombr" e2e-custombr; then
-		fail "a container behind a custom-named bridge reached another container's veth"
-	fi
-	for ifc in veth eth0; do
-		if RAW_DST=$sink_veth raw_arrives "$ifc" "$1-raw-$ifc"; then
-			fail "raw frames through $ifc reached another container's veth"
-		fi
-	done
+veth_raw_arrives() { RAW_DST=$sink_veth raw_arrives "$@"; }
+# veth_isolation_off keeps the jump into the isolation out until
+# veth_isolation_restored: the watchdog restores it every minute, which would
+# block the control run if it came in its middle
+veth_hold_pid=""
+veth_isolation_off() {
+	sudo sh -c 'while :; do
+		iptables -t mangle -D FORWARD -j TSLINK-VETH-FWD 2>/dev/null
+		sleep 0.5
+	done' &
+	veth_hold_pid=$!
 }
-veth_probes_blocked veth-isolated
+stop_veth_hold() {
+	[ -n "$veth_hold_pid" ] || return 0
+	sudo kill "$veth_hold_pid" 2>/dev/null || true
+	while sudo kill -0 "$veth_hold_pid" 2>/dev/null; do sleep 1; done
+	veth_hold_pid=""
+}
+# The watchdog puts the isolation back
+veth_isolation_restored() {
+	stop_veth_hold
+	retry 150 sudo iptables -t mangle -C FORWARD -j TSLINK-VETH-FWD ||
+		fail "the watchdog did not restore the veth isolation"
+}
 
 # Co-located nodes keep their direct path: tailscaled's WireGuard port passes
 client_ts() {
@@ -412,20 +440,22 @@ client_ts() {
 direct() { client_ts ping --c=10 "$server_ip" 2>&1 | grep -qE 'via [0-9.]+:41641 '; }
 retry 60 direct || fail "client and server are not directly connected: $(client_ts ping --c=3 "$server_ip" 2>&1)"
 
-log "Without the veth isolation, the same probes get through"
-# Shows that the probes above would catch a leak
-sudo iptables -t mangle -D FORWARD -j TSLINK-VETH-FWD
-plain_arrives veth-open-plain || fail "control: an ordinary socket did not reach the sink's veth"
-plain_arrives veth-open-custombr e2e-custombr ||
-	fail "control: the container behind a custom-named bridge did not reach the sink's veth"
+probe_group "veth isolation" veth_isolation_off veth_isolation_restored 60
+probe G2 "an ordinary socket reaches another container's veth" plain_arrives veth-plain
+probe G2 "a container behind a custom-named bridge reaches another container's veth" \
+	plain_arrives veth-custombr e2e-custombr
 for ifc in veth eth0; do
-	RAW_DST=$sink_veth raw_arrives "$ifc" "veth-open-raw-$ifc" ||
-		fail "control: raw frames through $ifc did not reach the sink's veth"
+	probe G2 "raw frames through $ifc reach another container's veth" \
+		veth_raw_arrives "$ifc" "veth-raw-$ifc"
 done
-# The watchdog puts the isolation back
-retry 150 sudo iptables -t mangle -C FORWARD -j TSLINK-VETH-FWD ||
-	fail "the watchdog did not restore the veth isolation"
-veth_probes_blocked veth-restored
+run_probes || fail "veth isolation"
+# run_probes checks the first attack again once the isolation is back; the
+# raw frames too
+for ifc in veth eth0; do
+	if veth_raw_arrives "$ifc" "veth-restored-raw-$ifc"; then
+		fail "raw frames through $ifc reached another container's veth after the restore"
+	fi
+done
 
 log "A container cannot store Taildrop files on the host"
 # The sink's node is untagged, so its own container may send it files. They
@@ -449,5 +479,99 @@ case $put in 2*) fail "Taildrop accepted a file from the container ($put)" ;; es
 if sudo grep -rqs tslink-e2e-taildrop "$DATA"; then
 	fail "a Taildrop file reached the host: $(sudo grep -rls tslink-e2e-taildrop "$DATA")"
 fi
+
+log "The preflight checks this host"
+# preflight: tslink diag --preflight against the real plugin, as README shows
+preflight() {
+	docker run --rm --network host --cap-add NET_ADMIN \
+		-v /var/run/docker.sock:/var/run/docker.sock -v "$DATA:/data" \
+		--entrypoint /tslink tslink:rootfs diag --preflight 2>&1 || true
+}
+# preflight_says PROPERTY STATUS
+preflight_says() { preflight | grep -qE "^$1 +$2 "; }
+out=$(preflight)
+echo "$out"
+for p in E1 E2 E4 E5; do
+	grep -qE "^$p +ok " <<<"$out" || fail "preflight: $p is not ok"
+done
+# A plugin created from a directory is not pinned by digest
+grep -qE '^E6 +violated ' <<<"$out" || fail "preflight: E6 does not report the local build"
+# Without the jump into the isolation, E5 is violated until the watchdog
+# puts it back. Removed again on each try: the watchdog may restore it before
+# the preflight looks.
+input_jump_off_violates_e5() {
+	sudo iptables -t mangle -D INPUT -j TSLINK-ISOLATE-IN 2>/dev/null || true
+	preflight_says E5 violated
+}
+retry 10 input_jump_off_violates_e5 ||
+	fail "preflight: E5 ok without the jump into TSLINK-ISOLATE-IN"
+retry 150 preflight_says E5 ok || fail "preflight: E5 not ok after the watchdog restored the isolation"
+
+log "Auth keys stay out of logs, state, processes, diagnostics and containers"
+# creds_in_*: whether an auth key the test created appears where tslink must
+# keep it out. Network options and plugin settings, which Docker API holders
+# can read anyway, are not searched, nor is headscale, which issued the keys.
+# Each scan reads its producer to EOF instead of grep -q, and runs in a
+# subshell without pipefail: under it, a producer that fails, from grep -q's
+# SIGPIPE, a process that exited or a find that could not read one file,
+# turns a found match into a failing pipeline.
+creds_in_data() { sudo grep -rqsF -f "$WORK/keys" "$DATA"; } # logs, status, state
+creds_in_processes() (
+	set +o pipefail
+	local pid
+	for pid in $(pgrep -x tailscaled) $(pgrep -x tslink); do
+		sudo cat "/proc/$pid/cmdline" "/proc/$pid/environ" 2>/dev/null | tr '\0' '\n' |
+			grep -F -f "$WORK/keys" >/dev/null && return 0
+	done
+	return 1
+)
+creds_in_diag() (
+	set +o pipefail
+	docker run --rm -v "$DATA:/data:ro" --entrypoint /tslink tslink:rootfs diag 2>&1 |
+		grep -F -f "$WORK/keys" >/dev/null
+)
+creds_in_containers() (
+	set +o pipefail
+	local c
+	for c in $(docker ps --format '{{.Names}}' --filter name=^e2e- | grep -vx e2e-headscale); do
+		docker exec "$c" sh -c 'tr "\0" "\n" </proc/1/environ
+			find /etc /root /tmp /var /home /opt /srv -xdev -type f -size -2048k \
+				-exec cat {} + 2>/dev/null' | grep -F -f "$WORK/keys" >/dev/null && return 0
+	done
+	return 1
+)
+# canary_key is the first key in $WORK/keys, planted in all four places so
+# each probe above has its own thing to find; canary_pid is a process named
+# and run as tailscaled would be, with the key in its environment, not a real
+# tailscaled.
+canary_key=""
+canary_pid=""
+plant_canaries() {
+	canary_key=$(head -n 1 "$WORK/keys")
+	echo "$canary_key" | sudo tee "$DATA/e2e-canary" >/dev/null
+	sudo mkdir -p "$DATA/status"
+	printf '{"endpoint":"e2ecanary000","hostname":"e2e-canary","state":"failed",' \
+		>"$WORK/canary.json"
+	printf '"attempts":1,"updated":"2026-01-01T00:00:00Z","error":"%s"}' "$canary_key" \
+		>>"$WORK/canary.json"
+	sudo cp "$WORK/canary.json" "$DATA/status/e2ecanary000.json"
+	mkdir -p "$WORK/canary"
+	cp "$(command -v sleep)" "$WORK/canary/tailscaled"
+	sudo env TSLINK_E2E_CANARY="$canary_key" "$WORK/canary/tailscaled" 600 &
+	canary_pid=$!
+	printf '%s' "$canary_key" | docker exec -i e2e-client sh -c 'cat >/tmp/e2e-canary'
+}
+unplant_canaries() {
+	sudo rm -f "$DATA/e2e-canary" "$DATA/status/e2ecanary000.json"
+	docker exec e2e-client rm -f /tmp/e2e-canary
+	sudo kill "$canary_pid" 2>/dev/null || true
+	while sudo kill -0 "$canary_pid" 2>/dev/null; do sleep 1; done
+}
+probe_group "credentials" plant_canaries unplant_canaries 10
+probe G5 "an auth key appears in the plugin's data directory" creds_in_data
+probe G5 "an auth key appears in a process's command line or environment" creds_in_processes
+probe G5 "an auth key appears in tslink diag output" creds_in_diag
+probe G5 "an auth key appears in a container" creds_in_containers
+run_probes || fail "credentials"
 
 log "All end-to-end tests passed"

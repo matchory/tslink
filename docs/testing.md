@@ -56,6 +56,9 @@ account. It checks these properties:
 - A container keeps its identity after a plugin restart.
 - An ephemeral node is removed with its container.
 - The host isolation holds. These checks are probes on `test/security/lib.sh`, with control runs.
+- No auth key that the test creates appears in the data directory of the plugin, in the command lines and the
+  environments of the plugin and of tailscaled, in the output of `tslink diag`, or in the containers. The test plants
+  a key of its own in each place, as the control run for that place.
 
 CI runs the test on each pull request. It does not test Tailscale Services, because headscale does not support them.
 
@@ -81,6 +84,22 @@ Service. It then measures the recovery time.
 - Reset the node, or switch it off.
 
 The cluster tests need a Swarm and a tailnet that are set up for them. Thus they do not run in CI.
+
+## Security testbed
+
+[`test/security/testbed`](../test/security/testbed) provisions one Hetzner Cloud server for the end-to-end test and
+the red team. [`test/security/testbed/README.md`](../test/security/testbed/README.md) lists the prerequisites.
+
+[`test/security/redteam.sh`](../test/security/redteam.sh) does these steps:
+
+1. It copies a working tree to the server.
+2. It runs `test/integration/run.sh`.
+3. It runs the probes in [`test/security/redteam/`](../test/security/redteam), and the probes in a private directory
+   that you give with `--probes`.
+4. It writes a report in `$TSLINK_TEST_DIR/reports/`. Do not commit the report.
+
+The testbed and the red team do not run in CI. Run them by hand. Before a release, follow
+[docs/releasing.md](releasing.md).
 
 ## Fuzzing
 

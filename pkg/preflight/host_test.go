@@ -28,6 +28,20 @@ func fakeRun(
 	}
 }
 
+// isolatedTables answers the mangle listings of a host where tslink's
+// isolation is in force.
+func isolatedTables() map[string]string {
+	return map[string]string{
+		"iptables -t mangle -S FORWARD": "-P FORWARD ACCEPT\n" +
+			"-A FORWARD -j TSLINK-VETH-FWD\n-A FORWARD -j TSLINK-ISOLATE-FWD\n" +
+			"-A FORWARD -i eth0 -j ACCEPT\n",
+		"iptables -t mangle -S INPUT": "-P INPUT ACCEPT\n-A INPUT -j TSLINK-ISOLATE-IN\n",
+		"ip6tables -t mangle -S FORWARD": "-P FORWARD ACCEPT\n" +
+			"-A FORWARD -j TSLINK-ISOLATE-FWD\n",
+		"ip6tables -t mangle -S INPUT": "-P INPUT ACCEPT\n-A INPUT -j TSLINK-ISOLATE-IN\n",
+	}
+}
+
 func testEnv(t *testing.T) Env {
 	t.Helper()
 	data := t.TempDir()
@@ -38,13 +52,11 @@ func testEnv(t *testing.T) Env {
 		t.Fatal(err)
 	}
 	sock := filepath.Join(data, "sock", "abc.sock")
+	answers := isolatedTables()
+	answers["tailscale --socket="+sock+" lock status --json"] = `{"Enabled":true}`
 	return Env{
-		Docker: newFakeDocker(),
-		Run: fakeRun(
-			map[string]string{
-				"tailscale --socket=" + sock + " lock status --json": `{"Enabled":true}`,
-			},
-		),
+		Docker:  newFakeDocker(),
+		Run:     fakeRun(answers),
 		DataDir: data,
 	}
 }
@@ -65,18 +77,79 @@ func TestHostIsolation(t *testing.T) {
 	if r.Status != OK || !strings.Contains(r.Detail, "on this host") {
 		t.Errorf("E5 = %+v, want ok on this host", r)
 	}
-	for _, missing := range []string{
-		"iptables -t mangle -S TSLINK-ISOLATE-FWD",
-		"iptables -t mangle -S TSLINK-ISOLATE-IN",
-		"ip6tables -t mangle -S TSLINK-ISOLATE-FWD",
-		"ip6tables -t mangle -S TSLINK-ISOLATE-IN",
+	for _, tt := range []struct {
+		name, cmd, listing, want string
+	}{
+		{
+			"veth jump missing", "iptables -t mangle -S FORWARD",
+			"-P FORWARD ACCEPT\n-A FORWARD -j TSLINK-ISOLATE-FWD\n", "TSLINK-VETH-FWD",
+		},
+		{
+			"jump behind a foreign rule", "iptables -t mangle -S INPUT",
+			"-P INPUT ACCEPT\n-A INPUT -i lo -j ACCEPT\n-A INPUT -j TSLINK-ISOLATE-IN\n",
+			"TSLINK-ISOLATE-IN",
+		},
+		{
+			"IPv6 forward jump missing", "ip6tables -t mangle -S FORWARD",
+			"-P FORWARD ACCEPT\n", "TSLINK-ISOLATE-FWD",
+		},
+		{
+			"chains in the other order", "iptables -t mangle -S FORWARD",
+			"-P FORWARD ACCEPT\n-A FORWARD -j TSLINK-ISOLATE-FWD\n-A FORWARD -j TSLINK-VETH-FWD\n",
+			"",
+		},
 	} {
-		env.Run = fakeRun(nil, missing)
-		r := result(t, Check(context.Background(), env), "E5")
-		cmd, chain, _ := strings.Cut(missing, " -t mangle -S ")
-		if r.Status != Violated || !strings.Contains(r.Detail, cmd) ||
-			!strings.Contains(r.Detail, chain) {
-			t.Errorf("%s fails: E5 = %+v, want violated naming %s and %s", missing, r, cmd, chain)
+		t.Run(tt.name, func(t *testing.T) {
+			answers := isolatedTables()
+			answers[tt.cmd] = tt.listing
+			env := testEnv(t)
+			env.Run = fakeRun(answers)
+			r := result(t, Check(context.Background(), env), "E5")
+			if tt.want == "" {
+				if r.Status != OK {
+					t.Errorf("E5 = %+v, want ok", r)
+				}
+				return
+			}
+			if r.Status != Violated || !strings.Contains(r.Detail, tt.want) {
+				t.Errorf("E5 = %+v, want violated naming %s", r, tt.want)
+			}
+		})
+	}
+	env.Run = fakeRun(nil, "ip6tables -t mangle -S INPUT")
+	if r := result(t, Check(context.Background(), env), "E5"); r.Status != Violated {
+		t.Errorf("listing fails: E5 = %+v, want violated", r)
+	}
+}
+
+func TestIsolationOffStillChecksVethJump(t *testing.T) {
+	answers := map[string]string{"iptables -t mangle -S FORWARD": "-P FORWARD ACCEPT\n"}
+	env := testEnv(t)
+	f := newFakeDocker()
+	f.plugins[0].Settings.Env = []string{"TSLINK_ISOLATE_HOST_TAILNET=false"}
+	env.Docker, env.Run = f, fakeRun(answers)
+	r := result(t, Check(context.Background(), env), "E5")
+	if r.Status != Violated || !strings.Contains(r.Detail, "TSLINK-VETH-FWD") ||
+		strings.Contains(r.Detail, "ip6tables") {
+		t.Errorf("E5 = %+v, want violated for the setting and the veth jump only", r)
+	}
+}
+
+func TestTagScopeSetting(t *testing.T) {
+	for _, tt := range []struct {
+		env    []string
+		status Status
+	}{
+		{nil, Unknown},
+		{[]string{"TSLINK_TAG_SCOPE=exact"}, Unknown},
+		{[]string{"TSLINK_TAG_SCOPE=prefix"}, Violated},
+	} {
+		env := testEnv(t)
+		f := newFakeDocker()
+		f.plugins[0].Settings.Env = tt.env
+		env.Docker = f
+		if r := result(t, Check(context.Background(), env), "E8"); r.Status != tt.status {
+			t.Errorf("settings %v: E8 = %+v, want %s", tt.env, r, tt.status)
 		}
 	}
 }

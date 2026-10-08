@@ -269,6 +269,7 @@ func TestCredentialAppliesEphemeralOption(t *testing.T) {
 	}
 }
 
+// Guards: G4
 func TestCheckTagScope(t *testing.T) {
 	tests := []struct {
 		stack   string
@@ -312,6 +313,8 @@ func TestCheckTagScope(t *testing.T) {
 
 // NewNetwork carries the plugin's tag-scope mode onto the network, so the
 // scope check sees the operator's setting.
+//
+// Guards: G4
 func TestNewNetworkCarriesTagScope(t *testing.T) {
 	for _, strict := range []bool{true, false} {
 		cfg := &Config{DataDir: t.TempDir(), AuthKey: "tskey-auth-x", StrictTagScope: strict}

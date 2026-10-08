@@ -1,0 +1,5 @@
+#!/bin/bash
+# s CMD...: run CMD as root on the security testbed
+: "${TSLINK_TEST_DIR:=$HOME/.tslink-test}"
+: "${TSLINK_SEC_DIR:=$TSLINK_TEST_DIR/security}"
+exec ssh -F "$TSLINK_SEC_DIR/ssh_config" testbed "$@"

@@ -98,3 +98,41 @@ func TestCheckStackScopeOnStackNetworks(t *testing.T) {
 		}
 	}
 }
+
+// TestCheckStackScopeWithClusterCredential checks checkStackScope's own
+// cluster-credential branch, which TestCheckStackScopeOnStackNetworks does
+// not exercise: that test's network always has an AuthKey, so
+// UsesClusterCredential is always false there.
+//
+// Guards: G4
+func TestCheckStackScopeWithClusterCredential(t *testing.T) {
+	tests := []struct {
+		name    string
+		stack   string // info.Stack and info.NetworkStack: same stack, matching tags
+		tags    []string
+		strict  bool
+		wantErr bool
+	}{
+		{"stackless network refused", "", []string{"tag:billing"}, true, true},
+		{"out-of-scope tag refused", "billing", []string{"tag:shop"}, true, true},
+		{"tag:<stack> accepted", "billing", []string{"tag:billing"}, true, false},
+		{
+			"prefix opt-out: tag:<stack>-x accepted",
+			"billing",
+			[]string{"tag:billing-x"},
+			false,
+			false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			network := &Network{ID: "n", StrictTagScope: tt.strict}
+			info := &ContainerInfo{Stack: tt.stack, NetworkStack: tt.stack}
+			err := checkStackScope(info, network, tt.tags)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("checkStackScope(stack %q, tags %v, strict %v) = %v, want error %v",
+					tt.stack, tt.tags, tt.strict, err, tt.wantErr)
+			}
+		})
+	}
+}

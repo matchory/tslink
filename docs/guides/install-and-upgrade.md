@@ -6,7 +6,7 @@ Install the tslink plugin on a host, upgrade it, and change its settings.
 
 ## Prerequisites
 
-- A Linux host with Docker Engine, or Docker in a Linux VM such as OrbStack or Docker Desktop.
+- A Linux host with Docker Engine 19.03 or later, or Docker in a Linux VM such as OrbStack or Docker Desktop.
 - Root access on the host.
 - Access to `ghcr.io`, or to a registry that mirrors `ghcr.io/matchory/tslink`.
 
@@ -22,13 +22,15 @@ For a production host, first do the steps in [Provision a host](provision-a-node
 
    The plugin does not enable without this directory.
 
+   On macOS, do the step in [macOS](#macos) instead.
+
 2. Find the architecture of the host:
 
    ```bash
    uname -m
    ```
 
-   If the output is `x86_64`, use `amd64`. If the output is `aarch64`, use `arm64`.
+   If the output is `x86_64`, use `amd64`. If the output is `aarch64` or `arm64`, use `arm64`.
 
 3. Select an image tag. Docker plugins have no multi-architecture images, so each tag contains the architecture:
 
@@ -52,6 +54,15 @@ For a production host, first do the steps in [Provision a host](provision-a-node
    > `tslink:latest` for all versions and architectures. Plugin commands accept `tslink`, but the driver name of a
    > network must be complete.
 
+### macOS
+
+On macOS, the data directory must be in the Linux VM of OrbStack or Docker Desktop, not on the Mac. Create it with a
+container, then continue with step 2:
+
+```bash
+docker run --rm --privileged -v /var/lib:/var/lib alpine mkdir -p /var/lib/docker-plugins/tailscale
+```
+
 ### Upgrade
 
 1. If possible, move the containers off the host. On a Swarm, drain the node:
@@ -70,6 +81,10 @@ For a production host, first do the steps in [Provision a host](provision-a-node
 
    On an ARM host, use `<version>-arm64`. Containers keep their nodes. Their tailnet traffic stops for some seconds
    while each tailscaled restarts.
+
+   > [!NOTE]
+   > The cluster tests measured a reinstall of the plugin, not this sequence of commands. Before you upgrade
+   > production hosts, run `test/cluster/regress.sh` against the new version.
 
 3. On a Swarm, make the node active again:
 

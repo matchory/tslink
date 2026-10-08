@@ -8,7 +8,7 @@ sources. This page gives the types, the sources and the rules for ephemeral node
 | Type | Format | Nodes are ephemeral | Needs `tslink.tags` |
 | --- | --- | --- | --- |
 | Auth key | `tskey-auth-…` | Not known to tslink. See [Ephemeral nodes](#ephemeral-nodes). | No |
-| OAuth client secret | `tskey-client-…`, with optional parameters | Yes, unless `?ephemeral=false` is appended | Yes |
+| OAuth client secret | `tskey-client-…`, with optional parameters | Yes, unless `?ephemeral=false` is appended or the network has `tslink.ephemeral=false` | Yes |
 | Cluster credential | An OAuth client secret in a file, without parameters | Yes, always | Yes |
 
 Properties of an auth key that tslink uses:
@@ -38,11 +38,13 @@ When the container of an ephemeral node stops, tslink logs the node out and dele
 then removed from the tailnet, and its hostname is free. When the container of another node stops, tslink keeps the
 state directory, and the node stays in the tailnet, offline.
 
+If the network has `tslink.ephemeral`, its value decides. Otherwise the credential decides:
+
 | Credential | The node is ephemeral if |
 | --- | --- |
-| Cluster credential | Always |
-| OAuth client secret | The secret has no `?ephemeral=false`, or the network has `tslink.ephemeral=true` |
-| Auth key | The network has `tslink.ephemeral=true` |
+| Cluster credential | Always. The network cannot have `tslink.ephemeral=false`. |
+| OAuth client secret | The secret has no `ephemeral` parameter, or it has `?ephemeral=true` |
+| Auth key | Never, because tslink cannot know it from the key |
 
 An auth key does not tell tslink if it creates ephemeral nodes. Thus tslink keeps the state of its nodes, unless the
 network has `tslink.ephemeral=true`. The control server removes an ephemeral node some time after it goes offline.

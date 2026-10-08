@@ -11,16 +11,16 @@ Docker 29.8 in Swarm mode.
 
 | Requirement | Check |
 | --- | --- |
-| Docker Engine, with iptables on nftables (the default on current distributions) | `iptables --version` shows `nf_tables` |
+| Docker Engine, with iptables on nftables (the default on current distributions). The plugin image uses `iptables-nft`. | `iptables --version` shows `nf_tables` |
 | The kernel has `tun`, `veth` and nftables | `modinfo tun veth nf_tables` |
-| The clock is synchronized | `timedatectl show -p NTPSynchronized` shows `yes` |
+| The clock is synchronized. Tailscale rejects clocks with a large error. | `timedatectl show -p NTPSynchronized` shows `yes` |
 | Outbound TCP to port 443, for the control server and DERP | Your firewall rules |
 | Outbound UDP, for STUN on port 3478 and for direct connections on all ports | Your firewall rules |
 | Containers can reach a DNS server | See [DNS](../explanation/architecture.md#dns) |
 
-The host needs no inbound firewall rule, and no Tailscale package. If the host runs its own tailscaled, containers do
-not use it. Without outbound UDP, traffic goes through DERP relays and is slower. See
-[Throughput](../explanation/architecture.md#throughput).
+The host needs no inbound firewall rule, no Tailscale package, and no access to `pkgs.tailscale.com`. If the host
+runs its own tailscaled, containers do not use it. Without outbound UDP, traffic goes through DERP relays and is
+slower. See [Throughput](../explanation/architecture.md#throughput).
 
 ## Steps
 
@@ -31,6 +31,12 @@ not use it. Without outbound UDP, traffic goes through DERP relays and is slower
    {
      "mtu": 1450
    }
+   ```
+
+   Restart Docker to apply it:
+
+   ```bash
+   systemctl restart docker
    ```
 
    Then set the same value on each tslink network with `--opt com.docker.network.driver.mtu=1450`. Private networks

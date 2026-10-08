@@ -37,7 +37,10 @@ Update a Tailscale Service, restart Docker and upgrade tslink while the callers 
 
    Swarm moves the tasks of the node to other nodes.
 
-5. To upgrade tslink, follow [Upgrade](install-and-upgrade.md#upgrade). Each tailscaled on the host restarts, and
+5. Before you roll out a new tslink version, run `test/cluster/regress.sh` against it. See
+   [Testing](../testing.md#cluster-tests).
+
+6. To upgrade tslink, follow [Upgrade](install-and-upgrade.md#upgrade). Each tailscaled on the host restarts, and
    the containers keep their nodes. Drain the node first, because the tailnet traffic of its containers stops for
    some seconds.
 

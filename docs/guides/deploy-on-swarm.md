@@ -29,6 +29,7 @@ properties of the two models, see [Security model](../explanation/security-model
 
    ```json
    "tagOwners": {
+     "tag:tslink": ["autogroup:admin"],
      "tag:billing": ["tag:tslink"]
    }
    ```

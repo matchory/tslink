@@ -50,7 +50,8 @@ The value has this syntax:
 | `tslink.serve.80=http:3000/api` | HTTP on port 80 at `/api`, to port 3000 |
 | `tslink.serve.5432=tcp` | TCP on port 5432, to port 5432 |
 
-tslink ignores a rule with an unknown protocol or an incorrect option, and logs a warning.
+tslink ignores a rule with an incorrect option, and logs a warning. It also ignores a rule with an unknown protocol,
+and logs this only at the debug level.
 
 > [!NOTE]
 > Tailscale gets a Let's Encrypt certificate for each name that it serves HTTP on, also for plain HTTP. See

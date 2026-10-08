@@ -39,7 +39,7 @@ Find the symptom below, then do the checks in the sequence of the table. Before 
 
 | Cause | Check | Fix |
 | --- | --- | --- |
-| The data directory does not exist | `ls -d /var/lib/docker-plugins/tailscale` | Create it: `sudo install -d -m 0755 /var/lib/docker-plugins/tailscale` |
+| The data directory does not exist | `ls -d /var/lib/docker-plugins/tailscale` | Create it: `sudo install -d -m 0755 /var/lib/docker-plugins/tailscale`. On macOS, see [macOS](install-and-upgrade.md#macos). |
 
 ## `docker network create` fails
 

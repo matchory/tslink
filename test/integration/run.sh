@@ -319,12 +319,15 @@ raw_send() {
 		python3 /rawsend.py "$ifc" "$src" "$mac" "$2" 9999 "$3"' sh "$1" "${RAW_DST:-$sink_ip}" "$2"
 }
 sink_got() { docker logs e2e-sink 2>&1 | grep -qF "$1"; }
-# raw_arrives IFACE PAYLOAD: sends until the sink has PAYLOAD, for 30 seconds
+# raw_arrives IFACE PREFIX: sends until the sink has a payload unique to this
+# call (PREFIX plus a per-call suffix, fixed across its own retries), for 30
+# seconds; a frame sent by an earlier call cannot satisfy a later one
 raw_arrives() {
+	local p="$2-$SECONDS-$RANDOM"
 	local deadline=$((SECONDS + 30))
-	until sink_got "$2"; do
+	until sink_got "$p"; do
 		[ "$SECONDS" -lt "$deadline" ] || return 1
-		raw_send "$1" "$2"
+		raw_send "$1" "$p"
 		sleep 2
 	done
 }

@@ -91,7 +91,7 @@ shellcheck scripts/*.sh
 - Handle every error; log cleanup failures instead of discarding them.
 - Compare errors with `errors.Is` and `errors.As`, and wrap them with `%w`.
 - Never hold `driver.mu` while calling endpoint methods, which take
-  `endpoint.mu`; and keep network syscalls, downloads and `tailscale up`
+  `endpoint.mu`; and keep network syscalls, downloads and logins
   outside locks.
 
 [CLAUDE.md](CLAUDE.md) explains the main design decisions (state directories,

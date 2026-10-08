@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"tailscale.com/client/local"
+	"tailscale.com/ipn"
 
 	"github.com/matchory/tslink/pkg/logger"
 )
@@ -566,8 +567,10 @@ func (d *Daemon) killProcess(cmd *exec.Cmd) {
 	// it anyway
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if out, err := d.tailscale(ctx, "down", "--socket="+d.socketPath, "down"); err != nil {
-		logger.Debugf("tailscale down failed: %v (output: %s)", err, strings.TrimSpace(out))
+	if _, err := d.lc.EditPrefs(ctx, &ipn.MaskedPrefs{
+		WantRunningSet: true,
+	}); err != nil {
+		logger.Debugf("tailscale down failed: %v", err)
 	}
 
 	// Kill the process

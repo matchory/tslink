@@ -5,16 +5,18 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"sync"
 	"testing"
 	"time"
+
+	"tailscale.com/ipn"
 )
 
 // fakeTailscaled stands in for tailscaled: each start runs sleep in its
 // place, with the daemon's CLI calls going to cli, or fails while fail is set.
 type fakeTailscaled struct {
 	cli *fakeCLI
+	api *fakeLocalAPI // Every daemon's LocalAPI
 
 	mu      sync.Mutex
 	fail    error
@@ -31,6 +33,7 @@ func (f *fakeTailscaled) start(d *Daemon) error {
 		return f.fail
 	}
 	d.runCLI = f.cli.run
+	d.lc = f.api.client()
 	cmd := exec.Command("sleep", "60")
 	if err := cmd.Start(); err != nil {
 		return err
@@ -91,7 +94,7 @@ func newFakeSupervisor(t *testing.T) (*DaemonSupervisor, *fakeTailscaled, string
 		NetNSPath:  netns,
 		AuthKey:    func() (string, error) { return "tskey-auth-test", nil },
 	})
-	f := &fakeTailscaled{cli: &fakeCLI{}}
+	f := &fakeTailscaled{cli: &fakeCLI{}, api: newFakeLocalAPI(t)}
 	s.start = f.start
 	// Registered after setDuration, so it runs first: the loop reads them
 	t.Cleanup(func() {
@@ -246,48 +249,44 @@ func TestSupervisorGivesUpWithoutNetNS(t *testing.T) {
 }
 
 // A node control no longer knows, as after its device was deleted, logs in
-// again with the auth key, and again after a failed attempt.
+// again with the auth key, as a new device, and again after a failed attempt.
 func TestSupervisorReauthenticatesNodeNotFound(t *testing.T) {
-	for name, upErr := range map[string]error{
-		"succeeds": nil,
-		"fails":    errors.New("exit status 1"),
+	for name, loginErr := range map[string]string{
+		"succeeds": "",
+		"fails":    "register request: node not found",
 	} {
 		t.Run(name, func(t *testing.T) {
 			s, f, _ := newFakeSupervisor(t)
-			f.cli.err = upErr
+			f.api.loggedIn(ipn.Prefs{ControlURL: defaultControlURL})
+			f.api.startErr = loginErr
 			f.onStart = func(d *Daemon) {
 				d.handleLine("2026/10/08 12:00:00 control: " + nodeNotFoundLog)
 			}
 			if err := s.Start(); err != nil {
 				t.Fatal(err)
 			}
-			wantUps := 1
-			if upErr != nil {
-				wantUps = 2 // retried after a backoff
+			wantLogins := 1
+			if loginErr != "" {
+				wantLogins = 2 // retried after a backoff
 			}
-			waitFor(t, "a login", func() bool { return countReauths(f.cli) >= wantUps })
-			if upErr == nil {
-				d := s.GetDaemon()
-				waitFor(t, "the node found", func() bool { return d.nodeNotFound.Load() == 0 })
-			}
-			f.cli.mu.Lock()
-			defer f.cli.mu.Unlock()
-			for i, c := range f.cli.calls {
-				if len(c) > 1 && c[1] == "up" && f.cli.stdins[i] != "tskey-auth-test" {
-					t.Errorf("up got %q on stdin, want the auth key", f.cli.stdins[i])
+			waitFor(t, "a login", func() bool { return countReauths(f.api) >= wantLogins })
+			d := s.GetDaemon()
+			waitFor(t, "the node found", func() bool { return d.nodeNotFound.Load() == 0 })
+			for _, k := range f.api.keys() {
+				if k != "tskey-auth-test" {
+					t.Errorf("login got key %q, want the auth key", k)
 				}
 			}
 		})
 	}
 }
 
-// countReauths returns how often cli ran "tailscale up --force-reauth".
-func countReauths(cli *fakeCLI) int {
-	cli.mu.Lock()
-	defer cli.mu.Unlock()
+// countReauths returns how often tailscaled was asked to log in as a new
+// device.
+func countReauths(api *fakeLocalAPI) int {
 	n := 0
-	for _, c := range cli.calls {
-		if len(c) > 1 && c[1] == "up" && slices.Contains(c, "--force-reauth") {
+	for _, r := range api.paths() {
+		if r == "POST /localapi/v0/login-interactive" {
 			n++
 		}
 	}

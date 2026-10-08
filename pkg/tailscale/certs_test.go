@@ -274,7 +274,7 @@ func TestServiceDomain(t *testing.T) {
 	if err != nil || got != "api.example.ts.net" {
 		t.Errorf("serviceDomain() = %q, %v, want api.example.ts.net", got, err)
 	}
-	if want := []string{statusPath + "?peers=false"}; !slices.Equal(api.paths(), want) {
+	if want := []string{"GET " + statusPath + "?peers=false"}; !slices.Equal(api.paths(), want) {
 		t.Errorf("requests = %q, want %q", api.paths(), want)
 	}
 

@@ -115,6 +115,11 @@ three- and five-node swarms; see [docs/testing.md](docs/testing.md).
 - tslink reads tailscaled's status, preferences and serve config through
   its LocalAPI instead of the `tailscale` CLI, with a client of the bundled
   Tailscale's version. `tslink diag` no longer needs a `tailscale` binary.
+- tslink logs nodes in and out and takes them down through tailscaled's
+  LocalAPI, as `tailscale up` would, instead of running the CLI. The auth
+  key goes to tailscaled only over its socket, and the plugin itself
+  exchanges an OAuth client secret for a single-use key with the node's
+  tags, through Tailscale's API.
 - Building tslink requires Go 1.27.1 or later.
 - CI reports golangci-lint and govulncheck findings to GitHub code scanning,
   and test results and per-package coverage in each run's summary.

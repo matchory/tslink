@@ -158,7 +158,6 @@ func (d *Daemon) Start() error {
 	}
 
 	d.cmd = d.tailscaledCommand(tailscaledArgs)
-	d.cmd.Env = os.Environ()
 
 	// Set up streaming output - logs each line as it arrives
 	stdoutPipe, err := d.cmd.StdoutPipe()
@@ -476,7 +475,11 @@ netns=$2; shift 2; exec nsenter --net="$netns" -- "$@"`,
 	}
 	unshareArgs = append(unshareArgs, args...)
 	logger.Debugf("Running: unshare %v", unshareArgs)
-	return exec.CommandContext(d.ctx, "unshare", unshareArgs...)
+	cmd := exec.CommandContext(d.ctx, "unshare", unshareArgs...)
+	// tailscaled does not need the plugin's auth key, and its peerapi serves
+	// its environment to peers the control server lets debug it
+	cmd.Env = withoutAuthKey(os.Environ())
+	return cmd
 }
 
 // waitForSocket waits for the tailscaled socket to be ready.

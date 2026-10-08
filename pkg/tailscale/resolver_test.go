@@ -257,3 +257,22 @@ func TestTailscaledCommandWarnsAboutFallback(t *testing.T) {
 		t.Errorf("warning kept after a start with the host's resolvers: %q", got)
 	}
 }
+
+// tailscaled does not get the plugin's TS_AUTHKEY: it does not need it, and
+// its peerapi serves its environment (/v0/env) to peers that the control
+// server lets debug it.
+func TestTailscaledCommandWithoutAuthKey(t *testing.T) {
+	t.Setenv("TS_AUTHKEY", "tskey-auth-secret")
+	t.Setenv("TSLINK_TEST_KEPT", "1")
+	d := &Daemon{config: DaemonConfig{StateDir: t.TempDir(), TailscaledBin: "/tailscaled"}}
+	d.ctx = t.Context()
+	env := d.tailscaledCommand(nil).Env
+	if !slices.Contains(env, "TSLINK_TEST_KEPT=1") {
+		t.Errorf("env %q lacks the plugin's other variables", env)
+	}
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "TS_AUTHKEY=") {
+			t.Errorf("env contains %q", kv)
+		}
+	}
+}

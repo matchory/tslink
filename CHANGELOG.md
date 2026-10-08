@@ -199,5 +199,8 @@ three- and five-node swarms; see [docs/testing.md](docs/testing.md).
   all, never through the host's Tailscale.
 - The auth key is passed to `tailscale up` on stdin instead of its command
   line, where it was visible in the host's process list.
+- tailscaled no longer inherits the plugin's `TS_AUTHKEY`. tailscaled does
+  not use it, and its peerapi serves its environment to peers that the
+  control server grants debug access.
 
 [Unreleased]: https://github.com/matchory/tslink/compare/v0.1.0...HEAD

@@ -78,6 +78,18 @@ daemon, or resets or powers it off, while callers probe a Tailscale Service,
 and times the recovery. The cluster tests need a Swarm and a tailnet set up
 for them, so they do not run in CI.
 
+## Security testbed
+
+[`test/security/testbed`](../test/security/testbed) provisions a single
+Hetzner Cloud server for the end-to-end test and the red team;
+[`test/security/testbed/README.md`](../test/security/testbed/README.md) has
+the prerequisites. [`test/security/redteam.sh`](../test/security/redteam.sh)
+syncs a working tree to it, runs `test/integration/run.sh`, then the probes
+of [`test/security/redteam/`](../test/security/redteam) and of a private
+probe directory passed with `--probes`. It writes a report under
+`$TSLINK_TEST_DIR/reports/`, which is never committed. The testbed and the
+red team run by hand, not in CI.
+
 ## Fuzzing
 
 Fuzz targets check properties of code that handles input from containers,

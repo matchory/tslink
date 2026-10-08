@@ -131,6 +131,8 @@ internal/
 └── secmodel/   # Checks that every guarantee in SECURITY.md is guarded
 test/
 └── security/   # lib.sh: security probes with control runs, used by test/integration/run.sh
+    ├── testbed/  # Scripts for a single-host Hetzner Cloud security testbed
+    └── redteam/  # Standalone probe scripts for redteam.sh, moved here once their fix ships
 ```
 
 `pkg/core`, `pkg/docker` and `pkg/tailscale` run their tests through `leakcheck.Main`, which reads Go's `goroutineleak`

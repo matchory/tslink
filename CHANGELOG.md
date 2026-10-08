@@ -211,6 +211,11 @@ three- and five-node swarms; see [docs/testing.md](docs/testing.md).
 
 ### Security
 
+- A stack using the cluster credential is now confined to the exact tag
+  `tag:<stack>`, not `tag:<stack>-*`. The prefix form let a stack claim a
+  longer-named stack's base tag: stack `a` could register `tag:a-b`, stack
+  `a-b`'s identity. The plugin setting `TSLINK_TAG_SCOPE=prefix` restores the
+  old behaviour for operators who need it.
 - Containers no longer reach the tailnet through the host's own tailscaled.
   On a host running tailscaled, any container reached the tailnet with the
   host's identity: one on Docker's bridges with an ordinary socket, and one on

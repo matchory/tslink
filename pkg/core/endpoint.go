@@ -717,7 +717,7 @@ func checkStackScope(info *ContainerInfo, network *Network, tags []string) error
 		)
 	}
 	if network.UsesClusterCredential() {
-		return CheckTagScope(info.NetworkStack, tags)
+		return CheckTagScope(info.NetworkStack, tags, network.StrictTagScope)
 	}
 	return nil
 }

@@ -240,8 +240,11 @@ networks:
 
 - The file is read whenever a node registers, so replacing it rotates the credential without recreating networks.
 - Nodes are ephemeral and pre-approved; such a network refuses `tslink.ephemeral=false`.
-- A stack may only use `tag:<stack>` and `tag:<stack>-*`, where `<stack>` is its stack name. The OAuth client must own
+- A stack may only use `tag:<stack>`, where `<stack>` is its stack name. The OAuth client must own
   these tags in the tailnet policy, e.g. through a tag of its own: `"tag:billing": ["tag:tslink"]`.
+  Set the plugin setting `TSLINK_TAG_SCOPE=prefix` to also allow `tag:<stack>-*`;
+  this lets a stack claim a longer-named stack's base tag, so prefer a
+  per-stack `tslink.authkey` when a stack needs several tags.
 - A network's own `tslink.authkey` takes precedence over the file, and the file over `TS_AUTHKEY`.
 
 See [docs/credentials.md](docs/credentials.md) for the reasoning.

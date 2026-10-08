@@ -364,8 +364,8 @@ echo "sink veth $sink_veth"
 # A container on a bridge network whose bridge the stack file named: the
 # isolation must not depend on interface names
 docker network create -o com.docker.network.bridge.name=tslinkcust0 e2e-custombr >/dev/null
-docker run -d --name e2e-custombr --network e2e-custombr "$PYTHON" sleep 3600
-wait_ip e2e-custombr >/dev/null
+# Not on tslink: it gets no tailnet IP to wait for
+docker run -d --name e2e-custombr --network e2e-custombr "$PYTHON" sleep 3600 >/dev/null
 # plain_send PAYLOAD [CONTAINER]: CONTAINER (e2e-raw) sends PAYLOAD to the
 # sink's veth address with an ordinary socket, which leaves through its
 # Docker gateway

@@ -98,6 +98,10 @@ cleanup() {
 		sudo kill "$HOST_TS_PID" 2>/dev/null || true
 		while sudo kill -0 "$HOST_TS_PID" 2>/dev/null; do sleep 1; done
 	fi
+	if [ -n "${canary_pid:-}" ]; then
+		sudo kill "$canary_pid" 2>/dev/null || true
+		while sudo kill -0 "$canary_pid" 2>/dev/null; do sleep 1; done
+	fi
 	# The isolation outlives the plugin, so a restart never opens a window
 	for ipt in iptables ip6tables; do
 		for c in FORWARD:TSLINK-ISOLATE-FWD INPUT:TSLINK-ISOLATE-IN FORWARD:TSLINK-VETH-FWD; do
@@ -438,6 +442,28 @@ if sudo grep -rqs tslink-e2e-taildrop "$DATA"; then
 	fail "a Taildrop file reached the host: $(sudo grep -rls tslink-e2e-taildrop "$DATA")"
 fi
 
+log "The preflight checks this host"
+# preflight: tslink diag --preflight against the real plugin, as README shows
+preflight() {
+	docker run --rm --network host --cap-add NET_ADMIN \
+		-v /var/run/docker.sock:/var/run/docker.sock -v "$DATA:/data" \
+		--entrypoint /tslink tslink:rootfs diag --preflight 2>&1 || true
+}
+# preflight_says PROPERTY STATUS
+preflight_says() { preflight | grep -qE "^$1 +$2 "; }
+out=$(preflight)
+echo "$out"
+for p in E1 E2 E4 E5; do
+	grep -qE "^$p +ok " <<<"$out" || fail "preflight: $p is not ok"
+done
+# A plugin created from a directory is not pinned by digest
+grep -qE '^E6 +violated ' <<<"$out" || fail "preflight: E6 does not report the local build"
+# Without the jump into the isolation, E5 is violated until the watchdog
+# puts it back
+sudo iptables -t mangle -D INPUT -j TSLINK-ISOLATE-IN
+preflight_says E5 violated || fail "preflight: E5 ok without the jump into TSLINK-ISOLATE-IN"
+retry 150 preflight_says E5 ok || fail "preflight: E5 not ok after the watchdog restored the isolation"
+
 log "Auth keys stay out of logs, state, processes, diagnostics and containers"
 # creds_in_*: whether an auth key the test created appears where tslink must
 # keep it out. Network options and plugin settings, which Docker API holders
@@ -494,7 +520,7 @@ unplant_canaries() {
 	sudo kill "$canary_pid" 2>/dev/null || true
 	while sudo kill -0 "$canary_pid" 2>/dev/null; do sleep 1; done
 }
-probe_group "credentials" plant_canaries unplant_canaries 0
+probe_group "credentials" plant_canaries unplant_canaries 10
 probe G5 "an auth key appears in the plugin's data directory" creds_in_data
 probe G5 "an auth key appears in a process's command line or environment" creds_in_processes
 probe G5 "an auth key appears in tslink diag output" creds_in_diag

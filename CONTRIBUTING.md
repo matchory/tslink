@@ -33,7 +33,7 @@ docker run --rm --network tailnet alpine sh -c "ip addr && ping -c 2 8.8.8.8"
 docker network rm tailnet
 ```
 
-`make logs` shows the plugin's output. The [readme](README.md#troubleshooting)
+`make logs` shows the plugin's output. The [troubleshooting guide](docs/guides/troubleshoot.md)
 lists where each container's `tailscaled.log` is.
 
 ## Tests

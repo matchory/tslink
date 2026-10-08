@@ -209,6 +209,8 @@ return fmt.Errorf("failed to create endpoint: %w", err)
   Tailscale Services are not covered: headscale does not support them. The headscale and Alpine images are pinned
   by digest in `run.sh`, which Dependabot does not update. It replaces the host's `tslink` plugin; run it locally only
   on a disposable Linux machine.
+- `fuzz.yml`: each fuzz target for 10 minutes, weekly and on manual dispatch; a failing input is uploaded as an
+  artifact.
 - `codeql-analysis.yml`: CodeQL for Go and the workflows.
 - `release.yml`: a push to `main` publishes `ghcr.io/matchory/tslink:main-<arch>`; a `vX.Y.Z` tag publishes
   `vX.Y.Z-<arch>` and `latest-<arch>` and creates a GitHub release. Docker plugins have no multi-arch manifests, so

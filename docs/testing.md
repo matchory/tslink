@@ -58,3 +58,13 @@ tests it against a real tailnet, including Tailscale Services; see
 daemon, or resets or powers it off, while callers probe a Tailscale Service,
 and times the recovery. The cluster tests need a Swarm and a tailnet set up
 for them, so they do not run in CI.
+
+## Fuzzing
+
+Fuzz targets check properties of code that handles input from containers,
+stack files and the host: state directory paths, network options, serve
+labels and the `tailscale serve` arguments they become, tailscaled's
+`resolv.conf`, and certificate paths. Their seeds run with every `go test`.
+`fuzz.yml` fuzzes each target for ten minutes every week and on demand, and
+keeps a failing input as an artifact; once fixed, commit it under the
+package's `testdata/fuzz/`, where it becomes a regression test.

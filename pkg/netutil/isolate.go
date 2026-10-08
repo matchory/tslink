@@ -3,6 +3,7 @@ package netutil
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -57,8 +58,42 @@ const returnTarget = "RETURN"
 var tslinkChains = []string{vethIsolateChain, isolateForwardChain, isolateInputChain}
 
 // containerInterfaces are the host interfaces container traffic arrives on:
-// Docker's bridges, and the host ends of veth pairs, tslink's among them.
+// Docker's bridges, and the host ends of veth pairs, tslink's among them. A
+// bridge network may name its bridge otherwise: the host's tailnet isolation
+// takes those names from Docker.
 var containerInterfaces = []string{"docker0", "docker_gwbridge", "br-+", "veth+"}
+
+// bridgeName matches the bridge names the host's tailnet isolation takes. A
+// "+" would make a name an iptables pattern for other interfaces too.
+var bridgeName = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,15}$`)
+
+// isolatedInterfaces returns containerInterfaces and the bridges they do not
+// match, in a stable order. Names that are no interface name are left out.
+func isolatedInterfaces(bridges []string) []string {
+	ifcs := slices.Clone(containerInterfaces)
+	for _, b := range slices.Sorted(slices.Values(bridges)) {
+		if !bridgeName.MatchString(b) {
+			logger.Warnf("Host tailnet isolation: ignoring bridge %q, not an interface name", b)
+			continue
+		}
+		if !matchesInterface(ifcs, b) {
+			ifcs = append(ifcs, b)
+		}
+	}
+	return ifcs
+}
+
+// matchesInterface reports whether one of the iptables interface patterns
+// matches name: a trailing "+" matches any name with that prefix.
+func matchesInterface(patterns []string, name string) bool {
+	for _, p := range patterns {
+		prefix, wildcard := strings.CutSuffix(p, "+")
+		if wildcard && strings.HasPrefix(name, prefix) || !wildcard && p == name {
+			return true
+		}
+	}
+	return false
+}
 
 // tailscaleInterfaces matches the host tailscaled's interface, tailscale0 by
 // default.
@@ -81,9 +116,9 @@ var isolationFamilies = []isolationFamily{
 // tailscaled's DNS resolver only: Docker passes a host resolv.conf that names
 // it on to containers, and they would lose DNS. That lets a container resolve
 // tailnet names, nothing more.
-func (f isolationFamily) rules(chain string) [][]string {
+func (f isolationFamily) rules(chain string, ifcs []string) [][]string {
 	var rules [][]string
-	for _, ifc := range containerInterfaces {
+	for _, ifc := range ifcs {
 		switch chain {
 		case isolateForwardChain:
 			for _, proto := range []string{"udp", "tcp"} {
@@ -101,19 +136,21 @@ func (f isolationFamily) rules(chain string) [][]string {
 }
 
 // SetupHostIsolation installs the host's tailnet isolation, or restores it:
-// rules another program removed, and jumps it pushed down. It changes nothing
-// that is in place, so it can run periodically.
-func SetupHostIsolation() error {
+// rules another program removed, and jumps it pushed down. bridges are the
+// interface names of Docker's bridge networks, which containerInterfaces may
+// not match. It changes nothing that is in place, so it can run periodically.
+func SetupHostIsolation(bridges []string) error {
+	ifcs := isolatedInterfaces(bridges)
 	var errs []error
 	for _, f := range isolationFamilies {
-		if err := setupIsolation(f); err != nil {
+		if err := setupIsolation(f, ifcs); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", f.name, err))
 		}
 	}
 	return errors.Join(errs...)
 }
 
-func setupIsolation(f isolationFamily) error {
+func setupIsolation(f isolationFamily, ifcs []string) error {
 	ipt, err := iptables.NewWithProtocol(f.proto)
 	if err != nil {
 		return fmt.Errorf("failed to initialize iptables: %w", err)
@@ -122,7 +159,7 @@ func setupIsolation(f isolationFamily) error {
 		{isolateForwardChain, "FORWARD"},
 		{isolateInputChain, "INPUT"},
 	} {
-		if err := ensureChain(ipt, c.chain, f.rules(c.chain)); err != nil {
+		if err := ensureChain(ipt, c.chain, f.rules(c.chain, ifcs)); err != nil {
 			return err
 		}
 		if err := ensureFirstJump(ipt, c.from, c.chain); err != nil {

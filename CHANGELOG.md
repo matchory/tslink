@@ -245,6 +245,13 @@ three- and five-node swarms; see [docs/testing.md](docs/testing.md).
 
 - OpenTelemetry, which the Docker client pulls in, is at v1.42.0, with fixes
   for GO-2026-5506, whose vulnerable code tslink called, and GO-2026-5158.
+- The host's tailnet isolation now covers bridges with their own names
+  too. It matched Docker's default interface names only, so a container on
+  a bridge network whose bridge a stack file named
+  (`com.docker.network.bridge.name`), or on a default bridge renamed in
+  `daemon.json`, reached the tailnet through the host's tailscaled and the
+  host's own tailnet address. tslink takes the names from Docker, at start,
+  on every watchdog run and when a bridge network is created.
 - A container on a bridge network whose bridge has its own name
   (`com.docker.network.bridge.name`, which a stack file may set) reached
   any port of a tslink container's veth address: the veth isolation matched

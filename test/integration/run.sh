@@ -295,10 +295,15 @@ host_ts_ip=$(host_ts ip -4)
 docker run -d --name e2e-hostsvc --network host "$ALPINE" sh -c \
 	"printf '#!/bin/sh\necho $MARK\n' >/reply && chmod +x /reply && exec nc -lk -s $host_ts_ip -p 8081 -e /reply"
 
-# plain_reaches IP PORT: whether a container on Docker's default bridge, not
-# on tslink, gets the answer of the service at IP:PORT on the tailnet
+# A bridge network whose bridge the stack file named: the isolation must not
+# depend on interface names
+docker network create -o com.docker.network.bridge.name=tslinkcust0 e2e-custombr >/dev/null
+# plain_reaches IP PORT [NETWORK]: whether a container on Docker's default
+# bridge, or on NETWORK, not on tslink, gets the answer of the service at
+# IP:PORT on the tailnet
 plain_reaches() {
-	[ "$(docker run --rm "$ALPINE" sh -c "timeout 15 nc -w 5 $1 $2 </dev/null" 2>/dev/null)" = "$MARK" ]
+	[ "$(docker run --rm --network "${3:-bridge}" "$ALPINE" \
+		sh -c "timeout 15 nc -w 5 $1 $2 </dev/null" 2>/dev/null)" = "$MARK" ]
 }
 # raw_send IFACE PAYLOAD: e2e-raw sends PAYLOAD to the sink as a raw frame to
 # the gateway of IFACE: "veth" for tslink's, eth0 for docker_gwbridge. The
@@ -348,6 +353,10 @@ probe G1 "a container on Docker's bridge reaches the tailnet through the host" \
 	plain_reaches "$server_ip" 8080
 probe G1 "a container on Docker's bridge reaches the host's tailnet address" \
 	plain_reaches "$host_ts_ip" 8081
+probe G1 "a container on a custom-named bridge reaches the tailnet through the host" \
+	plain_reaches "$server_ip" 8080 e2e-custombr
+probe G1 "a container on a custom-named bridge reaches the host's tailnet address" \
+	plain_reaches "$host_ts_ip" 8081 e2e-custombr
 for ifc in veth eth0; do
 	probe G1 "raw frames through $ifc reach the tailnet" raw_arrives "$ifc" "probe-$ifc"
 done
@@ -361,10 +370,8 @@ log "Containers do not reach each other through tslink's veths"
 sink_veth=$(docker exec e2e-sink sh -c \
 	'ip -4 -o addr show | awk "\$2 ~ /^veth/ {split(\$4, a, \"/\"); print a[1]}"')
 echo "sink veth $sink_veth"
-# A container on a bridge network whose bridge the stack file named: the
-# isolation must not depend on interface names
-docker network create -o com.docker.network.bridge.name=tslinkcust0 e2e-custombr >/dev/null
-# Not on tslink: it gets no tailnet IP to wait for
+# A container on the custom-named bridge network. Not on tslink: it gets no
+# tailnet IP to wait for
 docker run -d --name e2e-custombr --network e2e-custombr "$PYTHON" sleep 3600 >/dev/null
 # plain_send PAYLOAD [CONTAINER]: CONTAINER (e2e-raw) sends PAYLOAD to the
 # sink's veth address with an ordinary socket, which leaves through its

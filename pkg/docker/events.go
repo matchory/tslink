@@ -77,6 +77,7 @@ type ContainerStopCallback func(containerID string)
 // The context controls the lifecycle - when cancelled, the watcher stops.
 // ownsNetwork reports whether a network ID belongs to this driver.
 // onStop, if set, is called when a container is sent its stop signal.
+// onBridgeNetwork, if set, is called when a bridge network is created.
 func WatchEvents(
 	ctx context.Context,
 	cli dockerAPI,
@@ -84,13 +85,16 @@ func WatchEvents(
 	ownsNetwork func(id string) bool,
 	onInfo ContainerInfoCallback,
 	onStop ContainerStopCallback,
+	onBridgeNetwork func(),
 ) {
 	logger.Infof("Starting Docker event watcher")
 
-	// Watch for network connects, and for kills to see containers stopping
+	// Watch for network connects, for kills to see containers stopping, and
+	// for new bridge networks, whose bridges the host's tailnet isolation
+	// covers by name
 	filterArgs := dockerclient.Filters{}.
 		Add("type", "network", "container").
-		Add("event", "connect", "kill")
+		Add("event", "connect", "kill", "create")
 
 	// The time of the first event the watcher has not seen. Reconnecting, it
 	// asks for the events since then: a connect event lost while the stream
@@ -136,24 +140,54 @@ func WatchEvents(
 				msg.Action, msg.Actor.ID, msg.Actor.Attributes["type"])
 
 			if msg.Type == events.ContainerEventType {
-				if msg.Action == events.ActionKill && onStop != nil {
-					signal := msg.Actor.Attributes["signal"]
-					if isStopSignal(signal, stopSignalOf(ctx, cli, msg.Actor.ID)) {
-						onStop(msg.Actor.ID)
-					}
-				}
+				handleContainerEvent(ctx, cli, msg, onStop)
 				continue
 			}
-
-			// Only process events for networks Docker created through this driver,
-			// whatever name the plugin was installed under
-			if !ownsNetwork(msg.Actor.ID) {
-				continue
-			}
-
-			handleConnect(ctx, cli, msg, cache, onInfo)
+			handleNetworkEvent(ctx, cli, msg, cache, ownsNetwork, onInfo, onBridgeNetwork)
 		}
 	}
+}
+
+// handleContainerEvent passes containers sent their stop signal to onStop.
+func handleContainerEvent(
+	ctx context.Context,
+	cli dockerAPI,
+	msg events.Message,
+	onStop ContainerStopCallback,
+) {
+	if msg.Action == events.ActionKill && onStop != nil {
+		signal := msg.Actor.Attributes["signal"]
+		if isStopSignal(signal, stopSignalOf(ctx, cli, msg.Actor.ID)) {
+			onStop(msg.Actor.ID)
+		}
+	}
+}
+
+// handleNetworkEvent passes new bridge networks to onBridgeNetwork, and
+// containers joining this driver's networks to handleConnect.
+func handleNetworkEvent(
+	ctx context.Context,
+	cli dockerAPI,
+	msg events.Message,
+	cache *ContainerCache,
+	ownsNetwork func(id string) bool,
+	onInfo ContainerInfoCallback,
+	onBridgeNetwork func(),
+) {
+	if msg.Action == events.ActionCreate {
+		if msg.Actor.Attributes["type"] == "bridge" && onBridgeNetwork != nil {
+			onBridgeNetwork()
+		}
+		return
+	}
+
+	// Only process events for networks Docker created through this driver,
+	// whatever name the plugin was installed under
+	if !ownsNetwork(msg.Actor.ID) {
+		return
+	}
+
+	handleConnect(ctx, cli, msg, cache, onInfo)
 }
 
 // backOff logs the error that ended the event stream and waits a second

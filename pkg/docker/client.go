@@ -27,6 +27,10 @@ type dockerAPI interface {
 		networkID string,
 		options dockerclient.NetworkInspectOptions,
 	) (dockerclient.NetworkInspectResult, error)
+	NetworkList(
+		ctx context.Context,
+		options dockerclient.NetworkListOptions,
+	) (dockerclient.NetworkListResult, error)
 	Events(ctx context.Context, options dockerclient.EventsListOptions) dockerclient.EventsResult
 	Close() error
 }

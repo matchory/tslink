@@ -10,28 +10,31 @@ When you create a Docker network with this plugin and run containers on it:
 1. Each container gets its own Tailscale node identity
 2. The container appears in your Tailscale admin console as a separate device
 3. The container can reach other nodes in your tailnet
-4. The container also has internet access via NAT
+4. The container keeps its usual Docker networking for everything else
 
 ```text
-┌──────────────────────────────────────────────────────────┐
-│ Docker Host                                              │
-│                                                          │
-│  ┌────────────────────────────────────────────────────┐  │
-│  │ Container (Tailscale IP: 100.x.y.z)                │  │
-│  │                                                    │  │
-│  │   App ──► tailscaled ──► Tailnet                   │  │
-│  │                                                    │  │
-│  │   eth0 ──► veth ──► NAT ──► Internet               │  │
-│  └────────────────────────────────────────────────────┘  │
-│                                                          │
-│  ┌──────────────────────┐                                │
-│  │ Plugin               │                                │
-│  │ • Manages tailscaled │                                │
-│  │ • Creates veth pairs │                                │
-│  │ • Sets up NAT        │                                │
-│  └──────────────────────┘                                │
-└──────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────┐
+│ Docker Host                                                │
+│                                                            │
+│  ┌──────────────────────────────────────────┐              │
+│  │ Container (Tailscale IP: 100.x.y.z)      │              │
+│  │                                          │              │
+│  │ App ─► tailscale0 ─► tailscaled ─► veth ─┼─► NAT ───────┼─► Tailnet
+│  │                                          │              │
+│  │ App ─► eth0 ─────────────────────────────┼─► Docker ────┼─► Internet
+│  └──────────────────────────────────────────┘              │
+│                                                            │
+│  ┌──────────────────────────────┐                          │
+│  │ Plugin                       │                          │
+│  │ • Manages tailscaled         │                          │
+│  │ • Creates the veth pair      │                          │
+│  │ • Routes and NATs the veth   │                          │
+│  └──────────────────────────────┘                          │
+└────────────────────────────────────────────────────────────┘
 ```
+
+The veth carries only tailscaled's own traffic. Tailnet addresses are unreachable through any other route, so a
+container reaches the tailnet as its own node or not at all, never through the host's Tailscale.
 
 ## Installation
 

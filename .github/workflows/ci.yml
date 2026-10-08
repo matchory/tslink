@@ -99,6 +99,10 @@ jobs:
             sudo "${RUNNER_TEMP}/tailscale.test" -test.v=test2json -test.count=1 \
             -test.run 'OverStale|SystemBus|Taildrop' -test.gocoverdir="${RUNNER_TEMP}/cover/netns"
 
+      - name: Test the probe library
+        id: probe-library
+        run: bash test/security/lib_test.sh
+
       - name: Report test results
         id: junit
         if: ${{ !cancelled() }}

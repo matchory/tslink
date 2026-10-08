@@ -465,6 +465,16 @@ func (d *Daemon) tailscaledCommand(args []string) *exec.Cmd {
 	if err := os.WriteFile(backup, nil, 0o644); err != nil { // #nosec G306 -- not secret
 		logger.Warnf("Failed to write %s: %v", backup, err)
 	}
+	// Taildrop writes received files to <state dir>/files on the host, where
+	// no container sees them: drop any received before, and give tailscaled
+	// an empty mount point to cover
+	files := filepath.Join(d.config.StateDir, "files")
+	if err := os.RemoveAll(files); err != nil {
+		logger.Warnf("Failed to remove Taildrop files %s: %v", files, err)
+	}
+	if err := os.Mkdir(files, 0o700); err != nil {
+		logger.Warnf("Failed to create %s: %v", files, err)
+	}
 	// unshare, sh and nsenter each exec the next, so the process is tailscaled.
 	// The plugin's resolv.conf is a bind mount of the host's, and the kernel
 	// refuses to mount over it once the host replaced that file (move_mount:
@@ -473,6 +483,9 @@ func (d *Daemon) tailscaledCommand(args []string) *exec.Cmd {
 	// tailscaled must not reach the host's system bus, in the host's /run:
 	// with it, it would configure the host's systemd-resolved with the
 	// control server's DNS settings. It does not start if the bus stays.
+	// Nor if it can store Taildrop files: a peer the control server lets
+	// send files, or an untagged node's own container, could fill the host's
+	// disk with them, and they serve no container.
 	unshareArgs := []string{
 		"--mount",
 		"--propagation",
@@ -490,10 +503,13 @@ for d in /run/dbus /var/run/dbus; do
 		{ echo "tslink: cannot hide the host's system bus from tailscaled" >&2; exit 1; }
 done
 unset DBUS_SYSTEM_BUS_ADDRESS
-netns=$2; shift 2; exec nsenter --net="$netns" -- "$@"`,
+mount -t tmpfs -o ro,size=4k,mode=0500 tmpfs "$3" ||
+	{ echo "tslink: cannot keep Taildrop files off the host" >&2; exit 1; }
+netns=$2; shift 3; exec nsenter --net="$netns" -- "$@"`,
 		resolvConf,
 		backup,
 		d.config.NetNSPath,
+		files,
 		d.config.TailscaledBin,
 	}
 	unshareArgs = append(unshareArgs, args...)

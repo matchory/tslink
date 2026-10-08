@@ -391,4 +391,27 @@ retry 150 sudo iptables -t mangle -C FORWARD -j TSLINK-VETH-FWD ||
 	fail "the watchdog did not restore the veth isolation"
 veth_probes_blocked veth-restored
 
+log "A container cannot store Taildrop files on the host"
+# The sink's node is untagged, so its own container may send it files. They
+# would land in its state directory on the host: tailscaled must refuse them.
+api=$(sudo grep -o "peerapi: serving on http://$sink_ip:[0-9]*" "$DATA/by-hostname/e2e-sink/tailscaled.log" |
+	tail -n 1 | sed 's/.*on //')
+[ -n "$api" ] || fail "no peerapi address for the sink in its tailscaled.log"
+# peer_status METHOD PATH: the HTTP status of the sink's own peerapi
+peer_status() {
+	docker exec e2e-sink python3 -c 'import sys, urllib.request, urllib.error
+req = urllib.request.Request(sys.argv[1] + sys.argv[3], data=b"tslink-e2e-taildrop" if sys.argv[2] == "PUT" else None, method=sys.argv[2])
+try:
+    print(urllib.request.urlopen(req, timeout=10).status)
+except urllib.error.HTTPError as e:
+    print(e.code)' "$api" "$1" "$2"
+}
+# The peerapi answers the container, so a refusal below is Taildrop's
+[ "$(peer_status GET /)" = 200 ] || fail "precondition: the sink's container cannot reach its peerapi"
+put=$(peer_status PUT /v0/put/e2e-taildrop.txt)
+case $put in 2*) fail "Taildrop accepted a file from the container ($put)" ;; esac
+if sudo grep -rqs tslink-e2e-taildrop "$DATA"; then
+	fail "a Taildrop file reached the host: $(sudo grep -rls tslink-e2e-taildrop "$DATA")"
+fi
+
 log "All end-to-end tests passed"

@@ -211,6 +211,12 @@ three- and five-node swarms; see [docs/testing.md](docs/testing.md).
 
 ### Security
 
+- tailscaled no longer stores Taildrop files. They went to its state
+  directory on the host, where no container sees them: a peer the control
+  server lets send files, or an untagged node's own container, could fill the
+  host's disk. A read-only mount in tailscaled's own mount namespace now
+  refuses them, files received before are deleted when tailscaled starts, and
+  tailscaled does not start if the mount fails.
 - Containers no longer reach each other through tslink's veths. The host
   forwards between the veths' subnets, so a container reached any tslink
   container's veth address, on any network, past Docker's network isolation

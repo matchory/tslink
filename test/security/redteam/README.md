@@ -27,9 +27,9 @@ Its first comment lines document what it tests:
 # Assumes: E1, E2, E5
 ```
 
-`G<n>` is the guarantee of [SECURITY.md](../../../SECURITY.md) the probe tests, `A<n>` describes the
-attacker (matching the guarantee's own "Attackers:" line is fine), and `E<n>` lists the environment
-properties it assumes.
+`G<n>` is the guarantee of [SECURITY.md](../../../SECURITY.md) the probe tests, `Attacker:` describes
+the attacker (matching the guarantee's own "Attackers:" line is fine), and `Assumes:` lists the
+environment properties it assumes.
 
 For a probe with a control run, [`../lib.sh`](../lib.sh) does the PASS/FAIL/BROKEN bookkeeping;
 source it and call `probe_group`, `probe` and `run_probes` as `test/integration/run.sh` does.

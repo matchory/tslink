@@ -67,3 +67,21 @@ func TestLoadConfigDataDir(t *testing.T) {
 		t.Errorf("config %+v, err %v, want DataDir from TS_DATA_DIR", cfg, err)
 	}
 }
+
+func TestLoadConfigIsolateHostTailnet(t *testing.T) {
+	// Only an explicit false turns the isolation off: a typo must not open
+	// the host's tailnet to containers
+	for value, want := range map[string]bool{
+		"": true, "true": true, "false": false, "FALSE": false, "0": true, "no": true,
+	} {
+		t.Setenv(IsolateHostTailnetSetting, value)
+		cfg, err := LoadConfig()
+		if err != nil {
+			t.Fatalf("LoadConfig: %v", err)
+		}
+		if cfg.IsolateHostTailnet != want {
+			t.Errorf("%s=%q: IsolateHostTailnet = %v, want %v",
+				IsolateHostTailnetSetting, value, cfg.IsolateHostTailnet, want)
+		}
+	}
+}

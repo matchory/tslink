@@ -361,6 +361,7 @@ func TestDeleteEndpointDoesNotHoldDriverLock(t *testing.T) {
 func TestShutdownClosesClient(t *testing.T) {
 	fake := newFakeDocker()
 	d := newDriver(&core.Config{DataDir: t.TempDir()}, fake)
+	d.hostIsolation = func(bool) error { return nil }
 	d.start()
 	if err := d.Shutdown(t.Context()); err != nil {
 		t.Fatal(err)
@@ -696,4 +697,28 @@ func TestRecoverEndpointsWithoutNetworkSettings(t *testing.T) {
 		t.Error("recovered an endpoint of a container without network settings")
 	}
 	td.noRun(t)
+}
+
+// The plugin applies its isolation setting before it serves requests, so no
+// container joins while the host's tailnet is open to it.
+func TestStartAppliesHostIsolation(t *testing.T) {
+	for _, on := range []bool{true, false} {
+		d := newDriver(&core.Config{DataDir: t.TempDir(), IsolateHostTailnet: on}, newFakeDocker())
+		var calls []bool
+		d.hostIsolation = func(on bool) error {
+			calls = append(calls, on)
+			return nil
+		}
+		d.start()
+		if !slices.Equal(calls, []bool{on}) {
+			t.Errorf(
+				"IsolateHostTailnet=%v: start applied %v, want [%v] before returning",
+				on,
+				calls,
+				on,
+			)
+		}
+		d.cancel()
+		d.wg.Wait()
+	}
 }

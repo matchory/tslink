@@ -16,6 +16,7 @@ import (
 
 	"github.com/matchory/tslink/pkg/core"
 	"github.com/matchory/tslink/pkg/logger"
+	"github.com/matchory/tslink/pkg/netutil"
 )
 
 // Driver implements the Docker network plugin interface.
@@ -37,6 +38,9 @@ type Driver struct {
 	runTailscale   func(e *core.Endpoint, info *core.ContainerInfo)
 	leaveEndpoint  func(e *core.Endpoint) error
 	stopEndpoint   func(e *core.Endpoint) error
+
+	// Installs (true) or removes (false) the host's tailnet isolation
+	hostIsolation func(on bool) error
 
 	// Serializes RecoverEndpoints
 	recoverMu sync.Mutex
@@ -97,6 +101,7 @@ func newDriver(cfg *core.Config, docker dockerAPI) *Driver {
 		runTailscale:   (*core.Endpoint).RunTailscale,
 		leaveEndpoint:  (*core.Endpoint).Leave,
 		stopEndpoint:   (*core.Endpoint).Stop,
+		hostIsolation:  applyHostIsolation,
 		ctx:            ctx,
 		cancel:         cancel,
 	}
@@ -467,6 +472,10 @@ func (d *Driver) RecoverEndpoints(ctx context.Context) error {
 func (d *Driver) start() {
 	ctx := d.ctx
 
+	// Before the plugin serves requests: no container joins while the host's
+	// tailnet is open to it
+	d.applyHostIsolation()
+
 	// Start event watcher in background (tracked by waitgroup)
 	// Pass callback to trigger Tailscale setup when container info arrives
 	d.wg.Go(func() {
@@ -627,6 +636,24 @@ func (d *Driver) collectGarbage(ctx context.Context) {
 	core.CollectGarbage(ctx, d.config, d.claims, state, sockets, gcMinAge)
 }
 
+// applyHostIsolation installs or removes the host's tailnet isolation, as the
+// plugin's settings say. It stays in place when the plugin stops, so a
+// restart or an upgrade never opens the host's tailnet to containers.
+func (d *Driver) applyHostIsolation() {
+	if err := d.hostIsolation(d.config.IsolateHostTailnet); err != nil {
+		logger.Errorf("Host tailnet isolation (%s=%t): %v",
+			core.IsolateHostTailnetSetting, d.config.IsolateHostTailnet, err)
+	}
+}
+
+// applyHostIsolation is the default Driver.hostIsolation.
+func applyHostIsolation(on bool) error {
+	if on {
+		return netutil.SetupHostIsolation()
+	}
+	return netutil.RemoveHostIsolation()
+}
+
 // runWatchdog periodically scans for orphaned endpoints and recovers them,
 // then collects garbage. This handles cases where containers restart after
 // initial recovery.
@@ -647,6 +674,8 @@ func (d *Driver) runWatchdog(ctx context.Context) {
 			logger.Infof("Watchdog shutting down")
 			return
 		case <-ticker.C:
+			// Again here: restores the rules if something removed them
+			d.applyHostIsolation()
 			if err := d.RecoverEndpoints(ctx); err != nil {
 				logger.Errorf("Watchdog recovery failed: %v", err)
 				continue

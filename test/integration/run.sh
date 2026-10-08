@@ -3,7 +3,8 @@
 # tslink from source, installs it as the plugin "tslink", and checks tailnet
 # reachability, ACLs, DNS upstreams, plugin restarts and ephemeral nodes.
 # Needs Docker, sudo, curl and jq; no Tailscale account. It replaces the
-# host's plugin "tslink", so run it on a disposable machine such as CI.
+# host's plugin "tslink" and runs a tailscaled of its own on the host, so run
+# it on a disposable machine such as CI, without another tailscaled.
 set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -12,6 +13,7 @@ PLUGIN=tslink
 DATA=/var/lib/docker-plugins/tailscale
 HEADSCALE_IMAGE=docker.io/headscale/headscale:0.29.4@sha256:8833f828b414c0907b7e5c71da76473216fe17cce0818a166b536ec552c0903f
 ALPINE=alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
+PYTHON=python:3.13-alpine@sha256:2d9aefe2fef018a7eb2c13064c89c71929800fd2e5dccdbf52ea5da5bb8d929a
 MARK=tslink-e2e
 # A name only the test's DNS server knows, and its address
 PROBE_NAME=probe.tslink.test
@@ -20,7 +22,7 @@ PROBE_IP=192.0.2.53
 # host, so it must listen on an address other than loopback
 HOST_IP=${HOST_IP:-$(ip -4 route get 1.1.1.1 | awk '{for (i = 1; i < NF; i++) if ($i == "src") print $(i + 1)}')}
 URL=http://$HOST_IP:8080
-CONTAINERS=(e2e-server e2e-client e2e-outsider e2e-ephemeral e2e-late e2e-dns e2e-resolver)
+CONTAINERS=(e2e-server e2e-client e2e-outsider e2e-ephemeral e2e-late e2e-dns e2e-resolver e2e-sink e2e-raw e2e-hostsvc)
 NETWORKS=(e2e-alice e2e-bob e2e-ephemeral)
 WORK=$(mktemp -d)
 
@@ -30,6 +32,9 @@ fail() {
 	exit 1
 }
 hs() { docker exec e2e-headscale headscale "$@"; }
+# The host's own tailscaled, from the bundled binaries, on an interface of its
+# own name: tslink keeps containers from the tailnet through any tailscale*
+host_ts() { sudo "$WORK/plugin/rootfs/usr/local/bin/tailscale" --socket="$WORK/host-ts/sock" "$@"; }
 
 # retry SECONDS CMD...: runs CMD every 2 seconds until it succeeds
 retry() {
@@ -89,6 +94,17 @@ cleanup() {
 	docker network rm "${NETWORKS[@]}" >/dev/null 2>&1 || true
 	docker plugin disable -f "$PLUGIN" >/dev/null 2>&1 || true
 	docker plugin rm -f "$PLUGIN" >/dev/null 2>&1 || true
+	if [ -n "${HOST_TS_PID:-}" ]; then
+		sudo kill "$HOST_TS_PID" 2>/dev/null || true
+		while sudo kill -0 "$HOST_TS_PID" 2>/dev/null; do sleep 1; done
+	fi
+	# The isolation outlives the plugin, so a restart never opens a window
+	for ipt in iptables ip6tables; do
+		for c in FORWARD:TSLINK-ISOLATE-FWD INPUT:TSLINK-ISOLATE-IN; do
+			sudo "$ipt" -t mangle -D "${c%%:*}" -j "${c#*:}" 2>/dev/null || true
+			sudo "$ipt" -t mangle -X "${c#*:}" 2>/dev/null || true
+		done
+	done
 	if [ -n "${DNS_IFACE:-}" ]; then
 		# shellcheck disable=SC2086 # one argument per domain
 		sudo resolvectl domain "$DNS_IFACE" ${DNS_DOMAINS:-""} || true
@@ -99,6 +115,10 @@ cleanup() {
 
 if docker plugin inspect "$PLUGIN" >/dev/null 2>&1; then
 	echo "A plugin named $PLUGIN is installed; remove it first: docker plugin rm -f $PLUGIN" >&2
+	exit 1
+fi
+if pgrep -x tailscaled >/dev/null; then
+	echo "A tailscaled is running; stop it first: the test runs one of its own" >&2
 	exit 1
 fi
 trap cleanup EXIT
@@ -127,7 +147,19 @@ retry 60 curl -fsS -o /dev/null "$URL/health" || fail "headscale did not come up
 
 alice=$(hs users create alice -o json | jq -r .id)
 bob=$(hs users create bob -o json | jq -r .id)
+host=$(hs users create host -o json | jq -r .id)
 key() { hs preauthkeys create --user "$1" --reusable --expiration 1h "${@:2}" | tail -n 1; }
+
+log "Starting the host's own tailscaled"
+# Like a cluster node's: on the tailnet, and granted access to alice's
+# containers, so a container using the host's tailscaled would get through
+mkdir -p "$WORK/host-ts"
+# shellcheck disable=SC2024 # the log is ours, the daemon root's
+sudo "$WORK/plugin/rootfs/usr/local/bin/tailscaled" --state="$WORK/host-ts/state" \
+	--socket="$WORK/host-ts/sock" --tun=tailscale-e2e --port=0 >"$WORK/host-ts/log" 2>&1 &
+HOST_TS_PID=$!
+retry 30 sudo test -S "$WORK/host-ts/sock" || fail "host tailscaled did not start"
+key "$host" | host_ts up --login-server="$URL" --auth-key=file:/dev/stdin --hostname=e2e-host
 network() {
 	# A plain "tslink" does not resolve: the driver is registered under the
 	# plugin's full name
@@ -159,8 +191,8 @@ fi
 log "The ACL refuses a container it does not grant"
 outsider_ip=$(wait_ip e2e-outsider)
 echo "outsider $outsider_ip"
-# The host has no Tailscale, so only the outsider's own tailscaled could
-# carry the connection: a refusal is the ACL's
+# The host's tailscaled may reach the server, but the outsider's sockets cannot
+# use it (checked below): a refusal is the ACL's
 if retry 30 reaches e2e-outsider "$server_ip"; then
 	fail "outsider reached the server"
 fi
@@ -220,5 +252,84 @@ log "A network without containers during the restart takes new ones"
 docker run -d --name e2e-late --network e2e-ephemeral "$ALPINE" sleep 3600
 wait_ip e2e-late
 retry 120 reaches e2e-late "$server_ip" || fail "late container cannot reach the server"
+
+log "Containers do not reach the tailnet through the host's tailscaled"
+# A UDP sink on the tailnet, which the host may reach
+docker run -d --name e2e-sink --network e2e-alice "$PYTHON" python -u -c $'import socket\ns = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)\ns.bind(("", 9999))\nwhile True:\n    d, a = s.recvfrom(2048)\n    print(a[0], d.decode(errors="replace"), flush=True)'
+sink_ip=$(wait_ip e2e-sink)
+# A tslink container with Docker's default capabilities, CAP_NET_RAW included
+docker run -d --name e2e-raw --network e2e-bob -v "$HERE/rawsend.py:/rawsend.py:ro" "$PYTHON" sleep 3600
+wait_ip e2e-raw >/dev/null
+
+# A service of the host's own, on its tailnet address only
+host_ts_ip=$(host_ts ip -4)
+docker run -d --name e2e-hostsvc --network host "$ALPINE" sh -c \
+	"printf '#!/bin/sh\necho $MARK\n' >/reply && chmod +x /reply && exec nc -lk -s $host_ts_ip -p 8081 -e /reply"
+
+# plain_reaches IP PORT: whether a container on Docker's default bridge, not
+# on tslink, gets the answer of the service at IP:PORT on the tailnet
+plain_reaches() {
+	[ "$(docker run --rm "$ALPINE" sh -c "timeout 15 nc -w 5 $1 $2 </dev/null" 2>/dev/null)" = "$MARK" ]
+}
+# raw_send IFACE PAYLOAD: e2e-raw sends PAYLOAD to the sink as a raw frame to
+# the gateway of IFACE: "veth" for tslink's, eth0 for docker_gwbridge
+raw_send() {
+	docker exec e2e-raw sh -c '
+		if [ "$1" = veth ]; then
+			ifc=$(ls /sys/class/net | grep "^veth")
+			src=$(ip -4 -o addr show dev "$ifc" | awk "{split(\$4, a, \"/\"); print a[1]}")
+			gw=${src%.*}.$((${src##*.} - 1))
+		else
+			ifc=$1
+			src=$(ip -4 -o addr show dev "$ifc" | awk "{split(\$4, a, \"/\"); print a[1]}")
+			gw=$(ip route | awk "/^default/ {print \$3}")
+		fi
+		ping -c 1 -W 1 "$gw" >/dev/null 2>&1
+		mac=$(awk -v ip="$gw" "\$1 == ip {print \$4}" /proc/net/arp)
+		python3 /rawsend.py "$ifc" "$src" "$mac" "$2" 9999 "$3"' sh "$1" "$sink_ip" "$2"
+}
+sink_got() { docker logs e2e-sink 2>&1 | grep -qF "$1"; }
+# raw_arrives IFACE PAYLOAD: sends until the sink has PAYLOAD, for 30 seconds
+raw_arrives() {
+	local deadline=$((SECONDS + 30))
+	until sink_got "$2"; do
+		[ "$SECONDS" -lt "$deadline" ] || return 1
+		raw_send "$1" "$2"
+		sleep 2
+	done
+}
+set_isolation() {
+	docker plugin disable -f "$PLUGIN"
+	docker plugin set "$PLUGIN" TSLINK_ISOLATE_HOST_TAILNET="$1"
+	docker plugin enable "$PLUGIN"
+	retry 180 has_ip e2e-sink || fail "sink lost its tailnet IP after the restart"
+}
+
+docker run --rm --network host "$ALPINE" sh -c "timeout 15 nc -w 5 $server_ip 8080 </dev/null" |
+	grep -qx "$MARK" || fail "precondition: the host cannot reach the server"
+if plain_reaches "$server_ip" 8080; then
+	fail "a container on Docker's bridge reached the tailnet through the host"
+fi
+if plain_reaches "$host_ts_ip" 8081; then
+	fail "a container on Docker's bridge reached the host's tailnet address"
+fi
+for ifc in veth eth0; do
+	if raw_arrives "$ifc" "isolated-$ifc"; then
+		fail "raw frames through $ifc reached the tailnet: $(docker logs e2e-sink 2>&1 | tail -n 1)"
+	fi
+done
+
+log "Without the isolation, the same probes get through"
+# Shows that the probes above would catch a leak
+set_isolation false
+retry 60 plain_reaches "$server_ip" 8080 || fail "control: a container on Docker's bridge cannot reach the server"
+plain_reaches "$host_ts_ip" 8081 || fail "control: a container on Docker's bridge cannot reach the host's tailnet address"
+for ifc in veth eth0; do
+	raw_arrives "$ifc" "open-$ifc" || fail "control: raw frames through $ifc did not arrive"
+done
+set_isolation true
+if plain_reaches "$server_ip" 8080; then
+	fail "the isolation did not come back with the setting"
+fi
 
 log "All end-to-end tests passed"

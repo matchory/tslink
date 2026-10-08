@@ -46,7 +46,10 @@ ID. This avoids IP conflicts without coordination.
 server refuses to resolve public names. tslink's veth carries only tailscaled's own traffic: tailscaled marks its
 sockets with `0x80000`, and a rule at priority 5200 sends that mark to table 5200, a default route via the veth. Tailnet
 ranges are `unreachable` in the main table, so tailnet traffic leaves through the container's tailscaled (table 52) or
-not at all, never through the host's.
+not at all. Those routes stop sockets, not raw frames, and the host's tailscaled accepts all forwarded traffic, so the
+host enforces it too: `netutil.SetupHostIsolation` drops traffic from Docker's bridges and veths to `tailscale+` and to
+the host's tailnet addresses in the mangle table (`TSLINK_ISOLATE_HOST_TAILNET`), for every container on the host. The
+plugin installs it before serving, the watchdog restores it, and it stays when the plugin stops.
 
 **Self-healing**: `Endpoint.RunTailscale` retries a failed start with backoff until the endpoint leaves, unless the
 error is a `permanentError` (wrong stack, invalid hostname). The supervisor restarts a crashed tailscaled, resumes after

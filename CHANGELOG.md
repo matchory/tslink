@@ -211,6 +211,15 @@ three- and five-node swarms; see [docs/testing.md](docs/testing.md).
 
 ### Security
 
+- Containers no longer reach the tailnet through the host's own tailscaled.
+  On a host running tailscaled, any container reached the tailnet with the
+  host's identity: one on Docker's bridges with an ordinary socket, and one on
+  tslink with raw frames (`CAP_NET_RAW`, granted by default) past the
+  unreachable routes in its namespace, through its veth or `docker_gwbridge`.
+  tslink now drops traffic from container interfaces to `tailscale*` and to the
+  host's tailnet addresses, in the host's mangle table, where containers cannot
+  change it. DNS to `100.100.100.100` stays allowed. This applies to all
+  containers on the host; `TSLINK_ISOLATE_HOST_TAILNET=false` turns it off.
 - The certificate domain, built from the `tslink.service` label and the
   control server's MagicDNS suffix, is checked to be a DNS name before it
   names files in the certificate directory. A label or suffix with `..` or a

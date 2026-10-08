@@ -14,6 +14,30 @@ type Config struct {
 	AuthKey   string
 	DataDir   string
 	SharedDir string // Directory shared between hosts, for certificates; empty for none
+
+	// IsolateHostTailnet keeps every container on the host from reaching the
+	// tailnet through the host's own tailscaled (see netutil.SetupHostIsolation)
+	IsolateHostTailnet bool
+}
+
+// IsolateHostTailnetSetting is the plugin setting that turns the host's
+// tailnet isolation off.
+const IsolateHostTailnetSetting = "TSLINK_ISOLATE_HOST_TAILNET"
+
+// isolateHostTailnet parses IsolateHostTailnetSetting. Only "false" turns the
+// isolation off: any other value, a typo included, keeps the host's tailnet
+// closed to containers.
+func isolateHostTailnet(v string) bool {
+	switch {
+	case strings.EqualFold(v, "false"):
+		logger.Warnf("%s=false: containers on this host can reach the tailnet as the host",
+			IsolateHostTailnetSetting)
+		return false
+	case v != "" && !strings.EqualFold(v, "true"):
+		logger.Warnf("%s=%q is neither true nor false: keeping the host's tailnet isolated",
+			IsolateHostTailnetSetting, v)
+	}
+	return true
 }
 
 // NetworkOptions holds options for network creation.
@@ -61,6 +85,8 @@ func LoadConfig() (*Config, error) {
 		AuthKey:   os.Getenv("TS_AUTHKEY"),
 		DataDir:   DataDir(),
 		SharedDir: os.Getenv("TS_SHARED_DIR"),
+
+		IsolateHostTailnet: isolateHostTailnet(os.Getenv(IsolateHostTailnetSetting)),
 	}
 
 	// tslink no longer downloads Tailscale or runs other binaries: an

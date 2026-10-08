@@ -16,8 +16,8 @@ import (
 	"strings"
 )
 
-// knownGuarantees is the number of guarantees in the threat model. Tests may
-// guard any of G1 to G<knownGuarantees>, published or not.
+// knownGuarantees is the number of guarantees: Guarantee IDs run from G1 to
+// G10. Tests may guard any of them, published or not.
 const knownGuarantees = 10
 
 // Guarantee is a guarantee SECURITY.md publishes.

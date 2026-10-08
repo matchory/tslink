@@ -124,9 +124,13 @@ pkg/
 ├── core/       # Endpoint/network logic (endpoint.go, network.go)
 ├── tailscale/  # Daemon lifecycle (daemon.go, supervisor.go, binary.go)
 ├── netutil/    # Linux networking (veth.go - veth, routing, NAT)
+├── preflight/  # `tslink diag --preflight`: SECURITY.md's environment properties, via the Docker API
 └── logger/     # Structured logging
 internal/
-└── leakcheck/  # TestMain helper: fails a package's tests if they leak goroutines
+├── leakcheck/  # TestMain helper: fails a package's tests if they leak goroutines
+└── secmodel/   # Checks that every guarantee in SECURITY.md is guarded
+test/
+└── security/   # lib.sh: security probes with control runs, used by test/integration/run.sh
 ```
 
 `pkg/core`, `pkg/docker` and `pkg/tailscale` run their tests through `leakcheck.Main`, which reads Go's `goroutineleak`
@@ -196,9 +200,10 @@ return fmt.Errorf("failed to create endpoint: %w", err)
 
 - `ci.yml`: golangci-lint, pinned to the version `.golangci.toml` is written for, and the Go tests. The network
   namespace tests in `pkg/netutil` and the mount namespace test in `pkg/tailscale` skip without root, so CI runs them
-  a second time with `sudo`. Lint findings go to code scanning as SARIF (category `golangci-lint`); test results
-  become annotations and a job summary (JUnit from `gotestsum`); coverage of all runs is merged with
-  `go tool covdata` into the job summary and a `coverage` artifact, with no threshold.
+  a second time with `sudo`. It also tests the probe library, `test/security/lib_test.sh`. Lint findings go to code
+  scanning as SARIF (category `golangci-lint`); test results become annotations and a job summary (JUnit from
+  `gotestsum`); coverage of all runs is merged with `go tool covdata` into the job summary and a `coverage` artifact,
+  with no threshold.
 - `govulncheck.yml`: govulncheck findings as SARIF in code scanning, on pushes, PRs and weekly. `gotestsum` and
   `govulncheck` are pinned in the `tool` block of `go.mod` (`go tool ...`), so Dependabot updates them.
 - `linter.yml`: super-linter for everything except Go (Markdown, YAML, shell, Dockerfile). Configs are in
@@ -219,6 +224,16 @@ return fmt.Errorf("failed to create endpoint: %w", err)
 
 `test/cluster` builds a three-node Swarm on a cloud provider (the scripts currently target Hetzner Cloud) and runs
 `regress.sh` against a real tailnet; see `test/cluster/README.md`.
+
+## Security Model Tests
+
+`SECURITY.md` publishes guarantees (`### G<n>:`) and the environment properties they assume (E1, E2, ...). A test
+that verifies a guarantee carries its ID: `// Guards: G1` in the doc comment of a Go test, `\* Guards: G1` in a TLA+
+model, and `probe G1 ...` for a shell probe. `internal/secmodel` (`TestRepository`, part of `go test ./...`) fails
+if a published guarantee has no marker, unless its section has a `Manual:` line; markers may name G1 to G10,
+published or not. A shell probe goes through `test/security/lib.sh`, which runs it once against the defended system,
+where it must fail, and once in a control run with the defence off, where it must get through: a probe whose control
+run does not get through is reported as BROKEN, since it could not catch a regression.
 
 ## Troubleshooting
 

@@ -34,7 +34,8 @@ func (b *lockedBuffer) String() string {
 
 // TestCredentialsStayOutOfTheLog creates networks with valid and invalid
 // options around an auth key, and checks that neither the plugin's log nor the
-// errors returned to Docker contain it.
+// errors returned to Docker contain it. It covers network creation only, not
+// the other places G5 names.
 //
 // Guards: G5
 func TestCredentialsStayOutOfTheLog(t *testing.T) {

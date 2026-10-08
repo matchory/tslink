@@ -13,6 +13,11 @@ HCLOUD_TOKEN=$(cat "$TSLINK_TEST_DIR/hcloud.token")
 export HCLOUD_TOKEN
 L=(--label "purpose=$NAME")
 ME=$(curl -fsS4 https://ifconfig.me)
+# It goes into the firewall rules unquoted: anything but an address is refused
+if ! [[ $ME =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+	echo "ifconfig.me did not answer with an IPv4 address: $ME" >&2
+	exit 1
+fi
 mkdir -p "$TSLINK_SEC_DIR"
 chmod 700 "$TSLINK_SEC_DIR"
 

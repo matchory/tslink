@@ -10,7 +10,7 @@ make test-network test-container
 
 ## Prerequisites
 
-- Go 1.26+
+- Go 1.27+
 - Docker (via OrbStack, Docker Desktop, or native Linux)
 - Tailscale auth key from <https://login.tailscale.com/admin/settings/keys>
 

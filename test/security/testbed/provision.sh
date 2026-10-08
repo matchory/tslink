@@ -21,13 +21,21 @@ fi
 mkdir -p "$TSLINK_SEC_DIR"
 chmod 700 "$TSLINK_SEC_DIR"
 
-hcloud ssh-key create --name $NAME --public-key-from-file ~/.ssh/id_ed25519.pub "${L[@]}" >/dev/null
+# Hetzner refuses a second copy of a public key: use the one another testbed
+# registered, if any
+FP=$(ssh-keygen -E md5 -lf ~/.ssh/id_ed25519.pub | awk '{print $2}')
+KEY=$(hcloud ssh-key list -o noheader -o columns=name,fingerprint |
+	awk -v fp="${FP#MD5:}" '$2 == fp { print $1 }')
+if [ -z "$KEY" ]; then
+	KEY=$NAME
+	hcloud ssh-key create --name $NAME --public-key-from-file ~/.ssh/id_ed25519.pub "${L[@]}" >/dev/null
+fi
 hcloud firewall create --name $NAME "${L[@]}" >/dev/null
 printf '[{"direction":"in","protocol":"tcp","port":"22","source_ips":["%s/32"],"description":"ssh"}]' \
 	"$ME" >"$TSLINK_SEC_DIR/firewall.json"
 hcloud firewall replace-rules $NAME --rules-file "$TSLINK_SEC_DIR/firewall.json" >/dev/null
 hcloud server create --name $NAME --type cpx22 --location fsn1 --image ubuntu-24.04 \
-	--ssh-key $NAME --firewall $NAME --user-data-from-file "$B/cloud-init.yaml" "${L[@]}" >/dev/null
+	--ssh-key "$KEY" --firewall $NAME --user-data-from-file "$B/cloud-init.yaml" "${L[@]}" >/dev/null
 
 cat >"$TSLINK_SEC_DIR/ssh_config" <<EOF
 Host testbed

@@ -164,6 +164,64 @@ func TestRunTailscaleCleansUpStartCancelledByLeave(t *testing.T) {
 	}
 }
 
+// Plugin shutdown stops every endpoint without a Leave: the container keeps
+// running, and recovery adopts it after the restart. A start in flight is
+// cancelled, but its node is not logged out, its state stays and its claim
+// goes.
+func TestRunTailscaleKeepsStateOfStartCancelledByStop(t *testing.T) {
+	shortRetries(t)
+	loggedOut := stubLogout(t, nil)
+	claims := NewStateClaims()
+	e := &Endpoint{
+		ID:      "0123456789abcdef",
+		DataDir: t.TempDir(),
+		Network: &Network{AuthKey: "tskey-client-x?ephemeral=true"},
+		claims:  claims,
+	}
+	var dir string
+	started := make(chan struct{})
+	e.startFn = func(info *ContainerInfo) error {
+		e.mu.RLock()
+		ctx := e.runCtx
+		e.mu.RUnlock()
+		var err error
+		if dir, err = e.prepareStateDir(info, e.Network); err != nil {
+			return err
+		}
+		state := filepath.Join(dir, "tailscaled.state")
+		if err := os.WriteFile(state, []byte("{}"), 0o600); err != nil {
+			t.Error(err)
+		}
+		close(started)
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	done := make(chan struct{})
+	go func() {
+		e.RunTailscale(&ContainerInfo{Hostname: "app_web.1.abc", Stack: "app"})
+		close(done)
+	}()
+	<-started
+	if err := e.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunTailscale did not return after Stop")
+	}
+
+	if got := loggedOut(); len(got) != 0 {
+		t.Errorf("logged out %v on Stop without Leave", got)
+	}
+	if !tailscale.IsMarkedEphemeral(dir) || !tailscale.StateExists(dir) {
+		t.Errorf("%s lost its state or its ephemeral mark", dir)
+	}
+	if _, ok := claims.claim(dir, "fedcba9876543210"); !ok {
+		t.Error("state directory still claimed after the run ended")
+	}
+}
+
 // A start that reaches tailscaled after Leave began starts none.
 func TestStartSupervisorRefusesWhileLeaving(t *testing.T) {
 	e := &Endpoint{ID: "0123456789abcdef", DataDir: t.TempDir(), leaving: true}

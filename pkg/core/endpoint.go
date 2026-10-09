@@ -46,6 +46,7 @@ type Endpoint struct {
 
 	running bool                       // Whether RunTailscale is active
 	leaving bool                       // Leave or Stop began: RunTailscale starts nothing until a Join
+	left    bool                       // Leave began: the container is gone, not just the plugin
 	runCtx  context.Context            //nolint:containedctx // Cancelled when the endpoint leaves
 	stopRun context.CancelFunc         // Cancels runCtx
 	startFn func(*ContainerInfo) error // Replaces StartTailscale in tests
@@ -274,6 +275,7 @@ func (e *Endpoint) Join(sandboxKey string) (*network.JoinResponse, error) {
 	e.SandboxKey = sandboxKey
 	e.VethName = vethHost
 	e.leaving = false
+	e.left = false
 	e.mu.Unlock()
 
 	logger.Infof(
@@ -467,12 +469,19 @@ func (e *Endpoint) RunTailscale(info *ContainerInfo) {
 	defer func() {
 		e.mu.Lock()
 		e.running = false
+		left := e.left
 		e.mu.Unlock()
-		if ctx.Err() != nil {
+		switch {
+		case ctx.Err() == nil:
+		case left:
 			// Left while starting: Leave left the state directory, and a
 			// supervisor stored after it looked, to the run
 			logger.Infof("Endpoint %s left while Tailscale started, stopping it", e.ID[:12])
 			e.stopTailscale() //nolint:contextcheck // ctx is done: cleanup outlives it
+		default:
+			// Stopped with the plugin: the container keeps running, and
+			// recovery adopts its node with its state
+			e.abandonStart()
 		}
 	}()
 
@@ -612,6 +621,7 @@ func (e *Endpoint) Leave() error {
 	// Tailscale started after stopTailscale would run until DeleteEndpoint
 	e.mu.Lock()
 	e.leaving = true
+	e.left = true
 	vethName := e.VethName
 	sandboxKey := e.SandboxKey
 	e.mu.Unlock()
@@ -842,6 +852,23 @@ func (e *Endpoint) cancelRun() {
 // releaseStateDir gives up the endpoint's claim on its state directory.
 func (e *Endpoint) releaseStateDir() {
 	e.claims.release(e.GetStateDir(), e.ID)
+}
+
+// abandonStart stops a supervisor a start stored after Stop looked, and gives
+// up the state directory, keeping its state: the endpoint stopped with the
+// plugin, not because its container left.
+func (e *Endpoint) abandonStart() {
+	e.mu.Lock()
+	supervisor := e.supervisor
+	e.supervisor = nil
+	e.tailscaleStarted = false
+	e.mu.Unlock()
+	if supervisor != nil {
+		if err := supervisor.Stop(); err != nil {
+			logger.Warnf("Failed to stop supervisor: %v", err)
+		}
+	}
+	e.releaseStateDir()
 }
 
 // unstartedLogoutTimeout bounds logging out the node of a start that failed.

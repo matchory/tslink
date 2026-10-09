@@ -15,7 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stayed behind without its `ephemeral` mark, so garbage collection never
   removed it. Leaving now aborts the start and its login, and once the start
   has returned, an ephemeral node it may have registered is logged out and
-  its state removed. The state directory stays claimed until then.
+  its state removed. The state directory stays claimed until then. A start
+  the plugin's shutdown interrupts keeps its node and state for recovery.
 
 ## [0.2.0] - 2026-10-09
 

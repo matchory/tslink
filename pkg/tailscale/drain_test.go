@@ -79,7 +79,7 @@ func TestDrainAndWaitWaitsForControl(t *testing.T) {
 	cli := &fakeCLI{}
 	s, d := newTestSupervisor(t, cli)
 	api := newFakeLocalAPI(t)
-	api.loggedIn(ipn.Prefs{})
+	api.loggedIn(ipn.Prefs{AdvertiseServices: []string{"svc:web"}})
 	d.lc = api.client()
 	loggedOut := func() bool {
 		return slices.Contains(api.paths(), "POST /localapi/v0/logout")
@@ -116,6 +116,35 @@ func TestDrainAndWaitWaitsForControl(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed < drainAckFloor {
 		t.Errorf("returned after %v, want at least %v", elapsed, drainAckFloor)
+	}
+}
+
+// A backend drained outside tslink, as by "tailscale serve drain" from the
+// host before Docker stops, is no longer advertised: leaving neither drains it
+// again nor waits for a fetch that drain would never cause, and it stays
+// drained.
+func TestDrainAndWaitAfterExternalDrain(t *testing.T) {
+	setDuration(t, &drainAckFloor, 10*time.Millisecond)
+	setDuration(t, &drainAckTimeout, 2*time.Second)
+	cli := &fakeCLI{}
+	s, d := newTestSupervisor(t, cli)
+	api := newFakeLocalAPI(t)
+	api.loggedIn(ipn.Prefs{})
+	d.lc = api.client()
+
+	start := time.Now()
+	s.DrainAndWait("svc:web")
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Errorf("waited %v after a drain outside tslink", elapsed)
+	}
+	if ran(cli.snapshot(), "serve", "drain", "svc:web") {
+		t.Errorf("drained again: %q", cli.snapshot())
+	}
+	if !s.Drained() {
+		t.Error("backend not marked drained")
+	}
+	if err := d.advertise("svc:web"); !errors.Is(err, errDrained) {
+		t.Errorf("advertise = %v, want errDrained", err)
 	}
 }
 

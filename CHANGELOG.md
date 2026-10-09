@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A container whose Tailscale Service backend was drained outside tslink, as
+  by `tailscale serve drain` from the `tslink-drain` systemd unit, waited the
+  full 10 seconds for control when it left. tslink drained it again, which
+  changed nothing control would fetch. A Service the node no longer advertises
+  now counts as drained, and the container leaves without waiting.
+
 ## [0.2.0] - 2026-10-09
 
 The first release of this fork. Changes since upstream

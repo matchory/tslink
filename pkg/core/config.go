@@ -1,11 +1,13 @@
 package core
 
 import (
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
 
 	"github.com/matchory/tslink/pkg/logger"
+	"github.com/matchory/tslink/pkg/netutil"
 	"github.com/matchory/tslink/pkg/tailscale"
 )
 
@@ -22,6 +24,32 @@ type Config struct {
 	// StrictTagScope confines a cluster-credential stack to tag:<stack>
 	// exactly. TSLINK_TAG_SCOPE=prefix turns it off.
 	StrictTagScope bool
+
+	// WireGuardPorts are the host ports containers' tailscaled leave the host
+	// on, one for each container (see netutil.SetupNAT)
+	WireGuardPorts netutil.PortRange
+}
+
+// WireGuardPortsSetting is the plugin setting that sets the range of
+// WireGuardPorts.
+const WireGuardPortsSetting = "TSLINK_WIREGUARD_PORTS"
+
+// wireGuardPorts parses WireGuardPortsSetting. An invalid range, or one with
+// the port tailscaled uses in the containers, keeps the default.
+func wireGuardPorts(v string) netutil.PortRange {
+	if v == "" {
+		return netutil.DefaultPortRange
+	}
+	r, err := netutil.ParsePortRange(v)
+	if err == nil && r.Contains(tailscale.WireGuardPort) {
+		err = fmt.Errorf("it contains tailscaled's port %d", tailscale.WireGuardPort)
+	}
+	if err != nil {
+		logger.Warnf("%s=%q: %v; keeping %s", WireGuardPortsSetting, v, err,
+			netutil.DefaultPortRange)
+		return netutil.DefaultPortRange
+	}
+	return r
 }
 
 // IsolateHostTailnetSetting is the plugin setting that turns the host's
@@ -115,7 +143,9 @@ func LoadConfig() (*Config, error) {
 
 		IsolateHostTailnet: isolateHostTailnet(os.Getenv(IsolateHostTailnetSetting)),
 		StrictTagScope:     TagScopeStrict(os.Getenv(TagScopeSetting)),
+		WireGuardPorts:     wireGuardPorts(os.Getenv(WireGuardPortsSetting)),
 	}
+	netutil.ConfigurePortMapping(tailscale.WireGuardPort, cfg.WireGuardPorts)
 
 	// tslink no longer downloads Tailscale or runs other binaries: an
 	// installation upgraded with these settings keeps working, on the bundled

@@ -241,22 +241,37 @@ func mapContainers(ipt *iptables.IPTables, srcs []netip.Addr) error {
 	}
 	var errs []error
 	for _, src := range srcs {
-		if _, ok := mapped[src]; ok {
-			continue
+		if _, ok := mapped[src]; !ok {
+			errs = append(errs, mapContainer(ipt, src, mapped))
 		}
-		port, err := pickPort(src, portMap.ports, mapped)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("failed to map %s: %w", src, err))
-			continue
-		}
-		if err := ipt.Append("nat", portMapChain, portMap.rule(src, port)...); err != nil {
-			errs = append(errs, fmt.Errorf("failed to map %s to port %d: %w", src, port, err))
-			continue
-		}
-		mapped[src] = port
-		logger.Infof("Mapped the WireGuard port of %s to %d", src, port)
 	}
 	return errors.Join(errs...)
+}
+
+// mapContainer maps the tailscaled at src, which mapped has no port for, to a
+// free one, and records it in mapped. The flows it has already, as one an
+// older version set up or a restarted tailscaled on the same port, keep their
+// NAT until their conntrack entries go, which tailscaled's keepalives never
+// let happen: mapContainer deletes them, so their next packets leave on the
+// new port.
+func mapContainer(ipt *iptables.IPTables, src netip.Addr, mapped map[netip.Addr]int) error {
+	port, err := pickPort(src, portMap.ports, mapped)
+	if err != nil {
+		return fmt.Errorf("failed to map %s: %w", src, err)
+	}
+	if err := ipt.Append("nat", portMapChain, portMap.rule(src, port)...); err != nil {
+		return fmt.Errorf("failed to map %s to port %d: %w", src, port, err)
+	}
+	mapped[src] = port
+	logger.Infof("Mapped the WireGuard port of %s to %d", src, port)
+	n, err := forgetUDPFlows(src, portMap.sport)
+	if err != nil {
+		return err
+	}
+	if n > 0 {
+		logger.Infof("Reset %d flows of %s to its new WireGuard port", n, src)
+	}
+	return nil
 }
 
 // pruneMappings removes the mappings of addresses outside the /30s of the

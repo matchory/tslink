@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"syscall"
 	"testing"
 	"time"
 
@@ -121,6 +122,104 @@ func sourcePort(t *testing.T, conn *net.UDPConn, dst *net.UDPConn) int {
 		t.Fatalf("no datagram at %s: %v", dst.LocalAddr(), err)
 	}
 	return int(from.Port())
+}
+
+// udpFlows returns the conntrack entries of UDP flows from src:sport in the
+// namespace ns.
+func udpFlows(t *testing.T, ns string, src netip.Addr, sport int) int {
+	t.Helper()
+	var n int
+	if err := inNetNS(ns, func() error {
+		flows, err := netlink.ConntrackTableList(netlink.ConntrackTable, netlink.FAMILY_V4)
+		if err != nil {
+			return err
+		}
+		for _, f := range flows {
+			if f.Forward.Protocol == syscall.IPPROTO_UDP && f.Forward.SrcIP.Equal(src.AsSlice()) &&
+				int(f.Forward.SrcPort) == sport {
+				n++
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// A mapping added for a task whose flows exist already, as for a task an
+// older version set up, applies to those flows too: the kernel keeps a flow's
+// NAT for as long as its conntrack entry lives, and tailscaled's flows to
+// STUN, DERP and peers never go idle long enough to expire. Mapping it again
+// keeps the flows.
+func TestPortMappingAppliesToExistingFlows(t *testing.T) {
+	hostNS, tasks, upNS := natTopology(t, "pe")
+	if err := inNetNS(hostNS, func() error {
+		ipt, err := iptables.New()
+		if err != nil {
+			return err
+		}
+		return ipt.ClearChain("nat", portMapChain)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	const port = WireGuardTestPort
+	stun := udpSocket(t, upNS, "198.51.100.2", 3478)
+	peer := udpSocket(t, upNS, "198.51.100.3", 3478)
+	hostConn := udpSocket(t, hostNS, "", port)
+	if got := sourcePort(t, hostConn, stun); got != port {
+		t.Fatalf("the host's flow left on %d, want %d", got, port)
+	}
+
+	// Without the mapping the task's flows leave on two ports
+	conn := udpSocket(t, tasks[0], "", port)
+	if toSTUN, toPeer := sourcePort(t, conn, stun), sourcePort(t, conn, peer); toSTUN == toPeer {
+		t.Fatalf("before the mapping the task left on %d to both", toSTUN)
+	}
+
+	var mapped map[netip.Addr]int
+	if err := inNetNS(hostNS, func() error {
+		if err := SyncPortMappings(); err != nil {
+			return err
+		}
+		ipt, err := iptables.New()
+		if err != nil {
+			return err
+		}
+		mapped, err = listMappings(ipt)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	src := netip.MustParseAddr("10.200.0.2")
+	want := mapped[src]
+	if !DefaultPortRange.Contains(want) {
+		t.Fatalf("mappings = %v, want one for %s", mapped, src)
+	}
+	for i, dst := range []*net.UDPConn{stun, peer} {
+		if got := sourcePort(t, conn, dst); got != want {
+			t.Errorf(
+				"flow %d of the same socket left on %d after the mapping, want %d",
+				i,
+				got,
+				want,
+			)
+		}
+	}
+
+	// Mapping again changes nothing: the flows stay
+	if n := udpFlows(t, hostNS, src, port); n != 2 {
+		t.Fatalf("%d flows from the task, want 2", n)
+	}
+	if err := inNetNS(hostNS, SyncPortMappings); err != nil {
+		t.Fatal(err)
+	}
+	if err := inNetNS(hostNS, func() error { return SetupNAT("vethtp0") }); err != nil {
+		t.Fatal(err)
+	}
+	if n := udpFlows(t, hostNS, src, port); n != 2 {
+		t.Errorf("%d flows from the task after mapping it again, want 2", n)
+	}
 }
 
 // Two tasks behind one host each leave the host on a single port of their

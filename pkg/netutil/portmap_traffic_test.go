@@ -124,6 +124,23 @@ func sourcePort(t *testing.T, conn *net.UDPConn, dst *net.UDPConn) int {
 	return int(from.Port())
 }
 
+// destinationDependentPorts sends from conn to the peer, then to the STUN
+// server the host's own tailscaled talks to from the same port, and returns
+// the source ports they arrive from. The order is production's: a task's
+// flows that kept its port exist before one collides. Without a mapping,
+// MASQUERADE keeps the port towards the peer. Towards the STUN server it first
+// tries the mapping the task's existing flow has (the kernel's
+// find_appropriate_src), the same port, which collides, and remaps. Had the
+// colliding flow come first, later flows would reuse its port, and the
+// mapping would look endpoint-independent.
+func destinationDependentPorts(
+	t *testing.T, conn *net.UDPConn, stun, peer *net.UDPConn,
+) (int, int) {
+	t.Helper()
+	toPeer := sourcePort(t, conn, peer)
+	return sourcePort(t, conn, stun), toPeer
+}
+
 // udpFlows returns the conntrack entries of UDP flows from src:sport in the
 // namespace ns.
 func udpFlows(t *testing.T, ns string, src netip.Addr, sport int) int {
@@ -171,9 +188,10 @@ func TestPortMappingAppliesToExistingFlows(t *testing.T) {
 		t.Fatalf("the host's flow left on %d, want %d", got, port)
 	}
 
-	// Without the mapping the task's flows leave on two ports
+	// Without the mapping the task's flows leave on two ports (see
+	// destinationDependentPorts)
 	conn := udpSocket(t, tasks[0], "", port)
-	if toSTUN, toPeer := sourcePort(t, conn, stun), sourcePort(t, conn, peer); toSTUN == toPeer {
+	if toSTUN, toPeer := destinationDependentPorts(t, conn, stun, peer); toSTUN == toPeer {
 		t.Fatalf("before the mapping the task left on %d to both", toSTUN)
 	}
 
@@ -259,7 +277,7 @@ func TestPortMappingIsEndpointIndependent(t *testing.T) {
 			var ports [2]int
 			for i, ns := range tasks {
 				conn := udpSocket(t, ns, "", port)
-				toSTUN, toPeer := sourcePort(t, conn, stun), sourcePort(t, conn, peer)
+				toSTUN, toPeer := destinationDependentPorts(t, conn, stun, peer)
 				if !mapped {
 					if toSTUN == toPeer {
 						t.Errorf("control: task %d left on %d to both, want the "+

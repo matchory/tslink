@@ -363,6 +363,8 @@ var (
 
 // SetupNAT sets up MASQUERADE for traffic from the container.
 // Uses a custom chain (TS-CNI-FORWARD) for organized rule management.
+// vethHost must have its address: the container's tailscaled gets its own
+// external port (see portMapChain).
 func SetupNAT(vethHost string) error {
 	logger.Debugf("Setting up NAT for %s", vethHost)
 
@@ -394,6 +396,11 @@ func SetupNAT(vethHost string) error {
 
 	if err := ipt.AppendUnique("filter", chainName, "-o", vethHost, "-j", "ACCEPT"); err != nil {
 		logger.Warnf("Failed to add FORWARD rule for %s: %v", vethHost, err)
+	}
+
+	// One external port for tailscaled, whatever the destination
+	if err := setupPortMapping(ipt, vethHost); err != nil {
+		return fmt.Errorf("failed to map the WireGuard port behind %s: %w", vethHost, err)
 	}
 
 	logger.Debugf("NAT setup complete for %s", vethHost)
@@ -438,7 +445,8 @@ func initializeChain(ipt *iptables.IPTables) error {
 	return nil
 }
 
-// CleanupNAT removes the FORWARD rules for a specific veth interface.
+// CleanupNAT removes the FORWARD rules and the port mapping for a specific
+// veth interface, and the port mappings of veths that are gone.
 // The global MASQUERADE rule and chain structure are intentionally left in place.
 func CleanupNAT(vethHost string) error {
 	logger.Debugf("Cleaning up NAT rules for %s", vethHost)
@@ -460,6 +468,10 @@ func CleanupNAT(vethHost string) error {
 
 	if err := ipt.DeleteIfExists("filter", chainName, "-o", vethHost, "-j", "ACCEPT"); err != nil {
 		logger.Debugf("FORWARD -o rule not found for %s (already cleaned): %v", vethHost, err)
+	}
+
+	if err := removePortMapping(ipt, vethHost); err != nil {
+		logger.Warnf("Failed to remove the WireGuard port mapping behind %s: %v", vethHost, err)
 	}
 
 	logger.Debugf("NAT cleanup complete for %s", vethHost)
@@ -494,6 +506,16 @@ func CleanupAllNAT() error {
 			"MASQUERADE",
 		); err != nil {
 			logger.Debugf("No MASQUERADE rule found (may already be cleaned): %v", err)
+		}
+
+		// iptables cannot look for a jump to a chain that does not exist
+		if exists, err := ipt.ChainExists("nat", portMapChain); err == nil && exists {
+			if err := ipt.DeleteIfExists("nat", "POSTROUTING", "-j", portMapChain); err != nil {
+				logger.Debugf("No jump to %s found: %v", portMapChain, err)
+			}
+			if err := ipt.ClearAndDeleteChain("nat", portMapChain); err != nil {
+				logger.Debugf("Failed to delete chain %s: %v", portMapChain, err)
+			}
 		}
 	}
 

@@ -57,7 +57,16 @@ and it stays when the plugin stops. The host also forwards between tslink's veth
 (always on) drops everything forwarded to `10.200.0.0/16`, whatever interface it arrives on, except replies on
 connections the container opened and tailscaled's WireGuard port, the fixed `--port=41641` (`tailscale.WireGuardPort`),
 from tslink's veths: containers cannot reach each other's veth addresses, and colocated nodes keep their direct path
-instead of falling back to DERP.
+instead of falling back to DERP. The host masquerades `10.200.0.0/16`, and every tailscaled uses port 41641, so
+MASQUERADE would remap a container's port towards destinations another flow from the host uses (STUN, DERP) and keep
+it towards others, and hole punching between hosts would fail. So `SetupNAT` maps each container's `--sport 41641` to
+a port of its own (`MASQUERADE --to-ports P`, chain `TSLINK-WG-SNAT` jumped to first in nat `POSTROUTING`), from
+`TSLINK_WIREGUARD_PORTS` (default 61000-65535): from a hash of the container's veth address on, the first port no rule
+uses, under `portMapMu`. Adding a rule deletes the container's UDP conntrack entries from port 41641, whose NAT would
+otherwise outlive it (keepalives never let them expire); an existing rule is kept and its flows too. A rule's `-s` is
+the container's address, so a restarted plugin keeps the port; `CleanupNAT` removes it, and `SyncPortMappings` (run by
+`SetupVethIsolation`, so at start and by the watchdog) maps veths without a rule and removes rules of addresses no veth
+has.
 
 **Self-healing**: `Endpoint.RunTailscale` retries a failed start with backoff until the endpoint leaves, unless the
 error is a `permanentError` (wrong stack, invalid hostname). The supervisor restarts a crashed tailscaled, resumes after

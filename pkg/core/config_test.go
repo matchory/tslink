@@ -3,6 +3,8 @@ package core
 import (
 	"slices"
 	"testing"
+
+	"github.com/matchory/tslink/pkg/netutil"
 )
 
 func TestParseNetworkOptionsTags(t *testing.T) {
@@ -82,6 +84,27 @@ func TestLoadConfigIsolateHostTailnet(t *testing.T) {
 		if cfg.IsolateHostTailnet != want {
 			t.Errorf("%s=%q: IsolateHostTailnet = %v, want %v",
 				IsolateHostTailnetSetting, value, cfg.IsolateHostTailnet, want)
+		}
+	}
+}
+
+// An invalid range, or one with tailscaled's own port, keeps the default.
+func TestLoadConfigWireGuardPorts(t *testing.T) {
+	for value, want := range map[string]netutil.PortRange{
+		"":            netutil.DefaultPortRange,
+		"50000-50999": {First: 50000, Last: 50999},
+		"nonsense":    netutil.DefaultPortRange,
+		"10-20":       netutil.DefaultPortRange,
+		"41000-42000": netutil.DefaultPortRange, // tailscaled's own port
+	} {
+		t.Setenv(WireGuardPortsSetting, value)
+		cfg, err := LoadConfig()
+		if err != nil {
+			t.Fatalf("LoadConfig: %v", err)
+		}
+		if cfg.WireGuardPorts != want {
+			t.Errorf("%s=%q: WireGuardPorts = %v, want %v",
+				WireGuardPortsSetting, value, cfg.WireGuardPorts, want)
 		}
 	}
 }

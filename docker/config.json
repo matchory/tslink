@@ -108,6 +108,12 @@
 			"value": "exact"
 		},
 		{
+			"name": "TSLINK_WIREGUARD_PORTS",
+			"description": "Host UDP ports, first-last, that containers' tailscaled leave the host on, one for each container; keep it outside the kernel's ephemeral range and free of host services",
+			"settable": ["value"],
+			"value": "61000-65535"
+		},
+		{
 			"name": "TS_VERSION",
 			"description": "Only bundled (shipped in the plugin image) is supported; other values are ignored",
 			"settable": ["value"],

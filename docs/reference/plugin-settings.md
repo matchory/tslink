@@ -9,6 +9,7 @@ is disabled. See [Change a setting](../guides/install-and-upgrade.md#change-a-se
 | [`shared.source`](#sharedsource) | A directory on the host | The data directory |
 | [`TSLINK_ISOLATE_HOST_TAILNET`](#tslink_isolate_host_tailnet) | `true` or `false` | `true` |
 | [`TSLINK_TAG_SCOPE`](#tslink_tag_scope) | `exact` or `prefix` | `exact` |
+| [`TSLINK_WIREGUARD_PORTS`](#tslink_wireguard_ports) | A port range `first-last` | `61000-65535` |
 | [`TS_DEBUG_ACME_DIRECTORY_URL`](#ts_debug_acme_directory_url-and-ssl_cert_file) | A URL | Let's Encrypt |
 | [`SSL_CERT_FILE`](#ts_debug_acme_directory_url-and-ssl_cert_file) | A file in the plugin | The system's root certificates |
 
@@ -50,6 +51,19 @@ Sets which tags a stack can use with the cluster credential: `exact` or `prefix`
 > With `prefix`, a stack can use the base tag of a stack with a longer name. For example, stack `a` can use
 > `tag:a-b`, the base tag of stack `a-b`. If a stack needs more than one tag, give its network its own
 > `tslink.authkey`.
+
+## TSLINK_WIREGUARD_PORTS
+
+Sets the UDP ports on the host that the tailscaled of containers use for their WireGuard traffic to other hosts. Each
+container on the host gets its own port from the range, for all destinations. Thus peers on other hosts can connect
+to it directly, without a DERP relay. The range needs one port for each container on the host.
+
+Use ports from 1024 to 65535, outside the ephemeral port range of the kernel (`net.ipv4.ip_local_port_range`, by
+default `32768 60999`), and not used by services on the host. The range cannot contain `41641`, the port of
+tailscaled in the containers. For other values, tslink uses `61000-65535` and logs a warning. Containers keep their
+port until they leave the network.
+
+The ports only change the source port of traffic that leaves the host. They do not accept connections.
 
 ## TS_DEBUG_ACME_DIRECTORY_URL and SSL_CERT_FILE
 

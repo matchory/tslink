@@ -7,8 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `TSLINK_WIREGUARD_PORTS` plugin setting: the host ports that containers'
+  tailscaled leave the host on, one for each container (default
+  `61000-65535`).
+
 ### Fixed
 
+- Traffic between nodes on different hosts went over DERP instead of a direct
+  connection. Every container's tailscaled uses UDP port 41641, and the
+  host's masquerading changed that port only towards destinations another
+  flow from the host already used it for, such as the STUN servers. A
+  container then advertised a port that peers' packets did not reach. Each
+  container now leaves the host on a port of its own, for every destination.
 - A container that left while its Tailscale was starting kept that start
   running: tailscaled started after the container was gone, its login ran
   until it timed out a minute later, and an ephemeral node's state directory

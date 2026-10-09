@@ -243,8 +243,9 @@ func ensureFirstJump(ipt *iptables.IPTables, from, chain string) error {
 
 // SetupVethIsolation installs the veth isolation, or restores it, letting
 // only replies and UDP to port from tslink's veths through to them. IPv4 only:
-// the veths have no other addresses than link-local IPv6 ones. It changes
-// nothing that is in place, so it can run periodically.
+// the veths have no other addresses than link-local IPv6 ones. It also syncs
+// the veths' WireGuard port mappings (SyncPortMappings). It changes nothing
+// that is in place, so it can run periodically.
 func SetupVethIsolation(port int) error {
 	ipt, err := iptables.NewWithProtocol(iptables.ProtocolIPv4)
 	if err != nil {
@@ -261,7 +262,15 @@ func SetupVethIsolation(port int) error {
 	if err := ensureChain(ipt, vethIsolateChain, rules); err != nil {
 		return err
 	}
-	return ensureFirstJump(ipt, "FORWARD", vethIsolateChain)
+	if err := ensureFirstJump(ipt, "FORWARD", vethIsolateChain); err != nil {
+		return err
+	}
+	// It runs when the plugin starts and on every watchdog run, as the port
+	// mappings of the veths need to
+	if err := SyncPortMappings(); err != nil {
+		return fmt.Errorf("WireGuard port mappings: %w", err)
+	}
+	return nil
 }
 
 // RemoveHostIsolation removes the host's tailnet isolation, and tolerates its

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -55,6 +56,11 @@ type drainRecord struct {
 	at      time.Time
 	daemon  *Daemon // the daemon that drained
 	fetches int64   // its Service list fetches before the drain
+
+	// The Service was not advertised when tslink came to drain it, as after
+	// "tailscale serve drain" from outside tslink: control has nothing to
+	// fetch for this drain.
+	external bool
 }
 
 // isDrained reports whether the Service backend was drained.
@@ -64,13 +70,21 @@ func (d *Daemon) isDrained() bool {
 
 // Drain stops new connections to the node's backend for a Tailscale Service;
 // existing connections continue. The backend stays drained: tslink does not
-// advertise it again. Draining again does nothing once a drain took effect.
+// advertise it again. Draining again does nothing once a drain took effect,
+// and neither does a drain of a Service the node's prefs no longer advertise,
+// as one drained outside tslink.
 func (d *Daemon) Drain(service string) error {
 	g := d.config.gate
 	g.drained.Store(true)
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if !g.drain.at.IsZero() {
+		return nil
+	}
+	if d.notAdvertised(service) {
+		logger.Infof("%s is not advertised for %s, drained outside tslink: not draining it again",
+			service, d.config.EndpointID)
+		g.drain = drainRecord{at: time.Now(), daemon: d, external: true}
 		return nil
 	}
 
@@ -80,6 +94,24 @@ func (d *Daemon) Drain(service string) error {
 	}
 	g.drain = drainRecord{at: time.Now(), daemon: d, fetches: fetches}
 	return nil
+}
+
+// notAdvertised reports whether the node's prefs do not advertise service;
+// false if tailscaled cannot tell.
+func (d *Daemon) notAdvertised(service string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	prefs, err := d.lc.GetPrefs(ctx)
+	if err != nil {
+		logger.Debugf(
+			"Reading prefs before draining %s for %s: %v",
+			service,
+			d.config.EndpointID,
+			err,
+		)
+		return false
+	}
+	return !slices.Contains(prefs.AdvertiseServices, service)
 }
 
 // runServe runs "tailscale serve <args>", as drain and advertise.
@@ -135,7 +167,7 @@ func (s *DaemonSupervisor) DrainAndWait(service string) {
 	drain := g.drain
 	g.mu.Unlock()
 	d := s.GetDaemon()
-	if drain.at.IsZero() || d == nil {
+	if drain.at.IsZero() || drain.external || d == nil {
 		return
 	}
 	if !g.advertised.Load() {

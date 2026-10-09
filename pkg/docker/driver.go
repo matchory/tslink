@@ -63,8 +63,9 @@ type Driver struct {
 // for the tailnet to learn of it before the backends disappear.
 const drainGrace = 2 * time.Second
 
-// watchdogInterval is the interval at which the watchdog checks for orphaned endpoints.
-const watchdogInterval = 60 * time.Second
+// watchdogInterval is the interval at which the watchdog checks for orphaned
+// endpoints. A variable for tests.
+var watchdogInterval = 60 * time.Second
 
 // redactKey returns a redacted version of a key for safe logging.
 func redactKey(key string) string {
@@ -733,9 +734,16 @@ func (d *Driver) runWatchdog(ctx context.Context) {
 			logger.Infof("Watchdog shutting down")
 			return
 		case <-ticker.C:
+			if ctx.Err() != nil {
+				continue // shutting down: Done wins the next select
+			}
 			// Again here: restores the rules if something removed them
 			d.applyHostIsolation()
 			if err := d.RecoverEndpoints(ctx); err != nil {
+				if ctx.Err() != nil {
+					logger.Infof("Watchdog shutting down, recovery cut short: %v", err)
+					return
+				}
 				logger.Errorf("Watchdog recovery failed: %v", err)
 				continue
 			}

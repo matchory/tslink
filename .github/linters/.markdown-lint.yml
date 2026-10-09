@@ -9,7 +9,7 @@ MD013:
   line_length: 120
   tables: false
 
-# Repeated headings in different sections, as each release in CHANGELOG.md has
+# Duplicate headings: only among siblings, as CHANGELOG.md repeats "Fixed" per release
 MD024:
   siblings_only: true
 

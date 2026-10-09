@@ -13,7 +13,7 @@ func TestGetStatus(t *testing.T) {
 		`{"Self":{"TailscaleIPs":["100.64.0.1","fd7a::1"],"HostName":"web","Online":true}}`)
 	d := newTestDaemon(t, &fakeCLI{}, "")
 	d.lc = api.client()
-	st, err := d.getStatus()
+	st, err := d.getStatus(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -25,7 +25,7 @@ func TestGetStatus(t *testing.T) {
 	}
 
 	api.set(statusPath, "")
-	if _, err := d.getStatus(); err == nil {
+	if _, err := d.getStatus(t.Context()); err == nil {
 		t.Error("no error from a failing tailscaled")
 	}
 }

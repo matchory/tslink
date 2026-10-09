@@ -21,6 +21,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   flow from the host already used it for, such as the STUN servers. A
   container then advertised a port that peers' packets did not reach. Each
   container now leaves the host on a port of its own, for every destination.
+- A container that left while its Tailscale was starting kept that start
+  running: tailscaled started after the container was gone, its login ran
+  until it timed out a minute later, and an ephemeral node's state directory
+  stayed behind without its `ephemeral` mark, so garbage collection never
+  removed it. Leaving now aborts the start and its login, and once the start
+  has returned, an ephemeral node it may have registered is logged out and
+  its state removed. The state directory stays claimed until then. A start
+  the plugin's shutdown interrupts keeps its node and state for recovery.
+- A container whose Tailscale Service backend was drained outside tslink, as
+  by `tailscale serve drain` from the `tslink-drain` systemd unit, waited the
+  full 10 seconds for control when it left. tslink drained it again, which
+  changed nothing control would fetch. A Service the node no longer advertises
+  now counts as drained, and the container leaves without waiting.
+- The plugin logged `Watchdog recovery failed: ... context canceled` as an
+  error when it stopped during a watchdog scan. A scan cut short by the
+  shutdown is no longer an error.
+
+### Security
+
+- Built with Go 1.27.2 and golang.org/x/net v0.60.0, which fix
+  vulnerabilities in `net/http` and its HTTP/2 implementation (GO-2026-6612,
+  GO-2026-6613, GO-2026-6617). Building tslink requires Go 1.27.2 or later.
 
 ## [0.2.0] - 2026-10-09
 

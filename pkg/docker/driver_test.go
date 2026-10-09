@@ -1,6 +1,7 @@
 package docker
 
 import (
+	"context"
 	"errors"
 	"net/netip"
 	"os"
@@ -11,8 +12,10 @@ import (
 	"time"
 
 	"github.com/docker/go-plugins-helpers/network"
+	dockerclient "github.com/moby/moby/client"
 
 	"github.com/matchory/tslink/pkg/core"
+	"github.com/matchory/tslink/pkg/logger"
 )
 
 const sandbox = "/var/run/docker/netns/test"
@@ -726,5 +729,38 @@ func TestStartAppliesHostIsolation(t *testing.T) {
 		}
 		d.cancel()
 		d.wg.Wait()
+	}
+}
+
+// cancelingDocker cancels the plugin's context while Docker lists plugins, as
+// a plugin shutdown during a watchdog scan does.
+type cancelingDocker struct {
+	*fakeDocker
+	cancel context.CancelFunc
+}
+
+func (c cancelingDocker) PluginList(
+	ctx context.Context,
+	_ dockerclient.PluginListOptions,
+) (dockerclient.PluginListResult, error) {
+	c.cancel()
+	return dockerclient.PluginListResult{}, ctx.Err()
+}
+
+// A watchdog scan cut short by the plugin's shutdown is not an error.
+func TestWatchdogShutdownNotAnError(t *testing.T) {
+	old := watchdogInterval
+	watchdogInterval = 10 * time.Millisecond
+	t.Cleanup(func() { watchdogInterval = old })
+	var log lockedBuffer
+	logger.SetOutput(&log)
+	t.Cleanup(func() { logger.SetOutput(os.Stdout) })
+
+	td := newTestDriver(t, newFakeDocker())
+	ctx, cancel := context.WithCancel(t.Context())
+	td.docker = cancelingDocker{td.fake, cancel}
+	td.runWatchdog(ctx)
+	if strings.Contains(log.String(), "level=ERROR") {
+		t.Errorf("the watchdog logged an error at shutdown:\n%s", log.String())
 	}
 }

@@ -9,6 +9,10 @@ MD013:
   line_length: 120
   tables: false
 
+# Repeated headings in different sections, as each release in CHANGELOG.md has
+MD024:
+  siblings_only: true
+
 # Ordered list item prefix
 MD029:
   style: ordered

@@ -63,9 +63,10 @@ it towards others, and hole punching between hosts would fail. So `SetupNAT` map
 a port of its own (`MASQUERADE --to-ports P`, chain `TSLINK-WG-SNAT` jumped to first in nat `POSTROUTING`), from
 `TSLINK_WIREGUARD_PORTS` (default 61000-65535): from a hash of the container's veth address on, the first port no rule
 uses, under `portMapMu`. Adding a rule deletes the container's UDP conntrack entries from port 41641, whose NAT would
-otherwise outlive it (keepalives never let them expire); an existing rule is kept and its flows too. A rule's `-s` is the container's address, so a restarted plugin keeps the port; `CleanupNAT`
-removes it, and `SyncPortMappings` (run by `SetupVethIsolation`, so at start and by the watchdog) maps veths without a
-rule and removes rules of addresses no veth has.
+otherwise outlive it (keepalives never let them expire); an existing rule is kept and its flows too. A rule's `-s` is
+the container's address, so a restarted plugin keeps the port; `CleanupNAT` removes it, and `SyncPortMappings` (run by
+`SetupVethIsolation`, so at start and by the watchdog) maps veths without a rule and removes rules of addresses no veth
+has.
 
 **Self-healing**: `Endpoint.RunTailscale` retries a failed start with backoff until the endpoint leaves, unless the
 error is a `permanentError` (wrong stack, invalid hostname). The supervisor restarts a crashed tailscaled, resumes after

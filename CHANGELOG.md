@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Built with Go 1.27.2 and golang.org/x/net v0.60.0, which fix
+  vulnerabilities in `net/http` and its HTTP/2 implementation (GO-2026-6612,
+  GO-2026-6613, GO-2026-6617). Building tslink requires Go 1.27.2 or later.
+
 ## [0.2.0] - 2026-10-09
 
 The first release of this fork. Changes since upstream

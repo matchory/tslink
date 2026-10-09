@@ -21,6 +21,7 @@ type natRules struct {
 	forward     []string
 	chain       []string // nil when the chain does not exist
 	postrouting []string
+	portMap     map[netip.Addr]int // the mappings in portMapChain
 }
 
 func listNATRules(t *testing.T, nsPath string) natRules {
@@ -49,7 +50,10 @@ func listNATRules(t *testing.T, nsPath string) natRules {
 				return err
 			}
 		}
-		r.postrouting, err = ipt.List("nat", "POSTROUTING")
+		if r.postrouting, err = ipt.List("nat", "POSTROUTING"); err != nil {
+			return err
+		}
+		r.portMap, err = listMappings(ipt)
 		return err
 	}); err != nil {
 		t.Fatalf("list rules: %v", err)
@@ -93,6 +97,16 @@ func TestNATRules(t *testing.T) {
 		return ipt.Append("filter", "FORWARD", "-i", "dummy0", "-j", "DROP")
 	})
 
+	// The host ends of three veths, with their addresses
+	addrs := map[string]string{
+		"vethtslinka": "10.200.0.1/30",
+		"vethtslinkb": "10.200.0.5/30",
+		"vethtslinkc": "10.200.0.9/30",
+	}
+	inNS("add veths", func() error { return addLinks(addrs) })
+	ctrA, ctrB, ctrC := netip.MustParseAddr("10.200.0.2"), netip.MustParseAddr("10.200.0.6"),
+		netip.MustParseAddr("10.200.0.10")
+
 	inNS("SetupNAT", func() error {
 		if err := SetupNAT("vethtslinka"); err != nil {
 			return err
@@ -103,6 +117,8 @@ func TestNATRules(t *testing.T) {
 	jump := "-A FORWARD -j " + chainName
 	drop := "-A FORWARD -i dummy0 -j DROP"
 	masquerade := "-A POSTROUTING -s 10.200.0.0/16 -j MASQUERADE"
+	portJump := "-A POSTROUTING -j " + portMapChain
+	postrouting := []string{"-P POSTROUTING ACCEPT", portJump, masquerade}
 	accept := func(veth string) []string {
 		return []string{
 			"-A " + chainName + " -i " + veth + " -j ACCEPT",
@@ -117,7 +133,18 @@ func TestNATRules(t *testing.T) {
 	assertRules(t, "FORWARD", r.forward, []string{"-P FORWARD ACCEPT", jump, drop})
 	assertRules(t, chainName, r.chain,
 		slices.Concat([]string{"-N " + chainName}, accept("vethtslinka"), accept("vethtslinkb")))
-	assertRules(t, "POSTROUTING", r.postrouting, []string{"-P POSTROUTING ACCEPT", masquerade})
+	assertRules(t, "POSTROUTING", r.postrouting, postrouting)
+	mapped := r.portMap
+	if len(mapped) != 2 || mapped[ctrA] == mapped[ctrB] ||
+		!DefaultPortRange.Contains(mapped[ctrA]) || !DefaultPortRange.Contains(mapped[ctrB]) {
+		t.Fatalf("port mappings = %v, want two ports in %s", mapped, DefaultPortRange)
+	}
+
+	// Setting a veth up again keeps its port
+	inNS("SetupNAT again", func() error { return SetupNAT("vethtslinka") })
+	if got := listNATRules(t, nsPath).portMap; !maps.Equal(got, mapped) {
+		t.Errorf("port mappings after SetupNAT again = %v, want %v", got, mapped)
+	}
 
 	// After a plugin restart the chain and global rules exist already; they
 	// must not be duplicated.
@@ -137,12 +164,38 @@ func TestNATRules(t *testing.T) {
 			accept("vethtslinkc"),
 		),
 	)
-	assertRules(
-		t,
-		"POSTROUTING after restart",
-		r.postrouting,
-		[]string{"-P POSTROUTING ACCEPT", masquerade},
-	)
+	assertRules(t, "POSTROUTING after restart", r.postrouting, postrouting)
+	if r.portMap[ctrA] != mapped[ctrA] || r.portMap[ctrB] != mapped[ctrB] || len(r.portMap) != 3 {
+		t.Errorf(
+			"port mappings after restart = %v, want those of %v and one more",
+			r.portMap,
+			mapped,
+		)
+	}
+	mapped = r.portMap
+
+	// SyncPortMappings maps a veth an older version set up and removes the
+	// mapping of an address no veth has
+	inNS("simulate an old veth and a stale mapping", func() error {
+		ipt, err := iptables.New()
+		if err != nil {
+			return err
+		}
+		if err := ipt.Delete("nat", portMapChain, portMap.rule(ctrB, mapped[ctrB])...); err != nil {
+			return err
+		}
+		return ipt.Append(
+			"nat",
+			portMapChain,
+			portMap.rule(netip.MustParseAddr("10.200.9.2"), 1)...)
+	})
+	inNS("SyncPortMappings", SyncPortMappings)
+	r = listNATRules(t, nsPath)
+	if len(r.portMap) != 3 || r.portMap[ctrA] != mapped[ctrA] || r.portMap[ctrC] != mapped[ctrC] ||
+		r.portMap[ctrB] == 0 || r.portMap[ctrB] == mapped[ctrA] || r.portMap[ctrB] == mapped[ctrC] {
+		t.Errorf("port mappings after SyncPortMappings = %v, want a, b and c mapped", r.portMap)
+	}
+	assertRules(t, "POSTROUTING after SyncPortMappings", r.postrouting, postrouting)
 
 	// CleanupNAT removes one veth's rules, and tolerates their absence.
 	for range 2 {
@@ -153,14 +206,19 @@ func TestNATRules(t *testing.T) {
 	assertRules(t, "FORWARD after CleanupNAT", r.forward, []string{"-P FORWARD ACCEPT", jump, drop})
 	assertRules(t, chainName+" after CleanupNAT", r.chain,
 		slices.Concat([]string{"-N " + chainName}, accept("vethtslinkb"), accept("vethtslinkc")))
-	assertRules(
-		t,
-		"POSTROUTING after CleanupNAT",
-		r.postrouting,
-		[]string{"-P POSTROUTING ACCEPT", masquerade},
-	)
+	assertRules(t, "POSTROUTING after CleanupNAT", r.postrouting, postrouting)
+	if _, ok := r.portMap[ctrA]; ok || len(r.portMap) != 2 {
+		t.Errorf("port mappings after CleanupNAT = %v, want b's and c's", r.portMap)
+	}
 
-	// CleanupAllNAT removes the chain, the jump and MASQUERADE, and
+	// The mapping of a veth that is gone already goes too
+	inNS("delete veth c", func() error { return DeleteVeth("vethtslinkc") })
+	inNS("CleanupNAT of a deleted veth", func() error { return CleanupNAT("vethtslinkc") })
+	if got := listNATRules(t, nsPath).portMap; len(got) != 1 || got[ctrB] == 0 {
+		t.Errorf("port mappings after CleanupNAT of a deleted veth = %v, want b's", got)
+	}
+
+	// CleanupAllNAT removes the chains, the jumps and MASQUERADE, and
 	// tolerates their absence.
 	for range 2 {
 		inNS("CleanupAllNAT", CleanupAllNAT)
@@ -177,6 +235,28 @@ func TestNATRules(t *testing.T) {
 		r.postrouting,
 		[]string{"-P POSTROUTING ACCEPT"},
 	)
+	if len(r.portMap) != 0 {
+		t.Errorf("port mappings after CleanupAllNAT = %v", r.portMap)
+	}
+}
+
+// addLinks adds a dummy link for each name, with its address, in the
+// current network namespace.
+func addLinks(addrs map[string]string) error {
+	for name, addr := range addrs {
+		link := &netlink.Dummy{Name: name}
+		if err := netlink.LinkAdd(link); err != nil {
+			return err
+		}
+		a, err := netlink.ParseAddr(addr)
+		if err != nil {
+			return err
+		}
+		if err := netlink.AddrAdd(link, a); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // UsedVethSubnets lists the /30s in tslink's range on any link of the

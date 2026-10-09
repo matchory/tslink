@@ -119,7 +119,7 @@ func TestLogInFails(t *testing.T) {
 
 // A login that never gets the node running times out.
 func TestLogInTimesOut(t *testing.T) {
-	setDuration(t, &loginTimeout, 200*time.Millisecond)
+	setDuration(t, &loginTimeout, time.Second)
 	api := newFakeLocalAPI(t)
 	api.loggedOut()
 	d, _ := loginDaemon(t, api, DaemonConfig{Hostname: "web"})

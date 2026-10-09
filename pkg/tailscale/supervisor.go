@@ -134,6 +134,14 @@ func NewDaemonSupervisor(cfg DaemonConfig) *DaemonSupervisor {
 // Start begins the supervision loop and waits for initial daemon startup.
 // Returns error if the initial startup fails.
 func (s *DaemonSupervisor) Start() error {
+	return s.StartContext(context.Background())
+}
+
+// StartContext is Start, but cancelling ctx before the initial startup
+// succeeded, as the endpoint leaving does, stops the supervisor and aborts a
+// daemon start in progress, its login included. Once started, the supervisor
+// no longer depends on ctx. The caller still calls Stop after an error.
+func (s *DaemonSupervisor) StartContext(ctx context.Context) error {
 	s.mu.Lock()
 	if s.status != StatusStopped {
 		s.mu.Unlock()
@@ -142,9 +150,13 @@ func (s *DaemonSupervisor) Start() error {
 	s.status = StatusStarting
 	s.mu.Unlock()
 
-	// Start supervision loop in background
+	stop := context.AfterFunc(ctx, s.cancel)
+	defer stop()
+
+	// Start supervision loop in background. It outlives ctx: stop cancels
+	// it with ctx only until the initial startup succeeded.
 	s.wg.Add(1)
-	go s.supervisionLoop()
+	go s.supervisionLoop() //nolint:contextcheck // see above
 
 	// Wait for initial startup result
 	select {
@@ -152,11 +164,16 @@ func (s *DaemonSupervisor) Start() error {
 		if err != nil {
 			return fmt.Errorf("initial daemon startup failed: %w", err)
 		}
-		return nil
+	case <-s.ctx.Done():
+		return fmt.Errorf("initial daemon startup aborted: %w", s.ctx.Err())
 	case <-time.After(90 * time.Second):
 		s.cancel()
 		return errors.New("timeout waiting for initial daemon startup")
 	}
+	if !stop() {
+		return fmt.Errorf("initial daemon startup aborted: %w", ctx.Err())
+	}
+	return nil
 }
 
 // Stop gracefully stops the supervisor and daemon.
@@ -237,9 +254,9 @@ func (s *DaemonSupervisor) Readiness(ctx context.Context) Readiness {
 	return daemon.readiness(ctx)
 }
 
-// WaitForIP waits for the daemon to get a Tailscale IP.
+// WaitForIP waits for the daemon to get a Tailscale IP, or ctx to be done.
 // Delegates to the underlying daemon.
-func (s *DaemonSupervisor) WaitForIP() (*Status, error) {
+func (s *DaemonSupervisor) WaitForIP(ctx context.Context) (*Status, error) {
 	s.mu.RLock()
 	daemon := s.daemon
 	s.mu.RUnlock()
@@ -248,7 +265,7 @@ func (s *DaemonSupervisor) WaitForIP() (*Status, error) {
 		return nil, errors.New("no daemon running")
 	}
 
-	return daemon.WaitForIP()
+	return daemon.WaitForIP(ctx)
 }
 
 // signalStartup safely sends the startup result exactly once.
@@ -400,12 +417,22 @@ func (s *DaemonSupervisor) waitBeforeRestart() bool {
 
 // startDaemon creates and starts a new daemon instance.
 func (s *DaemonSupervisor) startDaemon() error {
+	// Stopped: NewDaemon would create the state directory again, which the
+	// endpoint may have removed
+	if err := s.ctx.Err(); err != nil {
+		return err
+	}
 	daemon, err := NewDaemon(s.cfg)
 	if err != nil {
 		return fmt.Errorf("failed to create daemon: %w", err)
 	}
 
-	if err := s.start(daemon); err != nil {
+	// Stopping the supervisor aborts the start, and its login. Once started,
+	// the daemon's own context lets Stop take tailscaled down gracefully.
+	stop := context.AfterFunc(s.ctx, daemon.cancel)
+	err = s.start(daemon)
+	stop()
+	if err != nil {
 		return fmt.Errorf("failed to start daemon: %w", err)
 	}
 

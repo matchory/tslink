@@ -541,12 +541,15 @@ netns=$2; shift 3; exec nsenter --net="$netns" -- "$@"`,
 func (d *Daemon) waitForSocket() error {
 	logger.Debugf("Waiting for tailscaled socket at %s", d.socketPath)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(d.ctx, 10*time.Second)
 	defer cancel()
 
 	for {
 		select {
 		case <-ctx.Done():
+			if err := d.ctx.Err(); err != nil {
+				return err
+			}
 			return errors.New("timeout waiting for tailscaled socket")
 		default:
 			if _, err := os.Stat(d.socketPath); err == nil {

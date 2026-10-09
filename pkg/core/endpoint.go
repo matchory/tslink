@@ -46,6 +46,7 @@ type Endpoint struct {
 
 	running bool                       // Whether RunTailscale is active
 	leaving bool                       // Leave or Stop began: RunTailscale starts nothing until a Join
+	left    bool                       // Leave began: the container is gone, not just the plugin
 	runCtx  context.Context            //nolint:containedctx // Cancelled when the endpoint leaves
 	stopRun context.CancelFunc         // Cancels runCtx
 	startFn func(*ContainerInfo) error // Replaces StartTailscale in tests
@@ -274,6 +275,7 @@ func (e *Endpoint) Join(sandboxKey string) (*network.JoinResponse, error) {
 	e.SandboxKey = sandboxKey
 	e.VethName = vethHost
 	e.leaving = false
+	e.left = false
 	e.mu.Unlock()
 
 	logger.Infof(
@@ -398,7 +400,7 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 		Warn:          e.setWarning,
 	})
 
-	tailscaleIP, err := startSupervisor(supervisor)
+	tailscaleIP, err := e.startSupervisor(supervisor)
 	if err != nil {
 		return err
 	}
@@ -467,7 +469,20 @@ func (e *Endpoint) RunTailscale(info *ContainerInfo) {
 	defer func() {
 		e.mu.Lock()
 		e.running = false
+		left := e.left
 		e.mu.Unlock()
+		switch {
+		case ctx.Err() == nil:
+		case left:
+			// Left while starting: Leave left the state directory, and a
+			// supervisor stored after it looked, to the run
+			logger.Infof("Endpoint %s left while Tailscale started, stopping it", e.ID[:12])
+			e.stopTailscale() //nolint:contextcheck // ctx is done: cleanup outlives it
+		default:
+			// Stopped with the plugin: the container keeps running, and
+			// recovery adopts its node with its state
+			e.abandonStart()
+		}
 	}()
 
 	// Before Tailscale, so the container's healthcheck sees it start, or fail
@@ -478,11 +493,6 @@ func (e *Endpoint) RunTailscale(info *ContainerInfo) {
 		err := start(info)
 		if err == nil {
 			e.writeStatus(info, StatusRunning, attempt-1, nil)
-			if ctx.Err() != nil {
-				// Left while starting: Leave found no supervisor to stop
-				logger.Infof("Endpoint %s left while Tailscale started, stopping it", e.ID[:12])
-				e.stopTailscale()
-			}
 			return
 		}
 		if ctx.Err() != nil {
@@ -532,30 +542,6 @@ func (e *Endpoint) ClaimStateDir(info *ContainerInfo) error {
 	e.StateDir = dir
 	e.mu.Unlock()
 	return nil
-}
-
-// startSupervisor starts the supervisor and waits for the node's Tailscale
-// IP, stopping the supervisor again if either fails.
-func startSupervisor(supervisor *tailscale.DaemonSupervisor) (string, error) {
-	// Start supervisor (blocks until initial daemon startup succeeds or fails - up to 90s!)
-	if err := supervisor.Start(); err != nil {
-		// The supervisor keeps retrying after a failed first start. Nothing
-		// would stop it later, since it is not stored on the endpoint.
-		if stopErr := supervisor.Stop(); stopErr != nil {
-			logger.Warnf("failed to stop supervisor after start error: %v", stopErr)
-		}
-		return "", fmt.Errorf("failed to start tailscale supervisor: %w", err)
-	}
-
-	// Wait for Tailscale to connect and get IP (can take up to 60s!)
-	status, err := supervisor.WaitForIP()
-	if err != nil {
-		if stopErr := supervisor.Stop(); stopErr != nil {
-			logger.Warnf("failed to stop supervisor after WaitForIP error: %v", stopErr)
-		}
-		return "", fmt.Errorf("failed to get Tailscale IP: %w", err)
-	}
-	return status.IP, nil
 }
 
 // GetStateDir returns the endpoint's state directory safely.
@@ -635,6 +621,7 @@ func (e *Endpoint) Leave() error {
 	// Tailscale started after stopTailscale would run until DeleteEndpoint
 	e.mu.Lock()
 	e.leaving = true
+	e.left = true
 	vethName := e.VethName
 	sandboxKey := e.SandboxKey
 	e.mu.Unlock()
@@ -695,14 +682,18 @@ func (e *Endpoint) Stop() error {
 	e.leaving = true
 	e.mu.Unlock()
 	e.cancelRun()
-	defer e.releaseStateDir()
 	e.stopHealth()
 
 	e.mu.Lock()
 	supervisor := e.supervisor
+	// A start in flight releases the state directory when it returns
+	inFlight := supervisor == nil && e.running
 	e.supervisor = nil
 	e.tailscaleStarted = false
 	e.mu.Unlock()
+	if !inFlight {
+		defer e.releaseStateDir()
+	}
 
 	logger.Infof("Stopping endpoint %s", e.ID)
 
@@ -713,6 +704,42 @@ func (e *Endpoint) Stop() error {
 	}
 
 	return nil
+}
+
+// startSupervisor starts the supervisor and waits for the node's Tailscale
+// IP, stopping the supervisor again if either fails. It starts nothing for an
+// endpoint that is leaving, and Leave aborts a start in progress, its login
+// included.
+func (e *Endpoint) startSupervisor(supervisor *tailscale.DaemonSupervisor) (string, error) {
+	e.mu.RLock()
+	leaving, ctx := e.leaving, e.runCtx
+	e.mu.RUnlock()
+	if leaving {
+		return "", errors.New("endpoint is leaving")
+	}
+	if ctx == nil {
+		ctx = context.Background() // Started outside RunTailscale
+	}
+
+	// Start supervisor (blocks until initial daemon startup succeeds or fails - up to 90s!)
+	if err := supervisor.StartContext(ctx); err != nil {
+		// The supervisor keeps retrying after a failed first start. Nothing
+		// would stop it later, since it is not stored on the endpoint.
+		if stopErr := supervisor.Stop(); stopErr != nil {
+			logger.Warnf("failed to stop supervisor after start error: %v", stopErr)
+		}
+		return "", fmt.Errorf("failed to start tailscale supervisor: %w", err)
+	}
+
+	// Wait for Tailscale to connect and get IP (can take up to 60s!)
+	status, err := supervisor.WaitForIP(ctx)
+	if err != nil {
+		if stopErr := supervisor.Stop(); stopErr != nil {
+			logger.Warnf("failed to stop supervisor after WaitForIP error: %v", stopErr)
+		}
+		return "", fmt.Errorf("failed to get Tailscale IP: %w", err)
+	}
+	return status.IP, nil
 }
 
 // checkStackScope keeps a task to its own stack's network: another stack
@@ -827,29 +854,76 @@ func (e *Endpoint) releaseStateDir() {
 	e.claims.release(e.GetStateDir(), e.ID)
 }
 
+// abandonStart stops a supervisor a start stored after Stop looked, and gives
+// up the state directory, keeping its state: the endpoint stopped with the
+// plugin, not because its container left.
+func (e *Endpoint) abandonStart() {
+	e.mu.Lock()
+	supervisor := e.supervisor
+	e.supervisor = nil
+	e.tailscaleStarted = false
+	e.mu.Unlock()
+	if supervisor != nil {
+		if err := supervisor.Stop(); err != nil {
+			logger.Warnf("Failed to stop supervisor: %v", err)
+		}
+	}
+	e.releaseStateDir()
+}
+
+// unstartedLogoutTimeout bounds logging out the node of a start that failed.
+const unstartedLogoutTimeout = 30 * time.Second
+
+// removeUnstartedState removes the state of an ephemeral node whose Tailscale
+// never started. The start may have created the state directory it claimed,
+// and registered the node before it failed: that node is logged out first.
+// A directory another endpoint claimed meanwhile is left alone.
+func (e *Endpoint) removeUnstartedState(stateDir string) {
+	if e.claims != nil {
+		if _, ok := e.claims.claim(stateDir, e.ID); !ok {
+			return
+		}
+	}
+	if !tailscale.IsMarkedEphemeral(stateDir) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), unstartedLogoutTimeout)
+	defer cancel()
+	if err := logoutNode(ctx, e.DataDir, stateDir); err != nil {
+		logger.Warnf("Failed to log out ephemeral node of %s, removing its state anyway: %v",
+			stateDir, err)
+	}
+	if err := os.RemoveAll(stateDir); err != nil {
+		logger.Warnf("Failed to remove state of ephemeral node %s: %v", stateDir, err)
+	}
+}
+
 // stopTailscale stops the endpoint's tailscaled, if it runs. A Service backend
 // is drained first, unless its stop signal did that, and control given time to
 // learn of it. An ephemeral node is then logged out and its state deleted,
 // since nothing will reuse it.
 func (e *Endpoint) stopTailscale() {
-	defer e.releaseStateDir()
-
 	e.mu.Lock()
 	stateDir := e.StateDir
 	service := e.Service
 	ephemeral := e.Network != nil && e.Network.Ephemeral()
 	supervisor := e.supervisor
+	inFlight := supervisor == nil && e.running
 	e.supervisor = nil
 	e.tailscaleStarted = false
 	e.mu.Unlock()
 
+	if inFlight {
+		// A start in flight may still create the state directory and register
+		// the node: RunTailscale stops it once the start returns, and the
+		// directory stays claimed until then
+		return
+	}
+	defer e.releaseStateDir()
+
 	if supervisor == nil {
-		// Tailscale never started, but the start may have created the state
-		// directory it claimed
-		if ephemeral && tailscale.IsMarkedEphemeral(stateDir) {
-			if err := os.RemoveAll(stateDir); err != nil {
-				logger.Warnf("Failed to remove state of ephemeral node %s: %v", stateDir, err)
-			}
+		if ephemeral {
+			e.removeUnstartedState(stateDir)
 		}
 		return
 	}

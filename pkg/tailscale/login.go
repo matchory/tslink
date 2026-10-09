@@ -166,7 +166,7 @@ func (d *Daemon) waitBackendState() string {
 		if err == nil && st.BackendState != "NoState" {
 			return st.BackendState
 		}
-		if time.Now().After(deadline) {
+		if time.Now().After(deadline) || d.ctx.Err() != nil {
 			return ""
 		}
 		time.Sleep(200 * time.Millisecond)
@@ -257,6 +257,9 @@ func waitRunning(
 	for {
 		n, err := watcher.Next()
 		if err != nil {
+			if errors.Is(ctx.Err(), context.Canceled) {
+				return fmt.Errorf("login aborted: %w", ctx.Err())
+			}
 			if ctx.Err() != nil {
 				return errors.New("timeout waiting for Tailscale to run")
 			}

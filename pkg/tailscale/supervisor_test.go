@@ -1,6 +1,7 @@
 package tailscale
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -146,6 +147,47 @@ func TestSupervisorRetriesFailedFirstStart(t *testing.T) {
 	waitFor(t, "a retry", func() bool { return f.startCount() >= 2 })
 	f.setFail(nil)
 	waitFor(t, "a successful start", func() bool { return hasStatus(s, StatusRunning) })
+}
+
+// Cancelling the context of a start in progress, as Leave does, aborts the
+// start and its login at once, not after the login timeout.
+func TestSupervisorStartCancelled(t *testing.T) {
+	s, f, _ := newFakeSupervisor(t)
+	f.api.loggedOut()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	inLogin := make(chan struct{})
+	var once sync.Once
+	s.start = func(d *Daemon) error {
+		if err := f.start(d); err != nil {
+			return err
+		}
+		once.Do(func() { close(inLogin) })
+		// Without a key or a node key, tailscaled keeps needing a login
+		if err := d.logIn(false, false); err != nil {
+			if stopErr := d.Stop(); stopErr != nil {
+				t.Errorf("Stop: %v", stopErr)
+			}
+			return err
+		}
+		return nil
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- s.StartContext(ctx) }()
+	<-inLogin
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Error("StartContext succeeded although its context was cancelled")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancelling did not abort the start")
+	}
+	if got := f.startCount(); got != 1 {
+		t.Errorf("%d starts, want 1: a cancelled start is not retried", got)
+	}
 }
 
 func TestSupervisorCrashLoopCoolsDown(t *testing.T) {

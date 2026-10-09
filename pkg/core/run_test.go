@@ -4,9 +4,13 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/matchory/tslink/pkg/tailscale"
 )
 
 func shortRetries(t *testing.T) {
@@ -108,6 +112,125 @@ func TestRunTailscaleRefusesAfterStop(t *testing.T) {
 	e.RunTailscale(&ContainerInfo{Hostname: "web"})
 	if got := calls.Load(); got != 0 {
 		t.Errorf("start called %d times after Stop, want 0", got)
+	}
+}
+
+// Leave while a start is in flight, after it claimed and marked its state
+// directory: the start goes on, recreates the directory as NewDaemon does and
+// may have registered the node before it fails. Once it returns, the run
+// logs the ephemeral node out and removes its state; until then, the
+// directory stays claimed.
+func TestRunTailscaleCleansUpStartCancelledByLeave(t *testing.T) {
+	shortRetries(t)
+	loggedOut := stubLogout(t, nil)
+	claims := NewStateClaims()
+	e := &Endpoint{
+		ID:      "0123456789abcdef",
+		DataDir: t.TempDir(),
+		Network: &Network{AuthKey: "tskey-client-x?ephemeral=true"},
+		claims:  claims,
+	}
+	var dir string
+	e.startFn = func(info *ContainerInfo) error {
+		var err error
+		if dir, err = e.prepareStateDir(info, e.Network); err != nil {
+			return err
+		}
+		if err := e.Leave(); err != nil {
+			t.Errorf("Leave: %v", err)
+		}
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Error(err)
+		}
+		state := filepath.Join(dir, "tailscaled.state")
+		if err := os.WriteFile(state, []byte("{}"), 0o600); err != nil {
+			t.Error(err)
+		}
+		if _, ok := claims.claim(dir, "fedcba9876543210"); ok {
+			t.Error("Leave released the state directory of a start in flight")
+		}
+		return errors.New("login cancelled")
+	}
+	e.RunTailscale(&ContainerInfo{Hostname: "app_web.1.abc", Stack: "app"})
+
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Errorf("%s should be removed (err=%v)", dir, err)
+	}
+	if got := loggedOut(); !slices.Equal(got, []string{dir}) {
+		t.Errorf("logged out %v, want %s", got, dir)
+	}
+	if _, ok := claims.claim(dir, "fedcba9876543210"); !ok {
+		t.Error("state directory still claimed after the run ended")
+	}
+}
+
+// Plugin shutdown stops every endpoint without a Leave: the container keeps
+// running, and recovery adopts it after the restart. A start in flight is
+// cancelled, but its node is not logged out, its state stays and its claim
+// goes.
+func TestRunTailscaleKeepsStateOfStartCancelledByStop(t *testing.T) {
+	shortRetries(t)
+	loggedOut := stubLogout(t, nil)
+	claims := NewStateClaims()
+	e := &Endpoint{
+		ID:      "0123456789abcdef",
+		DataDir: t.TempDir(),
+		Network: &Network{AuthKey: "tskey-client-x?ephemeral=true"},
+		claims:  claims,
+	}
+	var dir string
+	started := make(chan struct{})
+	e.startFn = func(info *ContainerInfo) error {
+		e.mu.RLock()
+		ctx := e.runCtx
+		e.mu.RUnlock()
+		var err error
+		if dir, err = e.prepareStateDir(info, e.Network); err != nil {
+			return err
+		}
+		state := filepath.Join(dir, "tailscaled.state")
+		if err := os.WriteFile(state, []byte("{}"), 0o600); err != nil {
+			t.Error(err)
+		}
+		close(started)
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	done := make(chan struct{})
+	go func() {
+		e.RunTailscale(&ContainerInfo{Hostname: "app_web.1.abc", Stack: "app"})
+		close(done)
+	}()
+	<-started
+	if err := e.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunTailscale did not return after Stop")
+	}
+
+	if got := loggedOut(); len(got) != 0 {
+		t.Errorf("logged out %v on Stop without Leave", got)
+	}
+	if !tailscale.IsMarkedEphemeral(dir) || !tailscale.StateExists(dir) {
+		t.Errorf("%s lost its state or its ephemeral mark", dir)
+	}
+	if _, ok := claims.claim(dir, "fedcba9876543210"); !ok {
+		t.Error("state directory still claimed after the run ended")
+	}
+}
+
+// A start that reaches tailscaled after Leave began starts none.
+func TestStartSupervisorRefusesWhileLeaving(t *testing.T) {
+	e := &Endpoint{ID: "0123456789abcdef", DataDir: t.TempDir(), leaving: true}
+	s := tailscale.NewDaemonSupervisor(tailscale.DaemonConfig{EndpointID: e.ID})
+	if _, err := e.startSupervisor(s); err == nil {
+		t.Error("started a supervisor for a leaving endpoint")
+	}
+	if status, _ := s.Status(); status != tailscale.StatusStopped {
+		t.Errorf("supervisor %s, want stopped", status)
 	}
 }
 

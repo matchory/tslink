@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A container that left while its Tailscale was starting kept that start
+  running: tailscaled started after the container was gone, its login ran
+  until it timed out a minute later, and an ephemeral node's state directory
+  stayed behind without its `ephemeral` mark, so garbage collection never
+  removed it. Leaving now aborts the start and its login, and once the start
+  has returned, an ephemeral node it may have registered is logged out and
+  its state removed. The state directory stays claimed until then. A start
+  the plugin's shutdown interrupts keeps its node and state for recovery.
 - A container whose Tailscale Service backend was drained outside tslink, as
   by `tailscale serve drain` from the `tslink-drain` systemd unit, waited the
   full 10 seconds for control when it left. tslink drained it again, which

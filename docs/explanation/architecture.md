@@ -69,6 +69,10 @@ are unreachable. Thus tailnet traffic leaves the container through its own tails
 
 Each veth pair gets a /30 subnet from `10.200.0.0/16`.
 
+The host masquerades this traffic. All tailscaled in containers use UDP port 41641, so the host maps the port of each
+container to a port of its own, from the plugin setting `TSLINK_WIREGUARD_PORTS`. A container then uses the same
+external port for all destinations, and peers on other hosts can connect to it directly.
+
 ## Isolation
 
 The container reaches the tailnet only as its own node, not as the host. Routes stop sockets, but not raw frames, and

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-10
+
 ### Added
 
 - `TSLINK_WIREGUARD_PORTS` plugin setting: the host ports that containers'
@@ -359,5 +361,6 @@ features were tested on three- and five-node swarms; see
   index its `tailscale0` has in the container: often the host's primary
   interface. tailscaled does not start if the bus cannot be hidden.
 
-[Unreleased]: https://github.com/matchory/tslink/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/matchory/tslink/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/matchory/tslink/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/matchory/tslink/compare/v0.1.0...v0.2.0

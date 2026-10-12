@@ -381,14 +381,25 @@ func TestSupervisorRestartsOnChangedHostEndpoints(t *testing.T) {
 	mu.Lock()
 	eps = []netip.AddrPort{netip.MustParseAddrPort("10.10.0.2:61400")}
 	mu.Unlock()
+	// startDaemon only sets s.daemon once the fake's start returned and
+	// recorded the count, so poll on the daemon actually advertising the new
+	// endpoints, not merely on the count: between the two, GetDaemon can
+	// still be nil or still be the old daemon.
 	deadline := time.Now().Add(5 * time.Second)
-	for f.startCount() < 2 && time.Now().Before(deadline) {
+	for time.Now().Before(deadline) {
+		if got := s.GetDaemon(); got != nil && slices.Equal(got.HostEndpoints(), eps) {
+			break
+		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if f.startCount() != 2 {
-		t.Fatalf("%d starts, want 2", f.startCount())
+	if got := f.startCount(); got != 2 {
+		t.Fatalf("%d starts, want 2", got)
 	}
-	if got := s.GetDaemon(); got == nil || !slices.Equal(got.HostEndpoints(), eps) {
+	got := s.GetDaemon()
+	if got == nil {
+		t.Fatal("no current daemon after the restart")
+	}
+	if !slices.Equal(got.HostEndpoints(), eps) {
 		t.Errorf("restarted daemon advertises %v, want %v", got.HostEndpoints(), eps)
 	}
 	s.mu.RLock()
@@ -431,6 +442,32 @@ func TestSupervisorIgnoresHostEndpointErrors(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	if n := f.startCount(); n != 1 {
 		t.Errorf("%d starts, want 1", n)
+	}
+}
+
+// A drain under way means the node is leaving: restarting it for changed
+// host endpoints would strand DrainAndWait waiting on a daemon that no
+// longer exists (GetDaemon would read nil mid-restart).
+func TestSupervisorSkipsRestartWhenDrained(t *testing.T) {
+	setDuration(t, &hostEndpointsCheckInterval, 10*time.Millisecond)
+	s, f, _ := newFakeSupervisor(t)
+	var mu sync.Mutex
+	eps := []netip.AddrPort{netip.MustParseAddrPort("10.10.0.2:61367")}
+	s.cfg.HostEndpoints = func() ([]netip.AddrPort, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(eps), nil
+	}
+	if err := s.Start(); err != nil {
+		t.Fatal(err)
+	}
+	s.cfg.gate.drained.Store(true)
+	mu.Lock()
+	eps = []netip.AddrPort{netip.MustParseAddrPort("10.10.0.2:61400")}
+	mu.Unlock()
+	time.Sleep(200 * time.Millisecond)
+	if n := f.startCount(); n != 1 {
+		t.Errorf("%d starts while drained, want 1", n)
 	}
 }
 

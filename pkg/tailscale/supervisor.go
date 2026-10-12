@@ -529,9 +529,12 @@ func (s *DaemonSupervisor) checkLogin(daemon *Daemon, login *loginWatch) {
 }
 
 // hostEndpointsChanged reports whether daemon advertises other endpoints
-// than the current ones. An error reading them is no change.
+// than the current ones. An error reading them is no change; so is a
+// drained Service backend: the node is on its way out, and DrainAndWait may
+// be waiting on this very daemon for control to fetch the drain. Restarting
+// it would strand that wait with no daemon to wait on.
 func (s *DaemonSupervisor) hostEndpointsChanged(daemon *Daemon) bool {
-	if s.cfg.HostEndpoints == nil {
+	if s.cfg.HostEndpoints == nil || s.cfg.gate.drained.Load() {
 		return false
 	}
 	eps, err := s.cfg.HostEndpoints()

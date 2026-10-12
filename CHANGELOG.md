@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-10-12
+
 ### Added
 
 - `TSLINK_HOST_ENDPOINTS` plugin setting: the host's private addresses
@@ -377,6 +379,7 @@ features were tested on three- and five-node swarms; see
   index its `tailscale0` has in the container: often the host's primary
   interface. tailscaled does not start if the bus cannot be hidden.
 
-[Unreleased]: https://github.com/matchory/tslink/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/matchory/tslink/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/matchory/tslink/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/matchory/tslink/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/matchory/tslink/compare/v0.1.0...v0.2.0

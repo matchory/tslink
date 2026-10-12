@@ -109,16 +109,16 @@ func arrives(t *testing.T, conn *net.UDPConn, d time.Duration) bool {
 // to host 0's advertised endpoint before host 0's task has sent anything;
 // then host 0's task sends to host 1's endpoint, and host 1's again. It
 // reports whether each of the two later packets arrived.
-func probeFirst(t *testing.T, hosts [2]lanHost) (toTask1, toTask0 bool) {
+func probeFirst(t *testing.T, hosts [2]lanHost) (bool, bool) {
 	t.Helper()
 	c0 := udpSocket(t, hosts[0].task, "", WireGuardTestPort)
 	c1 := udpSocket(t, hosts[1].task, "", WireGuardTestPort)
 	send(t, c1, hosts[0].lan, hosts[0].port) // arrives unsolicited at host 0
 	time.Sleep(200 * time.Millisecond)
 	send(t, c0, hosts[1].lan, hosts[1].port)
-	toTask1 = arrives(t, c1, time.Second)
+	toTask1 := arrives(t, c1, time.Second)
 	send(t, c1, hosts[0].lan, hosts[0].port)
-	toTask0 = arrives(t, c0, time.Second)
+	toTask0 := arrives(t, c0, time.Second)
 	return toTask1, toTask0
 }
 
@@ -283,14 +283,14 @@ func TestHostEndpointsFollowPortMapping(t *testing.T) {
 			return err
 		}
 		if _, err := HostEndpoints("vethln0"); !errors.Is(err, ErrNoPortMapping) {
-			return fmt.Errorf("without a rule: %v, want ErrNoPortMapping", err)
+			return fmt.Errorf("without a rule: %w, want ErrNoPortMapping", err)
 		}
 		if err := SyncPortMappings(); err != nil {
 			return err
 		}
 		got, err = HostEndpoints("vethln0")
 		if err != nil || len(got) != 1 || got[0].Addr() != hosts[0].lan {
-			return fmt.Errorf("after sync: %v, %v", got, err)
+			return fmt.Errorf("after sync: %v, %w", got, err)
 		}
 		return nil
 	}); err != nil {

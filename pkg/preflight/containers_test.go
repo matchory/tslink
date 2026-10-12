@@ -125,6 +125,69 @@ func TestStackLabels(t *testing.T) {
 	}
 }
 
+// inStack returns a container of the given stack ("" for none).
+func inStack(
+	id, stack string,
+	hc container.HostConfig,
+	mounts ...container.MountPoint,
+) container.InspectResponse {
+	labels := map[string]string{}
+	if stack != "" {
+		labels["com.docker.stack.namespace"] = stack
+	}
+	return container.InspectResponse{
+		ID: id, Name: "/" + id, HostConfig: &hc, Mounts: mounts,
+		Config: &container.Config{Labels: labels},
+	}
+}
+
+func TestStackMates(t *testing.T) {
+	privileged := container.HostConfig{Privileged: true}
+	socket := container.MountPoint{
+		Type: mount.TypeBind, Source: "/var/run/docker.sock", Destination: "/x",
+	}
+	for _, tt := range []struct {
+		name     string
+		other    container.InspectResponse
+		property string
+		status   Status
+	}{
+		{"privileged stack-mate", inStack("mate", "app", privileged), "E1", Violated},
+		{"stack-mate mounting the socket", inStack(
+			"mate", "app", container.HostConfig{}, socket,
+		), "E2", Violated},
+		{"privileged, other stack", inStack("other", "db", privileged), "E1", OK},
+		{"privileged, no stack", inStack("other", "", privileged), "E1", OK},
+		{"socket, other stack", inStack("other", "db", container.HostConfig{}, socket), "E2", OK},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFakeDocker()
+			f.networks["ov"] = "overlay"
+			f.add(inStack("web", "app", container.HostConfig{}), "tn")
+			f.add(tt.other, "ov")
+			r := result(t, checkContainers(context.Background(), f), tt.property)
+			if r.Status != tt.status {
+				t.Errorf("%s = %+v, want %s", tt.property, r, tt.status)
+			}
+			if r.Status == Violated && !strings.Contains(r.Detail, "mate") {
+				t.Errorf("%s detail %q does not name the stack-mate", tt.property, r.Detail)
+			}
+		})
+	}
+}
+
+// A container outside a stack on a tslink network brings no stack-mates:
+// containers outside any stack stay out of scope.
+func TestNoStackNoMates(t *testing.T) {
+	f := newFakeDocker()
+	f.networks["ov"] = "overlay"
+	f.add(inStack("web", "", container.HostConfig{}), "tn")
+	f.add(inStack("other", "", container.HostConfig{Privileged: true}), "ov")
+	if r := result(t, checkContainers(context.Background(), f), "E1"); r.Status != OK {
+		t.Errorf("E1 = %+v, want ok", r)
+	}
+}
+
 func TestContainersGoneDuringTheCheck(t *testing.T) {
 	f := newFakeDocker()
 	f.add(

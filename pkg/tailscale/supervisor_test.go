@@ -3,10 +3,13 @@ package tailscale
 import (
 	"context"
 	"errors"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -357,6 +360,77 @@ func TestSupervisorBackoff(t *testing.T) {
 	s.resetBackoff()
 	if got := s.nextBackoff(); got != initialBackoff {
 		t.Errorf("after reset: %v, want %v", got, initialBackoff)
+	}
+}
+
+// A changed port or address restarts tailscaled, so it advertises the new
+// one, and does not count as a crash.
+func TestSupervisorRestartsOnChangedHostEndpoints(t *testing.T) {
+	setDuration(t, &hostEndpointsCheckInterval, 10*time.Millisecond)
+	s, f, _ := newFakeSupervisor(t)
+	var mu sync.Mutex
+	eps := []netip.AddrPort{netip.MustParseAddrPort("10.10.0.2:61367")}
+	s.cfg.HostEndpoints = func() ([]netip.AddrPort, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(eps), nil
+	}
+	if err := s.Start(); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	eps = []netip.AddrPort{netip.MustParseAddrPort("10.10.0.2:61400")}
+	mu.Unlock()
+	deadline := time.Now().Add(5 * time.Second)
+	for f.startCount() < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if f.startCount() != 2 {
+		t.Fatalf("%d starts, want 2", f.startCount())
+	}
+	if got := s.GetDaemon(); got == nil || !slices.Equal(got.HostEndpoints(), eps) {
+		t.Errorf("restarted daemon advertises %v, want %v", got.HostEndpoints(), eps)
+	}
+	s.mu.RLock()
+	crashes := len(s.crashTimes)
+	s.mu.RUnlock()
+	if crashes != 0 {
+		t.Errorf("%d crashes recorded, want 0", crashes)
+	}
+}
+
+// Unchanged endpoints, and none at all, never restart it.
+func TestSupervisorKeepsDaemonWithoutHostEndpoints(t *testing.T) {
+	setDuration(t, &hostEndpointsCheckInterval, 10*time.Millisecond)
+	s, f, _ := newFakeSupervisor(t)
+	s.cfg.HostEndpoints = func() ([]netip.AddrPort, error) { return nil, nil }
+	if err := s.Start(); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if n := f.startCount(); n != 1 {
+		t.Errorf("%d starts, want 1", n)
+	}
+}
+
+// An error reading them (iptables busy, the rule missing until the next
+// sync) is no change.
+func TestSupervisorIgnoresHostEndpointErrors(t *testing.T) {
+	setDuration(t, &hostEndpointsCheckInterval, 10*time.Millisecond)
+	s, f, _ := newFakeSupervisor(t)
+	var calls atomic.Int32
+	s.cfg.HostEndpoints = func() ([]netip.AddrPort, error) {
+		if calls.Add(1) == 1 {
+			return []netip.AddrPort{netip.MustParseAddrPort("10.10.0.2:61367")}, nil
+		}
+		return nil, errors.New("no external port mapped")
+	}
+	if err := s.Start(); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if n := f.startCount(); n != 1 {
+		t.Errorf("%d starts, want 1", n)
 	}
 }
 

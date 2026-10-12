@@ -48,6 +48,11 @@ type DaemonConfig struct {
 	LoginServer   string          // Control server URL for --login-server; empty for Tailscale's
 	ContainerDNS  []netip.Addr    // DNS servers the container was given, as with docker run --dns
 
+	// HostEndpoints returns the endpoints on the host tailscaled advertises
+	// besides its own (netutil.HostEndpoints); nil for none. Read when
+	// tailscaled starts, as tailscaled reads them only then.
+	HostEndpoints func() ([]netip.AddrPort, error)
+
 	// Warn records a warning in the endpoint's status under key, or clears it
 	// if message is empty; nil ignores warnings
 	Warn func(key, message string)
@@ -60,6 +65,8 @@ type Daemon struct {
 	config     DaemonConfig
 	cmd        *exec.Cmd
 	socketPath string
+
+	hostEndpoints []netip.AddrPort // what tailscaled was started with
 
 	// Context for goroutine lifecycle management
 	ctx    context.Context //nolint:containedctx // lifecycle context, cancelled on shutdown
@@ -137,13 +144,25 @@ func NewDaemon(cfg DaemonConfig) (*Daemon, error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 
-	return &Daemon{
+	d := &Daemon{
 		config:     cfg,
 		socketPath: socketPath,
 		lc:         &local.Client{Socket: socketPath, UseSocketOnly: true},
 		ctx:        ctx,
 		cancel:     cancel,
-	}, nil
+	}
+
+	if cfg.HostEndpoints != nil {
+		eps, err := cfg.HostEndpoints()
+		if err != nil {
+			logger.Warnf("Endpoint %s: advertising no host endpoints: %v",
+				cfg.EndpointID[:min(12, len(cfg.EndpointID))], err)
+			eps = nil
+		}
+		d.hostEndpoints = eps
+	}
+
+	return d, nil
 }
 
 // Start starts the tailscaled process in the target network namespace.
@@ -211,6 +230,9 @@ func (d *Daemon) Start() error {
 
 	return nil
 }
+
+// HostEndpoints returns the endpoints on the host this tailscaled advertises.
+func (d *Daemon) HostEndpoints() []netip.AddrPort { return d.hostEndpoints }
 
 // IsRunning checks if the tailscaled process is still running.
 func (d *Daemon) IsRunning() bool {
@@ -441,6 +463,19 @@ func (d *Daemon) tailscaledArgs() []string {
 	}
 }
 
+// pretendpointEnv returns the environment that has tailscaled advertise eps
+// as explicitly configured endpoints. tailscaled reads it once, at start.
+func pretendpointEnv(eps []netip.AddrPort) []string {
+	if len(eps) == 0 {
+		return nil
+	}
+	s := make([]string, len(eps))
+	for i, ep := range eps {
+		s[i] = ep.String()
+	}
+	return []string{"TS_DEBUG_PRETENDPOINT=" + strings.Join(s, ",")}
+}
+
 // tailscaledCommand returns the command running tailscaled with args in the
 // container's network namespace.
 //
@@ -532,8 +567,17 @@ netns=$2; shift 3; exec nsenter --net="$netns" -- "$@"`,
 	logger.Debugf("Running: unshare %v", unshareArgs)
 	cmd := exec.CommandContext(d.ctx, "unshare", unshareArgs...)
 	// tailscaled does not need the plugin's auth key, and its peerapi serves
-	// its environment to peers the control server lets debug it
-	cmd.Env = withoutAuthKey(os.Environ())
+	// its environment to peers the control server lets debug it; and the
+	// endpoints on the host it advertises (netutil.HostEndpoints), last, so
+	// they win
+	pretendpoint := pretendpointEnv(d.hostEndpoints)
+	if len(pretendpoint) > 0 && os.Getenv("TS_DEBUG_PRETENDPOINT") != "" {
+		logger.Warnf(
+			"Endpoint %s: TS_DEBUG_PRETENDPOINT is overridden by the host endpoints",
+			d.config.EndpointID[:min(12, len(d.config.EndpointID))],
+		)
+	}
+	cmd.Env = append(withoutAuthKey(os.Environ()), pretendpoint...)
 	return cmd
 }
 

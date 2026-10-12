@@ -278,6 +278,44 @@ func TestTailscaledCommandWithoutAuthKey(t *testing.T) {
 	}
 }
 
+// With host endpoints to advertise, TS_DEBUG_PRETENDPOINT is the last
+// environment variable, so it wins over any inherited value.
+func TestTailscaledCommandHostEndpoints(t *testing.T) {
+	d := &Daemon{config: DaemonConfig{StateDir: t.TempDir(), TailscaledBin: "/tailscaled"}}
+	d.ctx = t.Context()
+	d.hostEndpoints = []netip.AddrPort{netip.MustParseAddrPort("10.10.0.2:61367")}
+	env := d.tailscaledCommand(nil).Env
+	if got, want := env[len(env)-1], "TS_DEBUG_PRETENDPOINT=10.10.0.2:61367"; got != want {
+		t.Errorf("last env entry = %q, want %q", got, want)
+	}
+}
+
+// Without host endpoints to advertise, tslink adds nothing: an operator's
+// own TS_DEBUG_PRETENDPOINT, if any, passes through unchanged.
+func TestTailscaledCommandWithoutHostEndpoints(t *testing.T) {
+	d := &Daemon{config: DaemonConfig{StateDir: t.TempDir(), TailscaledBin: "/tailscaled"}}
+	d.ctx = t.Context()
+	env := d.tailscaledCommand(nil).Env
+	if want := len(withoutAuthKey(os.Environ())); len(env) != want {
+		t.Errorf("env has %d entries, want %d: tslink must add nothing", len(env), want)
+	}
+}
+
+// An operator's own TS_DEBUG_PRETENDPOINT in the plugin's settings is
+// overridden: it is read by a Go process (tailscaled) via os.Getenv, which
+// resolves a duplicated variable to its last entry, so the host endpoints
+// placed last win over it.
+func TestTailscaledCommandHostEndpointsOverridesOperatorSetting(t *testing.T) {
+	t.Setenv("TS_DEBUG_PRETENDPOINT", "203.0.113.1:9")
+	d := &Daemon{config: DaemonConfig{StateDir: t.TempDir(), TailscaledBin: "/tailscaled"}}
+	d.ctx = t.Context()
+	d.hostEndpoints = []netip.AddrPort{netip.MustParseAddrPort("10.10.0.2:61367")}
+	env := d.tailscaledCommand(nil).Env
+	if got, want := env[len(env)-1], "TS_DEBUG_PRETENDPOINT=10.10.0.2:61367"; got != want {
+		t.Errorf("last env entry = %q, want %q", got, want)
+	}
+}
+
 // runSandboxed runs tailscaled's command as root in a mount namespace of the
 // test's own, with nsenter replaced by a script and tailscaled by show, after
 // setup prepares the namespace. /etc and /run are scratch directories there;

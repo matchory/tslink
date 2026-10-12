@@ -302,9 +302,8 @@ func TestTailscaledCommandWithoutHostEndpoints(t *testing.T) {
 }
 
 // An operator's own TS_DEBUG_PRETENDPOINT in the plugin's settings is
-// overridden: it is read by a Go process (tailscaled) via os.Getenv, which
-// resolves a duplicated variable to its last entry, so the host endpoints
-// placed last win over it.
+// overridden: exec.Cmd.Start dedups cmd.Env, keeping the last value for a
+// duplicated key, so the host endpoints placed last win over it.
 func TestTailscaledCommandHostEndpointsOverridesOperatorSetting(t *testing.T) {
 	t.Setenv("TS_DEBUG_PRETENDPOINT", "203.0.113.1:9")
 	d := &Daemon{config: DaemonConfig{StateDir: t.TempDir(), TailscaledBin: "/tailscaled"}}

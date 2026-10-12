@@ -230,6 +230,35 @@ func TestWireGuardInputKeepsHostClientReplies(t *testing.T) {
 	}
 }
 
+// hostLinks lists every link's own addresses, grouped by LinkIndex from one
+// AddrList dump rather than one per link.
+func TestHostLinksGroupsAddressesByLink(t *testing.T) {
+	pid := os.Getpid()
+	ns, h := newNamedNetNS(t, fmt.Sprintf("tsl-%d-hl-a", pid))
+	peerNS, _ := newNamedNetNS(t, fmt.Sprintf("tsl-%d-hl-b", pid))
+	addVeth(t, h, "vethhl", peerNS)
+	linkUp(t, h, "vethhl", "10.200.9.1/30", "")
+	if err := inNetNS(ns, func() error {
+		links, err := hostLinks()
+		if err != nil {
+			return err
+		}
+		for _, l := range links {
+			if l.Type != "veth" {
+				continue
+			}
+			want := netip.MustParseAddr("10.200.9.1")
+			if len(l.Addrs) == 1 && l.Addrs[0] == want {
+				return nil
+			}
+			return fmt.Errorf("vethhl addrs = %v, want [%v]", l.Addrs, want)
+		}
+		return errors.New("vethhl not found")
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // The endpoint follows the task's port mapping rule: present while it exists,
 // ErrNoPortMapping once it is flushed, and back once SyncPortMappings
 // restores it.

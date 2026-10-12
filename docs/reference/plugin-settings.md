@@ -72,7 +72,7 @@ listening there gets no unsolicited UDP.
 
 Sets the host addresses containers' tailscaled advertise, each with the container's external port (see
 [`TSLINK_WIREGUARD_PORTS`](#tslink_wireguard_ports)), so nodes on hosts that share a network go direct over it instead
-of through DERP or the tailnet's own routing.
+of through a DERP relay.
 
 | Value | Effect |
 | --- | --- |
@@ -81,11 +81,14 @@ of through DERP or the tailnet's own routing.
 | Up to 3 IPv4 addresses, comma-separated | Advertised as given. |
 | Other values | tslink keeps `auto` and logs a warning. |
 
+With `auto` or explicit addresses, the host's private addresses are sent to every peer that gets the node's
+endpoints, the same as the host's own tailscaled does; `off` advertises none.
+
 If the shared network sits on a bridge (for example `br0` holding the NIC), `auto` does not find it: give the
 addresses explicitly.
 
 tailscaled reads these addresses when it starts; tslink restarts a container's tailscaled when its address or port
-changes.
+changes, so a change is picked up within a minute.
 
 ## TS_DEBUG_ACME_DIRECTORY_URL and SSL_CERT_FILE
 

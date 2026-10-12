@@ -50,7 +50,9 @@ type DaemonConfig struct {
 
 	// HostEndpoints returns the endpoints on the host tailscaled advertises
 	// besides its own (netutil.HostEndpoints); nil for none. Read when
-	// tailscaled starts, as tailscaled reads them only then.
+	// tailscaled starts, as tailscaled reads them only then, and again by the
+	// supervisor every hostEndpointsCheckInterval, to detect a change and
+	// restart tailscaled with the new value.
 	HostEndpoints func() ([]netip.AddrPort, error)
 
 	// Warn records a warning in the endpoint's status under key, or clears it
@@ -568,8 +570,9 @@ netns=$2; shift 3; exec nsenter --net="$netns" -- "$@"`,
 	cmd := exec.CommandContext(d.ctx, "unshare", unshareArgs...)
 	// tailscaled does not need the plugin's auth key, and its peerapi serves
 	// its environment to peers the control server lets debug it; and the
-	// endpoints on the host it advertises (netutil.HostEndpoints), last, so
-	// they win
+	// endpoints on the host it advertises (netutil.HostEndpoints), last:
+	// exec.Cmd.Start dedups cmd.Env, keeping the last value for a duplicated
+	// key, so they win over any operator setting
 	pretendpoint := pretendpointEnv(d.hostEndpoints)
 	if len(pretendpoint) > 0 && os.Getenv("TS_DEBUG_PRETENDPOINT") != "" {
 		logger.Warnf(

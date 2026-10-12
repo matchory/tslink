@@ -98,31 +98,34 @@ func selectHostAddrs(links []hostLink) []netip.Addr {
 	return addrs
 }
 
-// hostLinks lists the host's interfaces and their IPv4 addresses.
+// hostLinks lists the host's interfaces and their IPv4 addresses, with one
+// netlink dump of each: AddrList(link, ...) would otherwise dump every
+// address and filter client-side, for every link.
 func hostLinks() ([]hostLink, error) {
 	links, err := netlink.LinkList()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list interfaces: %w", err)
 	}
+	addrs, err := netlink.AddrList(nil, syscall.AF_INET)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list addresses: %w", err)
+	}
+	byIndex := map[int][]netip.Addr{}
+	for _, a := range addrs {
+		if ip, ok := netip.AddrFromSlice(a.IP); ok {
+			byIndex[a.LinkIndex] = append(byIndex[a.LinkIndex], ip.Unmap())
+		}
+	}
 	out := make([]hostLink, 0, len(links))
 	for _, l := range links {
 		attrs := l.Attrs()
-		list, err := netlink.AddrList(l, syscall.AF_INET)
-		if err != nil {
-			return nil, fmt.Errorf("failed to list the addresses of %s: %w", attrs.Name, err)
-		}
-		hl := hostLink{
+		out = append(out, hostLink{
 			Index:    attrs.Index,
 			Type:     l.Type(),
 			Up:       attrs.Flags&net.FlagUp != 0,
 			Loopback: attrs.Flags&net.FlagLoopback != 0,
-		}
-		for _, a := range list {
-			if ip, ok := netip.AddrFromSlice(a.IP); ok {
-				hl.Addrs = append(hl.Addrs, ip.Unmap())
-			}
-		}
-		out = append(out, hl)
+			Addrs:    byIndex[attrs.Index],
+		})
 	}
 	return out, nil
 }

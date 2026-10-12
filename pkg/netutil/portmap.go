@@ -99,6 +99,13 @@ func ConfigurePortMapping(sport int, ports PortRange) {
 	portMap = portMapping{sport: sport, ports: ports}
 }
 
+// configuredPorts returns the range of external ports SetupNAT maps to.
+func configuredPorts() PortRange {
+	portMapMu.Lock()
+	defer portMapMu.Unlock()
+	return portMap.ports
+}
+
 // preferredPort is the port src's search starts at.
 func preferredPort(src netip.Addr, r PortRange) int {
 	h := fnv.New32a()

@@ -2,6 +2,7 @@ package tailscale
 
 import (
 	"errors"
+	"net/netip"
 	"os/exec"
 	"slices"
 	"strconv"
@@ -60,5 +61,49 @@ func TestTailscaledArgsFixedPort(t *testing.T) {
 	want := "--port=" + strconv.Itoa(WireGuardPort)
 	if !slices.Contains(args, want) {
 		t.Errorf("args %q lack %s", args, want)
+	}
+}
+
+// tailscaled gets the endpoints in TS_DEBUG_PRETENDPOINT, last in its
+// environment so no inherited value wins.
+func TestPretendpointEnv(t *testing.T) {
+	eps := []netip.AddrPort{
+		netip.MustParseAddrPort("10.10.0.2:61367"), netip.MustParseAddrPort("192.168.1.3:61367"),
+	}
+	if got := pretendpointEnv(eps); !slices.Equal(
+		got,
+		[]string{"TS_DEBUG_PRETENDPOINT=10.10.0.2:61367,192.168.1.3:61367"},
+	) {
+		t.Errorf("pretendpointEnv = %v", got)
+	}
+	if got := pretendpointEnv(nil); got != nil {
+		t.Errorf("no endpoints: %v, want nil", got)
+	}
+}
+
+func TestNewDaemonRecordsHostEndpoints(t *testing.T) {
+	want := []netip.AddrPort{netip.MustParseAddrPort("10.10.0.2:61367")}
+	d, err := NewDaemon(DaemonConfig{
+		EndpointID:    "0123456789abcdef",
+		StateDir:      t.TempDir(),
+		HostEndpoints: func() ([]netip.AddrPort, error) { return want, nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := d.HostEndpoints(); !slices.Equal(got, want) {
+		t.Errorf("HostEndpoints = %v, want %v", got, want)
+	}
+
+	d2, err := NewDaemon(DaemonConfig{
+		EndpointID:    "0123456789abcdef",
+		StateDir:      t.TempDir(),
+		HostEndpoints: func() ([]netip.AddrPort, error) { return nil, errors.New("iptables") },
+	})
+	if err != nil {
+		t.Fatalf("an endpoint error must not stop tailscaled: %v", err)
+	}
+	if got := d2.HostEndpoints(); got != nil {
+		t.Errorf("after an error: %v, want none", got)
 	}
 }

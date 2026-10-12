@@ -1,6 +1,7 @@
 package core
 
 import (
+	"net/netip"
 	"slices"
 	"testing"
 
@@ -105,6 +106,31 @@ func TestLoadConfigWireGuardPorts(t *testing.T) {
 		if cfg.WireGuardPorts != want {
 			t.Errorf("%s=%q: WireGuardPorts = %v, want %v",
 				WireGuardPortsSetting, value, cfg.WireGuardPorts, want)
+		}
+	}
+}
+
+func TestLoadConfigHostEndpoints(t *testing.T) {
+	two := []netip.Addr{netip.MustParseAddr("10.10.0.2"), netip.MustParseAddr("192.168.1.5")}
+	for value, want := range map[string]netutil.HostEndpointsConfig{
+		"":                                    {},
+		"auto":                                {},
+		"AUTO":                                {},
+		"off":                                 {Off: true},
+		"10.10.0.2, 192.168.1.5":              {Addrs: two},
+		"10.10.0.2,fd00::1":                   {}, // IPv6: keeps auto
+		"10.0.0.1,10.0.0.2,10.0.0.3,10.0.0.4": {}, // more than 3
+		"nonsense":                            {},
+		"10.10.0.2,":                          {}, // an empty entry
+	} {
+		t.Setenv(HostEndpointsSetting, value)
+		cfg, err := LoadConfig()
+		if err != nil {
+			t.Fatalf("LoadConfig: %v", err)
+		}
+		if cfg.HostEndpoints.Off != want.Off || !slices.Equal(cfg.HostEndpoints.Addrs, want.Addrs) {
+			t.Errorf("%s=%q: HostEndpoints = %+v, want %+v",
+				HostEndpointsSetting, value, cfg.HostEndpoints, want)
 		}
 	}
 }

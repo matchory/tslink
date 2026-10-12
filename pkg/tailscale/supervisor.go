@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"os"
+	"slices"
 	"sync"
 	"time"
 
@@ -38,6 +39,10 @@ var (
 
 	// Health check interval.
 	healthCheckInterval = 5 * time.Second
+
+	// hostEndpointsCheckInterval is how often the supervisor compares the
+	// endpoints on the host tailscaled advertises with the current ones.
+	hostEndpointsCheckInterval = 60 * time.Second
 
 	// Minimum uptime before backoff is reset (prevents rapid restart loops from resetting backoff).
 	minUptimeForBackoffReset = 30 * time.Second
@@ -296,6 +301,7 @@ func (s *DaemonSupervisor) supervisionLoop() {
 	defer s.wg.Done()
 
 	firstStart := true
+	restartNow := false
 
 	// Apply jitter on first start to prevent thundering herd
 	s.applyStartupJitter()
@@ -321,10 +327,11 @@ func (s *DaemonSupervisor) supervisionLoop() {
 			return
 		}
 
-		// Apply backoff (skip on first attempt)
-		if !firstStart && !s.waitBeforeRestart() {
+		// Apply backoff (skip on first attempt, and on a restart for new host endpoints)
+		if !firstStart && !restartNow && !s.waitBeforeRestart() {
 			return
 		}
+		restartNow = false
 
 		// Start daemon
 		s.mu.Lock()
@@ -362,6 +369,11 @@ func (s *DaemonSupervisor) supervisionLoop() {
 		if exitErr == nil {
 			// Clean exit (Stop() was called)
 			return
+		}
+
+		if errors.Is(exitErr, errHostEndpointsChanged) {
+			restartNow = true
+			continue
 		}
 
 		// Unexpected exit - check uptime before resetting backoff
@@ -457,6 +469,11 @@ func (s *DaemonSupervisor) stopDaemon() {
 	}
 }
 
+// errHostEndpointsChanged ends waitForExit when tailscaled advertises
+// endpoints on the host that are no longer current: it reads them only when
+// it starts.
+var errHostEndpointsChanged = errors.New("host endpoints changed")
+
 // waitForExit monitors the daemon and returns when it exits.
 // Returns nil if context was cancelled (clean shutdown).
 // Returns error if daemon exited unexpectedly.
@@ -464,6 +481,7 @@ func (s *DaemonSupervisor) waitForExit() error {
 	ticker := time.NewTicker(healthCheckInterval)
 	defer ticker.Stop()
 	var login loginWatch
+	lastCheck := time.Now()
 
 	for {
 		select {
@@ -484,23 +502,56 @@ func (s *DaemonSupervisor) waitForExit() error {
 				return errors.New("daemon process exited")
 			}
 
-			// tailscaled keeps running when its node is deleted, logged out
-			if login.observe(daemon.LoggedOut()) {
-				logger.Warnf(
-					"Endpoint %s: node is logged out, logging in again",
-					s.cfg.EndpointID[:8],
-				)
-				if err := daemon.Reauthenticate(); err != nil {
-					logger.Errorf(
-						"Endpoint %s: logging in again failed: %v",
-						s.cfg.EndpointID[:8],
-						err,
-					)
-					login.failed()
+			if time.Since(lastCheck) >= hostEndpointsCheckInterval {
+				lastCheck = time.Now()
+				if s.hostEndpointsChanged(daemon) {
+					s.stopDaemon()
+					return errHostEndpointsChanged
 				}
 			}
+
+			s.checkLogin(daemon, &login)
 		}
 	}
+}
+
+// checkLogin logs the daemon's node in again once login observes it is
+// logged out, as when its device was deleted or expired.
+func (s *DaemonSupervisor) checkLogin(daemon *Daemon, login *loginWatch) {
+	if !login.observe(daemon.LoggedOut()) {
+		return
+	}
+	logger.Warnf("Endpoint %s: node is logged out, logging in again", s.cfg.EndpointID[:8])
+	if err := daemon.Reauthenticate(); err != nil {
+		logger.Errorf("Endpoint %s: logging in again failed: %v", s.cfg.EndpointID[:8], err)
+		login.failed()
+	}
+}
+
+// hostEndpointsChanged reports whether daemon advertises other endpoints
+// than the current ones. An error reading them is no change; so is a
+// drained Service backend: the node is on its way out, and DrainAndWait may
+// be waiting on this very daemon for control to fetch the drain. Restarting
+// it would strand that wait with no daemon to wait on.
+func (s *DaemonSupervisor) hostEndpointsChanged(daemon *Daemon) bool {
+	if s.cfg.HostEndpoints == nil || s.cfg.gate.drained.Load() {
+		return false
+	}
+	eps, err := s.cfg.HostEndpoints()
+	if err != nil {
+		logger.Debugf("Endpoint %s: host endpoints unknown: %v", s.cfg.EndpointID[:8], err)
+		return false
+	}
+	if slices.Equal(eps, daemon.HostEndpoints()) {
+		return false
+	}
+	logger.Infof(
+		"Endpoint %s: host endpoints changed from %v to %v, restarting tailscaled",
+		s.cfg.EndpointID[:8],
+		daemon.HostEndpoints(),
+		eps,
+	)
+	return true
 }
 
 // isCrashLoop checks if we've had too many crashes in the time window.

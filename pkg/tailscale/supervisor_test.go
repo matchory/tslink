@@ -3,10 +3,13 @@ package tailscale
 import (
 	"context"
 	"errors"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -357,6 +360,114 @@ func TestSupervisorBackoff(t *testing.T) {
 	s.resetBackoff()
 	if got := s.nextBackoff(); got != initialBackoff {
 		t.Errorf("after reset: %v, want %v", got, initialBackoff)
+	}
+}
+
+// A changed port or address restarts tailscaled, so it advertises the new
+// one, and does not count as a crash.
+func TestSupervisorRestartsOnChangedHostEndpoints(t *testing.T) {
+	setDuration(t, &hostEndpointsCheckInterval, 10*time.Millisecond)
+	s, f, _ := newFakeSupervisor(t)
+	var mu sync.Mutex
+	eps := []netip.AddrPort{netip.MustParseAddrPort("10.10.0.2:61367")}
+	s.cfg.HostEndpoints = func() ([]netip.AddrPort, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(eps), nil
+	}
+	if err := s.Start(); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	eps = []netip.AddrPort{netip.MustParseAddrPort("10.10.0.2:61400")}
+	mu.Unlock()
+	// startDaemon only sets s.daemon once the fake's start returned and
+	// recorded the count, so poll on the daemon actually advertising the new
+	// endpoints, not merely on the count: between the two, GetDaemon can
+	// still be nil or still be the old daemon.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if got := s.GetDaemon(); got != nil && slices.Equal(got.HostEndpoints(), eps) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := f.startCount(); got != 2 {
+		t.Fatalf("%d starts, want 2", got)
+	}
+	got := s.GetDaemon()
+	if got == nil {
+		t.Fatal("no current daemon after the restart")
+	}
+	if !slices.Equal(got.HostEndpoints(), eps) {
+		t.Errorf("restarted daemon advertises %v, want %v", got.HostEndpoints(), eps)
+	}
+	s.mu.RLock()
+	crashes := len(s.crashTimes)
+	s.mu.RUnlock()
+	if crashes != 0 {
+		t.Errorf("%d crashes recorded, want 0", crashes)
+	}
+}
+
+// Unchanged endpoints, and none at all, never restart it.
+func TestSupervisorKeepsDaemonWithoutHostEndpoints(t *testing.T) {
+	setDuration(t, &hostEndpointsCheckInterval, 10*time.Millisecond)
+	s, f, _ := newFakeSupervisor(t)
+	s.cfg.HostEndpoints = func() ([]netip.AddrPort, error) { return nil, nil }
+	if err := s.Start(); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if n := f.startCount(); n != 1 {
+		t.Errorf("%d starts, want 1", n)
+	}
+}
+
+// An error reading them (iptables busy, the rule missing until the next
+// sync) is no change.
+func TestSupervisorIgnoresHostEndpointErrors(t *testing.T) {
+	setDuration(t, &hostEndpointsCheckInterval, 10*time.Millisecond)
+	s, f, _ := newFakeSupervisor(t)
+	var calls atomic.Int32
+	s.cfg.HostEndpoints = func() ([]netip.AddrPort, error) {
+		if calls.Add(1) == 1 {
+			return []netip.AddrPort{netip.MustParseAddrPort("10.10.0.2:61367")}, nil
+		}
+		return nil, errors.New("no external port mapped")
+	}
+	if err := s.Start(); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if n := f.startCount(); n != 1 {
+		t.Errorf("%d starts, want 1", n)
+	}
+}
+
+// A drain under way means the node is leaving: restarting it for changed
+// host endpoints would strand DrainAndWait waiting on a daemon that no
+// longer exists (GetDaemon would read nil mid-restart).
+func TestSupervisorSkipsRestartWhenDrained(t *testing.T) {
+	setDuration(t, &hostEndpointsCheckInterval, 10*time.Millisecond)
+	s, f, _ := newFakeSupervisor(t)
+	var mu sync.Mutex
+	eps := []netip.AddrPort{netip.MustParseAddrPort("10.10.0.2:61367")}
+	s.cfg.HostEndpoints = func() ([]netip.AddrPort, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(eps), nil
+	}
+	if err := s.Start(); err != nil {
+		t.Fatal(err)
+	}
+	s.cfg.gate.drained.Store(true)
+	mu.Lock()
+	eps = []netip.AddrPort{netip.MustParseAddrPort("10.10.0.2:61400")}
+	mu.Unlock()
+	time.Sleep(200 * time.Millisecond)
+	if n := f.startCount(); n != 1 {
+		t.Errorf("%d starts while drained, want 1", n)
 	}
 }
 

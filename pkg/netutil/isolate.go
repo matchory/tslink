@@ -47,6 +47,29 @@ const (
 // TSLINK_ISOLATE_HOST_TAILNET.
 const vethIsolateChain = "TSLINK-VETH-FWD"
 
+// The external ports of containers' tailscaled (portMapChain) take only
+// packets on flows the containers opened, which the host forwards. A packet
+// that arrives first, from a peer probing a port the container advertises,
+// has no NAT to undo and goes to the host itself: conntrack keeps an entry
+// for it, whose reply is the tuple the container's own packets to that peer
+// need, and as each container has a single port, they are dropped for as
+// long as the peer keeps probing. Dropping such packets before conntrack
+// confirms them leaves no entry behind; the container's first packet to the
+// peer then opens the path for the peer's next. It does not depend on
+// TSLINK_ISOLATE_HOST_TAILNET.
+const wireGuardInputChain = "TSLINK-WG-IN"
+
+// wireGuardInputRule drops new UDP to the ports in r.
+func wireGuardInputRule(r PortRange) []string {
+	return []string{
+		"-p", udp, "-m", udp, dportFlag, fmt.Sprintf("%d:%d", r.First, r.Last),
+		"-m", "conntrack", "--ctstate", "NEW", "-j", dropTarget,
+	}
+}
+
+// dportFlag is iptables' destination port match flag.
+const dportFlag = "--dport"
+
 // dropTarget is the target of the isolation rules that drop traffic.
 const dropTarget = "DROP"
 
@@ -55,7 +78,9 @@ const returnTarget = "RETURN"
 
 // tslinkChains are the chains tslink jumps to first from a built-in chain;
 // any order among them counts as first.
-var tslinkChains = []string{vethIsolateChain, isolateForwardChain, isolateInputChain}
+var tslinkChains = []string{
+	vethIsolateChain, wireGuardInputChain, isolateForwardChain, isolateInputChain,
+}
 
 // containerInterfaces are the host interfaces container traffic arrives on:
 // Docker's bridges, and the host ends of veth pairs, tslink's among them. A
@@ -124,7 +149,7 @@ func (f isolationFamily) rules(chain string, ifcs []string) [][]string {
 			for _, proto := range []string{"udp", "tcp"} {
 				rules = append(rules, []string{
 					"-i", ifc, "-o", tailscaleInterfaces, "-d", f.quad100,
-					"-p", proto, "--dport", "53", "-j", returnTarget,
+					"-p", proto, dportFlag, "53", "-j", returnTarget,
 				})
 			}
 			rules = append(rules, []string{"-i", ifc, "-o", tailscaleInterfaces, "-j", dropTarget})
@@ -242,10 +267,11 @@ func ensureFirstJump(ipt *iptables.IPTables, from, chain string) error {
 }
 
 // SetupVethIsolation installs the veth isolation, or restores it, letting
-// only replies and UDP to port from tslink's veths through to them. IPv4 only:
-// the veths have no other addresses than link-local IPv6 ones. It also syncs
-// the veths' WireGuard port mappings (SyncPortMappings). It changes nothing
-// that is in place, so it can run periodically.
+// only replies and UDP to port from tslink's veths through to them. It also
+// installs TSLINK-WG-IN and syncs the veths' WireGuard port mappings
+// (SyncPortMappings). IPv4 only: the veths have no other addresses than
+// link-local IPv6 ones. It changes nothing that is in place, so it can run
+// periodically.
 func SetupVethIsolation(port int) error {
 	ipt, err := iptables.NewWithProtocol(iptables.ProtocolIPv4)
 	if err != nil {
@@ -256,13 +282,20 @@ func SetupVethIsolation(port int) error {
 		// Replies on connections the container opened, as tailscaled's
 		{"-d", dst, "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", returnTarget},
 		// WireGuard from a colocated node's tailscaled, which uses its veth
-		{"-i", "veth+", "-d", dst, "-p", "udp", "--dport", strconv.Itoa(port), "-j", returnTarget},
+		{"-i", "veth+", "-d", dst, "-p", "udp", dportFlag, strconv.Itoa(port), "-j", returnTarget},
 		{"-d", dst, "-j", dropTarget},
 	}
 	if err := ensureChain(ipt, vethIsolateChain, rules); err != nil {
 		return err
 	}
 	if err := ensureFirstJump(ipt, "FORWARD", vethIsolateChain); err != nil {
+		return err
+	}
+	input := [][]string{wireGuardInputRule(configuredPorts())}
+	if err := ensureChain(ipt, wireGuardInputChain, input); err != nil {
+		return err
+	}
+	if err := ensureFirstJump(ipt, "INPUT", wireGuardInputChain); err != nil {
 		return err
 	}
 	// It runs when the plugin starts and on every watchdog run, as the port

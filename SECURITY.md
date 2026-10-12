@@ -105,6 +105,9 @@ Run `tslink diag --preflight` on each host, and on each node of a Swarm. It
 checks only the properties that it can see on the host where it runs.
 [tslink diag](docs/reference/diag.md) shows how.
 
+The range of `TSLINK_WIREGUARD_PORTS` is reserved: a host service listening
+in it gets no unsolicited UDP.
+
 ## Scope
 
 tslink is privileged by design. Think of this when you assess the impact of a

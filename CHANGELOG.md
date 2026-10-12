@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `TSLINK_HOST_ENDPOINTS` plugin setting: the host's private addresses
+  containers' tailscaled advertise alongside their external port, so nodes on
+  hosts that share a network connect directly instead of over DERP (default
+  `auto`).
+
+### Fixed
+
+- Nodes on different hosts that share a private network fell back to DERP
+  when the network in front of the hosts drops UDP to the containers' ports:
+  containers' tailscaled now also advertise the host's private addresses. A
+  peer's probe that reached a container's port before the container sent
+  anything blocked the container's own packets to that peer; the host now
+  drops such probes.
+
 ## [0.2.1] - 2026-10-10
 
 ### Added

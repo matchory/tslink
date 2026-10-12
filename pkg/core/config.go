@@ -2,6 +2,7 @@ package core
 
 import (
 	"fmt"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -28,6 +29,11 @@ type Config struct {
 	// WireGuardPorts are the host ports containers' tailscaled leave the host
 	// on, one for each container (see netutil.SetupNAT)
 	WireGuardPorts netutil.PortRange
+
+	// HostEndpoints are the addresses of the host tslink nodes advertise, with
+	// their external port, so nodes on hosts that share a network go direct
+	// over it (see netutil.HostEndpointAddrs)
+	HostEndpoints netutil.HostEndpointsConfig
 }
 
 // WireGuardPortsSetting is the plugin setting that sets the range of
@@ -50,6 +56,35 @@ func wireGuardPorts(v string) netutil.PortRange {
 		return netutil.DefaultPortRange
 	}
 	return r
+}
+
+// HostEndpointsSetting is the plugin setting that selects HostEndpoints:
+// auto, off, or up to netutil.MaxHostEndpoints IPv4 addresses.
+const HostEndpointsSetting = "TSLINK_HOST_ENDPOINTS"
+
+// hostEndpoints parses HostEndpointsSetting. An invalid value keeps auto.
+func hostEndpoints(v string) netutil.HostEndpointsConfig {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "", "auto":
+		return netutil.HostEndpointsConfig{}
+	case "off":
+		return netutil.HostEndpointsConfig{Off: true}
+	}
+	var addrs []netip.Addr
+	for s := range strings.SplitSeq(v, ",") {
+		a, err := netip.ParseAddr(strings.TrimSpace(s))
+		if err != nil || !a.Is4() {
+			logger.Warnf("%s=%q: %q is no IPv4 address; keeping auto", HostEndpointsSetting, v, s)
+			return netutil.HostEndpointsConfig{}
+		}
+		addrs = append(addrs, a)
+	}
+	if len(addrs) > netutil.MaxHostEndpoints {
+		logger.Warnf("%s=%q: more than %d addresses; keeping auto",
+			HostEndpointsSetting, v, netutil.MaxHostEndpoints)
+		return netutil.HostEndpointsConfig{}
+	}
+	return netutil.HostEndpointsConfig{Addrs: addrs}
 }
 
 // IsolateHostTailnetSetting is the plugin setting that turns the host's
@@ -144,8 +179,10 @@ func LoadConfig() (*Config, error) {
 		IsolateHostTailnet: isolateHostTailnet(os.Getenv(IsolateHostTailnetSetting)),
 		StrictTagScope:     TagScopeStrict(os.Getenv(TagScopeSetting)),
 		WireGuardPorts:     wireGuardPorts(os.Getenv(WireGuardPortsSetting)),
+		HostEndpoints:      hostEndpoints(os.Getenv(HostEndpointsSetting)),
 	}
 	netutil.ConfigurePortMapping(tailscale.WireGuardPort, cfg.WireGuardPorts)
+	netutil.ConfigureHostEndpoints(cfg.HostEndpoints)
 
 	// tslink no longer downloads Tailscale or runs other binaries: an
 	// installation upgraded with these settings keeps working, on the bundled

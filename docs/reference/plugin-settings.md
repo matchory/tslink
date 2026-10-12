@@ -10,6 +10,7 @@ is disabled. See [Change a setting](../guides/install-and-upgrade.md#change-a-se
 | [`TSLINK_ISOLATE_HOST_TAILNET`](#tslink_isolate_host_tailnet) | `true` or `false` | `true` |
 | [`TSLINK_TAG_SCOPE`](#tslink_tag_scope) | `exact` or `prefix` | `exact` |
 | [`TSLINK_WIREGUARD_PORTS`](#tslink_wireguard_ports) | A port range `first-last` | `61000-65535` |
+| [`TSLINK_HOST_ENDPOINTS`](#tslink_host_endpoints) | `auto`, `off`, or up to 3 IPv4 addresses | `auto` |
 | [`TS_DEBUG_ACME_DIRECTORY_URL`](#ts_debug_acme_directory_url-and-ssl_cert_file) | A URL | Let's Encrypt |
 | [`SSL_CERT_FILE`](#ts_debug_acme_directory_url-and-ssl_cert_file) | A file in the plugin | The system's root certificates |
 
@@ -64,6 +65,25 @@ tailscaled in the containers. For other values, tslink uses `61000-65535` and lo
 port until they leave the network.
 
 The ports only change the source port of traffic that leaves the host. They do not accept connections.
+
+## TSLINK_HOST_ENDPOINTS
+
+Sets the host addresses containers' tailscaled advertise, each with the container's external port (see
+[`TSLINK_WIREGUARD_PORTS`](#tslink_wireguard_ports)), so nodes on hosts that share a network go direct over it instead
+of through DERP or the tailnet's own routing.
+
+| Value | Effect |
+| --- | --- |
+| `auto` | The private IPv4 addresses of the host's NICs, bonds and VLANs that are up, in interface order, at most 3. Bridges (Docker's, libvirt's), veths, tun, wireguard and vxlan devices are never included. |
+| `off` | Nothing is advertised. |
+| Up to 3 IPv4 addresses, comma-separated | Advertised as given. |
+| Other values | tslink keeps `auto` and logs a warning. |
+
+If the shared network sits on a bridge (for example `br0` holding the NIC), `auto` does not find it: give the
+addresses explicitly.
+
+tailscaled reads these addresses when it starts; tslink restarts a container's tailscaled when its address or port
+changes.
 
 ## TS_DEBUG_ACME_DIRECTORY_URL and SSL_CERT_FILE
 

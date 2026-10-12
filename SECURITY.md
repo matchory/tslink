@@ -91,8 +91,8 @@ plugin settings. See "Scope".
 
 | ID | Property | Ensured by | `tslink diag --preflight` |
 | --- | --- | --- | --- |
-| E1 | Containers on tslink networks are not privileged and have neither `NET_ADMIN` nor `SYS_ADMIN` | stack review, CI policy | checks |
-| E2 | No container on a tslink network bind-mounts Docker's socket, `/run/netns`, Docker's data root (`/var/lib/docker` by default), the plugin's data directory or a directory containing them, or shares the host's PID namespace | stack review, CI policy | checks |
+| E1 | Containers on tslink networks, and the other containers of their stacks, are not privileged and have neither `NET_ADMIN` nor `SYS_ADMIN` | stack review, CI policy | checks |
+| E2 | No container on a tslink network, nor another container of its stack, bind-mounts Docker's socket, `/run/netns`, Docker's data root (`/var/lib/docker` by default), the plugin's data directory or a directory containing them, or shares the host's PID namespace | stack review, CI policy | checks |
 | E3 | Only operators have Docker API access and root on hosts | operator | does not check |
 | E4 | Stacks are deployed with `docker stack deploy`, which sets `com.docker.stack.namespace` | operator, CI | lists Swarm tasks outside stacks |
 | E5 | The host supports the iptables mangle table for IPv4 and IPv6, the plugin runs with the privileges of its `config.json`, and its setting `TSLINK_ISOLATE_HOST_TAILNET` is at its default, `true` | operator | checks the setting, and that tslink's isolation chains lead FORWARD and INPUT |

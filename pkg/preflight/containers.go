@@ -43,11 +43,14 @@ func protectedOn(rootDir string) protected {
 	return p
 }
 
-// checkContainers checks E1, E2 and E4 on the containers attached, directly
-// or through another container's network namespace, to a network of a
-// tslink plugin.
+// stackLabel is the label docker stack deploy sets to the stack's name.
+const stackLabel = "com.docker.stack.namespace"
+
+// checkContainers checks E4 on the containers attached, directly or through
+// another container's network namespace, to a network of a tslink plugin,
+// and E1 and E2 on them and the other containers of their stacks.
 func checkContainers(ctx context.Context, d DockerAPI) []Result {
-	containers, err := tslinkContainers(ctx, d)
+	containers, scope, err := tslinkContainers(ctx, d)
 	if err != nil {
 		var results []Result
 		for _, p := range []string{"E1", "E2", "E4"} {
@@ -58,22 +61,25 @@ func checkContainers(ctx context.Context, d DockerAPI) []Result {
 	if containers == nil {
 		return []Result{noPlugin("E1"), noPlugin("E2"), noPlugin("E4")}
 	}
-	mounts, err := checkMounts(ctx, d, containers)
+	mounts, err := checkMounts(ctx, d, scope)
 	if err != nil {
 		mounts = Result{Property: "E2", Status: Error, Detail: err.Error()}
 	}
-	return []Result{checkPrivileges(containers), mounts, checkStackLabels(containers)}
+	return []Result{checkPrivileges(scope), mounts, checkStackLabels(containers)}
 }
 
 // tslinkContainers returns the containers attached, directly or through
 // another container's network namespace, to a network of a tslink plugin,
-// in any state (including stopped and created-but-never-started): nil if no
-// tslink plugin is enabled, and empty but not nil if none is attached.
-// Containers and networks removed meanwhile are left out.
-func tslinkContainers(ctx context.Context, d DockerAPI) ([]container.InspectResponse, error) {
+// and, in scope, those and the other containers of their stacks, in any
+// state (including stopped and created-but-never-started): nil if no tslink
+// plugin is enabled, and empty but not nil if none is attached. Containers
+// and networks removed meanwhile are left out.
+func tslinkContainers(
+	ctx context.Context, d DockerAPI,
+) ([]container.InspectResponse, []container.InspectResponse, error) {
 	plugins, err := tslinkPlugins(ctx, d)
 	if err != nil || len(plugins) == 0 {
-		return nil, err
+		return nil, nil, err
 	}
 	own := make(map[string]bool)
 	for _, p := range plugins {
@@ -81,15 +87,16 @@ func tslinkContainers(ctx context.Context, d DockerAPI) ([]container.InspectResp
 	}
 	list, err := d.ContainerList(ctx, dockerclient.ContainerListOptions{All: true})
 	if err != nil {
-		return nil, fmt.Errorf("failed to list containers: %w", err)
+		return nil, nil, fmt.Errorf("failed to list containers: %w", err)
 	}
 	attached, err := attachedIDs(ctx, d, list.Items, own)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	out := []container.InspectResponse{}
+	inScope := stackScope(list.Items, attached)
+	tslink, scope := []container.InspectResponse{}, []container.InspectResponse{}
 	for _, c := range list.Items {
-		if !attached[c.ID] {
+		if !inScope[c.ID] {
 			continue
 		}
 		res, err := d.ContainerInspect(ctx, c.ID, dockerclient.ContainerInspectOptions{})
@@ -97,11 +104,32 @@ func tslinkContainers(ctx context.Context, d DockerAPI) ([]container.InspectResp
 			continue
 		}
 		if err != nil {
-			return nil, fmt.Errorf("failed to inspect container %s: %w", c.ID, err)
+			return nil, nil, fmt.Errorf("failed to inspect container %s: %w", c.ID, err)
 		}
-		out = append(out, res.Container)
+		scope = append(scope, res.Container)
+		if attached[c.ID] {
+			tslink = append(tslink, res.Container)
+		}
 	}
-	return out, nil
+	return tslink, scope, nil
+}
+
+// stackScope returns, for every container in items, whether E1 and E2 apply
+// to it: whether it is attached, or of the same stack as a container that is.
+// The author of a stack chose all its services, not only those on tslink
+// networks.
+func stackScope(items []container.Summary, attached map[string]bool) map[string]bool {
+	stacks := make(map[string]bool)
+	for _, c := range items {
+		if ns := c.Labels[stackLabel]; attached[c.ID] && ns != "" {
+			stacks[ns] = true
+		}
+	}
+	scope := make(map[string]bool, len(items))
+	for _, c := range items {
+		scope[c.ID] = attached[c.ID] || stacks[c.Labels[stackLabel]]
+	}
+	return scope
 }
 
 // attachedIDs returns, for every container in items, whether it is attached
@@ -216,8 +244,8 @@ func checkPrivileges(containers []container.InspectResponse) Result {
 			}
 		}
 	}
-	return outcome("E1", violations, "no container on a tslink network on this host "+
-		"is privileged or has NET_ADMIN or SYS_ADMIN")
+	return outcome("E1", violations, "no container on a tslink network on this host, "+
+		"nor another container of its stack, is privileged or has NET_ADMIN or SYS_ADMIN")
 }
 
 // within reports whether path is dir or lies in it.
@@ -282,8 +310,8 @@ func checkMounts(
 	return outcome(
 		"E2",
 		violations,
-		"no container on a tslink network on this host mounts protected host paths "+
-			"or shares the host's PIDs",
+		"no container on a tslink network on this host, nor another container of its "+
+			"stack, mounts protected host paths or shares the host's PIDs",
 	), nil
 }
 
@@ -316,7 +344,7 @@ func checkStackLabels(containers []container.InspectResponse) Result {
 		}
 		labels := c.Config.Labels
 		if labels["com.docker.swarm.service.id"] != "" &&
-			labels["com.docker.stack.namespace"] == "" {
+			labels[stackLabel] == "" {
 			loose = append(loose, containerName(c))
 		}
 	}

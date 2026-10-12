@@ -73,6 +73,9 @@ func (f *fakeDocker) ContainerList(
 				Networks: c.NetworkSettings.Networks,
 			},
 		}
+		if c.Config != nil {
+			summary.Labels = c.Config.Labels
+		}
 		if c.HostConfig != nil {
 			summary.HostConfig.NetworkMode = string(c.HostConfig.NetworkMode)
 		}

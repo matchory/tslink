@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- `tslink diag --preflight` also checks the other containers of a stack that
+  uses a tslink network for privileges and protected mounts (E1, E2): the
+  stack's author chose them too, and a privileged one gets root on the host.
+
 ## [0.2.2] - 2026-10-12
 
 ### Added

@@ -2,6 +2,7 @@ package netutil
 
 import (
 	"cmp"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -9,6 +10,7 @@ import (
 	"sync"
 	"syscall"
 
+	"github.com/coreos/go-iptables/iptables"
 	"github.com/vishvananda/netlink"
 )
 
@@ -123,4 +125,50 @@ func hostLinks() ([]hostLink, error) {
 		out = append(out, hl)
 	}
 	return out, nil
+}
+
+// ErrNoPortMapping is HostEndpoints' error for a container whose tailscaled
+// has no external port (portMapChain) at the moment, as while its rule is
+// missing until the next SyncPortMappings.
+var ErrNoPortMapping = errors.New("no external port mapped")
+
+// HostEndpoints returns the endpoints the tailscaled behind vethHost
+// advertises: each of HostEndpointAddrs with its external port. None if no
+// address is configured or found.
+func HostEndpoints(vethHost string) ([]netip.AddrPort, error) {
+	addrs, err := HostEndpointAddrs()
+	if err != nil || len(addrs) == 0 {
+		return nil, err
+	}
+	src, err := containerAddr(vethHost)
+	if err != nil {
+		return nil, err
+	}
+	ipt, err := iptables.NewWithProtocol(iptables.ProtocolIPv4)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize iptables: %w", err)
+	}
+	portMapMu.Lock()
+	mapped, err := listMappings(ipt)
+	portMapMu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	port, ok := mapped[src]
+	if !ok {
+		return nil, fmt.Errorf("%s: %w", src, ErrNoPortMapping)
+	}
+	return hostEndpointsOf(addrs, port), nil
+}
+
+// hostEndpointsOf returns each of addrs with port.
+func hostEndpointsOf(addrs []netip.Addr, port int) []netip.AddrPort {
+	if len(addrs) == 0 {
+		return nil
+	}
+	eps := make([]netip.AddrPort, len(addrs))
+	for i, a := range addrs {
+		eps[i] = netip.AddrPortFrom(a, uint16(port)) //nolint:gosec // ports are at most 65535
+	}
+	return eps
 }

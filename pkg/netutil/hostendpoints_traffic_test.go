@@ -3,6 +3,7 @@
 package netutil
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -226,5 +227,44 @@ func TestWireGuardInputKeepsHostClientReplies(t *testing.T) {
 	send(t, server, hosts[0].lan, DefaultPortRange.First+7)
 	if !arrives(t, client, time.Second) {
 		t.Fatal("TSLINK-WG-IN dropped the reply to a host client in the range")
+	}
+}
+
+// The endpoint follows the task's port mapping rule: present while it exists,
+// ErrNoPortMapping once it is flushed, and back once SyncPortMappings
+// restores it.
+func TestHostEndpointsFollowPortMapping(t *testing.T) {
+	hosts := lanTopology(t, "rd")
+	ConfigureHostEndpoints(HostEndpointsConfig{Addrs: []netip.Addr{hosts[0].lan}})
+	t.Cleanup(func() { ConfigureHostEndpoints(HostEndpointsConfig{}) })
+	if err := inNetNS(hosts[0].ns, func() error {
+		got, err := HostEndpoints("vethln0")
+		if err != nil {
+			return err
+		}
+		want := netip.AddrPortFrom(hosts[0].lan, uint16(hosts[0].port))
+		if len(got) != 1 || got[0] != want {
+			return fmt.Errorf("HostEndpoints = %v, want [%v]", got, want)
+		}
+		ipt, err := iptables.New()
+		if err != nil {
+			return err
+		}
+		if err := ipt.ClearChain("nat", portMapChain); err != nil {
+			return err
+		}
+		if _, err := HostEndpoints("vethln0"); !errors.Is(err, ErrNoPortMapping) {
+			return fmt.Errorf("without a rule: %v, want ErrNoPortMapping", err)
+		}
+		if err := SyncPortMappings(); err != nil {
+			return err
+		}
+		got, err = HostEndpoints("vethln0")
+		if err != nil || len(got) != 1 || got[0].Addr() != hosts[0].lan {
+			return fmt.Errorf("after sync: %v, %v", got, err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 }

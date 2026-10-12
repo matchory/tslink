@@ -65,3 +65,16 @@ func TestHostEndpointAddrsConfig(t *testing.T) {
 		t.Errorf("explicit: %v, %v", got, err)
 	}
 }
+
+func TestHostEndpointsOf(t *testing.T) {
+	got := hostEndpointsOf(addrs("10.10.0.2", "192.168.1.3"), 61367)
+	want := []netip.AddrPort{
+		netip.MustParseAddrPort("10.10.0.2:61367"), netip.MustParseAddrPort("192.168.1.3:61367"),
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("hostEndpointsOf = %v, want %v", got, want)
+	}
+	if got := hostEndpointsOf(nil, 61367); got != nil {
+		t.Errorf("no addresses: %v, want nil", got)
+	}
+}

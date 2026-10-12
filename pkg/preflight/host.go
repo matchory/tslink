@@ -54,6 +54,7 @@ func Write(w io.Writer, results []Result) (bool, error) {
 // chains themselves (pkg/netutil's isolate.go).
 const (
 	vethFwdChain    = "TSLINK-VETH-FWD"
+	wgInChain       = "TSLINK-WG-IN"
 	isolateFwdChain = "TSLINK-ISOLATE-FWD"
 	isolateInChain  = "TSLINK-ISOLATE-IN"
 	forwardBuiltin  = "FORWARD"
@@ -63,8 +64,10 @@ const (
 )
 
 // tslinkChains are the chains tslink jumps to first from a built-in chain;
-// its jumps lead their chain in any order.
-var tslinkChains = []string{vethFwdChain, isolateFwdChain, isolateInChain}
+// its jumps lead their chain in any order. TSLINK-WG-IN is always on, like
+// TSLINK-VETH-FWD, and is not itself a required jump here (isolationJumps):
+// E5 does not check for it, only tolerates it leading INPUT.
+var tslinkChains = []string{vethFwdChain, wgInChain, isolateFwdChain, isolateInChain}
 
 // isolationJump is a jump the isolation needs at the head of a built-in chain.
 type isolationJump struct {

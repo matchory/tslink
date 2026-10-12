@@ -64,7 +64,9 @@ default `32768 60999`), and not used by services on the host. The range cannot c
 tailscaled in the containers. For other values, tslink uses `61000-65535` and logs a warning. Containers keep their
 port until they leave the network.
 
-The ports only change the source port of traffic that leaves the host. They do not accept connections.
+The ports only change the source port of traffic that leaves the host. They do not accept connections: the host
+drops new UDP packets to the range before anything on it has sent a reply. Keep host services out of the range; one
+listening there gets no unsolicited UDP.
 
 ## TSLINK_HOST_ENDPOINTS
 

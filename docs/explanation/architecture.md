@@ -73,6 +73,12 @@ The host masquerades this traffic. All tailscaled in containers use UDP port 416
 container to a port of its own, from the plugin setting `TSLINK_WIREGUARD_PORTS`. A container then uses the same
 external port for all destinations, and peers on other hosts can connect to it directly.
 
+Each tailscaled also advertises the host's private IPv4 addresses with this external port, so two containers on hosts
+that share a private network connect over it directly instead of through a DERP relay. tslink reads the addresses
+once, when tailscaled starts, and restarts tailscaled if they change. The host also drops new, unsolicited UDP
+packets to `TSLINK_WIREGUARD_PORTS`, so a peer's probe that reaches a container's port before the container has sent
+it anything does not block the container's own traffic to that peer.
+
 ## Isolation
 
 The container reaches the tailnet only as its own node, not as the host. Routes stop sockets, but not raw frames, and

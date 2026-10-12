@@ -22,6 +22,9 @@ The host needs no inbound firewall rule, no Tailscale package, and no access to 
 runs its own tailscaled, containers do not use it. Without outbound UDP, traffic goes through DERP relays and is
 slower. See [Throughput](../explanation/architecture.md#throughput).
 
+Tasks on hosts that share a network connect to each other directly over it. Tasks that reach each other only over
+public addresses need inbound UDP on `TSLINK_WIREGUARD_PORTS` allowed in any firewall upstream of the host.
+
 Steps 7 and 8 need a clone of the tslink repository, at the tag of the release that you install.
 
 ## Steps

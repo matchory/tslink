@@ -292,6 +292,21 @@ retry 180 reaches e2e-client "$server_ip" || fail "client cannot reach the serve
 # Recovery serves the readiness endpoint again, ready since the server was
 retry 30 is_ready e2e-server || fail "the server is not ready after the restart: $(ready_answer e2e-server)"
 
+log "A container's tailscaled advertises the host's private address, and the host drops unsolicited packets to its port"
+sudo iptables -t mangle -S TSLINK-WG-IN | grep -q -- '--ctstate NEW -j DROP' || fail "TSLINK-WG-IN is missing"
+case "$HOST_IP" in
+10.* | 172.1[6-9].* | 172.2[0-9].* | 172.3[01].* | 192.168.*)
+	# tailscaled logs its endpoints as it finds them; explicitconf is the type
+	# of those from TS_DEBUG_PRETENDPOINT. A Tailscale update that drops the
+	# variable fails here.
+	retry 60 sudo grep -q "explicitconf" "$DATA/by-hostname/e2e-server/tailscaled.log" ||
+		fail "e2e-server's tailscaled advertises no host endpoint"
+	sudo grep "endpoints changed" "$DATA/by-hostname/e2e-server/tailscaled.log" | tail -n 1 | grep -q "$HOST_IP:" ||
+		fail "e2e-server's tailscaled does not advertise $HOST_IP"
+	;;
+*) echo "host address $HOST_IP is not private: no host endpoint to check" ;;
+esac
+
 log "A network without containers during the restart takes new ones"
 docker run -d --name e2e-late --network e2e-ephemeral "$ALPINE" sleep 3600
 wait_ip e2e-late

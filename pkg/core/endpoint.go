@@ -353,6 +353,7 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 	}
 	network := e.Network
 	tags := e.tagsFor(info)
+	vethName := e.VethName
 	e.mu.Unlock()
 
 	if err := checkStackScope(info, network, tags); err != nil {
@@ -397,6 +398,7 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 		Direct:        info.Direct,
 		LoginServer:   e.Network.LoginServer, // set once, at creation
 		ContainerDNS:  info.DNS,
+		HostEndpoints: func() ([]netip.AddrPort, error) { return netutil.HostEndpoints(vethName) },
 		Warn:          e.setWarning,
 	})
 

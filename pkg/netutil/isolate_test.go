@@ -292,6 +292,22 @@ func TestVethIsolationRules(t *testing.T) {
 	}
 }
 
+// The rule drops new UDP to the whole range of external ports, and follows
+// the configured range.
+func TestWireGuardInputRuleFollowsRange(t *testing.T) {
+	got := wireGuardInputRule(PortRange{61000, 65535})
+	want := []string{
+		"-p", "udp", "-m", "udp", "--dport", "61000:65535",
+		"-m", "conntrack", "--ctstate", "NEW", "-j", "DROP",
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("wireGuardInputRule = %v, want %v", got, want)
+	}
+	if got := wireGuardInputRule(PortRange{50000, 50000}); got[5] != "50000:50000" {
+		t.Errorf("single port: %v", got)
+	}
+}
+
 // The host's tailnet isolation also covers bridges named otherwise than
 // Docker's defaults, which Docker reports: a stack file names a bridge with
 // com.docker.network.bridge.name. Names its patterns match are not repeated,

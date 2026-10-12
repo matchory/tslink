@@ -1,6 +1,8 @@
 package tailscale
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -101,6 +103,56 @@ func TestLogInMintsKeyForOAuthSecret(t *testing.T) {
 	}
 	if got := api.keys(); !slices.Equal(got, []string{"tskey-auth-minted"}) {
 		t.Errorf("Start got keys %q, want the minted one", got)
+	}
+}
+
+// An OAuth client secret reaches neither tailscaled's LocalAPI nor its
+// requests: only the key minted for it does.
+// Guards: G5
+func TestLogInOAuthSecretOnlyOverSocket(t *testing.T) {
+	keyAPI := newFakeKeyAPI(t)
+	api := newFakeLocalAPI(t)
+	api.loggedOut()
+	d, cli := loginDaemon(t, api, DaemonConfig{
+		Hostname: "web",
+		Tags:     []string{"tag:a"},
+		AuthKey: func() (string, error) {
+			return "tskey-client-SECRET-def?baseURL=" + keyAPI.URL, nil
+		},
+	})
+	if err := d.logIn(true, false); err != nil {
+		t.Fatal(err)
+	}
+	if len(cli.calls) != 0 {
+		t.Errorf("ran %q, want no CLI", cli.calls)
+	}
+	for _, r := range api.paths() {
+		if strings.Contains(r, "SECRET") {
+			t.Errorf("request %q holds the secret", r)
+		}
+	}
+}
+
+// A login that fails to mint a key for an OAuth client secret fails without
+// the secret in the error.
+// Guards: G5
+func TestLogInOAuthSecretFailureQuotesNoSecret(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "server_error", http.StatusInternalServerError)
+	}))
+	t.Cleanup(srv.Close)
+	api := newFakeLocalAPI(t)
+	api.loggedOut()
+	d, _ := loginDaemon(t, api, DaemonConfig{
+		Hostname: "web",
+		Tags:     []string{"tag:a"},
+		AuthKey: func() (string, error) {
+			return "tskey-client-SECRET-def?baseURL=" + srv.URL, nil
+		},
+	})
+	err := d.logIn(true, false)
+	if err == nil || strings.Contains(err.Error(), "SECRET") {
+		t.Errorf("err = %v, want an error without the secret", err)
 	}
 }
 

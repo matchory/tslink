@@ -33,13 +33,14 @@ func (b *lockedBuffer) String() string {
 }
 
 // TestCredentialsStayOutOfTheLog creates networks with valid and invalid
-// options around an auth key, and checks that neither the plugin's log nor the
-// errors returned to Docker contain it. It covers network creation only, not
-// the other places G5 names.
+// options around an auth key or an OAuth client secret, and checks that
+// neither the plugin's log nor the errors returned to Docker contain it. It
+// covers network creation only, not the other places G5 names.
 //
 // Guards: G5
 func TestCredentialsStayOutOfTheLog(t *testing.T) {
 	const canary = "tskey-auth-kCANARY0CNTRL-0123456789abcdef"
+	const oauthCanary = "tskey-client-kCANARY1CNTRL-0123456789abcdef"
 	var log lockedBuffer
 	logger.SetOutput(&log)
 	t.Cleanup(func() { logger.SetOutput(os.Stdout) })
@@ -53,6 +54,9 @@ func TestCredentialsStayOutOfTheLog(t *testing.T) {
 		{"tslink.authkey": canary, core.EphemeralOption: "maybe"},
 		{"tslink.authkey": canary + "?ephemeral=maybe"},
 		{"tslink.authkey": canary + "?preauthorized=true"},
+		{"tslink.authkey": oauthCanary},
+		{"tslink.authkey": oauthCanary, "tslink.tags": "tag:a"},
+		{"tslink.authkey": oauthCanary + "?ephemeral=false", core.EphemeralOption: "true"},
 		{},
 	} {
 		err := td.CreateNetwork(&network.CreateNetworkRequest{

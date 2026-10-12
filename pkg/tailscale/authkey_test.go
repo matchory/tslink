@@ -156,3 +156,37 @@ func TestResolveAuthKeyErrorsQuoteNoSecret(t *testing.T) {
 		}
 	}
 }
+
+// A failing token exchange or key creation fails resolveAuthKey without the
+// secret in the error: the client sends it in the request, never gets it back
+// from the server, and the error wraps only the server's response.
+// Guards: G5
+func TestResolveAuthKeyHTTPFailuresQuoteNoSecret(t *testing.T) {
+	const secret = "tskey-client-SECRET-def"
+	for name, handler := range map[string]http.HandlerFunc{
+		"token exchange fails": func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, "unauthorized_client", http.StatusUnauthorized)
+		},
+		"key creation fails": func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/api/v2/oauth/token" {
+				http.Error(w, `{"message":"internal error"}`, http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			if _, err := w.Write([]byte(
+				`{"access_token":"token","token_type":"Bearer","expires_in":3600}`,
+			)); err != nil {
+				return
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(handler)
+			t.Cleanup(srv.Close)
+			_, err := resolveAuthKey(t.Context(), secret+"?baseURL="+srv.URL, []string{"tag:a"})
+			if err == nil || strings.Contains(err.Error(), "SECRET") {
+				t.Errorf("resolveAuthKey(...) = %v, want an error without the secret", err)
+			}
+		})
+	}
+}

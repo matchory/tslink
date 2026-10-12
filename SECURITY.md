@@ -73,8 +73,6 @@ cluster credential.
 Attackers: a process in a container on a tslink network; a tailnet peer; the
 control server.
 Assumes: E2, E3.
-Manual: OAuth client secrets (the cluster credential) are searched for by
-hand on a test tailnet before each release.
 
 Auth keys and OAuth client secrets do not appear in these places:
 

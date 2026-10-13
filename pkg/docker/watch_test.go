@@ -226,3 +226,54 @@ func parseSince(t *testing.T, since string) time.Time {
 	}
 	return time.Unix(s, ns)
 }
+
+// A kill event inspects the container once, for its stop signal and its
+// networks both: kill events of every container on the host pass through the
+// event loop.
+func TestKillEventInspectsOnce(t *testing.T) {
+	s := newEventSetup(t, true)
+	fake := s.td.fake
+	other := fake.addContainer("other", nil)
+
+	fake.send(t, killEvent(s.containerID, "15"))
+	receive(t, s.stopped, "the stop")
+	fake.send(t, killEvent(other, "15"))
+	receive(t, s.stopped, "the stop of another container")
+
+	for name, id := range map[string]string{"tslink": s.containerID, "other": other} {
+		if n := fake.inspects(id); n != 1 {
+			t.Errorf("%s container inspected %d times, want once", name, n)
+		}
+	}
+}
+
+// A Docker call that does not return holds up an event handler only until
+// dockerCallTimeout: the watcher goes on with the events after it.
+func TestEventHandlersTimeOut(t *testing.T) {
+	old := dockerCallTimeout
+	dockerCallTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { dockerCallTimeout = old })
+
+	s := newEventSetup(t, true)
+	fake := s.td.fake
+	s.td.config.IsolateHostTailnet = true // the bridge handler lists networks
+	opts := map[string]string{"tslink.authkey": "k"}
+	hungNet := fake.addNetwork("hung_net", pluginName, opts, nil)
+	s.td.createNetwork(t, hungNet, opts)
+	onHungNet := fake.addContainer("on-hung-net", nil,
+		attachment{"hung_net", hungNet, fakeID("hung-ep")})
+	hung := fake.addContainer("hung", nil, attachment{"billing_net", s.netID, fakeID("ep3")})
+	fake.mu.Lock()
+	fake.hang = map[string]bool{hung: true, hungNet: true}
+	fake.hangList = true
+	fake.mu.Unlock()
+
+	fake.send(t, killEvent(hung, "15"))
+	fake.send(t, connectEvent(s.netID, "billing_net", hung))
+	fake.send(t, connectEvent(hungNet, "hung_net", onHungNet))
+	fake.send(t, createEvent(fakeID("bridge"), "new_bridge", "bridge"))
+	fake.send(t, connectEvent(s.netID, "billing_net", s.containerID))
+	if id := receive(t, s.handled, "the connect event after the hung calls"); id != s.epID {
+		t.Errorf("handled endpoint %s, want %s", id[:12], s.epID[:12])
+	}
+}

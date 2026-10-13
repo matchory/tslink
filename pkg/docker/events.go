@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/events"
 	dockerclient "github.com/moby/moby/client"
 	"golang.org/x/sys/unix"
@@ -19,6 +20,12 @@ import (
 	"github.com/matchory/tslink/pkg/logger"
 	"github.com/matchory/tslink/pkg/tailscale"
 )
+
+// dockerCallTimeout bounds each Docker API call of the event handlers, which
+// run one at a time: a call Docker does not answer would hold up every event
+// after it. The host isolation's network listing uses it too. A variable for
+// tests.
+var dockerCallTimeout = 10 * time.Second
 
 // ContainerCache caches container info for quick lookup during Join().
 type ContainerCache struct {
@@ -69,8 +76,9 @@ func (c *ContainerCache) Delete(endpointID string) {
 type ContainerInfoCallback func(endpointID string, info *core.ContainerInfo)
 
 // ContainerStopCallback is called when Docker sends a container its stop
-// signal, before the container exits.
-type ContainerStopCallback func(containerID string)
+// signal, before the container exits, with the container as inspected for
+// the signal, nil if inspect failed.
+type ContainerStopCallback func(containerID string, inspected *container.InspectResponse)
 
 // WatchEvents watches Docker events and caches container info.
 // When container info is stored, the callback is invoked to trigger Tailscale setup.
@@ -155,11 +163,16 @@ func handleContainerEvent(
 	msg events.Message,
 	onStop ContainerStopCallback,
 ) {
-	if msg.Action == events.ActionKill && onStop != nil {
-		signal := msg.Actor.Attributes["signal"]
-		if isStopSignal(signal, stopSignalOf(ctx, cli, msg.Actor.ID)) {
-			onStop(msg.Actor.ID)
-		}
+	if msg.Action != events.ActionKill || onStop == nil {
+		return
+	}
+	inspected := inspectKilled(ctx, cli, msg.Actor.ID)
+	stopSignal := ""
+	if inspected != nil && inspected.Config != nil {
+		stopSignal = inspected.Config.StopSignal
+	}
+	if isStopSignal(msg.Actor.Attributes["signal"], stopSignal) {
+		onStop(msg.Actor.ID, inspected)
 	}
 }
 
@@ -232,11 +245,13 @@ func handleConnect(
 
 	// Inspect container to get labels and endpoint ID
 	// This is safe - we're not in a callback
+	callCtx, cancel := context.WithTimeout(ctx, dockerCallTimeout)
 	info, err := cli.ContainerInspect(
-		ctx,
+		callCtx,
 		containerID,
 		dockerclient.ContainerInspectOptions{},
 	)
+	cancel()
 	if err != nil {
 		logger.Errorf("Failed to inspect container %s: %v", containerID[:12], err)
 		return
@@ -281,11 +296,13 @@ func handleConnect(
 	}
 
 	// The network's stack decides which tasks may use it
+	callCtx, cancel = context.WithTimeout(ctx, dockerCallTimeout)
 	netInfo, err := cli.NetworkInspect(
-		ctx,
+		callCtx,
 		netSettings.NetworkID,
 		dockerclient.NetworkInspectOptions{},
 	)
+	cancel()
 	if err != nil {
 		logger.Errorf("Failed to inspect network %s: %v", networkName, err)
 		return
@@ -306,13 +323,20 @@ func eventsSince(t time.Time) string {
 	return fmt.Sprintf("%d.%09d", t.Unix(), t.Nanosecond())
 }
 
-// stopSignalOf returns the container's configured stop signal, empty for the default.
-func stopSignalOf(ctx context.Context, cli dockerAPI, containerID string) string {
+// inspectKilled inspects a container Docker sent a signal, for its stop
+// signal and its networks. It returns nil if inspect failed.
+func inspectKilled(
+	ctx context.Context,
+	cli dockerAPI,
+	containerID string,
+) *container.InspectResponse {
+	ctx, cancel := context.WithTimeout(ctx, dockerCallTimeout)
+	defer cancel()
 	info, err := cli.ContainerInspect(ctx, containerID, dockerclient.ContainerInspectOptions{})
-	if err != nil || info.Container.Config == nil {
-		return ""
+	if err != nil {
+		return nil
 	}
-	return info.Container.Config.StopSignal
+	return &info.Container
 }
 
 // isStopSignal reports whether a kill event's signal stops the container: its

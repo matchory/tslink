@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/docker/go-plugins-helpers/network"
+	"github.com/moby/moby/api/types/container"
 	dockerclient "github.com/moby/moby/client"
 
 	"github.com/matchory/tslink/pkg/core"
@@ -616,17 +617,13 @@ const gcMinAge = 2 * time.Minute
 // onContainerStop drains the Tailscale Service backends of a stopping
 // container. Docker sends the stop signal before it tears down the network,
 // so callers move to other backends while the application can still finish
-// its requests, instead of when the backend disappears.
-func (d *Driver) onContainerStop(containerID string) {
-	info, err := d.docker.ContainerInspect(
-		d.ctx,
-		containerID,
-		dockerclient.ContainerInspectOptions{},
-	)
-	if err != nil || info.Container.NetworkSettings == nil {
+// its requests, instead of when the backend disappears. It takes the
+// container as the event watcher inspected it, nil if that failed.
+func (d *Driver) onContainerStop(_ string, inspected *container.InspectResponse) {
+	if inspected == nil || inspected.NetworkSettings == nil {
 		return
 	}
-	for _, settings := range info.Container.NetworkSettings.Networks {
+	for _, settings := range inspected.NetworkSettings.Networks {
 		if settings == nil || !d.ownsNetwork(settings.NetworkID) {
 			continue
 		}
@@ -695,6 +692,8 @@ const bridgeNameOption = "com.docker.network.bridge.name"
 // bridgeNames returns the bridge names Docker's bridge networks set, the
 // default network's docker0 among them.
 func bridgeNames(ctx context.Context, cli dockerAPI) ([]string, error) {
+	ctx, cancel := context.WithTimeout(ctx, dockerCallTimeout)
+	defer cancel()
 	res, err := cli.NetworkList(ctx, dockerclient.NetworkListOptions{
 		Filters: dockerclient.Filters{}.Add("driver", "bridge"),
 	})

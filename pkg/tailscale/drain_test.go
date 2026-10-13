@@ -557,3 +557,55 @@ func TestDrainCancelsConfigureInProgress(t *testing.T) {
 		t.Errorf("advertise after the drain = %v, want errDrained", err)
 	}
 }
+
+// A drain that cancels the advertisement in progress leaves the
+// configuration drained, not failed: a failure would fail the daemon's start
+// and stop it, and with it the drain.
+func TestDrainCancelsAdvertiseInProgress(t *testing.T) {
+	cli := &fakeCLI{}
+	d := newTestDaemon(t, cli, "svc:web")
+	api := newFakeLocalAPI(t)
+	api.loggedIn(ipn.Prefs{AdvertiseServices: []string{"svc:web"}})
+	d.lc = api.client()
+	d.config.Endpoints = []ServeEndpoint{{Proto: "tcp", Port: "22", Target: "22"}}
+	started := make(chan struct{})
+	d.runCLI = blockOn(cli, "advertise", started)
+	configured := make(chan error, 1)
+	go func() { configured <- d.configureService() }()
+	<-started
+
+	if err := returnsWithin(t, time.Second, "Drain", func() error {
+		return d.Drain("svc:web")
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := returnsWithin(t, time.Second, "the configuration", func() error {
+		return <-configured
+	}); !errors.Is(err, errDrained) {
+		t.Errorf("configureService = %v, want errDrained", err)
+	}
+}
+
+// A drain while the supervisor has no daemon, as while it restarts
+// tailscaled, still cancels the serve configuration of the starting daemon.
+func TestSupervisorDrainCancelsConfigureWithoutDaemon(t *testing.T) {
+	cli := &fakeCLI{}
+	d := newTestDaemon(t, cli, "svc:web")
+	s := NewDaemonSupervisor(d.config)
+	d.config.gate = s.cfg.gate
+	d.config.Endpoints = []ServeEndpoint{{Proto: "tcp", Port: "22", Target: "22"}}
+	started := make(chan struct{})
+	d.runCLI = blockOn(cli, "--tcp=22", started)
+	configured := make(chan error, 1)
+	go func() { configured <- d.configureService() }()
+	<-started
+
+	if err := s.Drain("svc:web"); err == nil {
+		t.Error("Drain without a daemon succeeded")
+	}
+	if err := returnsWithin(t, time.Second, "the configuration", func() error {
+		return <-configured
+	}); !errors.Is(err, errDrained) {
+		t.Errorf("configureService = %v, want errDrained", err)
+	}
+}

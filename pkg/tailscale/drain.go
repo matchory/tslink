@@ -56,34 +56,41 @@ type serviceGate struct {
 	cancel   context.CancelFunc
 }
 
-// lock takes the gate's lock for a change of d's Service, and returns the
-// context of the change's CLI calls, which a drain cancels, and the function
-// that ends the change. Once the backend is drained, it returns errDrained
-// and holds nothing.
-func (g *serviceGate) lock(d *Daemon) (context.Context, func(), error) {
+// change runs fn, a change of d's Service, under the gate's lock, with the
+// context of its CLI calls, which a drain cancels. Once the backend is
+// drained, before fn or while it runs, it returns errDrained: a call the
+// drain cancelled is no failure.
+func (g *serviceGate) change(d *Daemon, fn func(ctx context.Context) error) error {
 	g.mu.Lock()
+	defer g.mu.Unlock()
 	ctx, cancel := context.WithCancel(d.ctx)
-	g.cancelMu.Lock()
-	g.cancel = cancel
-	g.cancelMu.Unlock()
-	unlock := func() {
-		g.cancelMu.Lock()
-		g.cancel = nil
-		g.cancelMu.Unlock()
-		cancel()
-		g.mu.Unlock()
-	}
+	defer cancel()
+	g.setCancel(cancel)
+	defer g.setCancel(nil)
 	// Checked after the cancel func is in place: a drain that set drained
 	// later finds it
 	if g.drained.Load() {
-		unlock()
-		return nil, nil, errDrained
+		return errDrained
 	}
-	return ctx, unlock, nil
+	if err := fn(ctx); err != nil {
+		if g.drained.Load() {
+			return errDrained
+		}
+		return err
+	}
+	return nil
 }
 
-// cancelChange cancels the CLI calls of the change in progress, if any.
-func (g *serviceGate) cancelChange() {
+func (g *serviceGate) setCancel(cancel context.CancelFunc) {
+	g.cancelMu.Lock()
+	defer g.cancelMu.Unlock()
+	g.cancel = cancel
+}
+
+// markDrained marks the backend drained, and cancels the CLI calls of the
+// change in progress, if any.
+func (g *serviceGate) markDrained() {
+	g.drained.Store(true)
 	g.cancelMu.Lock()
 	defer g.cancelMu.Unlock()
 	if g.cancel != nil {
@@ -116,8 +123,7 @@ func (d *Daemon) isDrained() bool {
 // cancelled rather than waited for.
 func (d *Daemon) Drain(service string) error {
 	g := d.config.gate
-	g.drained.Store(true)
-	g.cancelChange()
+	g.markDrained()
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if !g.drain.at.IsZero() {

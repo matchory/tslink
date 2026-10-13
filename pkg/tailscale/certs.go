@@ -295,13 +295,18 @@ func (d *Daemon) configureServiceWhenCertified() error {
 	if validCert(dir, domain, time.Now()) {
 		return ignoreDrained(d.configureService())
 	}
-	d.certWait.Do(func() {
-		logger.Infof(
-			"No certificate for %s yet: configuring %s once there is one",
-			domain,
-			d.config.Service,
-		)
-		d.wg.Go(func() { d.configureServiceAfterCert(dir, domain) })
+	// One wait at a time: Reauthenticate may find no certificate again
+	if !d.certWaiting.CompareAndSwap(false, true) {
+		return nil
+	}
+	logger.Infof(
+		"No certificate for %s yet: configuring %s once there is one",
+		domain,
+		d.config.Service,
+	)
+	d.wg.Go(func() {
+		defer d.certWaiting.Store(false)
+		d.configureServiceAfterCert(dir, domain)
 	})
 	return nil
 }

@@ -427,3 +427,50 @@ func TestStopWaitsForConfigurationAfterCert(t *testing.T) {
 		t.Errorf("Stop returned before the configuration ended: lease kept (%v)", err)
 	}
 }
+
+// Once the wait for the certificate ended, configuring the Service again
+// without a valid certificate, as Reauthenticate does, waits for it again.
+func TestCertWaiterStartsAgainAfterItEnded(t *testing.T) {
+	setDuration(t, &certPollInterval, 10*time.Millisecond)
+	fake := &fakeCLI{}
+	d, dir := newDomainDaemon(t, fake)
+	other, err := tryLease(dir, webDomain, "other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.release()
+	serves := func() int {
+		n := 0
+		for _, c := range fake.snapshot() {
+			if slices.Contains(c, "--https=443") {
+				n++
+			}
+		}
+		return n
+	}
+	waitServes := func(want int) {
+		t.Helper()
+		deadline := time.Now().Add(time.Second)
+		for serves() < want {
+			if time.Now().After(deadline) {
+				t.Fatalf("Service configured %d times, want %d", serves(), want)
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+
+	for i := 1; i <= 2; i++ {
+		writeCert(t, dir, webDomain, webDomain, time.Now().Add(-time.Hour))
+		if err := d.configureServiceWhenCertified(); err != nil {
+			t.Fatal(err)
+		}
+		writeCert(t, dir, webDomain, webDomain, time.Now().Add(90*24*time.Hour))
+		waitServes(i)
+		for d.certWaiting.Load() {
+			time.Sleep(time.Millisecond)
+		}
+	}
+	if err := d.Stop(); err != nil {
+		t.Fatal(err)
+	}
+}

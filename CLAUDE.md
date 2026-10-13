@@ -95,7 +95,7 @@ stop tailscaled. A node gone before control processed its drain leaves callers p
 final for the supervisor (`serviceGate`, shared by its daemons): neither a certificate that appears later nor a
 restarted tailscaled advertises the backend again, and the certificate lease holder is advertised only once its
 certificate exists. A drain does not wait for a serve configuration in progress: the gate holds the cancel func of the
-change holding its lock (`serviceGate.lock`), which the drain calls before taking the lock, and the change runs nothing
+change holding its lock (`serviceGate.change`), which the drain calls before taking the lock, and the change runs nothing
 more once drained. Plugin shutdown stops all endpoints concurrently within its deadline (`Driver.Shutdown`), and an
 endpoint's Tailscale run derives from the driver's context, so a start in progress ends with the plugin and is
 abandoned as on `Stop`. A daemon's CLI calls and waits use its context, cancelled by `Daemon.Stop`, and its goroutines

@@ -96,9 +96,10 @@ type Daemon struct {
 	// goroutine may wait for a process
 	exited chan struct{}
 
-	// Start the certificate expiry watcher, and the configuration of the
-	// Service once its certificate exists, at most once each
-	certWatch, certWait sync.Once
+	// Start the certificate expiry watcher at most once
+	certWatch sync.Once
+	// Set while the Service waits for its certificate to be configured
+	certWaiting atomic.Bool
 
 	// runCLI runs the tailscale CLI and returns its output; tests replace it.
 	// Nil runs config.TailscaleBin.

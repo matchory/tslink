@@ -122,37 +122,36 @@ func (d *Daemon) configureServiceBackend(advertise bool) error {
 		return nil
 	}
 
-	ctx, unlock, err := d.config.gate.lock(d)
-	if err != nil {
+	if d.isDrained() {
 		logger.Infof("Not configuring %s for %s: drained", d.config.Service, d.config.EndpointID)
-		return err
+		return errDrained
 	}
-	defer unlock()
+	return d.config.gate.change(d, func(ctx context.Context) error {
+		logger.Infof("Configuring Tailscale Service %s with %d endpoint(s) for %s",
+			d.config.Service, len(d.config.Endpoints), d.config.EndpointID)
 
-	logger.Infof("Configuring Tailscale Service %s with %d endpoint(s) for %s",
-		d.config.Service, len(d.config.Endpoints), d.config.EndpointID)
+		// Configure each endpoint. A drain cancels the call in progress and
+		// waits for this to return: run nothing more once it began
+		for i, ep := range d.config.Endpoints {
+			err := d.configureServeEndpoint(ctx, ep)
+			if d.isDrained() {
+				return errDrained
+			}
+			if err != nil {
+				return fmt.Errorf("failed to configure endpoint %d (%s:%s): %w",
+					i, ep.Proto, ep.Port, err)
+			}
+		}
 
-	// Configure each endpoint. A drain cancels the call in progress and
-	// waits for this to return: run nothing more once it began
-	for i, ep := range d.config.Endpoints {
-		err := d.configureServeEndpoint(ctx, ep)
 		if d.isDrained() {
 			return errDrained
 		}
-		if err != nil {
-			return fmt.Errorf("failed to configure endpoint %d (%s:%s): %w",
-				i, ep.Proto, ep.Port, err)
+		if !advertise {
+			// "tailscale serve --service" advertises the Service by itself
+			return d.runServe(ctx, "serve-unadvertise", "drain", d.config.Service)
 		}
-	}
-
-	if d.isDrained() {
-		return errDrained
-	}
-	if !advertise {
-		// "tailscale serve --service" advertises the Service by itself
-		return d.runServe(ctx, "serve-unadvertise", "drain", d.config.Service)
-	}
-	return d.runAdvertise(ctx, d.config.Service)
+		return d.runAdvertise(ctx, d.config.Service)
+	})
 }
 
 // runAdvertise runs "tailscale serve advertise" and notes that the backend
@@ -177,12 +176,9 @@ func (d *Daemon) noteSurvivingState() {
 // A drained service stays drained in the node's state, as after a plugin
 // restart: advertise it again once its endpoints are configured.
 func (d *Daemon) advertise(service string) error {
-	ctx, unlock, err := d.config.gate.lock(d)
-	if err != nil {
-		return err
-	}
-	defer unlock()
-	return d.runAdvertise(ctx, service)
+	return d.config.gate.change(d, func(ctx context.Context) error {
+		return d.runAdvertise(ctx, service)
+	})
 }
 
 // configureDirectServe runs "tailscale serve" without --service flag to configure

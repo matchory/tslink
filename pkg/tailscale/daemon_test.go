@@ -26,30 +26,27 @@ func TestKillErrorIgnoresExitedProcess(t *testing.T) {
 	}
 }
 
-// Stopping takes the node down before killing tailscaled, and kills it even
-// if that fails, as it does when tailscaled has crashed.
-func TestKillProcessTakesNodeDown(t *testing.T) {
-	for _, crashed := range []bool{false, true} {
-		d := newTestDaemon(t, &fakeCLI{}, "")
-		api := newFakeLocalAPI(t)
-		api.loggedIn(ipn.Prefs{WantRunning: true})
-		if !crashed {
-			d.lc = api.client()
-		}
-		cmd := exec.Command("sleep", "30")
-		if err := cmd.Start(); err != nil {
-			t.Fatal(err)
-		}
-		d.killProcess(cmd)
-		api.mu.Lock()
-		running := api.prefs.WantRunning
-		api.mu.Unlock()
-		if running == !crashed {
-			t.Errorf("crashed %v: WantRunning = %v", crashed, running)
-		}
-		if cmd.ProcessState == nil {
-			t.Errorf("crashed %v: tailscaled was not killed", crashed)
-		}
+// Stopping leaves the node's prefs alone: taking it down would persist
+// WantRunning=false in a persistent node's state. tailscaled is stopped either
+// way.
+func TestKillProcessKeepsPrefs(t *testing.T) {
+	d := newTestDaemon(t, &fakeCLI{}, "")
+	api := newFakeLocalAPI(t)
+	api.loggedIn(ipn.Prefs{WantRunning: true})
+	d.lc = api.client()
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	d.killProcess(cmd)
+	api.mu.Lock()
+	running := api.prefs.WantRunning
+	api.mu.Unlock()
+	if !running {
+		t.Error("stopping took the node down")
+	}
+	if cmd.ProcessState == nil {
+		t.Error("tailscaled was not stopped")
 	}
 }
 

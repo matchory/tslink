@@ -342,7 +342,7 @@ raw_send() {
 	docker exec e2e-raw sh -c '
 		if [ "$1" = veth ]; then
 			ifc=$(ls /sys/class/net | grep "^veth")
-			src=$(ip -4 -o addr show dev "$ifc" | awk "{split(\$4, a, \"/\"); print a[1]}")
+			src=$(ip -4 -o addr show dev "$ifc" | awk "\$4 ~ /^10\\.200\\./ {split(\$4, a, \"/\"); print a[1]}")
 			gw=${src%.*}.$((${src##*.} - 1))
 		else
 			ifc=$1
@@ -398,7 +398,7 @@ log "Containers do not reach each other through tslink's veths"
 # past Docker's network isolation and the tailnet's ACLs. e2e-raw is on
 # e2e-bob, the sink on e2e-alice.
 sink_veth=$(docker exec e2e-sink sh -c \
-	'ip -4 -o addr show | awk "\$2 ~ /^veth/ {split(\$4, a, \"/\"); print a[1]}"')
+	'ip -4 -o addr show | awk "\$2 ~ /^veth/ && \$4 ~ /^10\\.200\\./ {split(\$4, a, \"/\"); print a[1]}"')
 echo "sink veth $sink_veth"
 # A container on the custom-named bridge network. Not on tslink: it gets no
 # tailnet IP to wait for

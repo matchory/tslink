@@ -349,9 +349,10 @@ func TestSupervisorBackoff(t *testing.T) {
 			t.Errorf("backoff %d = %v, want %v", i, got, w)
 		}
 	}
-	for range 20 {
-		if got := s.nextBackoff(); got > maxBackoff {
-			t.Fatalf("backoff %v exceeds %v", got, maxBackoff)
+	// Past 2^63 ns the shift would wrap to zero or below
+	for range 100 {
+		if got := s.nextBackoff(); got <= 0 || got > maxBackoff {
+			t.Fatalf("backoff %v, want within (0, %v]", got, maxBackoff)
 		}
 	}
 	if got := s.nextBackoff(); got != maxBackoff {

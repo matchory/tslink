@@ -593,10 +593,14 @@ func (s *DaemonSupervisor) nextBackoff() time.Duration {
 		return initialBackoff
 	}
 
-	// Exponential backoff: initialBackoff * 2^attempt
+	// Exponential backoff: initialBackoff * 2^attempt. The attempt stops
+	// growing at the cap: a larger shift would overflow
 	delay := initialBackoff << s.backoffAttempt
+	if delay >= maxBackoff {
+		return maxBackoff
+	}
 	s.backoffAttempt++
-	return min(delay, maxBackoff)
+	return delay
 }
 
 // resetBackoff resets the backoff counter after a successful start.

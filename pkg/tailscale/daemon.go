@@ -392,7 +392,12 @@ func (d *Daemon) setUp() error {
 	if err := d.bringUp(); err != nil {
 		return fmt.Errorf("failed to bring up tailscale: %w", err)
 	}
+	return d.configureServing()
+}
 
+// configureServing configures direct serve and the Service backend, as the
+// container asks, once the node has logged in.
+func (d *Daemon) configureServing() error {
 	// Configure direct machine serve if enabled (HTTPS on machine hostname)
 	logger.Infof(
 		"Checking direct serve: Direct=%v Endpoints=%d",

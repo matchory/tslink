@@ -314,15 +314,5 @@ func (d *Daemon) Reauthenticate() error {
 		return err
 	}
 	d.nodeNotFound.Store(0)
-	if d.config.Direct && len(d.config.Endpoints) > 0 {
-		if err := d.configureDirectServe(); err != nil {
-			return fmt.Errorf("failed to configure direct serve: %w", err)
-		}
-	}
-	if d.config.Service != "" {
-		if err := d.configureServiceWhenCertified(); err != nil {
-			return fmt.Errorf("failed to configure Tailscale service: %w", err)
-		}
-	}
-	return nil
+	return d.configureServing()
 }

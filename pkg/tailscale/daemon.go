@@ -297,10 +297,7 @@ func (d *daemon) startProcess(cmd *exec.Cmd) error {
 func (d *daemon) watchProcess(out *io.PipeWriter) {
 	// Write debug info to a file (cancellable via context)
 	d.wg.Go(func() {
-		select {
-		case <-d.ctx.Done():
-			return
-		case <-time.After(2 * time.Second):
+		if ctxtime.Sleep(d.ctx, 2*time.Second) {
 			d.writeDebug(fmt.Sprintf("PID: %d\nSocket: %s\nEndpoint: %s\n",
 				d.cmd.Process.Pid, d.socketPath, d.config.EndpointID))
 		}

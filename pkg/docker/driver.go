@@ -749,11 +749,7 @@ func applyHostIsolation(on bool, bridges []string) error {
 // then collects garbage. This handles cases where containers restart after
 // initial recovery.
 func (d *Driver) runWatchdog(ctx context.Context) {
-	// Wait before first check (let initial recovery complete)
-	if !ctxtime.Sleep(ctx, watchdogInterval) {
-		return
-	}
-
+	// The first check is one interval in, after the initial recovery
 	ticker := time.NewTicker(watchdogInterval)
 	defer ticker.Stop()
 

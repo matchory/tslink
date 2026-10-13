@@ -152,7 +152,7 @@ func attachedIDs(
 	byName := make(map[string]string, len(items)) // container name (no slash) -> ID
 	for _, c := range items {
 		for _, name := range c.Names {
-			byName[strings.TrimPrefix(name, "/")] = c.ID
+			byName[core.ContainerName(name)] = c.ID
 		}
 	}
 	// Propagate through network_mode: container:<ref>, to a fixed point: a

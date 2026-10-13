@@ -87,8 +87,8 @@ func Run(dataDir string, w io.Writer) error {
 	result.DataDirExists = info.IsDir()
 
 	// Each state directory links to its daemon's socket under <dataDir>/sock
-	// (see tailscale.NewDaemon). Sockets no state directory links to are
-	// reported on their own.
+	// (see the tailscale package's newDaemon). Sockets no state directory
+	// links to are reported on their own.
 	linked := make(map[string]bool)
 	for _, stateDir := range stateDirs(dataDir) {
 		status, socketPath := checkStateDir(dataDir, stateDir)

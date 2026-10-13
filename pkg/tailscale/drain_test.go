@@ -24,7 +24,7 @@ func setTiming(cfg *DaemonConfig, set func(*timing)) {
 
 // newTestSupervisor returns a supervisor whose daemon runs the fake CLI and
 // has advertised svc:web.
-func newTestSupervisor(t *testing.T, cli *fakeCLI) (*DaemonSupervisor, *Daemon) {
+func newTestSupervisor(t *testing.T, cli *fakeCLI) (*DaemonSupervisor, *daemon) {
 	t.Helper()
 	s := NewDaemonSupervisor(DaemonConfig{EndpointID: "0123456789abcdef", Service: "svc:web"})
 	t.Cleanup(s.cancel)
@@ -300,7 +300,7 @@ func TestDrainAndWaitWithoutDaemon(t *testing.T) {
 
 // failCert has tailscaled refuse d's certificate requests with msg, at once:
 // with nothing listening on its socket, a request may take seconds to fail.
-func failCert(t *testing.T, d *Daemon, msg string) {
+func failCert(t *testing.T, d *daemon, msg string) {
 	t.Helper()
 	api := newFakeLocalAPI(t)
 	d.lc = api.client()
@@ -309,7 +309,7 @@ func failCert(t *testing.T, d *Daemon, msg string) {
 
 // newCertDaemon returns a daemon serving svc:web over HTTPS with a shared
 // certificate directory, and that directory.
-func newCertDaemon(t *testing.T, cli *fakeCLI) (*Daemon, string) {
+func newCertDaemon(t *testing.T, cli *fakeCLI) (*daemon, string) {
 	t.Helper()
 	d := newTestDaemon(t, cli, "svc:web")
 	d.config.Endpoints = []ServeEndpoint{{Proto: "https", Port: "443", Target: "8080"}}
@@ -324,7 +324,7 @@ const certDomain = "api.example.ts.net"
 
 // runAfterCert runs configureServiceAfterCert and returns a channel closed
 // when it returns.
-func runAfterCert(d *Daemon, dir string) <-chan struct{} {
+func runAfterCert(d *daemon, dir string) <-chan struct{} {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -383,7 +383,7 @@ func TestDrainSurvivesDaemonRestart(t *testing.T) {
 		t.Fatal("Drain without tailscaled succeeded")
 	}
 
-	d, err := NewDaemon(s.cfg) // as startDaemon after a crash
+	d, err := newDaemon(s.cfg) // as startDaemon after a crash
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -131,7 +131,7 @@ func TestReadiness(t *testing.T) {
 // A Service name too short to hold the svc: prefix does not panic: it waits
 // for a certificate it has none of.
 func TestPendingServiceShortName(t *testing.T) {
-	d := &Daemon{config: DaemonConfig{
+	d := &daemon{config: DaemonConfig{
 		Service:   "svc",
 		StateDir:  t.TempDir(),
 		Endpoints: []ServeEndpoint{{Proto: "https", Port: "443", Target: "8080"}},

@@ -25,11 +25,11 @@ type fakeTailscaled struct {
 	mu      sync.Mutex
 	fail    error
 	starts  int
-	daemons []*Daemon
-	onStart func(*Daemon)
+	daemons []*daemon
+	onStart func(*daemon)
 }
 
-func (f *fakeTailscaled) start(d *Daemon) error {
+func (f *fakeTailscaled) start(d *daemon) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.starts++
@@ -118,7 +118,7 @@ func TestSupervisorRestartsCrashedDaemon(t *testing.T) {
 	if status, restarts := s.Status(); status != StatusRunning || restarts != 1 {
 		t.Fatalf("after Start: %s, %d starts; want running, 1", status, restarts)
 	}
-	first := s.GetDaemon()
+	first := s.getDaemon()
 
 	f.crash(t)
 	waitFor(
@@ -129,7 +129,7 @@ func TestSupervisorRestartsCrashedDaemon(t *testing.T) {
 	if _, restarts := s.Status(); restarts != 2 {
 		t.Errorf("restart count = %d, want 2", restarts)
 	}
-	if s.GetDaemon() == first {
+	if s.getDaemon() == first {
 		t.Error("the crashed daemon is still current")
 	}
 }
@@ -152,7 +152,7 @@ func TestSupervisorStopsCrashedDaemon(t *testing.T) {
 	if err := s.Start(); err != nil {
 		t.Fatal(err)
 	}
-	first := s.GetDaemon()
+	first := s.getDaemon()
 	f.crash(t)
 	waitFor(t, "a restart", func() bool { return f.startCount() == 2 })
 	if first.ctx.Err() == nil {
@@ -182,7 +182,7 @@ func TestSupervisorStartCancelled(t *testing.T) {
 	defer cancel()
 	inLogin := make(chan struct{})
 	var once sync.Once
-	s.start = func(d *Daemon) error {
+	s.start = func(d *daemon) error {
 		if err := f.start(d); err != nil {
 			return err
 		}
@@ -230,7 +230,7 @@ func TestSupervisorCrashLoopCoolsDown(t *testing.T) {
 	}
 	f.crash(t)
 	waitFor(t, "the crash loop", func() bool { return hasStatus(s, StatusCrashLoop) })
-	if s.GetDaemon() != nil {
+	if s.getDaemon() != nil {
 		t.Error("a daemon is current during the cooldown")
 	}
 	if got := f.startCount(); got != crashLoopThreshold {
@@ -325,7 +325,7 @@ func TestSupervisorReauthenticatesNodeNotFound(t *testing.T) {
 			s, f, _ := newFakeSupervisor(t)
 			f.api.loggedIn(ipn.Prefs{ControlURL: defaultControlURL})
 			f.api.startErr = loginErr
-			f.onStart = func(d *Daemon) {
+			f.onStart = func(d *daemon) {
 				d.handleLine("2026/10/08 12:00:00 control: " + nodeNotFoundLog)
 			}
 			if err := s.Start(); err != nil {
@@ -336,7 +336,7 @@ func TestSupervisorReauthenticatesNodeNotFound(t *testing.T) {
 				wantLogins = 2 // retried after a backoff
 			}
 			waitFor(t, "a login", func() bool { return countReauths(f.api) >= wantLogins })
-			d := s.GetDaemon()
+			d := s.getDaemon()
 			waitFor(t, "the node found", func() bool { return d.nodeNotFound.Load() == 0 })
 			for _, k := range f.api.keys() {
 				if k != "tskey-auth-test" {
@@ -406,11 +406,11 @@ func TestSupervisorRestartsOnChangedHostEndpoints(t *testing.T) {
 	mu.Unlock()
 	// startDaemon only sets s.daemon once the fake's start returned and
 	// recorded the count, so poll on the daemon actually advertising the new
-	// endpoints, not merely on the count: between the two, GetDaemon can
+	// endpoints, not merely on the count: between the two, getDaemon can
 	// still be nil or still be the old daemon.
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if got := s.GetDaemon(); got != nil && slices.Equal(got.HostEndpoints(), eps) {
+		if got := s.getDaemon(); got != nil && slices.Equal(got.HostEndpoints(), eps) {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -418,7 +418,7 @@ func TestSupervisorRestartsOnChangedHostEndpoints(t *testing.T) {
 	if got := f.startCount(); got != 2 {
 		t.Fatalf("%d starts, want 2", got)
 	}
-	got := s.GetDaemon()
+	got := s.getDaemon()
 	if got == nil {
 		t.Fatal("no current daemon after the restart")
 	}
@@ -470,7 +470,7 @@ func TestSupervisorIgnoresHostEndpointErrors(t *testing.T) {
 
 // A drain under way means the node is leaving: restarting it for changed
 // host endpoints would strand DrainAndWait waiting on a daemon that no
-// longer exists (GetDaemon would read nil mid-restart).
+// longer exists (getDaemon would read nil mid-restart).
 func TestSupervisorSkipsRestartWhenDrained(t *testing.T) {
 	s, f, _ := newFakeSupervisor(t)
 	setTiming(&s.cfg, func(tm *timing) { tm.hostEndpointsCheckInterval = 10 * time.Millisecond })

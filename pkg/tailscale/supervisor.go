@@ -88,7 +88,7 @@ type DaemonSupervisor struct {
 
 	// State (protected by mu)
 	mu            sync.RWMutex
-	daemon        *Daemon
+	daemon        *daemon
 	status        SupervisorStatus
 	restartCount  int
 	crashTimes    []time.Time
@@ -102,7 +102,7 @@ type DaemonSupervisor struct {
 	startupDoneOnce sync.Once
 
 	// start starts a daemon; tests replace it.
-	start func(*Daemon) error
+	start func(*daemon) error
 }
 
 // NewDaemonSupervisor creates a new supervisor for managing a tailscaled daemon.
@@ -116,7 +116,7 @@ func NewDaemonSupervisor(cfg DaemonConfig) *DaemonSupervisor {
 		status:      StatusStopped,
 		crashTimes:  make([]time.Time, 0),
 		startupDone: make(chan error, 1),
-		start:       (*Daemon).Start,
+		start:       (*daemon).Start,
 	}
 }
 
@@ -195,7 +195,7 @@ func (s *DaemonSupervisor) Stop() error {
 
 // Logout logs the running daemon's node out.
 func (s *DaemonSupervisor) Logout() error {
-	d := s.GetDaemon()
+	d := s.getDaemon()
 	if d == nil || !d.IsRunning() {
 		return errors.New("tailscaled is not running")
 	}
@@ -207,7 +207,7 @@ func (s *DaemonSupervisor) Logout() error {
 // a daemon the supervisor starts later does not advertise it.
 func (s *DaemonSupervisor) Drain(service string) error {
 	s.cfg.gate.markDrained()
-	d := s.GetDaemon()
+	d := s.getDaemon()
 	if d == nil {
 		return errors.New("tailscaled is not running")
 	}
@@ -221,13 +221,6 @@ func (s *DaemonSupervisor) Status() (SupervisorStatus, int) {
 	return s.status, s.restartCount
 }
 
-// GetDaemon returns the current daemon (may be nil if not running).
-func (s *DaemonSupervisor) GetDaemon() *Daemon {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.daemon
-}
-
 // Drained reports whether the node's Service backend has been drained.
 func (s *DaemonSupervisor) Drained() bool {
 	return s.cfg.gate.drained.Load()
@@ -236,7 +229,7 @@ func (s *DaemonSupervisor) Drained() bool {
 // Readiness reports how far the node is from serving what its container asks
 // for. A daemon not started, or restarting, is starting.
 func (s *DaemonSupervisor) Readiness(ctx context.Context) Readiness {
-	daemon := s.GetDaemon()
+	daemon := s.getDaemon()
 	if daemon == nil || !daemon.IsRunning() {
 		return ReadyStarting
 	}
@@ -255,6 +248,13 @@ func (s *DaemonSupervisor) WaitForIP(ctx context.Context) (*Status, error) {
 	}
 
 	return daemon.WaitForIP(ctx)
+}
+
+// getDaemon returns the current daemon (may be nil if not running).
+func (s *DaemonSupervisor) getDaemon() *daemon {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.daemon
 }
 
 // signalStartup safely sends the startup result exactly once.
@@ -407,12 +407,12 @@ func (s *DaemonSupervisor) waitBeforeRestart() bool {
 
 // startDaemon creates and starts a new daemon instance.
 func (s *DaemonSupervisor) startDaemon() error {
-	// Stopped: NewDaemon would create the state directory again, which the
+	// Stopped: newDaemon would create the state directory again, which the
 	// endpoint may have removed
 	if err := s.ctx.Err(); err != nil {
 		return err
 	}
-	daemon, err := NewDaemon(s.cfg)
+	daemon, err := newDaemon(s.cfg)
 	if err != nil {
 		return fmt.Errorf("failed to create daemon: %w", err)
 	}
@@ -456,7 +456,7 @@ var errHostEndpointsChanged = errors.New("host endpoints changed")
 // Returns nil if context was cancelled (clean shutdown).
 // Returns error if daemon exited unexpectedly.
 func (s *DaemonSupervisor) waitForExit() error {
-	daemon := s.GetDaemon()
+	daemon := s.getDaemon()
 	if daemon == nil {
 		return errors.New("daemon is nil")
 	}
@@ -498,7 +498,7 @@ func (s *DaemonSupervisor) waitForExit() error {
 
 // checkLogin logs the daemon's node in again once login observes it is
 // logged out, as when its device was deleted or expired.
-func (s *DaemonSupervisor) checkLogin(daemon *Daemon, login *loginWatch) {
+func (s *DaemonSupervisor) checkLogin(daemon *daemon, login *loginWatch) {
 	if !login.observe(daemon.LoggedOut()) {
 		return
 	}
@@ -521,7 +521,7 @@ func (s *DaemonSupervisor) checkLogin(daemon *Daemon, login *loginWatch) {
 // drained Service backend: the node is on its way out, and DrainAndWait may
 // be waiting on this very daemon for control to fetch the drain. Restarting
 // it would strand that wait with no daemon to wait on.
-func (s *DaemonSupervisor) hostEndpointsChanged(daemon *Daemon) bool {
+func (s *DaemonSupervisor) hostEndpointsChanged(daemon *daemon) bool {
 	if s.cfg.HostEndpoints == nil || s.cfg.gate.drained.Load() {
 		return false
 	}

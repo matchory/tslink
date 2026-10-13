@@ -169,7 +169,7 @@ func TestTailscaledCommandWritesResolvConf(t *testing.T) {
 	if err := os.Mkdir(stateDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	d := &Daemon{
+	d := &daemon{
 		config: DaemonConfig{
 			StateDir:      stateDir,
 			NetNSPath:     "/run/netns/x",
@@ -265,7 +265,7 @@ func TestTailscaledCommandWarnsAboutFallback(t *testing.T) {
 func TestTailscaledCommandWithoutAuthKey(t *testing.T) {
 	t.Setenv("TS_AUTHKEY", "tskey-auth-secret")
 	t.Setenv("TSLINK_TEST_KEPT", "1")
-	d := &Daemon{config: DaemonConfig{StateDir: t.TempDir(), TailscaledBin: "/tailscaled"}}
+	d := &daemon{config: DaemonConfig{StateDir: t.TempDir(), TailscaledBin: "/tailscaled"}}
 	d.ctx = t.Context()
 	env := d.tailscaledCommand(nil).Env
 	if !slices.Contains(env, "TSLINK_TEST_KEPT=1") {
@@ -281,7 +281,7 @@ func TestTailscaledCommandWithoutAuthKey(t *testing.T) {
 // With host endpoints to advertise, TS_DEBUG_PRETENDPOINT is the last
 // environment variable, so it wins over any inherited value.
 func TestTailscaledCommandHostEndpoints(t *testing.T) {
-	d := &Daemon{config: DaemonConfig{StateDir: t.TempDir(), TailscaledBin: "/tailscaled"}}
+	d := &daemon{config: DaemonConfig{StateDir: t.TempDir(), TailscaledBin: "/tailscaled"}}
 	d.ctx = t.Context()
 	d.hostEndpoints = []netip.AddrPort{netip.MustParseAddrPort("10.10.0.2:61367")}
 	env := d.tailscaledCommand(nil).Env
@@ -293,7 +293,7 @@ func TestTailscaledCommandHostEndpoints(t *testing.T) {
 // Without host endpoints to advertise, tslink adds nothing: an operator's
 // own TS_DEBUG_PRETENDPOINT, if any, passes through unchanged.
 func TestTailscaledCommandWithoutHostEndpoints(t *testing.T) {
-	d := &Daemon{config: DaemonConfig{StateDir: t.TempDir(), TailscaledBin: "/tailscaled"}}
+	d := &daemon{config: DaemonConfig{StateDir: t.TempDir(), TailscaledBin: "/tailscaled"}}
 	d.ctx = t.Context()
 	env := d.tailscaledCommand(nil).Env
 	if want := len(withoutAuthKey(os.Environ())); len(env) != want {
@@ -306,7 +306,7 @@ func TestTailscaledCommandWithoutHostEndpoints(t *testing.T) {
 // duplicated key, so the host endpoints placed last win over it.
 func TestTailscaledCommandHostEndpointsOverridesOperatorSetting(t *testing.T) {
 	t.Setenv("TS_DEBUG_PRETENDPOINT", "203.0.113.1:9")
-	d := &Daemon{config: DaemonConfig{StateDir: t.TempDir(), TailscaledBin: "/tailscaled"}}
+	d := &daemon{config: DaemonConfig{StateDir: t.TempDir(), TailscaledBin: "/tailscaled"}}
 	d.ctx = t.Context()
 	d.hostEndpoints = []netip.AddrPort{netip.MustParseAddrPort("10.10.0.2:61367")}
 	env := d.tailscaledCommand(nil).Env
@@ -352,7 +352,7 @@ func runSandboxed(t *testing.T, setup, show string) string {
 			t.Fatal(err)
 		}
 	}
-	d := &Daemon{config: DaemonConfig{
+	d := &daemon{config: DaemonConfig{
 		StateDir:      stateDir,
 		NetNSPath:     "/run/netns/x",
 		TailscaledBin: filepath.Join(bin, "tailscaled"),
@@ -415,7 +415,7 @@ func TestTailscaledCommandRefusesTaildropFiles(t *testing.T) {
 
 // Files received before are deleted when tailscaled starts.
 func TestTailscaledCommandDeletesTaildropFiles(t *testing.T) {
-	d := &Daemon{config: DaemonConfig{StateDir: t.TempDir(), TailscaledBin: "/tailscaled"}}
+	d := &daemon{config: DaemonConfig{StateDir: t.TempDir(), TailscaledBin: "/tailscaled"}}
 	d.ctx = t.Context()
 	files := filepath.Join(d.config.StateDir, "files", "alice-uid-1")
 	if err := os.MkdirAll(files, 0o700); err != nil {

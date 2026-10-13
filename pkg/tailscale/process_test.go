@@ -11,7 +11,7 @@ import (
 
 // startFake starts script as tailscaled of d, with "$0" a directory for its
 // marker files and args from "$1", and stops it when the test ends.
-func startFake(t *testing.T, d *Daemon, script string, args ...string) string {
+func startFake(t *testing.T, d *daemon, script string, args ...string) string {
 	t.Helper()
 	dir := t.TempDir()
 	args = append([]string{"-c", script, dir}, args...)

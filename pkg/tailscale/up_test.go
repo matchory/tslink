@@ -15,7 +15,7 @@ import (
 )
 
 // loginDaemon returns a daemon with cfg whose tailscaled is api.
-func loginDaemon(t *testing.T, api *fakeLocalAPI, cfg DaemonConfig) (*Daemon, *fakeCLI) {
+func loginDaemon(t *testing.T, api *fakeLocalAPI, cfg DaemonConfig) (*daemon, *fakeCLI) {
 	t.Helper()
 	cli := &fakeCLI{}
 	d := newTestDaemon(t, cli, "")

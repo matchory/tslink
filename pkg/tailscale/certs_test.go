@@ -324,7 +324,7 @@ func TestServiceDomainRejectsNonDNSNames(t *testing.T) {
 
 // newDomainDaemon is newCertDaemon with a LocalAPI that gives the Service
 // the domain web.example.ts.net.
-func newDomainDaemon(t *testing.T, cli *fakeCLI) (*Daemon, string) {
+func newDomainDaemon(t *testing.T, cli *fakeCLI) (*daemon, string) {
 	t.Helper()
 	d, dir := newCertDaemon(t, cli)
 	api := newFakeLocalAPI(t)

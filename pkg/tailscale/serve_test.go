@@ -68,11 +68,11 @@ func (f *fakeCLI) snapshot() [][]string {
 
 const testSocket = "/run/test.sock"
 
-func newTestDaemon(t *testing.T, cli *fakeCLI, service string) *Daemon {
+func newTestDaemon(t *testing.T, cli *fakeCLI, service string) *daemon {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	return &Daemon{
+	return &daemon{
 		config: DaemonConfig{
 			EndpointID: "test", StateDir: t.TempDir(), Service: service, gate: &serviceGate{},
 		},
@@ -563,10 +563,10 @@ func returnsWithin(t *testing.T, d time.Duration, what string, fn func() error) 
 func TestServeCallsEndWithDaemon(t *testing.T) {
 	for _, tc := range []struct {
 		name, service string
-		configure     func(*Daemon) error
+		configure     func(*daemon) error
 	}{
-		{"service", "svc:web", (*Daemon).configureService},
-		{"direct", "", (*Daemon).configureDirectServe},
+		{"service", "svc:web", (*daemon).configureService},
+		{"direct", "", (*daemon).configureDirectServe},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cli := &fakeCLI{}

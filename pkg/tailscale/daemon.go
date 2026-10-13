@@ -59,12 +59,12 @@ type DaemonConfig struct {
 	// if message is empty; nil ignores warnings
 	Warn func(key, message string)
 
-	gate   *serviceGate // Shared by the daemons of one supervisor; NewDaemon creates one if nil
+	gate   *serviceGate // Shared by the daemons of one supervisor; newDaemon creates one if nil
 	timing *timing      // Shared like gate; nil for defaultTiming
 }
 
-// Daemon manages a tailscaled process.
-type Daemon struct {
+// daemon manages a tailscaled process.
+type daemon struct {
 	config     DaemonConfig
 	cmd        *exec.Cmd
 	socketPath string
@@ -107,8 +107,8 @@ type Daemon struct {
 	lc *local.Client
 }
 
-// NewDaemon creates a new Daemon instance.
-func NewDaemon(cfg DaemonConfig) (*Daemon, error) {
+// newDaemon creates a new daemon instance.
+func newDaemon(cfg DaemonConfig) (*daemon, error) {
 	// Create state directory
 	if err := os.MkdirAll(cfg.StateDir, 0o700); err != nil {
 		return nil, fmt.Errorf("failed to create state dir: %w", err)
@@ -148,7 +148,7 @@ func NewDaemon(cfg DaemonConfig) (*Daemon, error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 
-	d := &Daemon{
+	d := &daemon{
 		config:     cfg,
 		socketPath: socketPath,
 		lc:         &local.Client{Socket: socketPath, UseSocketOnly: true},
@@ -170,7 +170,7 @@ func NewDaemon(cfg DaemonConfig) (*Daemon, error) {
 }
 
 // Start starts the tailscaled process in the target network namespace.
-func (d *Daemon) Start() error {
+func (d *daemon) Start() error {
 	logger.Infof(
 		"Starting tailscaled for endpoint %s in netns %s",
 		d.config.EndpointID,
@@ -208,10 +208,10 @@ func (d *Daemon) Start() error {
 }
 
 // HostEndpoints returns the endpoints on the host this tailscaled advertises.
-func (d *Daemon) HostEndpoints() []netip.AddrPort { return d.hostEndpoints }
+func (d *daemon) HostEndpoints() []netip.AddrPort { return d.hostEndpoints }
 
 // IsRunning checks if the tailscaled process is still running.
-func (d *Daemon) IsRunning() bool {
+func (d *daemon) IsRunning() bool {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
@@ -227,7 +227,7 @@ func (d *Daemon) IsRunning() bool {
 }
 
 // Stop stops the tailscaled process.
-func (d *Daemon) Stop() error {
+func (d *daemon) Stop() error {
 	logger.Infof("Stopping tailscaled for endpoint %s", d.config.EndpointID)
 
 	// Mark as not running and get current state
@@ -265,7 +265,7 @@ func (d *Daemon) Stop() error {
 
 // startProcess starts cmd as tailscaled, drains its output and watches for
 // its exit.
-func (d *Daemon) startProcess(cmd *exec.Cmd) error {
+func (d *daemon) startProcess(cmd *exec.Cmd) error {
 	d.cmd = cmd
 
 	// Graceful stop: tailscaled gets SIGTERM when its context is cancelled,
@@ -308,7 +308,7 @@ func closePipe(r *io.PipeReader, w *io.PipeWriter) {
 
 // drainOutput writes tailscaled's output to its own size-capped log, until
 // watchProcess closes the pipe after tailscaled exited.
-func (d *Daemon) drainOutput(output io.Reader) {
+func (d *daemon) drainOutput(output io.Reader) {
 	// tailscaled's output goes to its own size-capped log: it is verbose, and
 	// the plugin log is shared by every endpoint on the node
 	logPath := filepath.Join(d.config.StateDir, "tailscaled.log")
@@ -338,7 +338,7 @@ func (d *Daemon) drainOutput(output io.Reader) {
 // watchProcess records tailscaled's PID, and its exit if it fails, in the
 // debug file. Once tailscaled exited and all its output is in the pipe, it
 // closes out, so the reader ends after the last line.
-func (d *Daemon) watchProcess(out *io.PipeWriter) {
+func (d *daemon) watchProcess(out *io.PipeWriter) {
 	// Write debug info to a file (cancellable via context)
 	d.wg.Go(func() {
 		select {
@@ -380,7 +380,7 @@ func (d *Daemon) watchProcess(out *io.PipeWriter) {
 }
 
 // writeDebug replaces the debug file in the state directory with info.
-func (d *Daemon) writeDebug(info string) {
+func (d *daemon) writeDebug(info string) {
 	path := filepath.Join(d.config.StateDir, "debug.log")
 	if err := os.WriteFile(path, []byte(info), 0o600); err != nil {
 		logger.Warnf("Failed to write debug file: %v", err)
@@ -388,7 +388,7 @@ func (d *Daemon) writeDebug(info string) {
 }
 
 // setUp brings the node up and configures its serve endpoints and service.
-func (d *Daemon) setUp() error {
+func (d *daemon) setUp() error {
 	if err := d.bringUp(); err != nil {
 		return fmt.Errorf("failed to bring up tailscale: %w", err)
 	}
@@ -397,7 +397,7 @@ func (d *Daemon) setUp() error {
 
 // configureServing configures direct serve and the Service backend, as the
 // container asks, once the node has logged in.
-func (d *Daemon) configureServing() error {
+func (d *daemon) configureServing() error {
 	// Configure direct machine serve if enabled (HTTPS on machine hostname)
 	logger.Infof(
 		"Checking direct serve: Direct=%v Endpoints=%d",
@@ -431,7 +431,7 @@ func (d *Daemon) configureServing() error {
 }
 
 // handleLine notes what tslink acts on in a line of tailscaled's output.
-func (d *Daemon) handleLine(line string) {
+func (d *daemon) handleLine(line string) {
 	switch {
 	case strings.Contains(line, nodeNotFoundLog):
 		d.nodeNotFound.Store(time.Now().Unix())
@@ -450,7 +450,7 @@ func (d *Daemon) handleLine(line string) {
 
 // servicesFetches returns how often control has fetched the node's Service
 // list, and a channel closed at the next fetch.
-func (d *Daemon) servicesFetches() (int64, <-chan struct{}) {
+func (d *daemon) servicesFetches() (int64, <-chan struct{}) {
 	d.fetchMu.Lock()
 	defer d.fetchMu.Unlock()
 	if d.fetched == nil {
@@ -467,7 +467,7 @@ const WireGuardPort = 41641
 
 // tailscaledArgs returns tailscaled's arguments. It uses a real tun device
 // (tailscale0), so containers use Tailscale networking directly.
-func (d *Daemon) tailscaledArgs() []string {
+func (d *daemon) tailscaledArgs() []string {
 	return []string{
 		"--state=" + filepath.Join(d.config.StateDir, "tailscaled.state"),
 		"--socket=" + d.socketPath,
@@ -502,7 +502,7 @@ func pretendpointEnv(eps []netip.AddrPort) []string {
 // own backup of it too: tailscaled replaces /etc/resolv.conf and then reads its
 // upstreams from the backup, which the endpoints would otherwise share. Without
 // the mounts, tailscaled keeps the plugin's files.
-func (d *Daemon) tailscaledCommand(args []string) *exec.Cmd {
+func (d *daemon) tailscaledCommand(args []string) *exec.Cmd {
 	host, err := os.ReadFile(hostResolvConfPath)
 	if err != nil {
 		logger.Warnf("Failed to read %s: %v", hostResolvConfPath, err)
@@ -597,7 +597,7 @@ netns=$2; shift 3; exec nsenter --net="$netns" -- "$@"`,
 }
 
 // waitForSocket waits for the tailscaled socket to be ready.
-func (d *Daemon) waitForSocket() error {
+func (d *daemon) waitForSocket() error {
 	logger.Debugf("Waiting for tailscaled socket at %s", d.socketPath)
 
 	ctx, cancel := context.WithTimeout(d.ctx, 10*time.Second)
@@ -623,7 +623,7 @@ func (d *Daemon) waitForSocket() error {
 
 // exitedChan returns the channel closed once tailscaled exits, or nil if it
 // was not started.
-func (d *Daemon) exitedChan() <-chan struct{} {
+func (d *daemon) exitedChan() <-chan struct{} {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	return d.exited
@@ -633,7 +633,7 @@ func (d *Daemon) exitedChan() <-chan struct{} {
 // stopGrace later. It waits for it to exit and removes its socket. It does not
 // take the node down first: that would persist WantRunning=false in a
 // persistent node's state.
-func (d *Daemon) killProcess(cmd *exec.Cmd) {
+func (d *daemon) killProcess(cmd *exec.Cmd) {
 	if err := killError(cmd.Process.Signal(syscall.SIGTERM)); err != nil {
 		logger.Warnf("Failed to stop tailscaled: %v", err)
 	}

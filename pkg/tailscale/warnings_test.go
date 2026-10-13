@@ -48,7 +48,7 @@ func (r *recordedWarnings) get(key string) string {
 
 // newWarningDaemon returns a test daemon recording its warnings, with the
 // node's log limiter reset.
-func newWarningDaemon(t *testing.T) (*Daemon, *recordedWarnings) {
+func newWarningDaemon(t *testing.T) (*daemon, *recordedWarnings) {
 	t.Helper()
 	old := nodeWarnings
 	nodeWarnings = &warnLimiter{}

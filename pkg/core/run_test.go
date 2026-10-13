@@ -117,10 +117,10 @@ func TestRunTailscaleRefusesAfterStop(t *testing.T) {
 }
 
 // Leave while a start is in flight, after it claimed and marked its state
-// directory: the start goes on, recreates the directory as NewDaemon does and
-// may have registered the node before it fails. Once it returns, the run
-// logs the ephemeral node out and removes its state; until then, the
-// directory stays claimed.
+// directory: the start goes on, recreates the directory as the tailscale
+// package's newDaemon does and may have registered the node before it fails.
+// Once it returns, the run logs the ephemeral node out and removes its
+// state; until then, the directory stays claimed.
 func TestRunTailscaleCleansUpStartCancelledByLeave(t *testing.T) {
 	shortRetries(t)
 	loggedOut := stubLogout(t, nil)

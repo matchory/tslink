@@ -82,7 +82,7 @@ func execCLI(ctx context.Context, bin string, c cliCall) (cliOutput, error) {
 }
 
 // runTailscale runs the tailscale CLI.
-func (d *Daemon) runTailscale(ctx context.Context, c cliCall) (cliOutput, error) {
+func (d *daemon) runTailscale(ctx context.Context, c cliCall) (cliOutput, error) {
 	if d.runCLI != nil {
 		return d.runCLI(ctx, c)
 	}
@@ -91,7 +91,7 @@ func (d *Daemon) runTailscale(ctx context.Context, c cliCall) (cliOutput, error)
 
 // tailscale runs the tailscale CLI with args, logging its output under prefix,
 // and returns its standard output followed by its standard error.
-func (d *Daemon) tailscale(ctx context.Context, prefix string, args ...string) (string, error) {
+func (d *daemon) tailscale(ctx context.Context, prefix string, args ...string) (string, error) {
 	out, err := d.runTailscale(ctx, cliCall{prefix: prefix, args: args})
 	return out.combined(), err
 }

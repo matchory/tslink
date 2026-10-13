@@ -53,7 +53,7 @@ func TestKillProcessKeepsPrefs(t *testing.T) {
 // tailscaled listens on a fixed WireGuard port: the host lets only that port
 // through between tslink's veths, so colocated nodes keep a direct path.
 func TestTailscaledArgsFixedPort(t *testing.T) {
-	d := &Daemon{config: DaemonConfig{StateDir: "/s"}, socketPath: "/sock"}
+	d := &daemon{config: DaemonConfig{StateDir: "/s"}, socketPath: "/sock"}
 	args := d.tailscaledArgs()
 	want := "--port=" + strconv.Itoa(WireGuardPort)
 	if !slices.Contains(args, want) {
@@ -80,7 +80,7 @@ func TestPretendpointEnv(t *testing.T) {
 
 func TestNewDaemonRecordsHostEndpoints(t *testing.T) {
 	want := []netip.AddrPort{netip.MustParseAddrPort("10.10.0.2:61367")}
-	d, err := NewDaemon(DaemonConfig{
+	d, err := newDaemon(DaemonConfig{
 		EndpointID:    "0123456789abcdef",
 		StateDir:      t.TempDir(),
 		HostEndpoints: func() ([]netip.AddrPort, error) { return want, nil },
@@ -92,7 +92,7 @@ func TestNewDaemonRecordsHostEndpoints(t *testing.T) {
 		t.Errorf("HostEndpoints = %v, want %v", got, want)
 	}
 
-	d2, err := NewDaemon(DaemonConfig{
+	d2, err := newDaemon(DaemonConfig{
 		EndpointID:    "0123456789abcdef",
 		StateDir:      t.TempDir(),
 		HostEndpoints: func() ([]netip.AddrPort, error) { return nil, errors.New("iptables") },

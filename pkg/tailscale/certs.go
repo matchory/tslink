@@ -221,7 +221,7 @@ func (l *certLease) release() {
 // The holder asks unadvertised. Should control keep refusing the name for
 // certDomainGrace, the holder advertises the Service, in case control makes it
 // a certificate domain only of hosts that advertise it.
-func (d *Daemon) requestCert(dir, domain string) error {
+func (d *daemon) requestCert(dir, domain string) error {
 	var lastErr string
 	start, advertised := time.Now(), false
 	tm := d.config.times()
@@ -265,7 +265,7 @@ func (d *Daemon) requestCert(dir, domain string) error {
 // serves no HTTPS or its certificate exists, and otherwise in the background
 // once it does or this replica holds the lease to issue it: waiting here would
 // hold up the daemon's start. A drained backend is left alone.
-func (d *Daemon) configureServiceWhenCertified() error {
+func (d *daemon) configureServiceWhenCertified() error {
 	if d.isDrained() {
 		logger.Infof("Not configuring %s for %s: drained", d.config.Service, d.config.EndpointID)
 		return nil
@@ -307,7 +307,7 @@ func ignoreDrained(err error) error {
 	return err
 }
 
-func (d *Daemon) configureServiceAfterCert(dir, domain string) {
+func (d *daemon) configureServiceAfterCert(dir, domain string) {
 	poll(d.ctx, d.config.times().certPollInterval, func() bool {
 		err := d.configureServiceWithCert(dir, domain)
 		if errors.Is(err, errDrained) {
@@ -329,7 +329,7 @@ func (d *Daemon) configureServiceAfterCert(dir, domain string) {
 // or if this replica takes the lease to issue it. It returns errLeaseHeld if
 // another replica holds the lease, and errDrained once the backend is drained.
 // No replica is advertised before the certificate exists.
-func (d *Daemon) configureServiceWithCert(dir, domain string) error {
+func (d *daemon) configureServiceWithCert(dir, domain string) error {
 	if d.isDrained() {
 		return errDrained
 	}
@@ -382,12 +382,12 @@ func servesWeb(endpoints []ServeEndpoint) bool {
 
 // serviceDomainIn returns the domain of the endpoint's Service in the tailnet
 // with the MagicDNS suffix suffix.
-func (d *Daemon) serviceDomainIn(suffix string) string {
+func (d *daemon) serviceDomainIn(suffix string) string {
 	return tailcfg.ServiceName(d.config.Service).WithoutPrefix() + "." + suffix
 }
 
 // serviceDomain returns the Service's DNS name, which its certificate is for.
-func (d *Daemon) serviceDomain() (string, error) {
+func (d *daemon) serviceDomain() (string, error) {
 	ctx, cancel := context.WithTimeout(d.ctx, 10*time.Second)
 	defer cancel()
 	st, err := d.lc.StatusWithoutPeers(ctx)

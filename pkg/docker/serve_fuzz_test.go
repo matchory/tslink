@@ -1,6 +1,7 @@
 package docker
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -19,7 +20,7 @@ func FuzzParseServeValue(f *testing.F) {
 		f.Add("443", v)
 	}
 	f.Fuzz(func(t *testing.T, port, value string) {
-		ep := parseServeValue(port, value)
+		ep := parseServeValue("web", port, value)
 		if ep == nil {
 			return
 		}
@@ -33,6 +34,8 @@ func FuzzParseServeValue(f *testing.F) {
 		switch {
 		case ep.Port != port:
 			t.Fatalf("parseServeValue(%q, %q): port %q", port, value, ep.Port)
+		case !validPort(ep.Port):
+			t.Fatalf("parseServeValue(%q, %q): accepted port %q", port, value, ep.Port)
 		case ep.Path != "" && !strings.HasPrefix(ep.Path, "/"):
 			t.Fatalf("parseServeValue(%q, %q): path %q", port, value, ep.Path)
 		case ep.ProxyProtocol != "" && (!l4 || (ep.ProxyProtocol != "1" && ep.ProxyProtocol != "2")):
@@ -41,4 +44,10 @@ func FuzzParseServeValue(f *testing.F) {
 			t.Fatalf("parseServeValue(%q, %q): accept-app-caps %q", port, value, ep.AcceptAppCaps)
 		}
 	})
+}
+
+// validPort reports whether port is a TCP or UDP port number.
+func validPort(port string) bool {
+	n, err := strconv.ParseUint(port, 10, 16)
+	return err == nil && n > 0
 }

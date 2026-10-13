@@ -105,7 +105,7 @@ func TestParseServeValueProxyProtocol(t *testing.T) {
 		{"80", "http:80?proxy-protocol=2", nil}, // TCP forwarding only
 	}
 	for _, tt := range tests {
-		got := parseServeValue(tt.port, tt.value)
+		got := parseServeValue("web", tt.port, tt.value)
 		if (got == nil) != (tt.want == nil) || (got != nil && *got != *tt.want) {
 			t.Errorf("parseServeValue(%q, %q) = %+v, want %+v", tt.port, tt.value, got, tt.want)
 		}
@@ -145,7 +145,7 @@ func TestParseServeValueAcceptAppCaps(t *testing.T) {
 		{"5432", "tcp:5432?proxy-protocol=2&accept-app-caps=example.com/cap/a", nil},
 	}
 	for _, tt := range tests {
-		got := parseServeValue(tt.port, tt.value)
+		got := parseServeValue("web", tt.port, tt.value)
 		if (got == nil) != (tt.want == nil) || (got != nil && *got != *tt.want) {
 			t.Errorf("parseServeValue(%q, %q) = %+v, want %+v", tt.port, tt.value, got, tt.want)
 		}
@@ -192,21 +192,26 @@ func TestParseContainerInfoHealth(t *testing.T) {
 }
 
 // Serve endpoints come in the order of their ports, whatever the order of
-// the labels.
+// the labels, and two labels of one port in the order of the labels. A label
+// whose port is not one is ignored.
 func TestParseServeEndpointsInPortOrder(t *testing.T) {
 	labels := map[string]string{
-		"tslink.serve.8443": "https:8443",
-		"tslink.serve.443":  "https:8080",
-		"tslink.serve.80":   "http:8080",
-		"tslink.serve.5432": "tcp",
-		"tslink.serve.22":   "tcp",
+		"tslink.serve.0443":  "https:9090",
+		"tslink.serve.https": "http:80",
+		"tslink.serve.0":     "tcp",
+		"tslink.serve.70000": "tcp",
+		"tslink.serve.8443":  "https:8443",
+		"tslink.serve.443":   "https:8080",
+		"tslink.serve.80":    "http:8080",
+		"tslink.serve.5432":  "tcp",
+		"tslink.serve.22":    "tcp",
 	}
 	for range 10 {
 		var got []string
-		for _, ep := range parseServeEndpoints(labels) {
+		for _, ep := range parseServeEndpoints("web", labels) {
 			got = append(got, ep.Port)
 		}
-		if want := []string{"22", "80", "443", "5432", "8443"}; !slices.Equal(got, want) {
+		if want := []string{"22", "80", "0443", "443", "5432", "8443"}; !slices.Equal(got, want) {
 			t.Fatalf("ports %v, want %v", got, want)
 		}
 	}

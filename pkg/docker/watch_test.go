@@ -114,8 +114,9 @@ func TestEventsIgnored(t *testing.T) {
 }
 
 // A kill event with the stop signal of a container on a tslink network
-// reports that it is stopping, so its Service backends drain; other signals,
-// such as SIGHUP, do not, nor kills of containers on no tslink network.
+// reports that it is stopping, so its Service backends drain, also when the
+// container is gone by then, as after docker rm -f; other signals, such as
+// SIGHUP, do not, nor kills of containers on no tslink network.
 func TestKillEvents(t *testing.T) {
 	s := newEventSetup(t, true)
 	fake := s.td.fake
@@ -129,6 +130,9 @@ func TestKillEvents(t *testing.T) {
 		fake.send(t, connectEvent(s.netID, "billing_net", id))
 		receive(t, s.handled, "a connect event")
 	}
+	// Connected, and removed from Docker since
+	gone := fakeID("gone")
+	s.td.cache.Store(fakeID("gone-ep"), &core.ContainerInfo{ID: gone, Hostname: "gone"})
 
 	tests := []struct {
 		container, signal string
@@ -139,6 +143,7 @@ func TestKillEvents(t *testing.T) {
 		{s.containerID, "9", true},  // stop timeout
 		{quitter, "15", false},      // not its stop signal
 		{quitter, "3", true},        // SIGQUIT
+		{gone, "9", true},           // removed: stops all the same
 		{other, "15", false},        // on no tslink network
 	}
 	var want []string
@@ -234,10 +239,10 @@ func parseSince(t *testing.T, since string) time.Time {
 	return time.Unix(s, ns)
 }
 
-// A kill event inspects a container on a tslink network once, for its stop
-// signal and its networks both, and other containers not at all: kill events
-// of every container on the host pass through the event loop.
-func TestKillEventInspects(t *testing.T) {
+// A kill event inspects no container: the stop signal and endpoints of one on
+// a tslink network come from its connect event. Kill events of every
+// container on the host pass through the event loop.
+func TestKillEventsInspectNothing(t *testing.T) {
 	s := newEventSetup(t, true)
 	fake := s.td.fake
 	other := fake.addContainer("other", nil)
@@ -251,8 +256,8 @@ func TestKillEventInspects(t *testing.T) {
 	if id := receive(t, s.stopped, "the stop"); id != s.containerID {
 		t.Errorf("stop reported for %s, want %s", id[:12], s.containerID[:12])
 	}
-	if n := fake.inspects(s.containerID) - before; n != 1 {
-		t.Errorf("tslink container inspected %d times for its kill, want once", n)
+	if n := fake.inspects(s.containerID) - before; n != 0 {
+		t.Errorf("tslink container inspected %d times for its kill, want never", n)
 	}
 	if n := fake.inspects(other); n != 0 {
 		t.Errorf("other container inspected %d times, want never", n)
@@ -280,8 +285,6 @@ func TestEventHandlersTimeOut(t *testing.T) {
 	fake.hangList = true
 	fake.mu.Unlock()
 
-	s.td.cache.Store(fakeID("ep3"), &core.ContainerInfo{ID: hung, Hostname: "hung"})
-	fake.send(t, killEvent(hung, "15"))
 	fake.send(t, connectEvent(s.netID, "billing_net", hung))
 	fake.send(t, connectEvent(hungNet, "hung_net", onHungNet))
 	fake.send(t, createEvent(fakeID("bridge"), "new_bridge", "bridge"))

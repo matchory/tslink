@@ -16,8 +16,6 @@ import (
 	"time"
 
 	"github.com/docker/go-plugins-helpers/network"
-	"github.com/moby/moby/api/types/container"
-	dockernetwork "github.com/moby/moby/api/types/network"
 	dockerclient "github.com/moby/moby/client"
 
 	"github.com/matchory/tslink/pkg/core"
@@ -433,6 +431,8 @@ func TestRecoverEndpoints(t *testing.T) {
 		attachment{"billing_net", netID, epID}, attachment{"bridge", bridgeID, fakeID("bridge-ep")})
 	dns := netip.MustParseAddr("100.100.100.100")
 	fake.setDNS(fakeID("container/billing_api.1.abc"), dns)
+	fake.setIPAM(fakeID("container/billing_api.1.abc"), "billing_net",
+		netip.MustParseAddr("10.0.9.7"))
 	td := newTestDriver(t, fake)
 
 	if err := td.RecoverEndpoints(t.Context()); err != nil {
@@ -456,6 +456,10 @@ func TestRecoverEndpoints(t *testing.T) {
 	}
 	if ep.Network != net || ep.SandboxKey() != sandbox {
 		t.Errorf("endpoint network %p (want %p), sandbox %q", ep.Network, net, ep.SandboxKey())
+	}
+	// Recover puts it on the container's veth, as Join does
+	if ep.IPAMAddress != "10.0.9.7" {
+		t.Errorf("IPAM address %q, want Docker's 10.0.9.7", ep.IPAMAddress)
 	}
 	if want := filepath.Join(
 		td.config.DataDir,
@@ -957,13 +961,7 @@ func TestEndpointOpsUseDriverHooks(t *testing.T) {
 
 	joined := fakeID("joined")
 	td.join(t, netID, joined, sandbox)
-	td.onContainerStop("web", &container.InspectResponse{
-		NetworkSettings: &container.NetworkSettings{
-			Networks: map[string]*dockernetwork.EndpointSettings{
-				"net": {NetworkID: netID, EndpointID: joined},
-			},
-		},
-	})
+	td.onContainerStop("web", []string{joined})
 	td.wg.Wait()
 	if err := td.Shutdown(t.Context()); err != nil {
 		t.Fatal(err)

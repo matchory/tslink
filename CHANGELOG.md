@@ -9,18 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- A kill event of a container on no tslink network no longer costs a Docker
-  inspect: tslink inspects only containers whose connect event or recovery
-  it saw, to find whether the signal stops them.
+- A kill event costs no Docker inspect: the stop signal and endpoints of a
+  container on a tslink network come from its connect event or recovery,
+  and kills of other containers are ignored. Before, every kill on the host
+  cost one inspect.
 - `tslink.serve.<port>` endpoints are configured in the order of their
   ports, rather than in an order that changed from one start to the next.
-- A `tslink.serve.<port>` label with an unknown protocol is logged as a
-  warning, not only at debug level; the endpoint is still ignored.
+- A `tslink.serve.<port>` label whose port is not a port number, or whose
+  protocol is unknown, is ignored with a warning; an unknown protocol was
+  logged only at debug level, and a label like `tslink.serve.https` kept the
+  container's Tailscale Service from being advertised. Serve warnings name
+  the container.
 
 ### Fixed
 
-- `tslink.service` without a `tslink.serve.<port>` label fails before the
-  endpoint takes a state directory, instead of claiming one first.
+- A container removed right after its stop signal, as by `docker rm -f`, had
+  its Service backends drained only when it left the network: the inspect
+  that read its networks failed. They now drain on the stop signal.
+- A container that recovery adopted, as after a plugin restart or upgrade,
+  got no IPAM address on its veth if Join had not added it (versions before
+  0.2.3): recovery now reads it from Docker.
+- Starting Tailscale for a container with `tslink.service` and no
+  `tslink.serve.<port>` label fails before it takes a state directory.
 
 ## [0.2.4] - 2026-10-13
 

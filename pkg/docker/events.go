@@ -67,17 +67,20 @@ func (c *ContainerCache) GetByEndpoint(endpointID string) (*core.ContainerInfo, 
 	return info, ok
 }
 
-// HasContainer reports whether the cache holds the info of the container
-// with the given ID, for any endpoint.
-func (c *ContainerCache) HasContainer(containerID string) bool {
+// Container returns the endpoints the cache holds the container's info for,
+// and its stop signal.
+func (c *ContainerCache) Container(containerID string) ([]string, string) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	for _, info := range c.byEndpoint {
+	var endpointIDs []string
+	stopSignal := ""
+	for endpointID, info := range c.byEndpoint {
 		if info.ID == containerID {
-			return true
+			endpointIDs = append(endpointIDs, endpointID)
+			stopSignal = info.StopSignal
 		}
 	}
-	return false
+	return endpointIDs, stopSignal
 }
 
 // Delete removes container info by endpoint ID.
@@ -91,10 +94,10 @@ func (c *ContainerCache) Delete(endpointID string) {
 // The driver uses this to trigger Tailscale setup.
 type ContainerInfoCallback func(endpointID string, info *core.ContainerInfo)
 
-// ContainerStopCallback is called when Docker sends a container its stop
-// signal, before the container exits, with the container as inspected for
-// the signal, nil if inspect failed.
-type ContainerStopCallback func(containerID string, inspected *container.InspectResponse)
+// ContainerStopCallback is called when Docker sends a container on this
+// driver's networks its stop signal, before the container exits, with the
+// container's endpoints on them.
+type ContainerStopCallback func(containerID string, endpointIDs []string)
 
 // WatchEvents watches Docker events and caches container info.
 // When container info is stored, the callback is invoked to trigger Tailscale setup.
@@ -164,7 +167,7 @@ func WatchEvents(
 				msg.Action, msg.Actor.ID, msg.Actor.Attributes["type"])
 
 			if msg.Type == events.ContainerEventType {
-				handleContainerEvent(ctx, cli, msg, cache, onStop)
+				handleContainerEvent(msg, cache, onStop)
 				continue
 			}
 			handleNetworkEvent(ctx, cli, msg, cache, ownsNetwork, onInfo, onBridgeNetwork)
@@ -172,27 +175,19 @@ func WatchEvents(
 	}
 }
 
-// handleContainerEvent passes containers sent their stop signal to onStop.
-// Only containers on this driver's networks, as their connect events or
-// recovery cached them: kill events of every container on the host pass
-// through here, and each would cost an inspect.
-func handleContainerEvent(
-	ctx context.Context,
-	cli dockerAPI,
-	msg events.Message,
-	cache *ContainerCache,
-	onStop ContainerStopCallback,
-) {
-	if msg.Action != events.ActionKill || onStop == nil || !cache.HasContainer(msg.Actor.ID) {
+// handleContainerEvent passes containers on this driver's networks sent their
+// stop signal to onStop. Their endpoints and stop signal come from the cache,
+// as their connect events or recovery stored them, so a kill costs no Docker
+// call: kill events of every container on the host pass through here, and a
+// container removed right after its kill, as by docker rm -f, could no longer
+// be inspected.
+func handleContainerEvent(msg events.Message, cache *ContainerCache, onStop ContainerStopCallback) {
+	if msg.Action != events.ActionKill || onStop == nil {
 		return
 	}
-	inspected := inspectKilled(ctx, cli, msg.Actor.ID)
-	stopSignal := ""
-	if inspected != nil && inspected.Config != nil {
-		stopSignal = inspected.Config.StopSignal
-	}
-	if isStopSignal(msg.Actor.Attributes["signal"], stopSignal) {
-		onStop(msg.Actor.ID, inspected)
+	endpointIDs, stopSignal := cache.Container(msg.Actor.ID)
+	if len(endpointIDs) > 0 && isStopSignal(msg.Actor.Attributes["signal"], stopSignal) {
+		onStop(msg.Actor.ID, endpointIDs)
 	}
 }
 
@@ -333,23 +328,6 @@ func eventsSince(t time.Time) string {
 	return fmt.Sprintf("%d.%09d", t.Unix(), t.Nanosecond())
 }
 
-// inspectKilled inspects a container Docker sent a signal, for its stop
-// signal and its networks. It returns nil if inspect failed.
-func inspectKilled(
-	ctx context.Context,
-	cli dockerAPI,
-	containerID string,
-) *container.InspectResponse {
-	ctx, cancel := context.WithTimeout(ctx, dockerCallTimeout)
-	defer cancel()
-	info, err := cli.ContainerInspect(ctx, containerID, dockerclient.ContainerInspectOptions{})
-	if err != nil {
-		logger.Debugf("Failed to inspect killed container %s: %v", containerID[:12], err)
-		return nil
-	}
-	return &info.Container
-}
-
 // isStopSignal reports whether a kill event's signal stops the container: its
 // stop signal (SIGTERM unless configured) or SIGKILL, which docker stop sends
 // when the timeout expires. Other signals, such as SIGHUP to reload, leave the
@@ -389,6 +367,9 @@ func inspectedContainerInfo(
 	}
 	info := parseContainerInfo(strings.TrimPrefix(c.Name, "/"), labels)
 	info.ID = c.ID
+	if c.Config != nil {
+		info.StopSignal = c.Config.StopSignal
+	}
 	if c.HostConfig != nil {
 		info.DNS = c.HostConfig.DNS
 	}
@@ -442,7 +423,7 @@ func parseContainerInfo(name string, labels map[string]string) *core.ContainerIn
 	}
 
 	// Parse serve endpoints from tslink.serve.<port> labels
-	info.Endpoints = parseServeEndpoints(labels)
+	info.Endpoints = parseServeEndpoints(name, labels)
 
 	return info
 }
@@ -472,7 +453,10 @@ func hostnameFromName(name string) string {
 //   - tslink.serve.443=https:8080       → HTTPS on 443 → localhost:8080
 //   - tslink.serve.80=http:3000/api     → HTTP on 80 → localhost:3000 at /api
 //   - tslink.serve.5432=tcp             → TCP on 5432 → localhost:5432 (same port)
-func parseServeEndpoints(labels map[string]string) []tailscale.ServeEndpoint {
+//
+// It logs the labels it ignores, with the name of the container they belong
+// to.
+func parseServeEndpoints(containerName string, labels map[string]string) []tailscale.ServeEndpoint {
 	var endpoints []tailscale.ServeEndpoint
 
 	for key, value := range labels {
@@ -486,26 +470,18 @@ func parseServeEndpoints(labels map[string]string) []tailscale.ServeEndpoint {
 			continue
 		}
 
-		endpoint := parseServeValue(externalPort, value)
+		endpoint := parseServeValue(containerName, externalPort, value)
 		if endpoint != nil {
 			endpoints = append(endpoints, *endpoint)
 		}
 	}
 
-	// In the order of their ports, as labels come as a map; ports that are
-	// not numbers last
+	// In the order of their ports, as labels come as a map. Ports are
+	// numbers (parseServeValue); "0443" and "443" go by their labels.
 	slices.SortFunc(endpoints, func(a, b tailscale.ServeEndpoint) int {
-		pa, errA := strconv.Atoi(a.Port)
-		pb, errB := strconv.Atoi(b.Port)
-		switch {
-		case errA == nil && errB == nil:
-			return cmp.Compare(pa, pb)
-		case errA == nil:
-			return -1
-		case errB == nil:
-			return 1
-		}
-		return strings.Compare(a.Port, b.Port)
+		pa, _ := strconv.Atoi(a.Port)
+		pb, _ := strconv.Atoi(b.Port)
+		return cmp.Or(cmp.Compare(pa, pb), strings.Compare(a.Port, b.Port))
 	})
 	return endpoints
 }
@@ -523,8 +499,16 @@ func parseServeEndpoints(labels map[string]string) []tailscale.ServeEndpoint {
 //   - "http:3000/api"   → proto=http, target=3000, path=/api
 //   - "tcp"             → proto=tcp, target=<same as external port>
 //   - "tcp:5432"        → proto=tcp, target=5432
-func parseServeValue(externalPort, value string) *tailscale.ServeEndpoint {
+func parseServeValue(containerName, externalPort, value string) *tailscale.ServeEndpoint {
 	if value == "" {
+		return nil
+	}
+	if port, err := strconv.ParseUint(externalPort, 10, 16); err != nil || port == 0 {
+		logger.Warnf(
+			"Container %s: tslink.serve.%s: ignoring endpoint: not a port",
+			containerName,
+			externalPort,
+		)
 		return nil
 	}
 
@@ -534,7 +518,7 @@ func parseServeValue(externalPort, value string) *tailscale.ServeEndpoint {
 	}
 
 	value, options, _ := strings.Cut(value, "?")
-	if options != "" && !parseServeOptions(endpoint, options) {
+	if options != "" && !parseServeOptions(containerName, endpoint, options) {
 		return nil
 	}
 
@@ -548,7 +532,8 @@ func parseServeValue(externalPort, value string) *tailscale.ServeEndpoint {
 		// Valid
 	default:
 		logger.Warnf(
-			"tslink.serve.%s: ignoring endpoint: unknown protocol %q",
+			"Container %s: tslink.serve.%s: ignoring endpoint: unknown protocol %q",
+			containerName,
 			externalPort,
 			endpoint.Proto,
 		)
@@ -567,21 +552,7 @@ func parseServeValue(externalPort, value string) *tailscale.ServeEndpoint {
 		}
 	}
 
-	if endpoint.ProxyProtocol != "" && endpoint.Proto != "tcp" &&
-		endpoint.Proto != "tls-terminated-tcp" {
-		logger.Warnf(
-			"tslink.serve.%s: ignoring endpoint: proxy-protocol needs tcp or tls-terminated-tcp, not %s",
-			externalPort,
-			endpoint.Proto,
-		)
-		return nil
-	}
-	if endpoint.AcceptAppCaps != "" && endpoint.Proto != "http" && endpoint.Proto != "https" {
-		logger.Warnf(
-			"tslink.serve.%s: ignoring endpoint: accept-app-caps needs http or https, not %s",
-			externalPort,
-			endpoint.Proto,
-		)
+	if !optionsFitProtocol(containerName, endpoint) {
 		return nil
 	}
 
@@ -593,9 +564,41 @@ func parseServeValue(externalPort, value string) *tailscale.ServeEndpoint {
 	return endpoint
 }
 
+// optionsFitProtocol reports whether the endpoint's options apply to its
+// protocol, and logs the one that does not.
+func optionsFitProtocol(containerName string, endpoint *tailscale.ServeEndpoint) bool {
+	l4 := endpoint.Proto == "tcp" || endpoint.Proto == "tls-terminated-tcp"
+	l7 := endpoint.Proto == "http" || endpoint.Proto == "https"
+	switch {
+	case endpoint.ProxyProtocol != "" && !l4:
+		logger.Warnf(
+			"Container %s: tslink.serve.%s: ignoring endpoint: "+
+				"proxy-protocol needs tcp or tls-terminated-tcp, not %s",
+			containerName,
+			endpoint.Port,
+			endpoint.Proto,
+		)
+		return false
+	case endpoint.AcceptAppCaps != "" && !l7:
+		logger.Warnf(
+			"Container %s: tslink.serve.%s: ignoring endpoint: "+
+				"accept-app-caps needs http or https, not %s",
+			containerName,
+			endpoint.Port,
+			endpoint.Proto,
+		)
+		return false
+	}
+	return true
+}
+
 // parseServeOptions sets the endpoint's options from the query after the
 // "?" of a tslink.serve value, and reports false if one is invalid.
-func parseServeOptions(endpoint *tailscale.ServeEndpoint, options string) bool {
+func parseServeOptions(
+	containerName string,
+	endpoint *tailscale.ServeEndpoint,
+	options string,
+) bool {
 	for opt := range strings.SplitSeq(options, "&") {
 		key, v, _ := strings.Cut(opt, "=")
 		switch {
@@ -604,8 +607,9 @@ func parseServeOptions(endpoint *tailscale.ServeEndpoint, options string) bool {
 		case key == "accept-app-caps" && validAppCaps(v):
 			endpoint.AcceptAppCaps = v
 		default:
-			logger.Warnf("tslink.serve.%s: ignoring endpoint with invalid option %q "+
-				"(want proxy-protocol=1|2 or accept-app-caps=<domain>/<name>[,...])", endpoint.Port, opt)
+			logger.Warnf("Container %s: tslink.serve.%s: ignoring endpoint with invalid option %q "+
+				"(want proxy-protocol=1|2 or accept-app-caps=<domain>/<name>[,...])",
+				containerName, endpoint.Port, opt)
 			return false
 		}
 	}

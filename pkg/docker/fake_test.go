@@ -267,6 +267,17 @@ func (f *fakeDocker) addContainer(
 	return id
 }
 
+// setIPAM sets the address Docker's IPAM gave the container on netName.
+func (f *fakeDocker) setIPAM(containerID, netName string, addr netip.Addr) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range f.containers {
+		if f.containers[i].ID == containerID {
+			f.containers[i].NetworkSettings.Networks[netName].IPAddress = addr
+		}
+	}
+}
+
 // setDNS sets the DNS servers the container was given.
 func (f *fakeDocker) setDNS(containerID string, dns ...netip.Addr) {
 	f.mu.Lock()
@@ -359,8 +370,8 @@ func (td *testDriver) watch(handled chan<- string, stopped chan<- string) {
 					handled <- endpointID
 				}
 			},
-			func(containerID string, inspected *container.InspectResponse) {
-				td.onContainerStop(containerID, inspected)
+			func(containerID string, endpointIDs []string) {
+				td.onContainerStop(containerID, endpointIDs)
 				if stopped != nil {
 					stopped <- containerID
 				}

@@ -73,14 +73,15 @@ func (e permanentError) Unwrap() error { return e.error }
 
 // ContainerInfo holds information extracted from Docker container inspection.
 type ContainerInfo struct {
-	ID        string                    // Container ID
-	Name      string                    // Container name (without leading /)
-	Labels    map[string]string         // All container labels
-	Hostname  string                    // Parsed tslink.hostname label or container name
-	Tags      []string                  // Parsed tslink.tags label (comma-separated)
-	Service   string                    // Parsed tslink.service label (e.g., "svc:hello-world")
-	Endpoints []tailscale.ServeEndpoint // Parsed tslink.serve.<port> labels
-	Direct    bool                      // tslink.direct; defaults to true without a Service
+	ID         string                    // Container ID
+	StopSignal string                    // Signal docker stop sends; "" for SIGTERM
+	Name       string                    // Container name (without leading /)
+	Labels     map[string]string         // All container labels
+	Hostname   string                    // Parsed tslink.hostname label or container name
+	Tags       []string                  // Parsed tslink.tags label (comma-separated)
+	Service    string                    // Parsed tslink.service label (e.g., "svc:hello-world")
+	Endpoints  []tailscale.ServeEndpoint // Parsed tslink.serve.<port> labels
+	Direct     bool                      // tslink.direct; defaults to true without a Service
 
 	Stack        string // Container's com.docker.stack.namespace label
 	NetworkStack string // Network's com.docker.stack.namespace label

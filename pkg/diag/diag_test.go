@@ -12,7 +12,7 @@ import (
 
 func TestRunFindsStateDirsAndSockets(t *testing.T) {
 	// The test's sockets never answer
-	statusTimeout = 200 * time.Millisecond
+	statusTimeout = 500 * time.Millisecond
 	t.Cleanup(func() { statusTimeout = 5 * time.Second })
 
 	// Short path: Unix socket paths are limited to about 100 bytes.
@@ -67,8 +67,13 @@ func TestRunFindsStateDirsAndSockets(t *testing.T) {
 	listen("bbbbbbbbbbbb")                             // running, no state dir links to it
 
 	var out bytes.Buffer
+	start := time.Now()
 	if err := Run(dataDir, &out); err != nil {
 		t.Fatal(err)
+	}
+	// The daemons are asked at once: two that never answer take one timeout
+	if elapsed := time.Since(start); elapsed >= 900*time.Millisecond {
+		t.Errorf("Run took %v, want less than two status timeouts", elapsed)
 	}
 	report := out.String()
 

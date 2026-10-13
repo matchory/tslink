@@ -50,6 +50,21 @@ To check the shared certificate directory, add `-v <shared directory>:/shared:ro
 
 To check more than one host, build the image once and copy it to each host with `docker save` and `docker load`.
 
+### Without an image
+
+On a host where the plugin is installed, the plugin's root file system contains the same binary. Run it as root on
+the host:
+
+```bash
+rootfs="$(docker info -f '{{.DockerRootDir}}')/plugins/$(docker plugin inspect -f '{{.Id}}' tslink)/rootfs"
+sudo env TS_DATA_DIR=/var/lib/docker-plugins/tailscale PATH="$rootfs/usr/local/bin:$PATH" \
+  "$rootfs/tslink" diag --preflight
+```
+
+`TS_DATA_DIR` points `diag` at the plugin's state directory, which is `/data` only inside the plugin. The check of
+Tailnet Lock (E9) runs the `tailscale` CLI, and the `PATH` gives it the plugin's own. Without it, on a host without
+`tailscale`, E9 is unknown. The same command without `--preflight` runs `diag`.
+
 ## scripts/tslink-diag.sh
 
 The script shows the same information from the host, without an image. Run it from a clone of the repository.

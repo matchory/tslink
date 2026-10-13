@@ -159,7 +159,7 @@ internal/
 └── secmodel/   # Checks that every guarantee in SECURITY.md is guarded
 test/
 └── security/   # lib.sh: security probes with control runs, used by test/integration/run.sh
-    ├── testbed/  # Scripts for a single-host Hetzner Cloud security testbed
+    ├── testbed/  # Scripts for a single-host security testbed (optional Hetzner Cloud provisioner)
     └── redteam/  # Standalone probe scripts for redteam.sh, moved here once their fix ships
 ```
 
@@ -252,8 +252,8 @@ return fmt.Errorf("failed to create endpoint: %w", err)
   each architecture is built on a native runner and pushed under its own tag.
 - Dependencies are updated by Dependabot (`.github/dependabot.yml`): Actions, Go modules and the Dockerfile base images.
 
-`test/cluster` builds a three-node Swarm on a cloud provider (the scripts currently target Hetzner Cloud) and runs
-`regress.sh` against a real tailnet; see `test/cluster/README.md`.
+`test/cluster` runs `regress.sh` against any Swarm of three or more nodes reached over SSH and a real tailnet
+(`provision.sh` can optionally build one on Hetzner Cloud); see `test/cluster/README.md`.
 
 ## Security Model Tests
 

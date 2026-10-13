@@ -87,8 +87,8 @@ The cluster tests need a Swarm and a tailnet that are set up for them. Thus they
 
 ## Security testbed
 
-[`test/security/testbed`](../test/security/testbed) provisions one Hetzner Cloud server for the end-to-end test and
-the red team. [`test/security/testbed/README.md`](../test/security/testbed/README.md) lists the prerequisites.
+The red team runs on a disposable Linux host reached over SSH. [`test/security/testbed/README.md`](../test/security/testbed/README.md)
+lists the prerequisites; its scripts can optionally provision such a host on Hetzner Cloud.
 
 [`test/security/redteam.sh`](../test/security/redteam.sh) does these steps:
 

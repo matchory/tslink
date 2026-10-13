@@ -39,10 +39,11 @@ the other tests: [docs/testing.md](../../docs/testing.md).
 | `TSLINK_TEST_SVC` | `svc:tslink-test` | Service prefix: `-callee`, `-other` |
 | `TSLINK_TEST_API` | `https://api.tailscale.com/api/v2` | Tailscale API |
 | `TSLINK_TEST_TAILNET` | `-` | tailnet; `-` is the API client's |
+| `TSLINK_TEST_MTU` | `1450` | MTU of the stacks' tslink networks (suits the Hetzner provisioner) |
 | `TSLINK_TEST_POWER` | `hetzner-power` | power actions for `disrupt` |
 | `MGR` | `mgr` | the manager that builds the plugin and runs stack and service commands |
 
-`deploy` passes `TSLINK_TEST_TAG` and `TSLINK_TEST_SVC` to `docker stack deploy`, and the stacks
+`deploy` passes `TSLINK_TEST_TAG`, `TSLINK_TEST_SVC` and `TSLINK_TEST_MTU` to `docker stack deploy`, and the stacks
 default to the values above. It also passes two settings of single stacks:
 
 - `TSLINK_TEST_PIN`: the node hostname the stack pins a task to: `perf` in `callee` and

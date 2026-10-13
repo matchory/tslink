@@ -84,7 +84,7 @@ Example output after plugin restart:
 ```
 level=INFO msg="RecoverEndpoints: found orphaned endpoint 77a4ecf2b6a3 for container d6636f344239"
 level=INFO msg="RecoverEndpoints: recovered 2 orphaned endpoint(s)"
-level=INFO msg="Endpoint 77a4ecf2b6a3 got Tailscale IP: 100.119.179.75 (hostname=test-client)"
+level=INFO msg="Endpoint 77a4ecf2b6a3 got Tailscale IP: 100.64.0.10 (hostname=test-client)"
 ```
 
 ## Security Considerations

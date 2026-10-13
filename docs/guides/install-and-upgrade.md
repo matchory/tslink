@@ -82,7 +82,7 @@ docker run --rm --privileged -v /var/lib:/var/lib alpine mkdir -p /var/lib/docke
 
    > [!NOTE]
    > The cluster tests measured a reinstall of the plugin, not this sequence of commands. Before you upgrade
-   > production hosts, run `test/cluster/regress.sh` against the new version.
+   > production hosts, upgrade a host that serves nothing important, and check that its containers keep their nodes.
 
 3. On a Swarm, make the node active again:
 

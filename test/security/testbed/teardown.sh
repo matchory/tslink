@@ -1,6 +1,7 @@
 #!/bin/bash
-# teardown.sh: delete the security testbed's server, firewall and SSH key (if
-# provision.sh created it), and its SSH config.
+# teardown.sh -- Hetzner Cloud provisioner (optional): delete the security
+# testbed's server, firewall and SSH key (if provision.sh created it), and its
+# SSH config.
 set -uo pipefail
 : "${TSLINK_TEST_DIR:=$HOME/.tslink-test}"
 : "${TSLINK_SEC_DIR:=$TSLINK_TEST_DIR/security}"

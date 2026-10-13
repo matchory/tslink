@@ -31,7 +31,7 @@ jobs:
         uses: super-linter/super-linter/slim@2da136927bd4a73596db63044b504547c62cb854 # v9.0.0
         env:
           DEFAULT_BRANCH: main
-          FILTER_REGEX_EXCLUDE: (specs|docs/superpowers)/.*
+          FILTER_REGEX_EXCLUDE: specs/.*
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VALIDATE_ALL_CODEBASE: true
           # Go is linted in ci.yml instead, with the golangci-lint version

@@ -43,6 +43,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to time out, up to 30 s.
 - A node logged in again after control deleted it started a second
   certificate watcher for its Service.
+- Two containers whose endpoint IDs share their first 8 characters get the
+  same veth name, and the second container's join deleted the first
+  container's veth, cutting it off. The second join now fails with an error
+  naming the collision; only a leftover veth without an address is replaced.
+- A veth pair that could not be brought up stayed behind on the host.
 - An address the kernel refused on the container's veth was ignored, and the
   container joined without it. The join now fails with the error.
 - A thread that could not switch back from a container's network namespace

@@ -42,7 +42,9 @@ container restarts with the same name, it keeps its Tailscale identity and IP.
 **Veth IP allocation**: Each container gets a /30 subnet from 10.200.0.0/16: the one its endpoint ID hashes to, or
 the first one after it that no host interface uses, chosen and assigned under one lock. Recovery reads the address back
 from the host veth. The address Docker's IPAM assigns the endpoint, which Docker lists in the container's `/etc/hosts`,
-goes on the container's veth as a /32, so a process resolving its own name reaches itself; a /32 adds no route.
+goes on the container's veth as a /32, so a process resolving its own name reaches itself; a /32 adds no route. The
+veth is named after the first 8 characters of the endpoint ID: `CreateVethPair` replaces a link of that name without
+an address in the veth range (a failed Join's leftover) but refuses one with an address, another endpoint's.
 
 **Container side**: `netutil.SetupContainerSide` configures the container's end of the veth, for Join and again for
 recovery: link up, its /30 address, the bypass route and rule, the IPAM /32 (a failure only logged) and the tailnet

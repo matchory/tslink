@@ -21,8 +21,14 @@ import (
 // DefaultMTU is the veth MTU when the network sets none.
 const DefaultMTU = 1500
 
+// Seam for tests: bringing up a new veth.
+var linkSetUp = netlink.LinkSetUp
+
 // CreateVethPair creates a veth pair with the given base name and MTU (0 for
-// DefaultMTU). Returns the host-side name and container-side name.
+// DefaultMTU). Returns the host-side name and container-side name. A link
+// with the host-side name and no address in tslink's veth range is a leftover
+// and replaced; one with such an address belongs to a live endpoint, and
+// CreateVethPair fails rather than delete it.
 func CreateVethPair(baseName string, mtu int) (string, string, error) {
 	if mtu == 0 {
 		mtu = DefaultMTU
@@ -30,11 +36,8 @@ func CreateVethPair(baseName string, mtu int) (string, string, error) {
 	hostName := "veth" + baseName
 	containerName := "veth" + baseName + "c"
 
-	// Delete existing interfaces if they exist
-	if link, err := netlink.LinkByName(hostName); err == nil {
-		if err := netlink.LinkDel(link); err != nil {
-			logger.Warnf("failed to delete existing veth %s: %v", hostName, err)
-		}
+	if err := removeLeftoverVeth(hostName); err != nil {
+		return "", "", err
 	}
 
 	veth := &netlink.Veth{
@@ -42,23 +45,51 @@ func CreateVethPair(baseName string, mtu int) (string, string, error) {
 		MTU:      mtu,
 		PeerName: containerName,
 	}
-
 	if err := netlink.LinkAdd(veth); err != nil {
 		return "", "", fmt.Errorf("failed to create veth pair: %w", err)
 	}
-
-	link, err := netlink.LinkByName(hostName)
-	if err != nil {
-		return "", "", fmt.Errorf("failed to get host veth: %w", err)
-	}
-
-	if err := netlink.LinkSetUp(link); err != nil {
+	if err := linkSetUp(veth); err != nil {
+		if delErr := DeleteVeth(hostName); delErr != nil {
+			logger.Warnf("failed to delete veth %s after error: %v", hostName, delErr)
+		}
 		return "", "", fmt.Errorf("failed to bring up host veth: %w", err)
 	}
 
 	logger.Debugf("Created veth pair: %s <-> %s", hostName, containerName)
 
 	return hostName, containerName, nil
+}
+
+// removeLeftoverVeth deletes the link name unless it has an address in
+// tslink's veth range: Join assigns one before it returns, so a link without
+// one is left over from a Join that failed.
+func removeLeftoverVeth(name string) error {
+	link, err := netlink.LinkByName(name)
+	if _, ok := errors.AsType[netlink.LinkNotFoundError](
+		err,
+	); ok ||
+		errors.Is(err, syscall.ENODEV) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("failed to get %s: %w", name, err)
+	}
+	addrs, err := netlink.AddrList(link, syscall.AF_INET)
+	if err != nil {
+		return fmt.Errorf("failed to list addresses of %s: %w", name, err)
+	}
+	for _, a := range addrs {
+		if ip, ok := netip.AddrFromSlice(a.IP.To4()); ok && vethRange.Contains(ip) {
+			return fmt.Errorf(
+				"veth %s exists with %s: another endpoint's ID starts with the same 8 characters",
+				name, ip,
+			)
+		}
+	}
+	if err := netlink.LinkDel(link); err != nil {
+		return fmt.Errorf("failed to delete leftover veth %s: %w", name, err)
+	}
+	return nil
 }
 
 // MoveToNetNS moves a network interface to the specified network namespace.

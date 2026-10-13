@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-10-13
+
 ### Fixed
 
 - A container could not reach its own name: Docker lists the address it
@@ -20,6 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `tslink diag --preflight` also checks the other containers of a stack that
   uses a tslink network for privileges and protected mounts (E1, E2): the
   stack's author chose them too, and a privileged one gets root on the host.
+- G5 (OAuth client secrets do not leak) is guarded by tests instead of a
+  manual check.
 
 ## [0.2.2] - 2026-10-12
 
@@ -393,7 +397,8 @@ features were tested on three- and five-node swarms; see
   index its `tailscale0` has in the container: often the host's primary
   interface. tailscaled does not start if the bus cannot be hidden.
 
-[Unreleased]: https://github.com/matchory/tslink/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/matchory/tslink/compare/v0.2.3...HEAD
+[0.2.3]: https://github.com/matchory/tslink/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/matchory/tslink/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/matchory/tslink/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/matchory/tslink/compare/v0.1.0...v0.2.0

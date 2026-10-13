@@ -9,10 +9,10 @@ import (
 )
 
 func TestParseNetworkOptionsTags(t *testing.T) {
-	opts := ParseNetworkOptions(map[string]any{
+	opts := mustParseNetworkOptions(t, map[string]any{
 		GenericOptionsKey: map[string]any{
-			"tslink.authkey": "tskey-client-x",
-			"tslink.tags":    " tag:svc-billing, tag:prod ,",
+			AuthKeyOption: "tskey-client-x",
+			TagsOption:    " tag:svc-billing, tag:prod ,",
 		},
 	})
 	if opts.AuthKey != "tskey-client-x" {
@@ -24,7 +24,8 @@ func TestParseNetworkOptionsTags(t *testing.T) {
 }
 
 func TestParseNetworkOptionsEphemeral(t *testing.T) {
-	opts := ParseNetworkOptions(
+	opts := mustParseNetworkOptions(
+		t,
 		map[string]any{GenericOptionsKey: map[string]any{EphemeralOption: "true"}},
 	)
 	if opts.Ephemeral != "true" {
@@ -38,14 +39,15 @@ func TestParseTagsEmpty(t *testing.T) {
 	}
 }
 
+// An MTU out of range or not a number fails the network.
 func TestParseNetworkOptionsMTU(t *testing.T) {
-	tests := map[string]int{"1450": 1450, "": 0, "abc": 0, "100": 0, "70000": 0}
+	tests := map[string]int{"1450": 1450, "576": 576, "": 0, "abc": 0, "100": 0, "70000": 0}
 	for in, want := range tests {
-		opts := ParseNetworkOptions(
+		opts, err := ParseNetworkOptions(
 			map[string]any{GenericOptionsKey: map[string]any{MTUOption: in}},
 		)
-		if opts.MTU != want {
-			t.Errorf("MTU %q parsed as %d, want %d", in, opts.MTU, want)
+		if opts.MTU != want || (err != nil) != (want == 0) {
+			t.Errorf("MTU %q parsed as %d, error %v; want %d", in, opts.MTU, err, want)
 		}
 	}
 }

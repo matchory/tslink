@@ -60,7 +60,7 @@ func NewNetwork(id string, opts NetworkOptions, cfg *Config) (*Network, error) {
 	if err := n.resolveCredential(cfg); err != nil {
 		return nil, err
 	}
-	source := "tslink.authkey"
+	source := AuthKeyOption
 	if opts.AuthKey == "" {
 		source = "TS_AUTHKEY"
 	}

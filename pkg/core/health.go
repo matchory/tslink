@@ -18,11 +18,6 @@ import (
 	"github.com/matchory/tslink/pkg/tailscale"
 )
 
-// HealthLabel is the container label that turns on the readiness endpoint on
-// a loopback port of the container's own, for a Docker healthcheck such as
-// wget -q -O- http://127.0.0.1:<port>/ready.
-const HealthLabel = "tslink.health"
-
 // healthWarning is the status warning key for a readiness endpoint tslink
 // cannot serve.
 const healthWarning = "health"
@@ -76,10 +71,10 @@ func (e *Endpoint) startHealth(info *ContainerInfo) {
 func (e *Endpoint) listenHealth(addr string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.health != nil || e.SandboxKey == "" || e.leaving {
+	if e.health != nil || e.sandboxKey == "" || e.leaving {
 		return nil
 	}
-	ln, err := listenInNetNS(e.SandboxKey, addr)
+	ln, err := listenInNetNS(e.sandboxKey, addr)
 	if err != nil {
 		return err
 	}
@@ -136,7 +131,7 @@ func (e *Endpoint) serveReady(w http.ResponseWriter, r *http.Request) {
 		code = http.StatusOK
 	}
 	e.mu.RLock()
-	service := e.Service
+	service := e.service
 	e.mu.RUnlock()
 	body, err := json.Marshal(struct {
 		State   tailscale.Readiness `json:"state"`
@@ -230,13 +225,13 @@ func (e *Endpoint) currentReadiness(ctx context.Context) tailscale.Readiness {
 // latched reports whether the endpoint has been ready. The record outlives
 // the plugin, so recovery finds it.
 func (e *Endpoint) latched() bool {
-	_, err := os.Stat(ReadyPath(e.DataDir, e.ID))
+	_, err := os.Stat(ReadyPath(e.dataDir, e.ID))
 	return err == nil
 }
 
 // latch records that the endpoint has been ready.
 func (e *Endpoint) latch() {
-	path := ReadyPath(e.DataDir, e.ID)
+	path := ReadyPath(e.dataDir, e.ID)
 	err := os.MkdirAll(filepath.Dir(path), 0o700)
 	if err == nil {
 		err = os.WriteFile(path, nil, 0o600)

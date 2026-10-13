@@ -6,15 +6,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/netip"
 	"runtime/pprof"
 	"slices"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/docker/go-plugins-helpers/network"
-	"github.com/moby/moby/api/types/container"
 	dockernetwork "github.com/moby/moby/api/types/network"
 	dockerclient "github.com/moby/moby/client"
 
@@ -43,6 +42,7 @@ type Driver struct {
 	runTailscale   func(e *core.Endpoint, ctx context.Context, info *core.ContainerInfo)
 	leaveEndpoint  func(e *core.Endpoint) error
 	stopEndpoint   func(e *core.Endpoint) error
+	drainService   func(e *core.Endpoint)
 
 	// Installs (true) or removes (false) the host's tailnet isolation, given
 	// the interface names of Docker's bridge networks
@@ -113,6 +113,7 @@ func newDriver(cfg *core.Config, docker dockerAPI) *Driver {
 		runTailscale:   (*core.Endpoint).RunTailscale,
 		leaveEndpoint:  (*core.Endpoint).Leave,
 		stopEndpoint:   (*core.Endpoint).Stop,
+		drainService:   (*core.Endpoint).DrainService,
 		hostIsolation:  applyHostIsolation,
 		ctx:            ctx,
 		cancel:         cancel,
@@ -145,7 +146,10 @@ func (d *Driver) CreateNetwork(req *network.CreateNetworkRequest) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	opts := core.ParseNetworkOptions(req.Options)
+	opts, err := core.ParseNetworkOptions(req.Options)
+	if err != nil {
+		return err
+	}
 	logger.Debugf("Parsed opts: authkey=%s", redactKey(opts.AuthKey))
 
 	net, err := core.NewNetwork(req.NetworkID, opts, d.config)
@@ -199,24 +203,26 @@ func (d *Driver) CreateEndpoint(
 		return nil, err
 	}
 
+	if err := core.CheckEndpointOptions(req.Options); err != nil {
+		return nil, err
+	}
+
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	// Parse endpoint options for hostname override
-	opts := core.ParseEndpointOptions(req.Options)
-
-	endpoint, err := core.NewEndpoint(req.EndpointID, net, opts, d.config, d.claims)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create endpoint: %w", err)
-	}
-
+	var opts core.EndpointOptions
 	if req.Interface != nil && req.Interface.Address != "" {
 		prefix, err := netip.ParsePrefix(req.Interface.Address)
 		if err != nil {
 			logger.Warnf("Ignoring IPAM address %q: %v", req.Interface.Address, err)
 		} else {
-			endpoint.IPAMAddress = prefix.Addr().String()
+			opts.IPAMAddress = prefix.Addr().String()
 		}
+	}
+
+	endpoint, err := core.NewEndpoint(req.EndpointID, net, opts, d.config, d.claims)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create endpoint: %w", err)
 	}
 
 	d.endpoints[req.EndpointID] = endpoint
@@ -380,19 +386,13 @@ func (d *Driver) Shutdown(ctx context.Context) error {
 	// Cancel internal context to stop event watcher and pending operations
 	d.cancel()
 
-	// Stop all endpoints
-	d.mu.Lock()
-	endpoints := make([]*core.Endpoint, 0, len(d.endpoints))
-	for _, ep := range d.endpoints {
-		endpoints = append(endpoints, ep)
-	}
-	d.mu.Unlock()
+	endpoints := d.endpointList()
 
 	// tailscaled stops with the plugin. Drain Service backends first, so
 	// callers use other nodes' backends until the plugin is back.
 	var drains sync.WaitGroup
 	for _, ep := range endpoints {
-		drains.Go(ep.DrainService)
+		drains.Go(func() { d.drainService(ep) })
 	}
 	drains.Wait()
 	if len(endpoints) > 0 {
@@ -622,7 +622,7 @@ func (d *Driver) onContainerInfo(endpointID string, info *core.ContainerInfo) {
 		return
 	}
 
-	if endpoint.GetSandboxKey() == "" {
+	if endpoint.SandboxKey() == "" {
 		logger.Debugf(
 			"onContainerInfo: endpoint %s has no sandbox key (Join not called yet)",
 			endpointID[:12],
@@ -656,44 +656,40 @@ func (d *Driver) startTailscale(endpoint *core.Endpoint, info *core.ContainerInf
 const gcMinAge = 2 * time.Minute
 
 // onContainerStop drains the Tailscale Service backends of a stopping
-// container. Docker sends the stop signal before it tears down the network,
-// so callers move to other backends while the application can still finish
-// its requests, instead of when the backend disappears. It takes the
-// container as the event watcher inspected it, nil if that failed.
-func (d *Driver) onContainerStop(_ string, inspected *container.InspectResponse) {
-	if inspected == nil || inspected.NetworkSettings == nil {
-		return
-	}
-	for _, settings := range inspected.NetworkSettings.Networks {
-		if settings == nil || !d.ownsNetwork(settings.NetworkID) {
-			continue
-		}
+// container, given its endpoints on this driver's networks. Docker sends the
+// stop signal before it tears down the network, so callers move to other
+// backends while the application can still finish its requests, instead of
+// when the backend disappears.
+func (d *Driver) onContainerStop(_ string, endpointIDs []string) {
+	for _, endpointID := range endpointIDs {
 		d.mu.RLock()
-		endpoint, ok := d.endpoints[settings.EndpointID]
+		endpoint, ok := d.endpoints[endpointID]
 		d.mu.RUnlock()
 		if ok {
-			d.wg.Go(endpoint.DrainService)
+			d.wg.Go(func() { d.drainService(endpoint) })
 		}
 	}
+}
+
+// endpointList returns the driver's endpoints, for calling their methods
+// after driver.mu is released.
+func (d *Driver) endpointList() []*core.Endpoint {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return slices.Collect(maps.Values(d.endpoints))
 }
 
 // collectGarbage removes state and sockets of endpoints that are gone without
 // a Leave, as after a host crash. It runs once recovery knows every endpoint,
 // and after each watchdog scan.
 func (d *Driver) collectGarbage(ctx context.Context) {
-	d.mu.RLock()
-	endpoints := make([]*core.Endpoint, 0, len(d.endpoints))
-	for _, ep := range d.endpoints {
-		endpoints = append(endpoints, ep)
-	}
-	d.mu.RUnlock()
-
 	// Endpoint methods take the endpoint's lock: never under driver.mu
+	endpoints := d.endpointList()
 	state := make(map[string]bool, len(endpoints))
 	sockets := make(map[string]bool, len(endpoints))
 	for _, ep := range endpoints {
 		sockets[ep.ID[:12]] = true
-		state[ep.GetStateDir()] = true
+		state[ep.StateDir()] = true
 	}
 
 	core.CollectGarbage(ctx, d.config, d.claims, state, sockets, gcMinAge)
@@ -823,7 +819,7 @@ func (d *Driver) recoverAttachment(
 	d.mu.RUnlock()
 
 	if exists {
-		if known.GetSandboxKey() != "" && !known.StartRequested() {
+		if known.SandboxKey() != "" && !known.StartRequested() {
 			if err := d.startMissedEndpoint(
 				ctx,
 				containerID,
@@ -860,10 +856,11 @@ func (d *Driver) startMissedEndpoint(
 	endpoint *core.Endpoint,
 	networkResult dockerclient.NetworkInspectResult,
 ) error {
-	tsInfo, _, err := d.inspectContainer(ctx, containerID, netName, networkResult)
+	a, err := d.inspectContainer(ctx, containerID, netName, networkResult)
 	if err != nil {
 		return err
 	}
+	tsInfo := a.info
 	logger.Infof(
 		"RecoverEndpoints: endpoint %s joined without its connect event, starting Tailscale (hostname=%s)",
 		endpoint.ID[:12],
@@ -874,50 +871,59 @@ func (d *Driver) startMissedEndpoint(
 	return nil
 }
 
+// inspectedAttachment is a container's attachment to a tslink network, as
+// inspected.
+type inspectedAttachment struct {
+	info        *core.ContainerInfo // the container's Tailscale configuration
+	sandboxKey  string              // its network namespace
+	ipamAddress string              // Docker's IPAM address for it on the network, or ""
+}
+
 // inspectContainer returns the Tailscale configuration of a container on a
-// tslink network, from its name and labels, and its network namespace.
+// tslink network, from its name and labels, its network namespace and its
+// IPAM address on the network.
 func (d *Driver) inspectContainer(
 	ctx context.Context,
 	containerID, netName string,
 	networkResult dockerclient.NetworkInspectResult,
-) (*core.ContainerInfo, string, error) {
+) (inspectedAttachment, error) {
 	containerInfo, err := d.docker.ContainerInspect(
 		ctx,
 		containerID,
 		dockerclient.ContainerInspectOptions{},
 	)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to inspect container: %w", err)
+		return inspectedAttachment{}, fmt.Errorf("failed to inspect container: %w", err)
 	}
 
 	settings := containerInfo.Container.NetworkSettings
 	if settings == nil {
-		return nil, "", errors.New("container has no network settings")
+		return inspectedAttachment{}, errors.New("container has no network settings")
 	}
 	// Verify container is attached to the network
-	if _, ok := settings.Networks[netName]; !ok {
-		return nil, "", fmt.Errorf("container not attached to network %s", netName)
+	netSettings, ok := settings.Networks[netName]
+	if !ok || netSettings == nil {
+		return inspectedAttachment{}, fmt.Errorf("container not attached to network %s", netName)
 	}
 
 	// Sandbox key might be empty if container isn't fully running
 	if settings.SandboxKey == "" {
-		return nil, "", errors.New("container has no sandbox key (not fully started?)")
+		return inspectedAttachment{}, errors.New(
+			"container has no sandbox key (not fully started?)",
+		)
 	}
 
-	// Parse container info for Tailscale config
-	name := strings.TrimPrefix(containerInfo.Container.Name, "/")
-
-	labels := make(map[string]string)
-	if containerInfo.Container.Config != nil && containerInfo.Container.Config.Labels != nil {
-		labels = containerInfo.Container.Config.Labels
+	a := inspectedAttachment{
+		info: inspectedContainerInfo(
+			&containerInfo.Container,
+			networkResult.Network.Labels[core.StackLabel],
+		),
+		sandboxKey: settings.SandboxKey,
 	}
-
-	tsInfo := parseContainerInfo(name, labels)
-	if containerInfo.Container.HostConfig != nil {
-		tsInfo.DNS = containerInfo.Container.HostConfig.DNS
+	if netSettings.IPAddress.IsValid() {
+		a.ipamAddress = netSettings.IPAddress.String()
 	}
-	tsInfo.NetworkStack = networkResult.Network.Labels[core.StackLabel]
-	return tsInfo, settings.SandboxKey, nil
+	return a, nil
 }
 
 // recoverEndpoint restores a single orphaned endpoint.
@@ -927,10 +933,11 @@ func (d *Driver) recoverEndpoint(
 	containerID, netName, endpointID string,
 	networkResult dockerclient.NetworkInspectResult,
 ) error {
-	tsInfo, sandboxKey, err := d.inspectContainer(ctx, containerID, netName, networkResult)
+	a, err := d.inspectContainer(ctx, containerID, netName, networkResult)
 	if err != nil {
 		return err
 	}
+	tsInfo, sandboxKey := a.info, a.sandboxKey
 
 	// Ensure network exists in driver state
 	net, err := d.adoptNetwork(networkResult)
@@ -942,7 +949,9 @@ func (d *Driver) recoverEndpoint(
 	endpoint, err := core.NewEndpoint(
 		endpointID,
 		net,
-		core.EndpointOptions{Hostname: tsInfo.Hostname},
+		// Recover puts the IPAM address on the container's veth, as Join
+		// does: an older version may not have
+		core.EndpointOptions{Hostname: tsInfo.Hostname, IPAMAddress: a.ipamAddress},
 		d.config,
 		d.claims,
 	)
@@ -973,7 +982,7 @@ func (d *Driver) recoverEndpoint(
 		delete(d.endpoints, endpointID)
 		d.mu.Unlock()
 		// Give the state directory up: the container's next endpoint needs it
-		if stopErr := endpoint.Stop(); stopErr != nil {
+		if stopErr := d.stopEndpoint(endpoint); stopErr != nil {
 			logger.Warnf(
 				"recoverEndpoint: failed to stop endpoint %s: %v",
 				endpointID[:12],

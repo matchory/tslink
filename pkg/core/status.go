@@ -99,7 +99,7 @@ func (e *Endpoint) saveStatus() {
 	st.Warnings = slices.SortedFunc(maps.Values(e.warnings), func(a, b StatusWarning) int {
 		return strings.Compare(a.Key, b.Key)
 	})
-	path := StatusPath(e.DataDir, e.ID)
+	path := StatusPath(e.dataDir, e.ID)
 	data, err := json.Marshal(st)
 	if err == nil {
 		err = os.MkdirAll(filepath.Dir(path), 0o700)
@@ -121,7 +121,7 @@ func (e *Endpoint) removeStatus() {
 	e.statusMu.Lock()
 	defer e.statusMu.Unlock()
 	e.status = nil
-	for _, path := range []string{StatusPath(e.DataDir, e.ID), ReadyPath(e.DataDir, e.ID)} {
+	for _, path := range []string{StatusPath(e.dataDir, e.ID), ReadyPath(e.dataDir, e.ID)} {
 		err := os.Remove(path)
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			logger.Warnf("Failed to remove status of endpoint %s: %v", e.ID[:12], err)

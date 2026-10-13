@@ -132,13 +132,13 @@ func TestCollectGarbageKeepsStateReusedByPersistentNetwork(t *testing.T) {
 func TestClaimStateDir(t *testing.T) {
 	// Recovery must claim the directory before garbage collection runs; the
 	// start that would claim it otherwise runs in the background.
-	e := &Endpoint{ID: "0123456789abcdef", DataDir: "/data", claims: NewStateClaims()}
+	e := &Endpoint{ID: "0123456789abcdef", dataDir: "/data", claims: NewStateClaims()}
 	e.ClaimStateDir(&ContainerInfo{Hostname: "app_web.1.abc", Stack: "app"})
-	if got := e.GetStateDir(); got != "/data/by-stack/app/app_web.1.abc" {
+	if got := e.StateDir(); got != "/data/by-stack/app/app_web.1.abc" {
 		t.Errorf("StateDir = %q", got)
 	}
 	e.ClaimStateDir(&ContainerInfo{Hostname: "../x"})
-	if got := e.GetStateDir(); got != "/data/by-stack/app/app_web.1.abc" {
+	if got := e.StateDir(); got != "/data/by-stack/app/app_web.1.abc" {
 		t.Errorf("invalid hostname changed StateDir to %q", got)
 	}
 }
@@ -149,12 +149,12 @@ func TestLeaveRemovesStateOfFailedStart(t *testing.T) {
 	data := t.TempDir()
 	e := &Endpoint{
 		ID:      "0123456789abcdef",
-		DataDir: data,
+		dataDir: data,
 		Network: &Network{AuthKey: "tskey-client-x?ephemeral=true"},
 		claims:  NewStateClaims(),
 	}
 	e.ClaimStateDir(&ContainerInfo{Hostname: "app_web.1.abc", Stack: "app"})
-	dir := e.GetStateDir()
+	dir := e.StateDir()
 	if err := tailscale.MarkEphemeral(dir); err != nil {
 		t.Fatal(err)
 	}
@@ -171,8 +171,8 @@ func TestStateDirClaimedOnce(t *testing.T) {
 	// tailscaled.state, and with it a node key.
 	claims := NewStateClaims()
 	info := &ContainerInfo{Hostname: "dup", Stack: "app"}
-	a := &Endpoint{ID: "aaaaaaaaaaaaaaaa", DataDir: "/data", Network: &Network{}, claims: claims}
-	b := &Endpoint{ID: "bbbbbbbbbbbbbbbb", DataDir: "/data", Network: &Network{}, claims: claims}
+	a := &Endpoint{ID: "aaaaaaaaaaaaaaaa", dataDir: "/data", Network: &Network{}, claims: claims}
+	b := &Endpoint{ID: "bbbbbbbbbbbbbbbb", dataDir: "/data", Network: &Network{}, claims: claims}
 	if err := a.ClaimStateDir(info); err != nil {
 		t.Fatalf("first claim: %v", err)
 	}
@@ -198,14 +198,14 @@ func TestCollectGarbageKeepsClaimedState(t *testing.T) {
 	// after the caller listed the endpoints in use.
 	data := t.TempDir()
 	claims := NewStateClaims()
-	e := &Endpoint{ID: "fedcba9876543210", DataDir: data, claims: claims}
+	e := &Endpoint{ID: "fedcba9876543210", dataDir: data, claims: claims}
 	if err := e.ClaimStateDir(
 		&ContainerInfo{Hostname: "app_web.4.claimed", Stack: "app"},
 	); err != nil {
 		t.Fatal(err)
 	}
 	defer e.releaseStateDir()
-	dir := e.GetStateDir()
+	dir := e.StateDir()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -283,7 +283,7 @@ func TestCollectGarbageLogsOutBeforeRemoving(t *testing.T) {
 	dir := orphan(t, data, "by-stack/app/web")
 	info := &ContainerInfo{Hostname: "web", Stack: "app"}
 	claims := NewStateClaims()
-	e := &Endpoint{ID: "0123456789abcdef", DataDir: data, Network: &Network{}, claims: claims}
+	e := &Endpoint{ID: "0123456789abcdef", dataDir: data, Network: &Network{}, claims: claims}
 
 	stubLogout(t, func(ctx context.Context, got string) error {
 		if !tailscale.StateExists(got) {

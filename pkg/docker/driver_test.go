@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -225,8 +226,8 @@ func TestJoinDoesNotBlockOnTailscale(t *testing.T) {
 		t.Errorf("traceback %q does not name the endpoint", r.traceback)
 	}
 	ep, _ := td.endpoint(epID)
-	if ep.GetSandboxKey() != sandbox {
-		t.Errorf("sandbox key %q", ep.GetSandboxKey())
+	if ep.SandboxKey() != sandbox {
+		t.Errorf("sandbox key %q", ep.SandboxKey())
 	}
 }
 
@@ -430,6 +431,8 @@ func TestRecoverEndpoints(t *testing.T) {
 		attachment{"billing_net", netID, epID}, attachment{"bridge", bridgeID, fakeID("bridge-ep")})
 	dns := netip.MustParseAddr("100.100.100.100")
 	fake.setDNS(fakeID("container/billing_api.1.abc"), dns)
+	fake.setIPAM(fakeID("container/billing_api.1.abc"), "billing_net",
+		netip.MustParseAddr("10.0.9.7"))
 	td := newTestDriver(t, fake)
 
 	if err := td.RecoverEndpoints(t.Context()); err != nil {
@@ -451,20 +454,25 @@ func TestRecoverEndpoints(t *testing.T) {
 	if _, ok := td.endpoint(fakeID("bridge-ep")); ok {
 		t.Error("recovered an endpoint of another driver")
 	}
-	if ep.Network != net || ep.GetSandboxKey() != sandbox {
-		t.Errorf("endpoint network %p (want %p), sandbox %q", ep.Network, net, ep.GetSandboxKey())
+	if ep.Network != net || ep.SandboxKey() != sandbox {
+		t.Errorf("endpoint network %p (want %p), sandbox %q", ep.Network, net, ep.SandboxKey())
+	}
+	// Recover puts it on the container's veth, as Join does
+	if ep.IPAMAddress != "10.0.9.7" {
+		t.Errorf("IPAM address %q, want Docker's 10.0.9.7", ep.IPAMAddress)
 	}
 	if want := filepath.Join(
 		td.config.DataDir,
 		"by-stack",
 		"billing",
 		"billing-api-1-abc",
-	); ep.GetStateDir() != want {
-		t.Errorf("state dir %q, want %q claimed before garbage collection", ep.GetStateDir(), want)
+	); ep.StateDir() != want {
+		t.Errorf("state dir %q, want %q claimed before garbage collection", ep.StateDir(), want)
 	}
 
 	r := td.nextRun(t)
 	if r.endpointID != epID || r.info.Name != "billing_api.1.abc" ||
+		r.info.ID != fakeID("container/billing_api.1.abc") ||
 		r.info.Hostname != "billing-api-1-abc" ||
 		r.info.Stack != "billing" ||
 		r.info.NetworkStack != "billing" ||
@@ -823,6 +831,36 @@ func (c cancelingDocker) PluginList(
 	return dockerclient.PluginListResult{}, ctx.Err()
 }
 
+// A misspelt network option fails docker network create, and an endpoint
+// option under tslink's prefix fails the endpoint: neither leaves a network
+// or container with other settings than meant.
+func TestCreateRejectsUnknownOptions(t *testing.T) {
+	td := newTestDriver(t, newFakeDocker())
+	netID := fakeID("net")
+	if err := td.CreateNetwork(&network.CreateNetworkRequest{
+		NetworkID: netID,
+		Options: map[string]any{core.GenericOptionsKey: map[string]any{
+			core.AuthKeyOption: "k", "tslink.tag": "tag:web",
+		}},
+	}); err == nil {
+		t.Error("network with tslink.tag created")
+	}
+	if _, ok := td.network(netID); ok {
+		t.Error("refused network stored")
+	}
+
+	td.createNetwork(t, netID, map[string]string{core.AuthKeyOption: "k"})
+	epID := fakeID("ep")
+	if _, err := td.CreateEndpoint(&network.CreateEndpointRequest{
+		NetworkID: netID, EndpointID: epID, Options: map[string]any{core.HostnameLabel: "web"},
+	}); err == nil {
+		t.Error("endpoint with the endpoint option tslink.hostname created")
+	}
+	if _, ok := td.endpoint(epID); ok {
+		t.Error("refused endpoint stored")
+	}
+}
+
 // A watchdog scan cut short by the plugin's shutdown is not an error.
 func TestWatchdogShutdownNotAnError(t *testing.T) {
 	old := watchdogInterval
@@ -918,5 +956,49 @@ func TestShutdownStopsWithinDeadline(t *testing.T) {
 		}
 	case <-time.After(drainGrace + 2*time.Second):
 		t.Fatal("Shutdown waited past its deadline for a stop")
+	}
+}
+
+// Shutdown and a stop signal drain through the driver's drainService, and a
+// recovery that fails stops its endpoint through stopEndpoint, as every other
+// caller does: tests that replace them see every call.
+func TestEndpointOpsUseDriverHooks(t *testing.T) {
+	fake := newFakeDocker()
+	netID := fake.addNetwork("net", pluginName, map[string]string{"tslink.authkey": "k"}, nil)
+	recovered := fakeID("recovered")
+	fake.addContainer("web", nil, attachment{"net", netID, recovered})
+	td := newTestDriver(t, fake)
+	var mu sync.Mutex
+	var drained, stopped []string
+	td.drainService = func(e *core.Endpoint) {
+		mu.Lock()
+		defer mu.Unlock()
+		drained = append(drained, e.ID)
+	}
+	td.stopEndpoint = func(e *core.Endpoint) error {
+		mu.Lock()
+		defer mu.Unlock()
+		stopped = append(stopped, e.ID)
+		return nil
+	}
+	td.recoverErr = errors.New("no such netns")
+	if err := td.RecoverEndpoints(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(stopped, []string{recovered}) {
+		t.Errorf("failed recovery stopped %v, want the recovered endpoint", stopped)
+	}
+
+	joined := fakeID("joined")
+	td.join(t, netID, joined, sandbox)
+	td.onContainerStop("web", []string{joined})
+	td.wg.Wait()
+	if err := td.Shutdown(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !slices.Equal(drained, []string{joined, joined}) {
+		t.Errorf("drained %v, want the joined endpoint on its stop and on shutdown", drained)
 	}
 }

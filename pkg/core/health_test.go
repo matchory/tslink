@@ -37,9 +37,9 @@ func healthEndpoint(t *testing.T, state *atomic.Value, calls *atomic.Int32) (*En
 
 	e := &Endpoint{
 		ID:         "0123456789abcdef",
-		DataDir:    t.TempDir(),
-		SandboxKey: "/run/netns/x",
-		Service:    "svc:ai",
+		dataDir:    t.TempDir(),
+		sandboxKey: "/run/netns/x",
+		service:    "svc:ai",
 	}
 	e.readinessFn = func(context.Context) tailscale.Readiness {
 		calls.Add(1)
@@ -92,7 +92,7 @@ func TestHealthLatchesReady(t *testing.T) {
 	if code, got := get(t, http.MethodGet, url+"/ready"); code != 200 || got != "ready" {
 		t.Errorf("ready: %d %q, want 200 ready", code, got)
 	}
-	if _, err := os.Stat(ReadyPath(e.DataDir, e.ID)); err != nil {
+	if _, err := os.Stat(ReadyPath(e.dataDir, e.ID)); err != nil {
 		t.Errorf("latch not recorded: %v", err)
 	}
 
@@ -108,7 +108,7 @@ func TestHealthLatchesReady(t *testing.T) {
 	}
 
 	// A new Endpoint for the same ID, as after a plugin restart, is latched
-	e2 := &Endpoint{ID: e.ID, DataDir: e.DataDir}
+	e2 := &Endpoint{ID: e.ID, dataDir: e.dataDir}
 	if !e2.latched() {
 		t.Error("latch lost for a recovered endpoint")
 	}
@@ -121,7 +121,7 @@ func TestHealthLatchesReady(t *testing.T) {
 	}
 
 	e.removeStatus()
-	if _, err := os.Stat(ReadyPath(e.DataDir, e.ID)); !os.IsNotExist(err) {
+	if _, err := os.Stat(ReadyPath(e.dataDir, e.ID)); !os.IsNotExist(err) {
 		t.Errorf("latch left after removeStatus: %v", err)
 	}
 }
@@ -161,7 +161,7 @@ func TestHealthServesReadyOnly(t *testing.T) {
 // Readiness from the endpoint's own state, before tailscaled is asked: a
 // start that failed for good, a drained backend and a leaving container.
 func TestCurrentReadiness(t *testing.T) {
-	e := &Endpoint{ID: "0123456789abcdef", DataDir: t.TempDir()}
+	e := &Endpoint{ID: "0123456789abcdef", dataDir: t.TempDir()}
 	if got := e.currentReadiness(t.Context()); got != tailscale.ReadyStarting {
 		t.Errorf("no supervisor: %q, want starting", got)
 	}
@@ -188,7 +188,7 @@ func TestHealthOptInAndListenFailure(t *testing.T) {
 	}
 	t.Cleanup(func() { listenInNetNS = old })
 
-	e := &Endpoint{ID: "0123456789abcdef", DataDir: t.TempDir(), SandboxKey: "/run/netns/x"}
+	e := &Endpoint{ID: "0123456789abcdef", dataDir: t.TempDir(), sandboxKey: "/run/netns/x"}
 	e.startHealth(&ContainerInfo{})
 	if listened.Load() {
 		t.Error("listened without tslink.health")
@@ -250,7 +250,7 @@ func TestHealthNotStartedAfterStop(t *testing.T) {
 	}
 	t.Cleanup(func() { listenInNetNS = old })
 
-	e := &Endpoint{ID: "0123456789abcdef", DataDir: t.TempDir(), SandboxKey: "/run/netns/x"}
+	e := &Endpoint{ID: "0123456789abcdef", dataDir: t.TempDir(), sandboxKey: "/run/netns/x"}
 	if err := e.Stop(); err != nil {
 		t.Fatal(err)
 	}

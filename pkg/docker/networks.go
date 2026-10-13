@@ -21,7 +21,11 @@ func networkFromInspect(
 	for k, v := range res.Network.Options {
 		opts[k] = v
 	}
-	net, err := core.NewNetwork(res.Network.ID, core.ParseNetworkOptions(opts), cfg)
+	parsed, err := core.ParseNetworkOptions(opts)
+	if err != nil {
+		return nil, fmt.Errorf("network %s: %w", res.Network.ID, err)
+	}
+	net, err := core.NewNetwork(res.Network.ID, parsed, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("network %s: %w", res.Network.ID, err)
 	}

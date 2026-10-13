@@ -23,17 +23,22 @@ const DefaultMTU = 1500
 // Seam for tests: bringing up a new veth.
 var linkSetUp = netlink.LinkSetUp
 
+// VethNames returns the host-side and container-side names of the veth pair
+// with the given base name.
+func VethNames(baseName string) (string, string) {
+	return "veth" + baseName, "veth" + baseName + "c"
+}
+
 // CreateVethPair creates a veth pair with the given base name and MTU (0 for
-// DefaultMTU). Returns the host-side name and container-side name. A link
-// with the host-side name and no address in tslink's veth range is a leftover
-// and replaced; one with such an address belongs to a live endpoint, and
-// CreateVethPair fails rather than delete it.
+// DefaultMTU). Returns the host-side name and container-side name, as
+// VethNames. A link with the host-side name and no address in tslink's veth
+// range is a leftover and replaced; one with such an address belongs to a
+// live endpoint, and CreateVethPair fails rather than delete it.
 func CreateVethPair(baseName string, mtu int) (string, string, error) {
 	if mtu == 0 {
 		mtu = DefaultMTU
 	}
-	hostName := "veth" + baseName
-	containerName := "veth" + baseName + "c"
+	hostName, containerName := VethNames(baseName)
 
 	if err := removeLeftoverVeth(hostName); err != nil {
 		return "", "", err

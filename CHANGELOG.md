@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- tslink checks option and label keys against the ones it knows.
+  `docker network create` fails for a network option under `tslink.` that
+  tslink does not know, such as a misspelt `tslink.authkye`, which left the
+  network with the cluster or plugin credential, and for an MTU that is not
+  a number from 576 to 65535, which tslink replaced with 1500. An endpoint
+  option under `tslink.` fails the endpoint: the undocumented endpoint option
+  `tslink.hostname` is gone, use the label. A container label under
+  `tslink.` that tslink does not know is logged as a warning. Tests check
+  the reference pages against the keys tslink reads.
+- A kill event costs no Docker inspect: the stop signal and endpoints of a
+  container on a tslink network come from its connect event or recovery,
+  and kills of other containers are ignored. Before, every kill on the host
+  cost one inspect.
+- `tslink.serve.<port>` endpoints are configured in the order of their
+  ports, rather than in an order that changed from one start to the next.
+- A `tslink.serve.<port>` label whose port is not a port number, or whose
+  protocol is unknown, is ignored with a warning; an unknown protocol was
+  logged only at debug level, and a label like `tslink.serve.https` kept the
+  container's Tailscale Service from being advertised. Serve warnings name
+  the container.
+
+### Fixed
+
+- A container removed right after its stop signal, as by `docker rm -f`, had
+  its Service backends drained only when it left the network: the inspect
+  that read its networks failed. They now drain on the stop signal.
+- A container that recovery adopted, as after a plugin restart or upgrade,
+  got no IPAM address on its veth if Join had not added it (versions before
+  0.2.3): recovery now reads it from Docker.
+- Starting Tailscale for a container with `tslink.service` and no
+  `tslink.serve.<port>` label fails before it takes a state directory.
+
 ## [0.2.4] - 2026-10-13
 
 ### Changed

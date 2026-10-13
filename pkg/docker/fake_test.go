@@ -267,6 +267,17 @@ func (f *fakeDocker) addContainer(
 	return id
 }
 
+// setIPAM sets the address Docker's IPAM gave the container on netName.
+func (f *fakeDocker) setIPAM(containerID, netName string, addr netip.Addr) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range f.containers {
+		if f.containers[i].ID == containerID {
+			f.containers[i].NetworkSettings.Networks[netName].IPAddress = addr
+		}
+	}
+}
+
 // setDNS sets the DNS servers the container was given.
 func (f *fakeDocker) setDNS(containerID string, dns ...netip.Addr) {
 	f.mu.Lock()
@@ -322,17 +333,15 @@ func newTestDriver(t *testing.T, fake *fakeDocker) *testDriver {
 	td.hostIsolation = func(bool, []string) error { return nil }
 	release := make(chan struct{})
 
-	// Nothing else reads the sandbox key while Join or recovery runs: events
-	// are sent by the tests only once these returned
 	td.joinEndpoint = func(e *core.Endpoint, sandboxKey string) (*network.JoinResponse, error) {
-		e.SandboxKey = sandboxKey
+		e.SetSandboxKey(sandboxKey)
 		return &network.JoinResponse{}, nil
 	}
 	td.recoverRouting = func(e *core.Endpoint, sandboxKey string) error {
 		if td.recoverErr != nil {
 			return td.recoverErr
 		}
-		e.SandboxKey = sandboxKey
+		e.SetSandboxKey(sandboxKey)
 		return nil
 	}
 	td.runTailscale = func(e *core.Endpoint, _ context.Context, info *core.ContainerInfo) {
@@ -361,8 +370,8 @@ func (td *testDriver) watch(handled chan<- string, stopped chan<- string) {
 					handled <- endpointID
 				}
 			},
-			func(containerID string, inspected *container.InspectResponse) {
-				td.onContainerStop(containerID, inspected)
+			func(containerID string, endpointIDs []string) {
+				td.onContainerStop(containerID, endpointIDs)
 				if stopped != nil {
 					stopped <- containerID
 				}

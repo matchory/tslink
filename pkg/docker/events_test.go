@@ -1,9 +1,14 @@
 package docker
 
 import (
+	"os"
+	"regexp"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/matchory/tslink/pkg/core"
+	"github.com/matchory/tslink/pkg/logger"
 	"github.com/matchory/tslink/pkg/tailscale"
 )
 
@@ -104,7 +109,7 @@ func TestParseServeValueProxyProtocol(t *testing.T) {
 		{"80", "http:80?proxy-protocol=2", nil}, // TCP forwarding only
 	}
 	for _, tt := range tests {
-		got := parseServeValue(tt.port, tt.value)
+		got := parseServeValue("web", tt.port, tt.value)
 		if (got == nil) != (tt.want == nil) || (got != nil && *got != *tt.want) {
 			t.Errorf("parseServeValue(%q, %q) = %+v, want %+v", tt.port, tt.value, got, tt.want)
 		}
@@ -144,7 +149,7 @@ func TestParseServeValueAcceptAppCaps(t *testing.T) {
 		{"5432", "tcp:5432?proxy-protocol=2&accept-app-caps=example.com/cap/a", nil},
 	}
 	for _, tt := range tests {
-		got := parseServeValue(tt.port, tt.value)
+		got := parseServeValue("web", tt.port, tt.value)
 		if (got == nil) != (tt.want == nil) || (got != nil && *got != *tt.want) {
 			t.Errorf("parseServeValue(%q, %q) = %+v, want %+v", tt.port, tt.value, got, tt.want)
 		}
@@ -187,5 +192,77 @@ func TestParseContainerInfoHealth(t *testing.T) {
 	}
 	if info := parseContainerInfo("web", nil); info.HealthPort != 0 {
 		t.Errorf("without the label: HealthPort = %d", info.HealthPort)
+	}
+}
+
+// Serve endpoints come in the order of their ports, whatever the order of
+// the labels, and two labels of one port in the order of the labels. A label
+// whose port is not one is ignored.
+func TestParseServeEndpointsInPortOrder(t *testing.T) {
+	labels := map[string]string{
+		"tslink.serve.0443":  "https:9090",
+		"tslink.serve.https": "http:80",
+		"tslink.serve.0":     "tcp",
+		"tslink.serve.70000": "tcp",
+		"tslink.serve.8443":  "https:8443",
+		"tslink.serve.443":   "https:8080",
+		"tslink.serve.80":    "http:8080",
+		"tslink.serve.5432":  "tcp",
+		"tslink.serve.22":    "tcp",
+	}
+	for range 10 {
+		var got []string
+		for _, ep := range parseServeEndpoints("web", labels) {
+			got = append(got, ep.Port)
+		}
+		if want := []string{"22", "80", "0443", "443", "5432", "8443"}; !slices.Equal(got, want) {
+			t.Fatalf("ports %v, want %v", got, want)
+		}
+	}
+}
+
+// A label under tslink's prefix that tslink does not know is logged with the
+// container's name, and changes nothing.
+func TestParseContainerInfoWarnsOfUnknownLabels(t *testing.T) {
+	var log lockedBuffer
+	logger.SetOutput(&log)
+	t.Cleanup(func() { logger.SetOutput(os.Stdout) })
+
+	info := parseContainerInfo("web", map[string]string{
+		"tslink.services":   "svc:web",
+		core.ServiceLabel:   "svc:web",
+		"tslink.serve.443":  "https:8080",
+		"com.example.label": "x",
+	})
+	if info.Service != "svc:web" || len(info.Endpoints) != 1 {
+		t.Errorf("parsed %+v", info)
+	}
+	out := log.String()
+	if !strings.Contains(out, "Container web: ignoring unknown label tslink.services") {
+		t.Errorf("no warning of the unknown label in %q", out)
+	}
+	if strings.Count(out, "unknown label") != 1 {
+		t.Errorf("warned of other labels: %q", out)
+	}
+}
+
+// The container labels reference lists exactly the labels tslink reads.
+func TestContainerLabelsMatchReference(t *testing.T) {
+	keys := []string{core.ServeLabelPrefix + "<port>"}
+	for key := range containerLabels {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	b, err := os.ReadFile("../../docs/reference/container-labels.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var listed []string
+	for _, m := range regexp.MustCompile("(?m)^\\| \\[`([^`]+)`\\]").FindAllStringSubmatch(string(b), -1) {
+		listed = append(listed, m[1])
+	}
+	slices.Sort(listed)
+	if !slices.Equal(listed, keys) {
+		t.Errorf("container-labels.md lists %q, tslink reads %q", listed, keys)
 	}
 }

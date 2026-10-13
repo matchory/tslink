@@ -2,7 +2,8 @@
 
 Container labels configure one container on a tslink network. tslink reads the labels of the container: `--label`
 on `docker run`, or `labels` of a service in a Compose or stack file. tslink does not read the labels of a Swarm
-service (`deploy.labels`).
+service (`deploy.labels`). For a label that starts with `tslink.` and is not in this table, tslink logs a warning
+with the container's name and ignores the label.
 
 | Label | Value | Default |
 | --- | --- | --- |

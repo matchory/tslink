@@ -140,13 +140,6 @@ type NetworkOptions struct {
 	Ephemeral   string // tslink.ephemeral as given; NewNetwork validates it
 }
 
-// EphemeralOption says whether a network's nodes are ephemeral, for keys
-// that do not say so themselves.
-const EphemeralOption = "tslink.ephemeral"
-
-// MTUOption is Docker's standard network option for the interface MTU.
-const MTUOption = "com.docker.network.driver.mtu"
-
 // ParseMTU returns the MTU an option value sets, or 0 if it is not a valid one.
 func ParseMTU(s string) int {
 	mtu, err := strconv.Atoi(s)
@@ -159,6 +152,8 @@ func ParseMTU(s string) int {
 // EndpointOptions holds options for endpoint creation.
 type EndpointOptions struct {
 	Hostname string
+	// IPAMAddress is the address Docker's IPAM assigned to the endpoint, or ""
+	IPAMAddress string
 }
 
 // DataDir returns the plugin's data directory: TS_DATA_DIR, or /data.
@@ -206,51 +201,6 @@ func LoadConfig() (*Config, error) {
 // GenericOptionsKey is the key Docker uses to pass driver options.
 const GenericOptionsKey = "com.docker.network.generic"
 
-// ParseNetworkOptions parses network creation options.
-// Docker passes --opt values nested under "com.docker.network.generic".
-func ParseNetworkOptions(opts map[string]any) NetworkOptions {
-	options := NetworkOptions{}
-
-	genericOpts := opts
-	if nested, ok := opts[GenericOptionsKey]; ok {
-		if nestedMap, ok := nested.(map[string]any); ok {
-			genericOpts = nestedMap
-		}
-	}
-
-	if v, ok := genericOpts["tslink.authkey"]; ok {
-		if s, ok := v.(string); ok {
-			options.AuthKey = s
-		}
-	}
-
-	if v, ok := genericOpts[MTUOption]; ok {
-		if s, ok := v.(string); ok {
-			options.MTU = ParseMTU(s)
-		}
-	}
-
-	if v, ok := genericOpts[LoginServerOption]; ok {
-		if s, ok := v.(string); ok {
-			options.LoginServer = s
-		}
-	}
-
-	if v, ok := genericOpts[EphemeralOption]; ok {
-		if s, ok := v.(string); ok {
-			options.Ephemeral = s
-		}
-	}
-
-	if v, ok := genericOpts["tslink.tags"]; ok {
-		if s, ok := v.(string); ok {
-			options.Tags = ParseTags(s)
-		}
-	}
-
-	return options
-}
-
 // ParseTags splits a comma-separated tag list (e.g. "tag:web, tag:prod").
 func ParseTags(s string) []string {
 	var tags []string
@@ -260,17 +210,4 @@ func ParseTags(s string) []string {
 		}
 	}
 	return tags
-}
-
-// ParseEndpointOptions parses endpoint creation options.
-func ParseEndpointOptions(opts map[string]any) EndpointOptions {
-	options := EndpointOptions{}
-
-	if v, ok := opts["tslink.hostname"]; ok {
-		if s, ok := v.(string); ok {
-			options.Hostname = s
-		}
-	}
-
-	return options
 }

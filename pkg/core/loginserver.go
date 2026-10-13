@@ -5,10 +5,6 @@ import (
 	"net/url"
 )
 
-// LoginServerOption is the network option for a control server other than
-// Tailscale's, such as headscale.
-const LoginServerOption = "tslink.loginserver"
-
 // ValidateLoginServer checks a login server URL. An empty one selects
 // Tailscale's control server.
 func ValidateLoginServer(s string) error {

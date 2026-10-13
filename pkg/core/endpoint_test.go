@@ -90,8 +90,10 @@ func TestStartTailscaleRejectsInvalidService(t *testing.T) {
 		}
 		info.Hostname = "web"
 		err := e.StartTailscale(&info)
-		if _, ok := errors.AsType[permanentError](err); !ok {
-			t.Errorf("service %q: got %v, want a permanent error", info.Service, err)
+		if _, ok := errors.AsType[permanentError](err); !ok ||
+			!strings.Contains(err.Error(), ServiceLabel) {
+			t.Errorf("service %q: got %v, want a permanent error naming %s",
+				info.Service, err, ServiceLabel)
 		}
 		if entries, err := os.ReadDir(dataDir); err != nil || len(entries) != 0 {
 			t.Errorf(
@@ -103,6 +105,20 @@ func TestStartTailscaleRejectsInvalidService(t *testing.T) {
 		}
 		if e.StateDir() != "" {
 			t.Errorf("service %q: state directory %q, want none", info.Service, e.StateDir())
+		}
+	}
+}
+
+// A valid Service with something to serve, or none at all, passes.
+func TestCheckServiceAcceptsValid(t *testing.T) {
+	serve := []tailscale.ServeEndpoint{{Proto: "https", Port: "443", Target: "8080"}}
+	for _, info := range []ContainerInfo{
+		{},
+		{Service: "svc:web", Endpoints: serve},
+		{Service: "svc:my-api-2", Endpoints: serve},
+	} {
+		if err := checkService(&info); err != nil {
+			t.Errorf("service %q: %v, want none", info.Service, err)
 		}
 	}
 }

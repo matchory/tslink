@@ -12,6 +12,7 @@ import (
 	"syscall"
 
 	"github.com/matchory/tslink/pkg/core"
+	"github.com/matchory/tslink/pkg/netutil"
 )
 
 // Env is what the preflight checks: the Docker API, a way to run host
@@ -50,24 +51,14 @@ func Write(w io.Writer, results []Result) (bool, error) {
 	return failed, nil
 }
 
-// The chains tslink jumps to first from a built-in chain, and the built-in
-// chains themselves (pkg/netutil's isolate.go).
+// The built-in chains tslink's isolation jumps from, and the commands that
+// list them.
 const (
-	vethFwdChain    = "TSLINK-VETH-FWD"
-	wgInChain       = "TSLINK-WG-IN"
-	isolateFwdChain = "TSLINK-ISOLATE-FWD"
-	isolateInChain  = "TSLINK-ISOLATE-IN"
-	forwardBuiltin  = "FORWARD"
-	inputBuiltin    = "INPUT"
-	iptablesCmd     = "iptables"
-	ip6tablesCmd    = "ip6tables"
+	forwardBuiltin = "FORWARD"
+	inputBuiltin   = "INPUT"
+	iptablesCmd    = "iptables"
+	ip6tablesCmd   = "ip6tables"
 )
-
-// tslinkChains are the chains tslink jumps to first from a built-in chain;
-// its jumps lead their chain in any order. TSLINK-WG-IN is always on, like
-// TSLINK-VETH-FWD, and is not itself a required jump here (isolationJumps):
-// E5 does not check for it, only tolerates it leading INPUT.
-var tslinkChains = []string{vethFwdChain, wgInChain, isolateFwdChain, isolateInChain}
 
 // isolationJump is a jump the isolation needs at the head of a built-in chain.
 type isolationJump struct {
@@ -76,28 +67,11 @@ type isolationJump struct {
 }
 
 var isolationJumps = []isolationJump{
-	{iptablesCmd, forwardBuiltin, vethFwdChain, true},
-	{iptablesCmd, forwardBuiltin, isolateFwdChain, false},
-	{iptablesCmd, inputBuiltin, isolateInChain, false},
-	{ip6tablesCmd, forwardBuiltin, isolateFwdChain, false},
-	{ip6tablesCmd, inputBuiltin, isolateInChain, false},
-}
-
-// leadingJumps returns the chains of the leading run of tslink jumps in the
-// listing of a built-in chain (iptables -S).
-func leadingJumps(listing, from string) []string {
-	var jumps []string
-	for line := range strings.SplitSeq(strings.TrimSpace(listing), "\n") {
-		if strings.HasPrefix(line, "-P ") {
-			continue
-		}
-		target, ok := strings.CutPrefix(strings.TrimSpace(line), "-A "+from+" -j ")
-		if !ok || !slices.Contains(tslinkChains, target) {
-			break
-		}
-		jumps = append(jumps, target)
-	}
-	return jumps
+	{iptablesCmd, forwardBuiltin, netutil.VethIsolateChain, true},
+	{iptablesCmd, forwardBuiltin, netutil.IsolateForwardChain, false},
+	{iptablesCmd, inputBuiltin, netutil.IsolateInputChain, false},
+	{ip6tablesCmd, forwardBuiltin, netutil.IsolateForwardChain, false},
+	{ip6tablesCmd, inputBuiltin, netutil.IsolateInputChain, false},
 }
 
 // missingJumps returns the isolation's jumps that are not at the head of
@@ -128,7 +102,7 @@ func missingJumps(
 				failed[key] = true
 				continue
 			}
-			jumps = leadingJumps(string(out), j.from)
+			jumps = netutil.LeadingJumps(strings.Split(string(out), "\n"), j.from)
 			listings[key] = jumps
 		}
 		if !slices.Contains(jumps, j.to) {

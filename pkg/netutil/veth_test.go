@@ -323,7 +323,7 @@ func TestNATRulesRestored(t *testing.T) {
 			ipt.ClearChain("filter", chainName),
 			ipt.Append("filter", chainName, "-i", "vethgone", "-j", "ACCEPT"),
 			ipt.Delete("filter", "FORWARD", "-j", chainName),
-			ipt.Delete("nat", "POSTROUTING", "-s", natSource, "-j", "MASQUERADE"),
+			ipt.Delete("nat", "POSTROUTING", "-s", vethRange.String(), "-j", "MASQUERADE"),
 		)
 	})
 	inNS("SetupVethIsolation", func() error { return SetupVethIsolation(WireGuardTestPort) })

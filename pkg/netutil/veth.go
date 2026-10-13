@@ -202,9 +202,6 @@ func VethIPv4(name string) (string, error) {
 // chainName is the custom iptables chain for tslink forwarding rules.
 const chainName = "TSLINK-FORWARD"
 
-// natSource is the veth range tslink masquerades.
-const natSource = "10.200.0.0/16"
-
 // ipForwardPath is the IPv4 forwarding sysctl.
 const ipForwardPath = "/proc/sys/net/ipv4/ip_forward"
 
@@ -293,7 +290,7 @@ func ensureForwarding(f *ipFamily, veths []string, exact bool) error {
 		{"filter", forwardChain, []string{"-j", chainName}, true, filter.rules[forwardChain]},
 		{
 			"nat", "POSTROUTING",
-			[]string{"-s", natSource, "-j", "MASQUERADE"},
+			[]string{"-s", vethRange.String(), "-j", "MASQUERADE"},
 			false,
 			nat.rules["POSTROUTING"],
 		},

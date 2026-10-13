@@ -281,23 +281,23 @@ func TestRememberedChainsStillChecked(t *testing.T) {
 	v4 := isolationFamilies[0]
 
 	tamper(iptables.ProtocolIPv4, func(i *iptables.IPTables) error {
-		return i.Append("mangle", vethIsolateChain, junk...)
+		return i.Append("mangle", VethIsolateChain, junk...)
 	})
 	assertRepaired("a rule added")
 
 	for _, fam := range isolationFamilies {
 		tamper(fam.proto, func(i *iptables.IPTables) error {
-			return i.Delete("mangle", isolateForwardChain,
-				fam.rules(isolateForwardChain, containerInterfaces)[0]...)
+			return i.Delete("mangle", IsolateForwardChain,
+				fam.rules(IsolateForwardChain, containerInterfaces)[0]...)
 		})
 	}
 	assertRepaired("a rule removed")
 
 	tamper(iptables.ProtocolIPv4, func(i *iptables.IPTables) error {
 		return errors.Join(
-			i.Delete("mangle", isolateInputChain,
-				v4.rules(isolateInputChain, containerInterfaces)[0]...),
-			i.Append("mangle", isolateInputChain, junk...),
+			i.Delete("mangle", IsolateInputChain,
+				v4.rules(IsolateInputChain, containerInterfaces)[0]...),
+			i.Append("mangle", IsolateInputChain, junk...),
 		)
 	})
 	assertRepaired("a rule replaced")

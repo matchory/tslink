@@ -14,12 +14,6 @@ import (
 
 const authKeyHashFile = "authkey.sha256"
 
-// GetHostnameStateDir returns the state directory path for a hostname.
-// The directory structure is: <dataDir>/by-hostname/<hostname>/.
-func GetHostnameStateDir(dataDir, hostname string) string {
-	return filepath.Join(dataDir, "by-hostname", hostname)
-}
-
 // StateExists checks if valid Tailscale state exists in the given directory.
 // Returns true if tailscaled.state file exists and is non-empty.
 func StateExists(stateDir string) bool {

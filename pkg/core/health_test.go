@@ -260,3 +260,15 @@ func TestHealthNotStartedAfterStop(t *testing.T) {
 		t.Error("readiness endpoint started after Stop")
 	}
 }
+
+// clearReadinessCache makes the next request compute readiness again.
+func (e *Endpoint) clearReadinessCache() {
+	e.mu.RLock()
+	h := e.health
+	e.mu.RUnlock()
+	if h != nil {
+		h.mu.Lock()
+		h.state = ""
+		h.mu.Unlock()
+	}
+}

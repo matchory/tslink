@@ -201,18 +201,6 @@ func (e *Endpoint) readiness(ctx context.Context) tailscale.Readiness {
 	return h.state
 }
 
-// clearReadinessCache makes the next request compute readiness again.
-func (e *Endpoint) clearReadinessCache() {
-	e.mu.RLock()
-	h := e.health
-	e.mu.RUnlock()
-	if h != nil {
-		h.mu.Lock()
-		h.state = ""
-		h.mu.Unlock()
-	}
-}
-
 // drainedOrLeaving reports whether the endpoint's backend is drained or its
 // container is leaving.
 func (e *Endpoint) drainedOrLeaving() bool {

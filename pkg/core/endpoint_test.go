@@ -149,8 +149,8 @@ func TestPickVethSubnetSkipsUsed(t *testing.T) {
 	}
 	// Unused: the subnet the hash names, as before, so recovered endpoints
 	// of older versions keep theirs
-	wantHost, wantCtr := generateVethIPs(id)
-	if host.String() != wantHost || ctr.String() != wantCtr {
+	wantHost, wantCtr := vethSlotIPs(vethSlot(id))
+	if host != wantHost || ctr != wantCtr {
 		t.Errorf("got %s %s, want %s %s", host, ctr, wantHost, wantCtr)
 	}
 	if netip.PrefixFrom(host, 30).Masked() != netip.PrefixFrom(ctr, 30).Masked() {

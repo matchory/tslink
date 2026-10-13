@@ -155,12 +155,6 @@ func vethBaseName(endpointID string) string {
 	return endpointID[:8]
 }
 
-// generateVethIPs returns the addresses of the endpoint's preferred subnet.
-func generateVethIPs(endpointID string) (string, string) {
-	host, ctr := vethSlotIPs(vethSlot(endpointID))
-	return host.String(), ctr.String()
-}
-
 // pickVethSubnet returns the addresses of the first subnet, from the
 // endpoint's preferred one on, that used does not contain. The preferred
 // subnets of about 150 endpoints on one host collide with even odds, and
@@ -312,14 +306,6 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 	if e.tailscaleStarted {
 		e.mu.Unlock()
 		logger.Debugf("Tailscale already started for endpoint %s", stringid.TruncateID(e.ID))
-		return nil
-	}
-	if e.supervisor != nil {
-		e.mu.Unlock()
-		logger.Debugf(
-			"Tailscale startup already in progress for endpoint %s",
-			stringid.TruncateID(e.ID),
-		)
 		return nil
 	}
 	sandboxKey := e.sandboxKey

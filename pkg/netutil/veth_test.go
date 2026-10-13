@@ -3,6 +3,7 @@
 package netutil
 
 import (
+	"errors"
 	"maps"
 	"net/netip"
 	"os"
@@ -68,18 +69,8 @@ func assertRules(t *testing.T, what string, got, want []string) {
 	}
 }
 
-// resetChainInitialized makes SetupNAT set up the chain again, as after a
-// plugin restart.
-func resetChainInitialized() {
-	chainMu.Lock()
-	chainInitialized = false
-	chainMu.Unlock()
-}
-
 func TestNATRules(t *testing.T) {
 	nsPath := newTestNetNS(t)
-	resetChainInitialized()
-	t.Cleanup(resetChainInitialized)
 
 	inNS := func(name string, fn func() error) {
 		t.Helper()
@@ -146,9 +137,8 @@ func TestNATRules(t *testing.T) {
 		t.Errorf("port mappings after SetupNAT again = %v, want %v", got, mapped)
 	}
 
-	// After a plugin restart the chain and global rules exist already; they
-	// must not be duplicated.
-	resetChainInitialized()
+	// The chain and global rules exist already, as after a plugin restart;
+	// they must not be duplicated.
 	inNS("SetupNAT after restart", func() error { return SetupNAT("vethtslinkc") })
 
 	r = listNATRules(t, nsPath)
@@ -217,27 +207,6 @@ func TestNATRules(t *testing.T) {
 	if got := listNATRules(t, nsPath).portMap; len(got) != 1 || got[ctrB] == 0 {
 		t.Errorf("port mappings after CleanupNAT of a deleted veth = %v, want b's", got)
 	}
-
-	// CleanupAllNAT removes the chains, the jumps and MASQUERADE, and
-	// tolerates their absence.
-	for range 2 {
-		inNS("CleanupAllNAT", CleanupAllNAT)
-	}
-
-	r = listNATRules(t, nsPath)
-	assertRules(t, "FORWARD after CleanupAllNAT", r.forward, []string{"-P FORWARD ACCEPT", drop})
-	if r.chain != nil {
-		t.Errorf("chain %s still exists: %q", chainName, r.chain)
-	}
-	assertRules(
-		t,
-		"POSTROUTING after CleanupAllNAT",
-		r.postrouting,
-		[]string{"-P POSTROUTING ACCEPT"},
-	)
-	if len(r.portMap) != 0 {
-		t.Errorf("port mappings after CleanupAllNAT = %v", r.portMap)
-	}
 }
 
 // addLinks adds a dummy link for each name, with its address, in the
@@ -302,4 +271,49 @@ func TestUsedVethSubnets(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// The watchdog's SetupVethIsolation puts back tslink's forwarding and
+// MASQUERADE after a firewall reload or "iptables -F" removed them, as when
+// they were set up: the jump to TSLINK-FORWARD, MASQUERADE, and each veth's
+// rules. It drops the rules of veths that are gone.
+func TestNATRulesRestored(t *testing.T) {
+	nsPath := newTestNetNS(t)
+	inNS := func(name string, fn func() error) {
+		t.Helper()
+		if err := inNetNS(nsPath, fn); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+	inNS("add veths", func() error {
+		return addLinks(
+			map[string]string{"vethtslinka": "10.200.0.1/30", "vethtslinkb": "10.200.0.5/30"},
+		)
+	})
+	inNS("SetupNAT", func() error {
+		if err := SetupNAT("vethtslinka"); err != nil {
+			return err
+		}
+		return SetupNAT("vethtslinkb")
+	})
+	want := listNATRules(t, nsPath)
+
+	inNS("remove the rules", func() error {
+		ipt, err := iptables.New()
+		if err != nil {
+			return err
+		}
+		return errors.Join(
+			ipt.ClearChain("filter", chainName),
+			ipt.Append("filter", chainName, "-i", "vethgone", "-j", "ACCEPT"),
+			ipt.Delete("filter", "FORWARD", "-j", chainName),
+			ipt.Delete("nat", "POSTROUTING", "-s", natSource, "-j", "MASQUERADE"),
+		)
+	})
+	inNS("SetupVethIsolation", func() error { return SetupVethIsolation(WireGuardTestPort) })
+
+	got := listNATRules(t, nsPath)
+	assertRules(t, "FORWARD", got.forward, want.forward)
+	assertRules(t, chainName, got.chain, want.chain)
+	assertRules(t, "POSTROUTING", got.postrouting, want.postrouting)
 }

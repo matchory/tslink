@@ -54,8 +54,9 @@ host enforces it too: `netutil.SetupHostIsolation` drops traffic from Docker's b
 the host's tailnet addresses in the mangle table (`TSLINK_ISOLATE_HOST_TAILNET`), for every container on the host. It
 matches Docker's default interface names and the bridge names Docker's bridge networks set
 (`com.docker.network.bridge.name`), which the driver lists at start, on every watchdog run and on a network `create`
-event, keeping the last list if Docker cannot answer. The plugin installs it before serving, the watchdog restores it,
-and it stays when the plugin stops. The host also forwards between tslink's veths, so `netutil.SetupVethIsolation`
+event, keeping the last list if Docker cannot answer. The plugin installs it before serving, the watchdog restores it
+(a chain and its jump in one `iptables-restore --noflush` of the backend `iptables` uses, so a repair never opens a
+gap), and it stays when the plugin stops. The host also forwards between tslink's veths, so `netutil.SetupVethIsolation`
 (always on) drops everything forwarded to `10.200.0.0/16`, whatever interface it arrives on, except replies on
 connections the container opened and tailscaled's WireGuard port, the fixed `--port=41641` (`tailscale.WireGuardPort`),
 from tslink's veths: containers cannot reach each other's veth addresses, and colocated nodes keep their direct path
@@ -71,7 +72,9 @@ no conntrack entry blocking the container's own NAT. Adding a rule deletes the c
 port 41641, whose NAT would otherwise outlive it (keepalives never let them expire); an existing rule is kept and its
 flows too. A rule's `-s` is the container's address, so a restarted plugin keeps the port; `CleanupNAT` removes it,
 and `SyncPortMappings` (run by `SetupVethIsolation`, so at start and by the watchdog) maps veths without a rule and
-removes rules of addresses no veth has.
+removes rules of addresses no veth has. `SetupVethIsolation` likewise restores the forwarding a firewall reload removes
+(`syncForwarding`, under `forwardMu`): `TSLINK-FORWARD`, its jump from filter `FORWARD`, the veths' ACCEPT rules and
+MASQUERADE of `10.200.0.0/16`.
 
 **Self-healing**: `Endpoint.RunTailscale` retries a failed start with backoff until the endpoint leaves, unless the
 error is a `permanentError` (wrong stack, invalid hostname). The supervisor restarts a crashed tailscaled, resumes after
@@ -230,10 +233,10 @@ return fmt.Errorf("failed to create endpoint: %w", err)
 
 - `ci.yml`: golangci-lint, pinned to the version `.golangci.toml` is written for, and the Go tests. The network
   namespace tests in `pkg/netutil` and the mount namespace test in `pkg/tailscale` skip without root, so CI runs them
-  a second time with `sudo`. It also tests the probe library, `test/security/lib_test.sh`. Lint findings go to code
-  scanning as SARIF (category `golangci-lint`); test results become annotations and a job summary (JUnit from
-  `gotestsum`); coverage of all runs is merged with `go tool covdata` into the job summary and a `coverage` artifact,
-  with no threshold.
+  a second time with `sudo`, and the netutil ones a third time with `iptables-legacy`. It also tests the probe
+  library, `test/security/lib_test.sh`. Lint findings go to code scanning as SARIF (category `golangci-lint`); test
+  results become annotations and a job summary (JUnit from `gotestsum`); coverage of all runs is merged with
+  `go tool covdata` into the job summary and a `coverage` artifact, with no threshold.
 - `govulncheck.yml`: govulncheck findings as SARIF in code scanning, on pushes, PRs and weekly. `gotestsum` and
   `govulncheck` are pinned in the `tool` block of `go.mod` (`go tool ...`), so Dependabot updates them.
 - `linter.yml`: super-linter for everything except Go (Markdown, YAML, shell, Dockerfile). Configs are in

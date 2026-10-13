@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"os"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -355,16 +356,13 @@ const natSource = "10.200.0.0/16"
 // ipForwardPath is the IPv4 forwarding sysctl.
 const ipForwardPath = "/proc/sys/net/ipv4/ip_forward"
 
-// chainInitialized tracks if we've already set up the custom chain.
-var (
-	chainMu          sync.Mutex
-	chainInitialized bool
-)
+// forwardMu serializes changes to TSLINK-FORWARD: the watchdog's sync must
+// not remove the rules of a veth SetupNAT adds meanwhile.
+var forwardMu sync.Mutex
 
-// SetupNAT sets up MASQUERADE for traffic from the container.
-// Uses a custom chain (TS-CNI-FORWARD) for organized rule management.
-// vethHost must have its address: the container's tailscaled gets its own
-// external port (see portMapChain).
+// SetupNAT sets up forwarding and MASQUERADE for traffic from the container,
+// in the chain TSLINK-FORWARD. vethHost must have its address: the
+// container's tailscaled gets its own external port (see portMapChain).
 func SetupNAT(vethHost string) error {
 	logger.Debugf("Setting up NAT for %s", vethHost)
 
@@ -378,24 +376,11 @@ func SetupNAT(vethHost string) error {
 		return fmt.Errorf("failed to initialize iptables: %w", err)
 	}
 
-	// Initialize our custom chain and global rules (only once, with mutex protection)
-	chainMu.Lock()
-	if !chainInitialized {
-		if err := initializeChain(ipt); err != nil {
-			chainMu.Unlock()
-			return err
-		}
-		chainInitialized = true
-	}
-	chainMu.Unlock()
-
-	// Allow forwarding for this specific veth (in our custom chain)
-	if err := ipt.AppendUnique("filter", chainName, "-i", vethHost, "-j", "ACCEPT"); err != nil {
-		logger.Warnf("Failed to add FORWARD rule for %s: %v", vethHost, err)
-	}
-
-	if err := ipt.AppendUnique("filter", chainName, "-o", vethHost, "-j", "ACCEPT"); err != nil {
-		logger.Warnf("Failed to add FORWARD rule for %s: %v", vethHost, err)
+	forwardMu.Lock()
+	err = ensureForwarding(ipt, []string{vethHost}, false)
+	forwardMu.Unlock()
+	if err != nil {
+		return err
 	}
 
 	// One external port for tailscaled, whatever the destination
@@ -415,34 +400,133 @@ func enableIPForward() error {
 	return os.WriteFile(ipForwardPath, []byte("1"), 0o600)
 }
 
-// initializeChain creates the custom chain and sets up global rules.
-func initializeChain(ipt *iptables.IPTables) error {
-	// Create our custom chain unless it exists
-	if exists, err := ipt.ChainExists("filter", chainName); err != nil || !exists {
+// ensureForwarding puts in place what any container's traffic needs:
+// TSLINK-FORWARD and the jump to it, MASQUERADE of the veth range, and the
+// forwarding rules of the veths named. With exact, TSLINK-FORWARD then holds
+// the rules of those veths only. It runs for each new veth and on every
+// watchdog run, so rules a firewall reload or "iptables -F" removed come back.
+// Missing rules stop traffic rather than let it through, so they need no
+// atomic write. The caller holds forwardMu.
+func ensureForwarding(ipt *iptables.IPTables, veths []string, exact bool) error {
+	// Rules missing from a chain that exists were removed: worth a warning,
+	// unlike setting them up the first time
+	exists, err := ipt.ChainExists("filter", chainName)
+	if err != nil {
+		return fmt.Errorf("failed to check chain %s: %w", chainName, err)
+	}
+	if !exists {
 		if err := ipt.NewChain("filter", chainName); err != nil {
-			logger.Debugf("iptables chain %s may already exist: %v", chainName, err)
+			return fmt.Errorf("failed to create chain %s: %w", chainName, err)
 		}
 	}
-
-	// Add jump rule from FORWARD to our chain at the beginning, unless it exists
-	if err := ipt.InsertUnique("filter", "FORWARD", 1, "-j", chainName); err != nil {
-		return fmt.Errorf("failed to add jump to %s: %w", chainName, err)
+	base := []struct {
+		table, chain string
+		rule         []string
+		first        bool
+	}{
+		{"filter", forwardChain, []string{"-j", chainName}, true},
+		{"nat", "POSTROUTING", []string{"-s", natSource, "-j", "MASQUERADE"}, false},
 	}
-
-	// Add global MASQUERADE rule for the 10.200.0.0/16 range, unless it exists
-	if err := ipt.AppendUnique(
-		"nat",
-		"POSTROUTING",
-		"-s",
-		natSource,
-		"-j",
-		"MASQUERADE",
-	); err != nil {
-		return fmt.Errorf("failed to add MASQUERADE rule: %w", err)
+	for _, r := range base {
+		ok, err := ipt.Exists(r.table, r.chain, r.rule...)
+		if err != nil {
+			return fmt.Errorf("failed to check %s %s: %w", r.chain, strings.Join(r.rule, " "), err)
+		}
+		if ok {
+			continue
+		}
+		if exists {
+			logger.Warnf("Restoring %s %s", r.chain, strings.Join(r.rule, " "))
+		}
+		if r.first {
+			err = ipt.Insert(r.table, r.chain, 1, r.rule...)
+		} else {
+			err = ipt.Append(r.table, r.chain, r.rule...)
+		}
+		if err != nil {
+			return fmt.Errorf("failed to add %s %s: %w", r.chain, strings.Join(r.rule, " "), err)
+		}
 	}
+	return syncVethRules(ipt, veths, exact)
+}
 
-	logger.Infof("Initialized iptables chain %s", chainName)
-	return nil
+// syncVethRules adds the forwarding rules of veths to TSLINK-FORWARD and,
+// with exact, removes those of other interfaces.
+func syncVethRules(ipt *iptables.IPTables, veths []string, exact bool) error {
+	listed, err := ipt.List("filter", chainName)
+	if err != nil {
+		return fmt.Errorf("failed to list chain %s: %w", chainName, err)
+	}
+	var order []string
+	want := map[string][]string{}
+	for _, veth := range veths {
+		for _, dir := range []string{"-i", "-o"} {
+			rule := []string{dir, veth, "-j", "ACCEPT"}
+			line := "-A " + chainName + " " + strings.Join(rule, " ")
+			order = append(order, line)
+			want[line] = rule
+		}
+	}
+	var errs []error
+	for _, line := range listed {
+		rule, ok := strings.CutPrefix(line, "-A "+chainName+" ")
+		if !ok {
+			continue
+		}
+		if _, keep := want[line]; keep {
+			delete(want, line)
+			continue
+		}
+		if exact {
+			logger.Debugf("Removing %s %s", chainName, rule)
+			if err := ipt.Delete("filter", chainName, strings.Fields(rule)...); err != nil {
+				errs = append(errs, fmt.Errorf("failed to remove %s %s: %w", chainName, rule, err))
+			}
+		}
+	}
+	for _, line := range order {
+		if rule, ok := want[line]; ok {
+			if err := ipt.Append("filter", chainName, rule...); err != nil {
+				errs = append(errs, fmt.Errorf("failed to add %s: %w", line, err))
+			}
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// syncForwarding makes TSLINK-FORWARD hold the forwarding rules of the veths
+// in tslink's veth range, and restores the jump to it and MASQUERADE.
+func syncForwarding(ipt *iptables.IPTables) error {
+	forwardMu.Lock()
+	defer forwardMu.Unlock()
+	veths, err := tslinkVeths()
+	if err != nil {
+		return err
+	}
+	return ensureForwarding(ipt, veths, true)
+}
+
+// tslinkVeths returns the links of the current network namespace with an
+// address in tslink's veth range, the host ends of its veths, sorted.
+func tslinkVeths() ([]string, error) {
+	addrs, err := netlink.AddrList(nil, syscall.AF_INET)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list addresses: %w", err)
+	}
+	var names []string
+	for _, a := range addrs {
+		ip, ok := netip.AddrFromSlice(a.IP.To4())
+		if !ok || !vethRange.Contains(ip) {
+			continue
+		}
+		link, err := netlink.LinkByIndex(a.LinkIndex)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get link %d: %w", a.LinkIndex, err)
+		}
+		names = append(names, link.Attrs().Name)
+	}
+	slices.Sort(names)
+	return slices.Compact(names), nil
 }
 
 // CleanupNAT removes the FORWARD rules and the port mapping for a specific
@@ -462,6 +546,7 @@ func CleanupNAT(vethHost string) error {
 	}
 
 	// Remove FORWARD rules from our custom chain (ignore errors if rules don't exist)
+	forwardMu.Lock()
 	if err := ipt.DeleteIfExists("filter", chainName, "-i", vethHost, "-j", "ACCEPT"); err != nil {
 		logger.Debugf("FORWARD -i rule not found for %s (already cleaned): %v", vethHost, err)
 	}
@@ -469,60 +554,12 @@ func CleanupNAT(vethHost string) error {
 	if err := ipt.DeleteIfExists("filter", chainName, "-o", vethHost, "-j", "ACCEPT"); err != nil {
 		logger.Debugf("FORWARD -o rule not found for %s (already cleaned): %v", vethHost, err)
 	}
+	forwardMu.Unlock()
 
 	if err := removePortMapping(ipt, vethHost); err != nil {
 		logger.Warnf("Failed to remove the WireGuard port mapping behind %s: %v", vethHost, err)
 	}
 
 	logger.Debugf("NAT cleanup complete for %s", vethHost)
-	return nil
-}
-
-// CleanupAllNAT removes the entire custom chain and all its rules.
-// This is useful for complete plugin cleanup.
-func CleanupAllNAT() error {
-	logger.Infof("Cleaning up all NAT rules")
-
-	if ipt, err := iptables.New(); err != nil {
-		logger.Debugf("Failed to initialize iptables, NAT rules not cleaned: %v", err)
-	} else {
-		// Remove jump rule from FORWARD
-		if err := ipt.DeleteIfExists("filter", "FORWARD", "-j", chainName); err != nil {
-			logger.Debugf("No jump rule to %s found (may already be cleaned): %v", chainName, err)
-		}
-
-		// Flush and delete our custom chain
-		if err := ipt.ClearAndDeleteChain("filter", chainName); err != nil {
-			logger.Debugf("Failed to delete chain %s (may not exist): %v", chainName, err)
-		}
-
-		// Remove MASQUERADE rule
-		if err := ipt.DeleteIfExists(
-			"nat",
-			"POSTROUTING",
-			"-s",
-			natSource,
-			"-j",
-			"MASQUERADE",
-		); err != nil {
-			logger.Debugf("No MASQUERADE rule found (may already be cleaned): %v", err)
-		}
-
-		// iptables cannot look for a jump to a chain that does not exist
-		if exists, err := ipt.ChainExists("nat", portMapChain); err == nil && exists {
-			if err := ipt.DeleteIfExists("nat", "POSTROUTING", "-j", portMapChain); err != nil {
-				logger.Debugf("No jump to %s found: %v", portMapChain, err)
-			}
-			if err := ipt.ClearAndDeleteChain("nat", portMapChain); err != nil {
-				logger.Debugf("Failed to delete chain %s: %v", portMapChain, err)
-			}
-		}
-	}
-
-	chainMu.Lock()
-	chainInitialized = false
-	chainMu.Unlock()
-
-	logger.Infof("All NAT rules cleaned up")
 	return nil
 }

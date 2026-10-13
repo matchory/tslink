@@ -72,7 +72,6 @@ func natTopology(t *testing.T, id string) (string, [2]string, string) {
 	}
 
 	if err := inNetNS(hostNS, func() error {
-		resetChainInitialized()
 		if err := SetupNAT("vethtp0"); err != nil {
 			return err
 		}

@@ -22,6 +22,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it without pausing.
 - A container that left while its node was starting could keep its readiness
   endpoint (`tslink.health`) listening, and its network namespace alive.
+- After a firewall reload or `iptables -F` removed them, tslink's forwarding
+  rules and MASQUERADE of its veth range came back only when a container
+  joined after a plugin restart, and containers' tailscaled lost its
+  connections until then. The watchdog now restores them every minute.
+
+### Security
+
+- Repairing the isolation chains (G1, G2), after a firewall reload or another
+  program changed them, emptied each chain and added its rules back one by
+  one, and moved the jump to it by deleting and inserting it: for those
+  moments, containers reached the host's tailnet addresses and each other's
+  veth addresses. Each repair is now a single `iptables-restore` transaction.
 
 ## [0.2.3] - 2026-10-13
 

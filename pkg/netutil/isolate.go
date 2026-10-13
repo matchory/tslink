@@ -67,6 +67,12 @@ func wireGuardInputRule(r PortRange) []string {
 	}
 }
 
+// The built-in chains tslink jumps from.
+const (
+	forwardChain = "FORWARD"
+	inputChain   = "INPUT"
+)
+
 // dportFlag is iptables' destination port match flag.
 const dportFlag = "--dport"
 
@@ -181,41 +187,50 @@ func setupIsolation(f isolationFamily, ifcs []string) error {
 		return fmt.Errorf("failed to initialize iptables: %w", err)
 	}
 	for _, c := range []struct{ chain, from string }{
-		{isolateForwardChain, "FORWARD"},
-		{isolateInputChain, "INPUT"},
+		{isolateForwardChain, forwardChain},
+		{isolateInputChain, inputChain},
 	} {
-		if err := ensureChain(ipt, c.chain, f.rules(c.chain, ifcs)); err != nil {
-			return err
-		}
-		if err := ensureFirstJump(ipt, c.from, c.chain); err != nil {
+		if err := ensureFirstChain(ipt, c.from, c.chain, f.rules(c.chain, ifcs)); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// ensureChain makes chain in the mangle table hold exactly rules, rewriting
-// it only if it does not.
-func ensureChain(ipt *iptables.IPTables, chain string, rules [][]string) error {
+// ensureFirstChain makes chain in the mangle table hold exactly rules, and a
+// jump to it the first rule of the built-in chain from, so no rule ahead of it
+// accepts the traffic first. What is not in place is written in one
+// iptables-restore: emptying the chain and adding its rules one by one, or
+// deleting the jump and inserting it again, would let through for a moment
+// what the chain drops.
+func ensureFirstChain(ipt *iptables.IPTables, from, chain string, rules [][]string) error {
+	w := chainWrite{table: "mangle", chain: chain, rules: rules, setRules: true}
 	exists, err := ipt.ChainExists("mangle", chain)
 	if err != nil {
 		return fmt.Errorf("failed to check chain %s: %w", chain, err)
 	}
 	if exists {
 		ok, err := chainHolds(ipt, chain, rules)
-		if err != nil || ok {
+		if err != nil {
 			return err
 		}
-		logger.Warnf("Restoring the rules of %s", chain)
-	}
-	// Creates the chain, or empties it
-	if err := ipt.ClearChain("mangle", chain); err != nil {
-		return fmt.Errorf("failed to clear chain %s: %w", chain, err)
-	}
-	for _, rule := range rules {
-		if err := ipt.Append("mangle", chain, rule...); err != nil {
-			return fmt.Errorf("failed to add rule to %s: %w", chain, err)
+		if !ok {
+			logger.Warnf("Restoring the rules of %s", chain)
 		}
+		w.setRules = !ok
+	}
+	first, jumps, err := jumpPosition(ipt, from, chain)
+	if err != nil {
+		return err
+	}
+	if !first {
+		w.from, w.jumpExists = from, jumps
+	}
+	if !w.setRules && w.from == "" {
+		return nil
+	}
+	if err := applyChainWrite(ipt, w); err != nil {
+		return fmt.Errorf("failed to write %s: %w", chain, err)
 	}
 	return nil
 }
@@ -239,36 +254,33 @@ func chainHolds(ipt *iptables.IPTables, chain string, rules [][]string) (bool, e
 	return true, nil
 }
 
-// ensureFirstJump makes a jump to chain the first rule of the built-in chain
-// from, so no rule ahead of it accepts the traffic first.
-func ensureFirstJump(ipt *iptables.IPTables, from, chain string) error {
+// jumpPosition reports whether the built-in chain from jumps to chain first,
+// and whether it jumps to it at all.
+func jumpPosition(ipt *iptables.IPTables, from, chain string) (bool, bool, error) {
 	listed, err := ipt.List("mangle", from)
 	if err != nil {
-		return fmt.Errorf("failed to list chain %s: %w", from, err)
+		return false, false, fmt.Errorf("failed to list chain %s: %w", from, err)
 	}
+	jump := "-A " + from + " -j " + chain
 	// After "-P <chain> <policy>", the leading rules may be jumps to any of
 	// tslink's chains, so two of them do not keep pushing each other down
+	leading := true
 	for _, rule := range listed[min(1, len(listed)):] {
-		target, ok := strings.CutPrefix(rule, "-A "+from+" -j ")
-		if !ok || !slices.Contains(tslinkChains, target) {
-			break
+		if leading {
+			target, ok := strings.CutPrefix(rule, "-A "+from+" -j ")
+			leading = ok && slices.Contains(tslinkChains, target)
 		}
-		if target == chain {
-			return nil
+		if rule == jump {
+			return leading, true, nil
 		}
 	}
-	if err := ipt.DeleteIfExists("mangle", from, "-j", chain); err != nil {
-		return fmt.Errorf("failed to move jump to %s: %w", chain, err)
-	}
-	if err := ipt.Insert("mangle", from, 1, "-j", chain); err != nil {
-		return fmt.Errorf("failed to add jump to %s: %w", chain, err)
-	}
-	return nil
+	return false, false, nil
 }
 
 // SetupVethIsolation installs the veth isolation, or restores it, letting
 // only replies and UDP to port from tslink's veths through to them. It also
-// installs TSLINK-WG-IN and syncs the veths' WireGuard port mappings
+// installs TSLINK-WG-IN, restores the veths' forwarding and MASQUERADE
+// (syncForwarding) and syncs their WireGuard port mappings
 // (SyncPortMappings). IPv4 only: the veths have no other addresses than
 // link-local IPv6 ones. It changes nothing that is in place, so it can run
 // periodically.
@@ -285,18 +297,17 @@ func SetupVethIsolation(port int) error {
 		{"-i", "veth+", "-d", dst, "-p", "udp", dportFlag, strconv.Itoa(port), "-j", returnTarget},
 		{"-d", dst, "-j", dropTarget},
 	}
-	if err := ensureChain(ipt, vethIsolateChain, rules); err != nil {
-		return err
-	}
-	if err := ensureFirstJump(ipt, "FORWARD", vethIsolateChain); err != nil {
+	if err := ensureFirstChain(ipt, forwardChain, vethIsolateChain, rules); err != nil {
 		return err
 	}
 	input := [][]string{wireGuardInputRule(configuredPorts())}
-	if err := ensureChain(ipt, wireGuardInputChain, input); err != nil {
+	if err := ensureFirstChain(ipt, inputChain, wireGuardInputChain, input); err != nil {
 		return err
 	}
-	if err := ensureFirstJump(ipt, "INPUT", wireGuardInputChain); err != nil {
-		return err
+	// So do the forwarding and MASQUERADE the veths need, which a firewall
+	// reload removes as well
+	if err := syncForwarding(ipt); err != nil {
+		return fmt.Errorf("forwarding: %w", err)
 	}
 	// It runs when the plugin starts and on every watchdog run, as the port
 	// mappings of the veths need to
@@ -317,8 +328,8 @@ func RemoveHostIsolation() error {
 			continue
 		}
 		for _, c := range []struct{ chain, from string }{
-			{isolateForwardChain, "FORWARD"},
-			{isolateInputChain, "INPUT"},
+			{isolateForwardChain, forwardChain},
+			{isolateInputChain, inputChain},
 		} {
 			// iptables cannot look for a jump to a chain that does not exist,
 			// and there is none

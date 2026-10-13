@@ -59,7 +59,6 @@ func lanTopology(t *testing.T, id string) [2]lanHost {
 	for i := range hosts {
 		veth := fmt.Sprintf("vethln%d", i)
 		if err := inNetNS(hosts[i].ns, func() error {
-			resetChainInitialized()
 			if err := SetupNAT(veth); err != nil {
 				return err
 			}

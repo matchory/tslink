@@ -2,6 +2,7 @@ package core
 
 import (
 	"fmt"
+	"log/slog"
 	"net/netip"
 	"os"
 	"strconv"
@@ -34,6 +35,9 @@ type Config struct {
 	// their external port, so nodes on hosts that share a network go direct
 	// over it (see netutil.HostEndpointAddrs)
 	HostEndpoints netutil.HostEndpointsConfig
+
+	// LogLevel is the lowest level the plugin logs (see LogLevelSetting)
+	LogLevel slog.Level
 }
 
 // WireGuardPortsSetting is the plugin setting that sets the range of
@@ -56,6 +60,23 @@ func wireGuardPorts(v string) netutil.PortRange {
 		return netutil.DefaultPortRange
 	}
 	return r
+}
+
+// LogLevelSetting is the plugin setting of the lowest level the plugin logs:
+// debug, info, warn or error.
+const LogLevelSetting = "TSLINK_LOG_LEVEL"
+
+// logLevel parses LogLevelSetting. An invalid value keeps info.
+func logLevel(v string) slog.Level {
+	var l slog.Level
+	if v == "" {
+		return slog.LevelInfo
+	}
+	if err := l.UnmarshalText([]byte(v)); err != nil {
+		logger.Warnf("%s=%q: %v; keeping info", LogLevelSetting, v, err)
+		return slog.LevelInfo
+	}
+	return l
 }
 
 // HostEndpointsSetting is the plugin setting that selects HostEndpoints:
@@ -175,7 +196,9 @@ func LoadConfig() *Config {
 		StrictTagScope:     TagScopeStrict(os.Getenv(TagScopeSetting)),
 		WireGuardPorts:     wireGuardPorts(os.Getenv(WireGuardPortsSetting)),
 		HostEndpoints:      hostEndpoints(os.Getenv(HostEndpointsSetting)),
+		LogLevel:           logLevel(os.Getenv(LogLevelSetting)),
 	}
+	logger.SetLevel(cfg.LogLevel)
 	netutil.ConfigurePortMapping(tailscale.WireGuardPort, cfg.WireGuardPorts)
 	netutil.ConfigureHostEndpoints(cfg.HostEndpoints)
 

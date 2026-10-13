@@ -16,6 +16,9 @@ const maxLogBytes = 50 << 20
 // current is the logger in use: stdout until Init adds the log file.
 var current atomic.Pointer[slog.Logger]
 
+// level is the lowest level logged; info until SetLevel.
+var level slog.LevelVar
+
 func init() {
 	SetOutput(os.Stdout)
 }
@@ -38,7 +41,12 @@ func Get() *slog.Logger {
 
 // SetOutput sends the log to w instead.
 func SetOutput(w io.Writer) {
-	current.Store(slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	current.Store(slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: &level})))
+}
+
+// SetLevel sets the lowest level logged.
+func SetLevel(l slog.Level) {
+	level.Set(l)
 }
 
 // Debugf logs at debug level with printf-style formatting.

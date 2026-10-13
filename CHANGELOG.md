@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The plugin logs from the info level on, set by the new plugin setting
+  `TSLINK_LOG_LEVEL` (`debug`, `info`, `warn` or `error`). Before, it always
+  logged at the debug level.
 - The supervisor notices a crashed tailscaled as soon as it exits, and
   restarts it after its usual backoff. Before, it noticed the crash at its
   next health check, up to 5 seconds later.

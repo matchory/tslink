@@ -23,6 +23,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A container that left while its node was starting could keep its readiness
   endpoint (`tslink.health`) listening, and its network namespace alive.
 
+### Security
+
+- Repairing the isolation chains (G1, G2), after a firewall reload or another
+  program changed them, emptied each chain and added its rules back one by
+  one, and moved the jump to it by deleting and inserting it: for those
+  moments, containers reached the host's tailnet addresses and each other's
+  veth addresses. Each repair is now a single `iptables-restore` transaction.
+
 ## [0.2.3] - 2026-10-13
 
 ### Fixed

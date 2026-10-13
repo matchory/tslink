@@ -10,8 +10,7 @@ import (
 	"github.com/matchory/tslink/pkg/logger"
 )
 
-// streamingWriter keeps output and logs each line as it arrives, unless its
-// prefix is empty.
+// streamingWriter keeps output and logs each line as it arrives.
 type streamingWriter struct {
 	prefix string
 	buf    bytes.Buffer
@@ -24,7 +23,7 @@ func (w *streamingWriter) Write(p []byte) (int, error) {
 	defer w.mu.Unlock()
 
 	n, err := w.buf.Write(p)
-	if err != nil || w.prefix == "" {
+	if err != nil {
 		return n, err
 	}
 
@@ -51,7 +50,7 @@ func (w *streamingWriter) String() string {
 
 // cliCall is a run of the tailscale CLI.
 type cliCall struct {
-	prefix string // Logs the output line by line under prefix; empty logs nothing
+	prefix string // Logs the output line by line under prefix
 	stdin  string // The CLI's standard input
 	args   []string
 }
@@ -72,13 +71,9 @@ func execCLI(ctx context.Context, bin string, c cliCall) (cliOutput, error) {
 	cmd := exec.CommandContext(ctx, bin, c.args...)
 	cmd.Stdin = strings.NewReader(c.stdin)
 
-	stdout := &streamingWriter{}
-	stderr := &streamingWriter{}
-	if c.prefix != "" {
-		stdout.prefix = c.prefix + ":stdout"
-		stderr.prefix = c.prefix + ":stderr"
-		logger.Debugf("[%s] Running: %s %v", c.prefix, bin, c.args)
-	}
+	stdout := &streamingWriter{prefix: c.prefix + ":stdout"}
+	stderr := &streamingWriter{prefix: c.prefix + ":stderr"}
+	logger.Debugf("[%s] Running: %s %v", c.prefix, bin, c.args)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 

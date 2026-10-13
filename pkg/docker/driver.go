@@ -15,6 +15,7 @@ import (
 
 	"github.com/docker/go-plugins-helpers/network"
 	"github.com/moby/moby/api/types/container"
+	dockernetwork "github.com/moby/moby/api/types/network"
 	dockerclient "github.com/moby/moby/client"
 
 	"github.com/matchory/tslink/pkg/core"
@@ -455,6 +456,12 @@ func (d *Driver) RecoverEndpoints(ctx context.Context) error {
 		return fmt.Errorf("failed to list containers: %w", err)
 	}
 
+	// After the containers: a network their attachments name exists by now
+	networks, err := d.ownNetworks(ctx, ownNames)
+	if err != nil {
+		return err
+	}
+
 	recovered := 0
 	for _, container := range containerList.Items {
 		// Check each network the container is attached to
@@ -468,7 +475,7 @@ func (d *Driver) RecoverEndpoints(ctx context.Context) error {
 			}
 			if d.recoverAttachment(
 				ctx,
-				ownNames,
+				networks,
 				container.ID,
 				netName,
 				netSettings.NetworkID,
@@ -554,6 +561,28 @@ func (d *Driver) ownPluginNames(ctx context.Context) (map[string]bool, error) {
 		}
 	}
 	return names, nil
+}
+
+// ownNetworks returns the networks whose driver is one of ownNames, by ID,
+// from a single listing. Its entries carry all recovery uses of a network:
+// its ID, driver, options and labels.
+func (d *Driver) ownNetworks(
+	ctx context.Context,
+	ownNames map[string]bool,
+) (map[string]dockerclient.NetworkInspectResult, error) {
+	list, err := d.docker.NetworkList(ctx, dockerclient.NetworkListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list networks: %w", err)
+	}
+	networks := make(map[string]dockerclient.NetworkInspectResult)
+	for _, n := range list.Items {
+		if ownNames[n.Driver] {
+			networks[n.ID] = dockerclient.NetworkInspectResult{
+				Network: dockernetwork.Inspect{Network: n.Network},
+			}
+		}
+	}
+	return networks, nil
 }
 
 // onContainerInfo is called by the event watcher when container info is stored.
@@ -763,25 +792,16 @@ func (d *Driver) runWatchdog(ctx context.Context) {
 }
 
 // recoverAttachment recovers the container's endpoint on a network, if the
-// network is tslink's, and reports whether it recovered one the driver did not
-// know. A known endpoint that joined and was never started missed its connect
-// event: it starts Tailscale for it.
+// network is tslink's, one of networks, and reports whether it recovered one
+// the driver did not know. A known endpoint that joined and was never started
+// missed its connect event: it starts Tailscale for it.
 func (d *Driver) recoverAttachment(
 	ctx context.Context,
-	ownNames map[string]bool,
+	networks map[string]dockerclient.NetworkInspectResult,
 	containerID, netName, networkID, endpointID string,
 ) bool {
-	// Check if this network uses our driver
-	networkResult, err := d.docker.NetworkInspect(
-		ctx,
-		networkID,
-		dockerclient.NetworkInspectOptions{},
-	)
-	if err != nil {
-		logger.Debugf("RecoverEndpoints: failed to inspect network %s: %v", networkID[:12], err)
-		return false
-	}
-	if !ownNames[networkResult.Network.Driver] {
+	networkResult, ok := networks[networkID]
+	if !ok {
 		return false
 	}
 

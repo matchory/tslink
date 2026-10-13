@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -481,6 +482,44 @@ func TestRecoverEndpoints(t *testing.T) {
 	td.noRun(t)
 }
 
+// A scan lists the networks once, instead of inspecting the network of every
+// attachment of every container on the host: the watchdog scans every minute.
+func TestRecoverEndpointsListsNetworksOnce(t *testing.T) {
+	fake := newFakeDocker()
+	opts := map[string]string{"tslink.authkey": "k"}
+	nets := []string{
+		fake.addNetwork("a", pluginName, opts, nil),
+		fake.addNetwork("b", pluginName, opts, nil),
+		fake.addNetwork("bridge", "bridge", nil, nil),
+	}
+	const containers = 3
+	for c := range containers {
+		name := "web" + strconv.Itoa(c)
+		var atts []attachment
+		for i, netID := range nets {
+			atts = append(atts, attachment{"net" + strconv.Itoa(i), netID, fakeID(name + netID)})
+		}
+		fake.addContainer(name, nil, atts...)
+	}
+	td := newTestDriver(t, fake)
+
+	if err := td.RecoverEndpoints(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	for range containers * 2 {
+		td.nextRun(t)
+	}
+	if n := fake.networkInspects(); n != 0 {
+		t.Errorf("inspected networks %d times, want none", n)
+	}
+	fake.mu.Lock()
+	lists := len(fake.networkLists)
+	fake.mu.Unlock()
+	if lists != 1 {
+		t.Errorf("listed networks %d times, want once", lists)
+	}
+}
+
 func TestRecoverEndpointsSkips(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -576,6 +615,11 @@ func TestRecoverEndpointsDockerErrors(t *testing.T) {
 	fake.listErr = errors.New("daemon starting")
 	if err := td.RecoverEndpoints(t.Context()); err == nil {
 		t.Error("RecoverEndpoints succeeded although listing containers failed")
+	}
+	fake.listErr = nil
+	fake.networkListErr = errors.New("daemon starting")
+	if err := td.RecoverEndpoints(t.Context()); err == nil {
+		t.Error("RecoverEndpoints succeeded although listing networks failed")
 	}
 }
 

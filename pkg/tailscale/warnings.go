@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/matchory/tslink/internal/ctxtime"
 	"github.com/matchory/tslink/pkg/logger"
 )
 
@@ -103,7 +104,7 @@ func (d *daemon) handleCertLine(line string) {
 func (d *daemon) watchCertExpiry(dir, domain string) {
 	for {
 		d.checkCertExpiry(dir, domain, time.Now())
-		if !sleep(d.ctx, d.config.times().certCheckInterval) {
+		if !ctxtime.Sleep(d.ctx, d.config.times().certCheckInterval) {
 			return
 		}
 	}

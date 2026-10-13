@@ -12,6 +12,7 @@ import (
 
 	"github.com/moby/moby/client/pkg/stringid"
 
+	"github.com/matchory/tslink/internal/ctxtime"
 	"github.com/matchory/tslink/pkg/logger"
 )
 
@@ -270,7 +271,7 @@ func (s *DaemonSupervisor) applyStartupJitter() {
 	jitter := time.Duration(rand.Int64N(int64(s.cfg.times().maxStartupJitter)))
 	if jitter > 0 {
 		logger.Debugf("Applying startup jitter: %v", jitter)
-		sleep(s.ctx, jitter)
+		ctxtime.Sleep(s.ctx, jitter)
 	}
 }
 
@@ -390,7 +391,7 @@ func (s *DaemonSupervisor) waitBeforeRestart() bool {
 		s.signalStartup(errors.New("crash loop detected"))
 		s.stopDaemon()
 
-		if !sleep(s.ctx, cooldown) {
+		if !ctxtime.Sleep(s.ctx, cooldown) {
 			return false
 		}
 		s.mu.Lock()
@@ -402,7 +403,7 @@ func (s *DaemonSupervisor) waitBeforeRestart() bool {
 	delay := s.nextBackoff()
 	logger.Infof("Restarting tailscaled in %v (attempt %d)", delay, s.restartCount+1)
 
-	return sleep(s.ctx, delay)
+	return ctxtime.Sleep(s.ctx, delay)
 }
 
 // startDaemon creates and starts a new daemon instance.

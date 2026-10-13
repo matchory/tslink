@@ -18,6 +18,7 @@ import (
 	dockerclient "github.com/moby/moby/client"
 	"github.com/moby/moby/client/pkg/stringid"
 
+	"github.com/matchory/tslink/internal/ctxtime"
 	"github.com/matchory/tslink/pkg/core"
 	"github.com/matchory/tslink/pkg/logger"
 	"github.com/matchory/tslink/pkg/netutil"
@@ -387,10 +388,7 @@ func (d *Driver) Shutdown(ctx context.Context) error {
 	}
 	drains.Wait()
 	if len(endpoints) > 0 {
-		select {
-		case <-ctx.Done():
-		case <-time.After(drainGrace):
-		}
+		ctxtime.Sleep(ctx, drainGrace)
 	}
 
 	// Each stop can take seconds, tailscaled's grace period: stop the
@@ -512,12 +510,7 @@ func (d *Driver) start() {
 	d.wg.Go(func() {
 		// Every second until it works: tasks have no tailnet until recovered,
 		// and the Docker API may still be starting after a host reboot
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(time.Second):
-			}
+		for ctxtime.Sleep(ctx, time.Second) {
 			err := d.RecoverEndpoints(ctx)
 			if err == nil {
 				d.collectGarbage(ctx)
@@ -757,10 +750,8 @@ func applyHostIsolation(on bool, bridges []string) error {
 // initial recovery.
 func (d *Driver) runWatchdog(ctx context.Context) {
 	// Wait before first check (let initial recovery complete)
-	select {
-	case <-ctx.Done():
+	if !ctxtime.Sleep(ctx, watchdogInterval) {
 		return
-	case <-time.After(watchdogInterval):
 	}
 
 	ticker := time.NewTicker(watchdogInterval)

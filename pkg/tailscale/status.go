@@ -8,6 +8,7 @@ import (
 
 	"tailscale.com/ipn/ipnstate"
 
+	"github.com/matchory/tslink/internal/ctxtime"
 	"github.com/matchory/tslink/pkg/logger"
 )
 
@@ -34,7 +35,7 @@ func (d *daemon) WaitForIP(ctx context.Context) (*Status, error) {
 		status = s
 		return true
 	}
-	if poll(ctx, 500*time.Millisecond, hasIP) {
+	if ctxtime.Poll(ctx, 500*time.Millisecond, hasIP) {
 		return status, nil
 	}
 	if errors.Is(ctx.Err(), context.Canceled) {

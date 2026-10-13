@@ -20,6 +20,7 @@ import (
 	"github.com/moby/moby/client/pkg/stringid"
 	"golang.org/x/sys/unix"
 
+	"github.com/matchory/tslink/internal/ctxtime"
 	"github.com/matchory/tslink/pkg/core"
 	"github.com/matchory/tslink/pkg/logger"
 	"github.com/matchory/tslink/pkg/tailscale"
@@ -228,13 +229,11 @@ func backOff(ctx context.Context, err error) bool {
 		return false
 	}
 	logger.Warnf("Event stream error: %v, reconnecting in 1s...", err)
-	select {
-	case <-ctx.Done():
+	if !ctxtime.Sleep(ctx, time.Second) {
 		logger.Infof("Event watcher context cancelled during backoff")
 		return false
-	case <-time.After(1 * time.Second):
-		return true
 	}
+	return true
 }
 
 // handleConnect handles a container connecting to a tslink network: it

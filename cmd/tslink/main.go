@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -60,8 +61,14 @@ func runPlugin() {
 	// A second signal is ignored, as the shutdown is under way
 	stopped, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 
+	// Set before stop when the server failed: that is no signal, and the
+	// process exits rather than shut down
+	var serveFailed atomic.Bool
 	go func() {
 		<-stopped.Done()
+		if serveFailed.Load() {
+			return
+		}
 		logger.Infof("Shutting down gracefully: %v", context.Cause(stopped))
 
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(stopped), 30*time.Second)
@@ -79,6 +86,7 @@ func runPlugin() {
 
 	logger.Infof("Listening on %s", socketAddress)
 	err = handler.ServeUnix(socketAddress, 0)
+	serveFailed.Store(true)
 	stop()
 	if err != nil {
 		logger.Errorf("Failed to serve: %v", err)

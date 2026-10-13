@@ -25,22 +25,19 @@ import (
 type Endpoint struct {
 	mu sync.RWMutex // Protects concurrent access to mutable fields
 
-	// Fixed when the endpoint is created
+	// Fixed when the endpoint is created: read without the lock
 	ID          string
 	Network     *Network
 	IPAMAddress string // Docker's IPAM address for the endpoint, or ""
+	dataDir     string // Base data directory for state
+	sharedDir   string // Directory shared between hosts; empty for none
 
 	hostname    string
-	tags        []string                  // ACL tags for tailscale up --advertise-tags
-	service     string                    // Service name (e.g., "svc:hello-world")
-	endpoints   []tailscale.ServeEndpoint // Parsed tslink.serve.<port> labels
-	direct      bool                      // Serve the endpoints on the task's own name too
+	service     string // Service name (e.g., "svc:hello-world")
 	tailscaleIP string
 	vethName    string
 	stateDir    string
 	sandboxKey  string // Container's network namespace path, stored during Join
-	dataDir     string // Base data directory for state
-	sharedDir   string // Directory shared between hosts; empty for none
 
 	claims           *StateClaims // The driver's state directory claims
 	supervisor       *tailscale.DaemonSupervisor
@@ -119,7 +116,6 @@ func NewEndpoint(
 		ID:          id,
 		Network:     net,
 		hostname:    hostname,
-		direct:      true, // Default to direct serve enabled
 		stateDir:    stateDir,
 		dataDir:     cfg.DataDir,
 		sharedDir:   cfg.SharedDir,
@@ -390,10 +386,7 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 	e.supervisor = supervisor
 	e.tailscaleIP = tailscaleIP
 	e.hostname = info.Hostname
-	e.tags = tags
 	e.service = info.Service
-	e.endpoints = info.Endpoints
-	e.direct = info.Direct
 	e.stateDir = stateDir
 	e.tailscaleStarted = true
 	e.mu.Unlock()
@@ -895,6 +888,7 @@ func (e *Endpoint) releaseStateDir() {
 // plugin, not because its container left.
 func (e *Endpoint) abandonStart() {
 	e.mu.Lock()
+	// The start in flight is this one: it releases the state directory below
 	supervisor, _ := e.takeSupervisorLocked()
 	e.mu.Unlock()
 	if supervisor != nil {

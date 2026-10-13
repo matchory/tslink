@@ -288,7 +288,7 @@ func (s *DaemonSupervisor) applyStartupJitter() {
 	jitter := time.Duration(rand.Int64N(int64(maxStartupJitter)))
 	if jitter > 0 {
 		logger.Debugf("Applying startup jitter: %v", jitter)
-		time.Sleep(jitter)
+		sleep(s.ctx, jitter)
 	}
 }
 

@@ -266,10 +266,8 @@ func (d *Daemon) requestCert(dir, domain string) error {
 				advertised = true
 			}
 		}
-		select {
-		case <-d.ctx.Done():
+		if !sleep(d.ctx, certPollInterval) {
 			return d.ctx.Err()
-		case <-time.After(certPollInterval):
 		}
 	}
 	return nil
@@ -322,25 +320,21 @@ func ignoreDrained(err error) error {
 }
 
 func (d *Daemon) configureServiceAfterCert(dir, domain string) {
-	for {
+	poll(d.ctx, certPollInterval, func() bool {
 		err := d.configureServiceWithCert(dir, domain)
 		if errors.Is(err, errDrained) {
 			logger.Infof("%s drained for %s: no longer waiting for the certificate for %s",
 				d.config.Service, d.config.EndpointID, domain)
-			return
+			return true
 		}
 		if err == nil || d.ctx.Err() != nil {
-			return
+			return true
 		}
 		if !errors.Is(err, errLeaseHeld) {
 			logger.Warnf("Failed to configure %s, retrying: %v", d.config.Service, err)
 		}
-		select {
-		case <-d.ctx.Done():
-			return
-		case <-time.After(certPollInterval):
-		}
-	}
+		return false
+	})
 }
 
 // configureServiceWithCert configures the Service if its certificate exists,

@@ -103,14 +103,10 @@ func (d *Daemon) handleCertLine(line string) {
 // watchCertExpiry checks the certificate for domain in dir at once and then
 // every certCheckInterval, until the daemon stops.
 func (d *Daemon) watchCertExpiry(dir, domain string) {
-	for {
+	poll(d.ctx, certCheckInterval, func() bool {
 		d.checkCertExpiry(dir, domain, time.Now())
-		select {
-		case <-d.ctx.Done():
-			return
-		case <-time.After(certCheckInterval):
-		}
-	}
+		return false
+	})
 }
 
 // checkCertExpiry warns if the certificate for domain in dir expires within

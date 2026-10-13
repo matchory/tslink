@@ -153,17 +153,22 @@ var runLogout = func(ctx context.Context, tailscaledBin, workDir, socket string)
 
 	lc := &local.Client{Socket: socket, UseSocketOnly: true}
 	// The LocalAPI answers once the backend has started
-	for {
-		if _, err := lc.StatusWithoutPeers(ctx); err == nil {
-			break
-		}
+	gone := false
+	started := func() bool {
 		select {
-		case <-ctx.Done():
-			return fmt.Errorf("tailscaled did not start: %w", ctx.Err())
 		case <-exited:
-			return errors.New("tailscaled exited before logging out")
-		case <-time.After(200 * time.Millisecond):
+			gone = true
+			return true
+		default:
 		}
+		_, err := lc.StatusWithoutPeers(ctx)
+		return err == nil
+	}
+	if !poll(ctx, 200*time.Millisecond, started) {
+		return fmt.Errorf("tailscaled did not start: %w", ctx.Err())
+	}
+	if gone {
+		return errors.New("tailscaled exited before logging out")
 	}
 	if err := lc.Logout(ctx); err != nil {
 		return fmt.Errorf("tailscale logout failed: %w", err)

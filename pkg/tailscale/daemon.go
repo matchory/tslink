@@ -598,25 +598,22 @@ func (d *Daemon) waitForSocket() error {
 	ctx, cancel := context.WithTimeout(d.ctx, 10*time.Second)
 	defer cancel()
 
-	for {
-		select {
-		case <-ctx.Done():
-			if err := d.ctx.Err(); err != nil {
-				return err
-			}
-			return errors.New("timeout waiting for tailscaled socket")
-		default:
-			if _, err := os.Stat(d.socketPath); err == nil {
-				logger.Infof("tailscaled socket is ready")
-				// Give it a bit more time to fully initialize
-				if !sleep(d.ctx, 500*time.Millisecond) {
-					return d.ctx.Err()
-				}
-				return nil
-			}
-			sleep(ctx, 100*time.Millisecond)
-		}
+	exists := func() bool {
+		_, err := os.Stat(d.socketPath)
+		return err == nil
 	}
+	if !poll(ctx, 100*time.Millisecond, exists) {
+		if err := d.ctx.Err(); err != nil {
+			return err
+		}
+		return errors.New("timeout waiting for tailscaled socket")
+	}
+	logger.Infof("tailscaled socket is ready")
+	// Give it a bit more time to fully initialize
+	if !sleep(d.ctx, 500*time.Millisecond) {
+		return d.ctx.Err()
+	}
+	return nil
 }
 
 // killProcess stops tailscaled: SIGTERM, then SIGKILL if it is still running
@@ -672,6 +669,17 @@ func killError(err error) error {
 		return nil
 	}
 	return err
+}
+
+// poll calls fn at once and then every interval until it reports done, or
+// until ctx is done. It reports whether fn did.
+func poll(ctx context.Context, interval time.Duration, fn func() bool) bool {
+	for !fn() {
+		if !sleep(ctx, interval) {
+			return false
+		}
+	}
+	return true
 }
 
 // sleep waits for d, or until ctx is done. It reports whether it slept the

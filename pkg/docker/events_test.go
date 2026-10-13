@@ -1,6 +1,7 @@
 package docker
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/matchory/tslink/pkg/core"
@@ -187,5 +188,26 @@ func TestParseContainerInfoHealth(t *testing.T) {
 	}
 	if info := parseContainerInfo("web", nil); info.HealthPort != 0 {
 		t.Errorf("without the label: HealthPort = %d", info.HealthPort)
+	}
+}
+
+// Serve endpoints come in the order of their ports, whatever the order of
+// the labels.
+func TestParseServeEndpointsInPortOrder(t *testing.T) {
+	labels := map[string]string{
+		"tslink.serve.8443": "https:8443",
+		"tslink.serve.443":  "https:8080",
+		"tslink.serve.80":   "http:8080",
+		"tslink.serve.5432": "tcp",
+		"tslink.serve.22":   "tcp",
+	}
+	for range 10 {
+		var got []string
+		for _, ep := range parseServeEndpoints(labels) {
+			got = append(got, ep.Port)
+		}
+		if want := []string{"22", "80", "443", "5432", "8443"}; !slices.Equal(got, want) {
+			t.Fatalf("ports %v, want %v", got, want)
+		}
 	}
 }

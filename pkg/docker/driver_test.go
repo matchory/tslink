@@ -468,6 +468,7 @@ func TestRecoverEndpoints(t *testing.T) {
 
 	r := td.nextRun(t)
 	if r.endpointID != epID || r.info.Name != "billing_api.1.abc" ||
+		r.info.ID != fakeID("container/billing_api.1.abc") ||
 		r.info.Hostname != "billing-api-1-abc" ||
 		r.info.Stack != "billing" ||
 		r.info.NetworkStack != "billing" ||

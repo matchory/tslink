@@ -1,6 +1,7 @@
 package core
 
 import (
+	"errors"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -63,6 +64,30 @@ func TestStartTailscaleRejectsForeignStack(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "does not match network stack") {
 			t.Errorf("stack %q: got %v, want stack mismatch error", stack, err)
 		}
+	}
+}
+
+// A Service without serve endpoints fails before the endpoint claims or
+// creates a state directory.
+func TestStartTailscaleRejectsServiceWithoutEndpoints(t *testing.T) {
+	dataDir := t.TempDir()
+	claims := NewStateClaims()
+	e := &Endpoint{
+		ID:         "0123456789abcdef",
+		Network:    &Network{ID: "net", AuthKey: "tskey-test"},
+		sandboxKey: "/var/run/docker/netns/test",
+		dataDir:    dataDir,
+		claims:     claims,
+	}
+	err := e.StartTailscale(&ContainerInfo{Hostname: "web", Service: "svc:web"})
+	if _, ok := errors.AsType[permanentError](err); !ok {
+		t.Fatalf("got %v, want a permanent error", err)
+	}
+	if entries, err := os.ReadDir(dataDir); err != nil || len(entries) != 0 {
+		t.Errorf("data directory holds %v (%v), want nothing", entries, err)
+	}
+	if e.StateDir() != "" {
+		t.Errorf("state directory %q, want none", e.StateDir())
 	}
 }
 

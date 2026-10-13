@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- A kill event of a container on no tslink network no longer costs a Docker
+  inspect: tslink inspects only containers whose connect event or recovery
+  it saw, to find whether the signal stops them.
+- `tslink.serve.<port>` endpoints are configured in the order of their
+  ports, rather than in an order that changed from one start to the next.
+- A `tslink.serve.<port>` label with an unknown protocol is logged as a
+  warning, not only at debug level; the endpoint is still ignored.
+
+### Fixed
+
+- `tslink.service` without a `tslink.serve.<port>` label fails before the
+  endpoint takes a state directory, instead of claiming one first.
+
 ## [0.2.4] - 2026-10-13
 
 ### Changed

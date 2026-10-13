@@ -59,7 +59,8 @@ func TestEventStartsTailscaleWithContainerName(t *testing.T) {
 		t.Fatalf("handled endpoint %s, want %s", id[:12], s.epID[:12])
 	}
 	r := s.td.nextRun(t)
-	if r.endpointID != s.epID || r.info.Name != "billing_web.1.xyz" ||
+	if r.endpointID != s.epID || r.info.ID != s.containerID ||
+		r.info.Name != "billing_web.1.xyz" ||
 		r.info.Hostname != "billing-web-1-xyz" ||
 		r.info.Stack != "billing" ||
 		r.info.NetworkStack != "billing" ||
@@ -112,8 +113,9 @@ func TestEventsIgnored(t *testing.T) {
 	}
 }
 
-// A kill event with the container's stop signal reports that it is stopping,
-// so its Service backends drain; other signals, such as SIGHUP, do not.
+// A kill event with the stop signal of a container on a tslink network
+// reports that it is stopping, so its Service backends drain; other signals,
+// such as SIGHUP, do not, nor kills of containers on no tslink network.
 func TestKillEvents(t *testing.T) {
 	s := newEventSetup(t, true)
 	fake := s.td.fake
@@ -121,18 +123,23 @@ func TestKillEvents(t *testing.T) {
 	fake.mu.Lock()
 	fake.containers[len(fake.containers)-1].Config.StopSignal = "SIGQUIT"
 	fake.mu.Unlock()
-	marker := fakeID("marker")
+	marker := fake.addContainer("marker", nil, attachment{"billing_net", s.netID, fakeID("ep3")})
+	other := fake.addContainer("other", nil)
+	for _, id := range []string{s.containerID, quitter, marker} {
+		fake.send(t, connectEvent(s.netID, "billing_net", id))
+		receive(t, s.handled, "a connect event")
+	}
 
 	tests := []struct {
 		container, signal string
 		stops             bool
 	}{
-		{s.containerID, "1", false},  // SIGHUP: reload
-		{s.containerID, "15", true},  // docker stop
-		{s.containerID, "9", true},   // stop timeout
-		{quitter, "15", false},       // not its stop signal
-		{quitter, "3", true},         // SIGQUIT
-		{fakeID("gone"), "15", true}, // container gone: default stop signal
+		{s.containerID, "1", false}, // SIGHUP: reload
+		{s.containerID, "15", true}, // docker stop
+		{s.containerID, "9", true},  // stop timeout
+		{quitter, "15", false},      // not its stop signal
+		{quitter, "3", true},        // SIGQUIT
+		{other, "15", false},        // on no tslink network
 	}
 	var want []string
 	for _, tt := range tests {
@@ -227,23 +234,28 @@ func parseSince(t *testing.T, since string) time.Time {
 	return time.Unix(s, ns)
 }
 
-// A kill event inspects the container once, for its stop signal and its
-// networks both: kill events of every container on the host pass through the
-// event loop.
-func TestKillEventInspectsOnce(t *testing.T) {
+// A kill event inspects a container on a tslink network once, for its stop
+// signal and its networks both, and other containers not at all: kill events
+// of every container on the host pass through the event loop.
+func TestKillEventInspects(t *testing.T) {
 	s := newEventSetup(t, true)
 	fake := s.td.fake
 	other := fake.addContainer("other", nil)
+	fake.send(t, connectEvent(s.netID, "billing_net", s.containerID))
+	receive(t, s.handled, "the connect event")
+	before := fake.inspects(s.containerID)
 
-	fake.send(t, killEvent(s.containerID, "15"))
-	receive(t, s.stopped, "the stop")
 	fake.send(t, killEvent(other, "15"))
-	receive(t, s.stopped, "the stop of another container")
-
-	for name, id := range map[string]string{"tslink": s.containerID, "other": other} {
-		if n := fake.inspects(id); n != 1 {
-			t.Errorf("%s container inspected %d times, want once", name, n)
-		}
+	fake.send(t, killEvent(s.containerID, "15"))
+	// Events are handled in order: the other container's kill was handled
+	if id := receive(t, s.stopped, "the stop"); id != s.containerID {
+		t.Errorf("stop reported for %s, want %s", id[:12], s.containerID[:12])
+	}
+	if n := fake.inspects(s.containerID) - before; n != 1 {
+		t.Errorf("tslink container inspected %d times for its kill, want once", n)
+	}
+	if n := fake.inspects(other); n != 0 {
+		t.Errorf("other container inspected %d times, want never", n)
 	}
 }
 
@@ -268,6 +280,7 @@ func TestEventHandlersTimeOut(t *testing.T) {
 	fake.hangList = true
 	fake.mu.Unlock()
 
+	s.td.cache.Store(fakeID("ep3"), &core.ContainerInfo{ID: hung, Hostname: "hung"})
 	fake.send(t, killEvent(hung, "15"))
 	fake.send(t, connectEvent(s.netID, "billing_net", hung))
 	fake.send(t, connectEvent(hungNet, "hung_net", onHungNet))

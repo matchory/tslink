@@ -73,6 +73,7 @@ func (e permanentError) Unwrap() error { return e.error }
 
 // ContainerInfo holds information extracted from Docker container inspection.
 type ContainerInfo struct {
+	ID        string                    // Container ID
 	Name      string                    // Container name (without leading /)
 	Labels    map[string]string         // All container labels
 	Hostname  string                    // Parsed tslink.hostname label or container name
@@ -317,6 +318,11 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 	if err := checkStackScope(info, network, tags); err != nil {
 		return permanentError{err}
 	}
+	if info.Service != "" && len(info.Endpoints) == 0 {
+		return permanentError{
+			errors.New("tslink.service requires at least one tslink.serve.<port> endpoint"),
+		}
+	}
 	authKey := func() (string, error) { return network.Credential(dataDir) }
 
 	stateDir, err := e.prepareStateDir(info, network)
@@ -326,13 +332,6 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 
 	logger.Infof("StartTailscale: endpoint=%s hostname=%s service=%s endpoints=%d direct=%v",
 		endpointID[:12], info.Hostname, info.Service, len(info.Endpoints), info.Direct)
-
-	// Validate service configuration
-	if info.Service != "" && len(info.Endpoints) == 0 {
-		return permanentError{
-			errors.New("tslink.service requires at least one tslink.serve.<port> endpoint"),
-		}
-	}
 
 	tailscaleBin, tailscaledBin, err := tailscale.BundledBinaries()
 	if err != nil {

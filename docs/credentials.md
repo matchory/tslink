@@ -2,7 +2,7 @@
 
 The content of this page moved to the pages below.
 
-## Cluster credential (2026-10-07)
+## Cluster credential
 
 See [Deploy on Swarm](guides/deploy-on-swarm.md) and [Credentials](reference/credentials.md#cluster-credential).
 

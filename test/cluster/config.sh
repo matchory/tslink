@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 # config.sh: settings of the cluster tests, sourced by the helpers. Set any of them in the
-# environment to override it; the defaults are those of the original test bed.
+# environment to override it; the defaults suit a Swarm built by provision.sh.
 _here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 # The nodes: an SSH config whose Host entries (mgr, w1, ...) are the Swarm nodes
@@ -14,6 +14,9 @@ _here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # Tailscale API base URL and tailnet ("-" is the tailnet of the API client)
 : "${TSLINK_TEST_API:=https://api.tailscale.com/api/v2}"
 : "${TSLINK_TEST_TAILNET:=-}"
+# MTU of the stacks' tslink networks: the nodes' network MTU minus overlay overhead
+# (1450 suits the Hetzner provisioner's private network)
+: "${TSLINK_TEST_MTU:=1450}"
 # Power actions for disrupt's reset and poweroff: <script> reset|poweroff|poweron <node>
 : "${TSLINK_TEST_POWER:=$_here/hetzner-power}"
 unset _here

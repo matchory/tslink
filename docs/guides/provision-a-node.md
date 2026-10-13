@@ -84,8 +84,8 @@ Steps 7 and 8 need a clone of the tslink repository, at the tag of the release t
 5. If the host is in a Swarm, and you use one credential for all stacks, install the cluster credential. See
    [Deploy on Swarm](deploy-on-swarm.md).
 
-6. If the host is in a Swarm, share the certificate directory. Mount a volume that all hosts share, for example
-   GlusterFS or NFS. Then set it as the source of the plugin's `shared` mount:
+6. If the host is in a Swarm, share the certificate directory. Mount a filesystem that all hosts share and on which an
+   exclusive create is atomic, for example NFS. Then set it as the source of the plugin's `shared` mount:
 
    ```bash
    docker plugin disable tslink

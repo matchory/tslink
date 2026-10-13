@@ -35,5 +35,5 @@ networks:
   tailnet:
     driver: tslink:latest
     driver_opts:
-      com.docker.network.driver.mtu: "1450"
+      com.docker.network.driver.mtu: "${TSLINK_TEST_MTU:-1450}"
       tslink.tags: ${TSLINK_TEST_TAG:-tag:tslink-test}-callee

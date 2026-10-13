@@ -10,9 +10,8 @@ check that tslink's security guarantees hold for the commit, as
 2. The weekly fuzz run on `main` succeeded within the last 7 days:
    `test/security/report.sh` checks that it succeeded and how recently.
    Check by hand whether a failing input is still open.
-3. The red team ran on the testbed for this commit without a failure:
-   `test/security/testbed/provision.sh`, `test/security/redteam.sh`, then
-   `test/security/testbed/teardown.sh`.
+3. The red team ran on a disposable testbed host for this commit without a
+   failure: `test/security/redteam.sh` (see `test/security/testbed/README.md`).
 4. `test/security/report.sh` reports nothing missing. It writes the report
    outside the repository; keep it with the release's records.
 5. The guarantees marked `Manual:` in SECURITY.md were checked by hand.

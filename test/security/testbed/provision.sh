@@ -1,6 +1,6 @@
 #!/bin/bash
-# provision.sh: create the security testbed, one Hetzner Cloud server (cpx22,
-# Ubuntu 24.04, fsn1) in the project whose token is in
+# provision.sh -- Hetzner Cloud provisioner (optional): create the security
+# testbed, one Hetzner Cloud server (cpx22, Ubuntu 24.04, fsn1) in the project whose token is in
 # $TSLINK_TEST_DIR/hcloud.token, with a firewall that admits SSH from this
 # machine only. Writes $TSLINK_SEC_DIR/ssh_config. Everything is named and
 # labelled tslink-security; teardown.sh deletes it.

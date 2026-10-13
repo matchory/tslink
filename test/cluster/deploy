@@ -16,7 +16,8 @@ if grep -q TSLINK_TEST_VIP "$B/stacks/$st.yml"; then
 fi
 scp -q -F "$TSLINK_TEST_SSH_CONFIG" "$B/stacks/$st.yml" "${MGR:-mgr}:/root/$st.yml"
 {
-	printf 'TSLINK_TEST_TAG=%q\nTSLINK_TEST_SVC=%q\n' "$TSLINK_TEST_TAG" "$TSLINK_TEST_SVC"
+	printf 'TSLINK_TEST_TAG=%q\nTSLINK_TEST_SVC=%q\nTSLINK_TEST_MTU=%q\n' \
+		"$TSLINK_TEST_TAG" "$TSLINK_TEST_SVC" "$TSLINK_TEST_MTU"
 	printf 'TSLINK_TEST_PIN=%q\nTSLINK_TEST_VIP=%q\n' "${TSLINK_TEST_PIN:-}" "$vip"
 	if [ "$sec" != - ]; then
 		printf 'TSLINK_OAUTH_SECRET='

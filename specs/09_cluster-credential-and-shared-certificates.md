@@ -7,7 +7,7 @@
 
 ## Overview
 
-Today each stack carries its own OAuth client secret in its network options, which puts a non-expiring secret into
+In the per-stack model, each stack carries its own OAuth client secret in its network options, which puts a non-expiring secret into
 stack files, CI and `docker network inspect`, and means minting a client per stack. This spec adds one OAuth client
 for the whole cluster, read by the plugin from a file, so stacks name only their tags.
 
@@ -42,7 +42,7 @@ Plugin settings, set once per node by provisioning, and the same for every stack
 | Setting | Default | Description |
 | --- | --- | --- |
 | file `/var/lib/docker-plugins/tailscale/oauth-client.secret` | absent | The cluster's OAuth client secret (`tskey-client-…`, nothing appended), in the plugin's existing data mount |
-| mount `shared` source | `/var/lib/docker-plugins/tailscale` | Holds `certs/`. Defaults to the data directory, so certificates are kept per host; point it at a shared volume (GlusterFS, NFS) to share them across hosts: `docker plugin set tslink shared.source=/mnt/shared/tslink` |
+| mount `shared` source | `/var/lib/docker-plugins/tailscale` | Holds `certs/`. Defaults to the data directory, so certificates are kept per host; point it at a filesystem all hosts share (for example NFS) to share them across hosts: `docker plugin set tslink shared.source=/mnt/shared/tslink` |
 | `TS_DEBUG_ACME_DIRECTORY_URL` | empty | Passed through to tailscaled. Test hook: point it at Let's Encrypt staging |
 | `SSL_CERT_FILE` | empty | Root certificates for tslink and tailscaled. Test hook: the system bundle plus the test CA's roots, which tailscaled needs to accept a cached certificate |
 
@@ -223,8 +223,8 @@ expires with at least 23 days to spare. tslink does not intervene, but makes it 
 ## Validation
 
 On the test bed ([test/cluster](../test/cluster/README.md)), against Let's Encrypt staging through
-`TS_DEBUG_ACME_DIRECTORY_URL`, with an NFS export from `mgr` mounted on all five nodes as the shared volume. Results
-from 2026-10-07 follow each item.
+`TS_DEBUG_ACME_DIRECTORY_URL`, with a shared volume mounted on all nodes (NFS in this run). Results follow each
+item.
 
 1. **Cluster credential:** mint a client that owns the `tag:tslink-test-*` tags and deploy `callee` and `caller` with
    only `tslink.tags`, as stacks named `tslink-test-callee` and `tslink-test-caller` to satisfy the tag scope; run
@@ -235,7 +235,7 @@ from 2026-10-07 follow each item.
 2. **Tag scope:** a stack declaring another stack's tag fails at network creation. **Passed**, at task start rather than
    network creation (Docker does not pass the network's labels to the driver): no device registered, and the status file
    names the tag. A stack network without tags fails at creation; a network outside a stack is refused at task start.
-3. **First issuance:** a shared certificate directory on all nodes (NFS from `mgr` if GlusterFS is not available),
+3. **First issuance:** a shared certificate directory on all nodes,
    Service with `https` on 443, three replicas. Expect exactly one issuance, and no replica advertised before its
    certificate. **Passed** after the fixes in [Tailscale behavior](#tailscale-behavior-worked-around): one certificate,
    issued 32 seconds after the holder took the lease; the two waiting replicas configured themselves a second later.
@@ -277,8 +277,9 @@ from 2026-10-07 follow each item.
    - Pebble has no rate limits, so this validates tailscaled's and tslink's behavior, not Let's Encrypt's exemption.
 6. **Lease takeover:** kill the holder's tailscaled during issuance; another replica takes the stale lease. **Passed:**
    a plugin reinstall killed the holder, and another replica took the lease once it went stale.
-7. **Locking on the shared volume:** exclusive create of the lease is atomic on GlusterFS (and on NFS, if used).
-   **Passed on NFS** (20 rounds of five nodes racing to hard-link the same name: one winner each); GlusterFS untested.
+7. **Locking on the shared volume:** exclusive create of the lease is atomic on the shared filesystem.
+   **Passed on NFS** (20 rounds of five nodes racing to hard-link the same name: one winner each); other filesystems
+   untested.
 
 ## Future Enhancements
 

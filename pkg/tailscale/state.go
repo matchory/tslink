@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"io/fs"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,23 +13,6 @@ import (
 )
 
 const authKeyHashFile = "authkey.sha256"
-
-// IsEphemeralKey reports whether a node registered with key is ephemeral, as
-// far as the key itself says. OAuth client secrets register ephemeral nodes
-// unless "?ephemeral=false" is appended; an auth key's ephemerality is set
-// when it is created and cannot be read from it, so it counts as not ephemeral.
-// tailscale up reads parameters only from OAuth client secrets and passes any
-// other key on unchanged, so a parameter appended to an auth key means nothing.
-func IsEphemeralKey(key string) bool {
-	if !strings.HasPrefix(key, "tskey-client-") {
-		return false
-	}
-	_, query, _ := strings.Cut(key, "?")
-	if params, err := url.ParseQuery(query); err == nil && params.Has("ephemeral") {
-		return params.Get("ephemeral") == "true"
-	}
-	return true
-}
 
 // GetHostnameStateDir returns the state directory path for a hostname.
 // The directory structure is: <dataDir>/by-hostname/<hostname>/.

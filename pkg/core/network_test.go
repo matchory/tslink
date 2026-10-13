@@ -158,6 +158,43 @@ func TestEphemeral(t *testing.T) {
 	}
 }
 
+// The node's state is marked ephemeral, so GC logs it out, exactly when the
+// key the node registers with is minted ephemeral. A secret whose attributes
+// cannot be parsed is refused when the network is created.
+func TestEphemeralAgreesWithMintedKey(t *testing.T) {
+	tests := map[string]string{ // ephemeral attribute: Ephemeral(), or "err"
+		"":                "true",
+		"?ephemeral=true": "true", "?ephemeral=1": "true", "?ephemeral=TRUE": "true",
+		"?ephemeral=false": "false", "?ephemeral=0": "false",
+		"?ephemeral=": "err", "?ephemeral": "err", "?ephemeral=maybe": "err",
+	}
+	for suffix, want := range tests {
+		t.Run(suffix, func(t *testing.T) {
+			dir := t.TempDir()
+			opts := NetworkOptions{
+				AuthKey: "tskey-client-s3cret" + suffix,
+				Tags:    []string{"tag:web"},
+			}
+			n, err := NewNetwork("net", opts, &Config{DataDir: dir})
+			if want == "err" {
+				if err == nil || !strings.Contains(err.Error(), "tslink.authkey") {
+					t.Fatalf("err = %v, want an error naming tslink.authkey", err)
+				}
+				if strings.Contains(err.Error(), "s3cret") {
+					t.Errorf("err = %v reveals the secret", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := strconv.FormatBool(n.Ephemeral()); got != want {
+				t.Errorf("Ephemeral() = %s, want %s", got, want)
+			}
+		})
+	}
+}
+
 func TestNewNetworkRejectsParametersOnNonOAuthKeys(t *testing.T) {
 	// tailscale up parses parameters of OAuth client secrets only, and passes
 	// any other key to control unchanged, where the suffix makes it invalid

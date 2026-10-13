@@ -190,3 +190,54 @@ func TestResolveAuthKeyHTTPFailuresQuoteNoSecret(t *testing.T) {
 		})
 	}
 }
+
+// One parser decides both whether a minted key is ephemeral and whether the
+// node's state is marked so: they must not disagree.
+func TestKeyEphemeral(t *testing.T) {
+	tests := map[string]struct {
+		ephemeral, set bool
+		err            bool
+	}{
+		"tskey-client-abc":                                    {ephemeral: true},
+		"tskey-client-abc?":                                   {ephemeral: true},
+		"tskey-client-abc?preauthorized=true":                 {ephemeral: true},
+		"tskey-client-abc?ephemeral=true&preauthorized=true":  {ephemeral: true, set: true},
+		"tskey-client-abc?ephemeral=1":                        {ephemeral: true, set: true},
+		"tskey-client-abc?ephemeral=TRUE":                     {ephemeral: true, set: true},
+		"tskey-client-abc?ephemeral=false&preauthorized=true": {set: true},
+		"tskey-client-abc?ephemeral=0":                        {set: true},
+		"tskey-client-abc?ephemeral=":                         {err: true},
+		"tskey-client-abc?ephemeral":                          {err: true},
+		"tskey-client-abc?ephemeral=maybe":                    {err: true},
+		"tskey-client-abc?preauthorized=":                     {err: true},
+		"tskey-client-abc?unknown=true":                       {err: true},
+		"tskey-auth-abc":                                      {}, // unknown from the key
+		"tskey-auth-abc?ephemeral=true":                       {}, // passed on unchanged
+		"":                                                    {},
+	}
+	for key, want := range tests {
+		t.Run(key, func(t *testing.T) {
+			ephemeral, set, err := KeyEphemeral(key)
+			if (err != nil) != want.err {
+				t.Fatalf("err = %v, want error %t", err, want.err)
+			}
+			if ephemeral != want.ephemeral || set != want.set {
+				t.Errorf(
+					"KeyEphemeral = %t, %t, want %t, %t",
+					ephemeral,
+					set,
+					want.ephemeral,
+					want.set,
+				)
+			}
+			if !strings.HasPrefix(key, "tskey-client-") {
+				return
+			}
+			// The key resolveAuthKey mints must agree
+			_, attrs, err := parseClientSecret(key)
+			if (err != nil) != want.err || attrs.ephemeral != want.ephemeral && err == nil {
+				t.Errorf("parseClientSecret: ephemeral %t, err %v", attrs.ephemeral, err)
+			}
+		})
+	}
+}

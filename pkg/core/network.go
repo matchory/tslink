@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -91,23 +90,22 @@ func (n *Network) Ephemeral() bool {
 	case n.ephemeral != nil:
 		return *n.ephemeral
 	default:
-		return tailscale.IsEphemeralKey(n.AuthKey)
+		// NewNetwork refused a secret whose attributes cannot be parsed
+		ephemeral, _, err := tailscale.KeyEphemeral(n.AuthKey)
+		return ephemeral && err == nil
 	}
 }
 
-// keyEphemeralParam returns the ephemeral parameter appended to an OAuth
+// keyEphemeralParam returns the ephemeral attribute appended to an OAuth
 // client secret, as in "tskey-client-...?ephemeral=false", and whether there
-// is one. Other keys take no parameters, so they never have one.
+// is one. Other keys take no attributes, so they never have one. NewNetwork
+// refuses a secret whose attributes cannot be parsed.
 func keyEphemeralParam(key string) (bool, bool) {
-	if !strings.HasPrefix(key, "tskey-client-") {
+	ephemeral, set, err := tailscale.KeyEphemeral(key)
+	if !set || err != nil {
 		return false, false
 	}
-	_, query, _ := strings.Cut(key, "?")
-	params, err := url.ParseQuery(query)
-	if err != nil || !params.Has("ephemeral") {
-		return false, false
-	}
-	return params.Get("ephemeral") == "true", true
+	return ephemeral, true
 }
 
 // Credential returns the key a node registers with. The cluster credential is
@@ -175,8 +173,14 @@ func (n *Network) resolveCredential(cfg *Config) error {
 // passes any other key to control unchanged, where it is invalid. The error
 // names where the key came from, never the key.
 func (n *Network) checkKeyParams(source string) error {
-	if n.UsesClusterCredential() || strings.HasPrefix(n.AuthKey, "tskey-client-") ||
-		!strings.Contains(n.AuthKey, "?") {
+	if strings.HasPrefix(n.AuthKey, "tskey-client-") {
+		// The error quotes nothing of the secret
+		if _, _, err := tailscale.KeyEphemeral(n.AuthKey); err != nil {
+			return fmt.Errorf("%s: %w", source, err)
+		}
+		return nil
+	}
+	if n.UsesClusterCredential() || !strings.Contains(n.AuthKey, "?") {
 		return nil
 	}
 	return fmt.Errorf(

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- An OAuth client secret with `?ephemeral=1` (or `TRUE`, or an empty value)
+  registered ephemeral nodes, but tslink treated them as persistent and never
+  logged them out when their containers left. tslink now reads the attribute as
+  Tailscale does, and `docker network create` refuses a secret with an empty or
+  invalid `ephemeral` or `preauthorized` value.
+
 ## [0.2.3] - 2026-10-13
 
 ### Fixed

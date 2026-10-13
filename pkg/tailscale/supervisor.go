@@ -166,7 +166,7 @@ func (s *DaemonSupervisor) StartContext(ctx context.Context) error {
 }
 
 // Stop gracefully stops the supervisor and daemon.
-func (s *DaemonSupervisor) Stop() {
+func (s *DaemonSupervisor) Stop() error {
 	logger.Infof("Stopping supervisor for endpoint %s", stringid.TruncateID(s.cfg.EndpointID))
 
 	// Signal supervision loop to stop
@@ -179,16 +179,18 @@ func (s *DaemonSupervisor) Stop() {
 		close(done)
 	}()
 
+	var err error
 	select {
 	case <-done:
 		logger.Debugf("Supervisor stopped cleanly")
 	case <-time.After(10 * time.Second):
-		logger.Warnf("Timeout waiting for supervisor to stop")
+		err = errors.New("timeout waiting for the supervisor to stop: tailscaled may still run")
 	}
 
 	s.mu.Lock()
 	s.status = StatusStopped
 	s.mu.Unlock()
+	return err
 }
 
 // Logout logs the running daemon's node out.

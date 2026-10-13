@@ -15,6 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A new auth key whose old state could not be wiped fails the container's
+  start, which is retried, rather than recording the new key over the old
+  node's identity. An ephemeral node whose supervisor does not stop within
+  its 10 seconds keeps its state for garbage collection, rather than having
+  it deleted under a tailscaled that may still run.
 - A `tslink.service` label that is not a valid Service name, `svc:`
   followed by a DNS label, fails the container's start for good, as an
   invalid hostname does. Before, tailscaled refused it on every retry, and

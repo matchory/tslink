@@ -393,7 +393,7 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 	// Double-check we didn't race with another caller
 	if e.tailscaleStarted {
 		e.mu.Unlock()
-		supervisor.Stop()
+		stopSupervisor(supervisor)
 		logger.Warnf(
 			"Tailscale was started by another goroutine for endpoint %s",
 			stringid.TruncateID(endpointID),
@@ -682,7 +682,7 @@ func (e *Endpoint) Stop() {
 	logger.Infof("Stopping endpoint %s", e.ID)
 
 	if supervisor != nil {
-		supervisor.Stop()
+		stopSupervisor(supervisor)
 	}
 }
 
@@ -735,14 +735,14 @@ func (e *Endpoint) startSupervisor(supervisor *tailscale.DaemonSupervisor) (stri
 	if err := supervisor.StartContext(ctx); err != nil {
 		// The supervisor keeps retrying after a failed first start. Nothing
 		// would stop it later, since it is not stored on the endpoint.
-		supervisor.Stop()
+		stopSupervisor(supervisor)
 		return "", fmt.Errorf("failed to start tailscale supervisor: %w", err)
 	}
 
 	// Wait for Tailscale to connect and get IP (can take up to 60s!)
 	status, err := supervisor.WaitForIP(ctx)
 	if err != nil {
-		supervisor.Stop()
+		stopSupervisor(supervisor)
 		return "", fmt.Errorf("failed to get Tailscale IP: %w", err)
 	}
 	return status.IP, nil
@@ -784,12 +784,16 @@ func syncEphemeralMarker(stateDir string, ephemeral bool) {
 // wipeStateOnKeyChange wipes the state if the network's auth key changed, for
 // a fresh registration. A replaced cluster credential is a rotation, which a
 // logged-in node survives, so its state is kept.
-func wipeStateOnKeyChange(stateDir string, network *Network) {
+func wipeStateOnKeyChange(stateDir string, network *Network) error {
 	if network.UsesClusterCredential() || !tailscale.StateExists(stateDir) ||
 		tailscale.CheckAuthKeyMatch(stateDir, network.AuthKey) {
-		return
+		return nil
 	}
-	tailscale.WipeState(stateDir)
+	if err := tailscale.WipeState(stateDir); err != nil {
+		return fmt.Errorf("failed to wipe the state of %s after the auth key changed: %w",
+			stateDir, err)
+	}
+	return nil
 }
 
 // prepareStateDir claims the container's state directory and readies it for
@@ -807,7 +811,9 @@ func (e *Endpoint) prepareStateDir(info *ContainerInfo, network *Network) (strin
 	}
 	syncEphemeralMarker(stateDir, network.Ephemeral())
 
-	wipeStateOnKeyChange(stateDir, network)
+	if err := wipeStateOnKeyChange(stateDir, network); err != nil {
+		return "", err
+	}
 	return stateDir, nil
 }
 
@@ -903,9 +909,19 @@ func (e *Endpoint) abandonStart() {
 	supervisor, _ := e.takeSupervisorLocked()
 	e.mu.Unlock()
 	if supervisor != nil {
-		supervisor.Stop()
+		stopSupervisor(supervisor)
 	}
 	e.releaseStateDir()
+}
+
+// stopSupervisor stops supervisor and reports whether it stopped; a failure
+// is logged.
+func stopSupervisor(supervisor *tailscale.DaemonSupervisor) bool {
+	if err := supervisor.Stop(); err != nil {
+		logger.Warnf("Failed to stop the supervisor: %v", err)
+		return false
+	}
+	return true
 }
 
 // unstartedLogoutTimeout bounds logging out the node of a start that failed.
@@ -975,10 +991,12 @@ func (e *Endpoint) stopTailscale() {
 			logger.Warnf("Failed to log out ephemeral node during Leave: %v", err)
 		}
 	}
-	supervisor.Stop()
+	stopped := stopSupervisor(supervisor)
 	// Nothing reuses an ephemeral node's state, and it holds the node key.
 	// stateDir is only this endpoint's once its supervisor has started.
-	if ephemeral {
+	// tailscaled may still run if the supervisor did not stop: its state is
+	// left to garbage collection.
+	if ephemeral && stopped {
 		if err := os.RemoveAll(stateDir); err != nil {
 			logger.Warnf("Failed to remove state of ephemeral node %s: %v", stateDir, err)
 		}

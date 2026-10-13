@@ -26,8 +26,9 @@ func StateExists(stateDir string) bool {
 }
 
 // WipeState removes all state files from the directory to allow fresh registration.
-// Removes tailscaled.state, tailscaled.sock, debug.log, and authkey hash.
-func WipeState(stateDir string) {
+// Removes tailscaled.state, tailscaled.sock, debug.log, and authkey hash, and
+// returns the removals that failed.
+func WipeState(stateDir string) error {
 	logger.Infof("Wiping state directory: %s", stateDir)
 
 	files := []string{
@@ -37,11 +38,13 @@ func WipeState(stateDir string) {
 		filepath.Join(stateDir, authKeyHashFile),
 	}
 
+	var errs []error
 	for _, f := range files {
 		if err := os.Remove(f); err != nil && !os.IsNotExist(err) {
-			logger.Warnf("Failed to remove %s: %v", f, err)
+			errs = append(errs, err)
 		}
 	}
+	return errors.Join(errs...)
 }
 
 // hashAuthKey returns the SHA256 hash of an auth key.

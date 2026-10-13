@@ -83,7 +83,9 @@ func TestWipeState(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	WipeState(dir)
+	if err := WipeState(dir); err != nil {
+		t.Fatal(err)
+	}
 	for _, f := range wiped {
 		if _, err := os.Stat(filepath.Join(dir, f)); !errors.Is(err, fs.ErrNotExist) {
 			t.Errorf("%s not wiped: %v", f, err)
@@ -98,5 +100,20 @@ func TestWipeState(t *testing.T) {
 		t.Error("state still exists after the wipe")
 	}
 	// Wiping again, with nothing left to remove, is no error
-	WipeState(dir)
+	if err := WipeState(dir); err != nil {
+		t.Errorf("second wipe: %v", err)
+	}
+}
+
+// A file that cannot be removed fails the wipe: the old identity would
+// survive it.
+func TestWipeStateReportsFailure(t *testing.T) {
+	dir := t.TempDir()
+	// A directory with an entry cannot be removed as a file
+	if err := os.MkdirAll(filepath.Join(dir, "tailscaled.state", "x"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := WipeState(dir); err == nil {
+		t.Error("wipe succeeded although tailscaled.state remains")
+	}
 }

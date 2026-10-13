@@ -214,7 +214,9 @@ func TestWipeStateOnKeyChange(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := newState(t, "tskey-auth-a")
-			wipeStateOnKeyChange(dir, tt.network)
+			if err := wipeStateOnKeyChange(dir, tt.network); err != nil {
+				t.Fatal(err)
+			}
 			if got := !tailscale.StateExists(dir); got != tt.wiped {
 				t.Errorf("wiped = %v, want %v", got, tt.wiped)
 			}

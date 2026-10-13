@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-13
+
 ### Changed
 
 - tslink checks option and label keys against the ones it knows.
@@ -502,7 +504,8 @@ features were tested on three- and five-node swarms; see
   index its `tailscale0` has in the container: often the host's primary
   interface. tailscaled does not start if the bus cannot be hidden.
 
-[Unreleased]: https://github.com/matchory/tslink/compare/v0.2.4...HEAD
+[Unreleased]: https://github.com/matchory/tslink/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/matchory/tslink/compare/v0.2.4...v0.3.0
 [0.2.4]: https://github.com/matchory/tslink/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/matchory/tslink/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/matchory/tslink/compare/v0.2.1...v0.2.2

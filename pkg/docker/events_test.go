@@ -229,7 +229,7 @@ func TestParseContainerInfoWarnsOfUnknownLabels(t *testing.T) {
 	t.Cleanup(func() { logger.SetOutput(os.Stdout) })
 
 	info := parseContainerInfo("web", map[string]string{
-		"tslink.servce":     "svc:web",
+		"tslink.services":   "svc:web",
 		core.ServiceLabel:   "svc:web",
 		"tslink.serve.443":  "https:8080",
 		"com.example.label": "x",
@@ -238,7 +238,7 @@ func TestParseContainerInfoWarnsOfUnknownLabels(t *testing.T) {
 		t.Errorf("parsed %+v", info)
 	}
 	out := log.String()
-	if !strings.Contains(out, "Container web: ignoring unknown label tslink.servce") {
+	if !strings.Contains(out, "Container web: ignoring unknown label tslink.services") {
 		t.Errorf("no warning of the unknown label in %q", out)
 	}
 	if strings.Count(out, "unknown label") != 1 {

@@ -41,8 +41,8 @@ type Driver struct {
 	joinEndpoint   func(e *core.Endpoint, sandboxKey string) (*network.JoinResponse, error)
 	recoverRouting func(e *core.Endpoint, sandboxKey string) error
 	runTailscale   func(e *core.Endpoint, ctx context.Context, info *core.ContainerInfo)
-	leaveEndpoint  func(e *core.Endpoint) error
-	stopEndpoint   func(e *core.Endpoint) error
+	leaveEndpoint  func(e *core.Endpoint)
+	stopEndpoint   func(e *core.Endpoint)
 	drainService   func(e *core.Endpoint)
 
 	// Installs (true) or removes (false) the host's tailnet isolation, given
@@ -81,10 +81,7 @@ func redactKey(key string) string {
 
 // NewDriver creates a new Docker network driver.
 func NewDriver() (*Driver, error) {
-	cfg, err := core.LoadConfig()
-	if err != nil {
-		return nil, fmt.Errorf("failed to load config: %w", err)
-	}
+	cfg := core.LoadConfig()
 	core.RemoveDownloadCache(cfg.DataDir)
 
 	// Create Docker client for container inspection and recovery
@@ -221,10 +218,7 @@ func (d *Driver) CreateEndpoint(
 		}
 	}
 
-	endpoint, err := core.NewEndpoint(req.EndpointID, net, opts, d.config, d.claims)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create endpoint: %w", err)
-	}
+	endpoint := core.NewEndpoint(req.EndpointID, net, opts, d.config, d.claims)
 
 	d.endpoints[req.EndpointID] = endpoint
 
@@ -249,9 +243,7 @@ func (d *Driver) DeleteEndpoint(req *network.DeleteEndpointRequest) error {
 		return nil
 	}
 
-	if err := d.stopEndpoint(endpoint); err != nil {
-		logger.Warnf("Failed to stop endpoint: %v", err)
-	}
+	d.stopEndpoint(endpoint)
 	return nil
 }
 
@@ -336,9 +328,7 @@ func (d *Driver) Leave(req *network.LeaveRequest) error {
 		return nil
 	}
 
-	if err := d.leaveEndpoint(endpoint); err != nil {
-		logger.Warnf("Failed to leave: %v", err)
-	}
+	d.leaveEndpoint(endpoint)
 
 	return nil
 }
@@ -412,9 +402,7 @@ func (d *Driver) Shutdown(ctx context.Context) error {
 		for _, ep := range endpoints {
 			stops.Go(func() {
 				logger.Infof("Stopping endpoint %s", stringid.TruncateID(ep.ID))
-				if err := d.stopEndpoint(ep); err != nil {
-					logger.Warnf("Failed to stop endpoint %s: %v", stringid.TruncateID(ep.ID), err)
-				}
+				d.stopEndpoint(ep)
 			})
 		}
 		stops.Wait()
@@ -954,7 +942,7 @@ func (d *Driver) recoverEndpoint(
 	}
 
 	// Create endpoint
-	endpoint, err := core.NewEndpoint(
+	endpoint := core.NewEndpoint(
 		endpointID,
 		net,
 		// Recover puts the IPAM address on the container's veth, as Join
@@ -963,9 +951,6 @@ func (d *Driver) recoverEndpoint(
 		d.config,
 		d.claims,
 	)
-	if err != nil {
-		return fmt.Errorf("failed to create endpoint: %w", err)
-	}
 
 	// Store endpoint
 	d.mu.Lock()
@@ -993,13 +978,7 @@ func (d *Driver) recoverEndpoint(
 		delete(d.endpoints, endpointID)
 		d.mu.Unlock()
 		// Give the state directory up: the container's next endpoint needs it
-		if stopErr := d.stopEndpoint(endpoint); stopErr != nil {
-			logger.Warnf(
-				"recoverEndpoint: failed to stop endpoint %s: %v",
-				stringid.TruncateID(endpointID),
-				stopErr,
-			)
-		}
+		d.stopEndpoint(endpoint)
 		return fmt.Errorf("failed to recover routing: %w", err)
 	}
 

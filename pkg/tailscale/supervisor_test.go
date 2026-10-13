@@ -97,9 +97,7 @@ func newFakeSupervisor(t *testing.T) (*DaemonSupervisor, *fakeTailscaled, string
 	f := &fakeTailscaled{cli: &fakeCLI{}, api: newFakeLocalAPI(t)}
 	s.start = f.start
 	t.Cleanup(func() {
-		if err := s.Stop(); err != nil {
-			t.Errorf("Stop: %v", err)
-		}
+		s.Stop()
 	})
 	return s, f, netns
 }
@@ -276,9 +274,7 @@ func TestSupervisorStopsDuringWait(t *testing.T) {
 			})
 
 			start := time.Now()
-			if err := s.Stop(); err != nil {
-				t.Fatal(err)
-			}
+			s.Stop()
 			if elapsed := time.Since(start); elapsed > time.Second {
 				t.Errorf("Stop took %v", elapsed)
 			}

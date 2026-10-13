@@ -57,9 +57,7 @@ func TestRunTailscaleStopsRetryingAfterLeave(t *testing.T) {
 	e := &Endpoint{ID: "0123456789abcdef", dataDir: t.TempDir()}
 	e.startFn = func(*ContainerInfo) error {
 		if calls.Add(1) == 2 {
-			if err := e.Leave(); err != nil {
-				t.Errorf("Leave: %v", err)
-			}
+			e.Leave()
 		}
 		return errors.New("control plane unreachable")
 	}
@@ -88,9 +86,7 @@ func TestRunTailscaleRefusesAfterLeave(t *testing.T) {
 		calls.Add(1)
 		return nil
 	}
-	if err := e.Leave(); err != nil {
-		t.Fatalf("Leave: %v", err)
-	}
+	e.Leave()
 	e.RunTailscale(t.Context(), &ContainerInfo{Hostname: "web"})
 	if got := calls.Load(); got != 0 {
 		t.Errorf("start called %d times after Leave, want 0", got)
@@ -107,9 +103,7 @@ func TestRunTailscaleRefusesAfterStop(t *testing.T) {
 		calls.Add(1)
 		return nil
 	}
-	if err := e.Stop(); err != nil {
-		t.Fatalf("Stop: %v", err)
-	}
+	e.Stop()
 	e.RunTailscale(t.Context(), &ContainerInfo{Hostname: "web"})
 	if got := calls.Load(); got != 0 {
 		t.Errorf("start called %d times after Stop, want 0", got)
@@ -137,9 +131,7 @@ func TestRunTailscaleCleansUpStartCancelledByLeave(t *testing.T) {
 		if dir, err = e.prepareStateDir(info, e.Network); err != nil {
 			return err
 		}
-		if err := e.Leave(); err != nil {
-			t.Errorf("Leave: %v", err)
-		}
+		e.Leave()
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			t.Error(err)
 		}
@@ -203,9 +195,7 @@ func TestRunTailscaleKeepsStateOfStartCancelledByStop(t *testing.T) {
 		close(done)
 	}()
 	<-started
-	if err := e.Stop(); err != nil {
-		t.Fatal(err)
-	}
+	e.Stop()
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
@@ -319,9 +309,7 @@ func TestRunTailscaleWritesStatus(t *testing.T) {
 		t.Errorf("after success: %+v", st)
 	}
 
-	if err := e.Leave(); err != nil {
-		t.Fatal(err)
-	}
+	e.Leave()
 	if _, err := os.Stat(StatusPath(data, e.ID)); !os.IsNotExist(err) {
 		t.Errorf("status should be removed on Leave (err=%v)", err)
 	}

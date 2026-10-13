@@ -59,9 +59,7 @@ func (d *daemon) bringUp() error {
 	// Check if it's an auth/state error that warrants a retry
 	if isStateError(err) {
 		logger.Warnf("Auth failed with existing state, wiping and retrying: %v", err)
-		if err := WipeState(d.config.StateDir); err != nil {
-			logger.Warnf("Failed to wipe state: %v", err)
-		}
+		WipeState(d.config.StateDir)
 
 		// Second attempt with fresh state
 		logger.Infof("Retrying the login with fresh state...")

@@ -314,11 +314,10 @@ func TestLeaveAndDeleteEndpoint(t *testing.T) {
 
 // blockingOp returns an endpoint operation that reports each call on entered
 // and returns once release is closed.
-func blockingOp(entered chan<- string, release <-chan struct{}) func(*core.Endpoint) error {
-	return func(e *core.Endpoint) error {
+func blockingOp(entered chan<- string, release <-chan struct{}) func(*core.Endpoint) {
+	return func(e *core.Endpoint) {
 		entered <- e.ID
 		<-release
-		return nil
 	}
 }
 
@@ -723,16 +722,13 @@ func TestFailedRecoveryReleasesStateDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	net, _ := td.network(netID)
-	restarted, err := core.NewEndpoint(
+	restarted := core.NewEndpoint(
 		fakeID("ep-new"),
 		net,
 		core.EndpointOptions{},
 		td.config,
 		td.claims,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
 	if err := restarted.ClaimStateDir(parseContainerInfo("web", nil)); err != nil {
 		t.Errorf("state directory still claimed by the endpoint whose recovery failed: %v", err)
 	}
@@ -909,10 +905,9 @@ func TestShutdownStopsEndpointsConcurrently(t *testing.T) {
 	td := newTestDriver(t, newFakeDocker())
 	const n, stopTime = 5, time.Second
 	var stopped atomic.Int32
-	td.stopEndpoint = func(*core.Endpoint) error {
+	td.stopEndpoint = func(*core.Endpoint) {
 		time.Sleep(stopTime)
 		stopped.Add(1)
-		return nil
 	}
 	netID := fakeID("net")
 	td.createNetwork(t, netID, map[string]string{"tslink.authkey": "k"})
@@ -937,10 +932,7 @@ func TestShutdownStopsWithinDeadline(t *testing.T) {
 	td := newTestDriver(t, newFakeDocker())
 	release := make(chan struct{})
 	defer close(release)
-	td.stopEndpoint = func(*core.Endpoint) error {
-		<-release
-		return nil
-	}
+	td.stopEndpoint = func(*core.Endpoint) { <-release }
 	netID := fakeID("net")
 	td.createNetwork(t, netID, map[string]string{"tslink.authkey": "k"})
 	td.join(t, netID, fakeID("ep"), sandbox)
@@ -975,11 +967,10 @@ func TestEndpointOpsUseDriverHooks(t *testing.T) {
 		defer mu.Unlock()
 		drained = append(drained, e.ID)
 	}
-	td.stopEndpoint = func(e *core.Endpoint) error {
+	td.stopEndpoint = func(e *core.Endpoint) {
 		mu.Lock()
 		defer mu.Unlock()
 		stopped = append(stopped, e.ID)
-		return nil
 	}
 	td.recoverErr = errors.New("no such netns")
 	if err := td.RecoverEndpoints(t.Context()); err != nil {

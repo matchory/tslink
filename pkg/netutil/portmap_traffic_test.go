@@ -304,10 +304,9 @@ func TestPortMappingIsEndpointIndependent(t *testing.T) {
 				if got, err = listMappings(ipt); err != nil {
 					return err
 				}
-				if err := CleanupNAT("vethtp0"); err != nil {
-					return err
-				}
-				return CleanupNAT("vethtp1")
+				CleanupNAT("vethtp0")
+				CleanupNAT("vethtp1")
+				return nil
 			}); err != nil {
 				t.Fatal(err)
 			}

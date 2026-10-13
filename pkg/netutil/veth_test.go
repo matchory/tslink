@@ -205,7 +205,7 @@ func TestNATRules(t *testing.T) {
 
 	// CleanupNAT removes one veth's rules, and tolerates their absence.
 	for range 2 {
-		inNS("CleanupNAT", func() error { return CleanupNAT("vethtslinka") })
+		inNS("CleanupNAT", func() error { CleanupNAT("vethtslinka"); return nil })
 	}
 
 	r = listNATRules(t, nsPath)
@@ -219,7 +219,7 @@ func TestNATRules(t *testing.T) {
 
 	// The mapping of a veth that is gone already goes too
 	inNS("delete veth c", func() error { return DeleteVeth("vethtslinkc") })
-	inNS("CleanupNAT of a deleted veth", func() error { return CleanupNAT("vethtslinkc") })
+	inNS("CleanupNAT of a deleted veth", func() error { CleanupNAT("vethtslinkc"); return nil })
 	if got := listNATRules(t, nsPath).portMap; len(got) != 1 || got[ctrB] == 0 {
 		t.Errorf("port mappings after CleanupNAT of a deleted veth = %v, want b's", got)
 	}

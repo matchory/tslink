@@ -166,7 +166,7 @@ func (s *DaemonSupervisor) StartContext(ctx context.Context) error {
 }
 
 // Stop gracefully stops the supervisor and daemon.
-func (s *DaemonSupervisor) Stop() error {
+func (s *DaemonSupervisor) Stop() {
 	logger.Infof("Stopping supervisor for endpoint %s", stringid.TruncateID(s.cfg.EndpointID))
 
 	// Signal supervision loop to stop
@@ -189,8 +189,6 @@ func (s *DaemonSupervisor) Stop() error {
 	s.mu.Lock()
 	s.status = StatusStopped
 	s.mu.Unlock()
-
-	return nil
 }
 
 // Logout logs the running daemon's node out.

@@ -165,7 +165,7 @@ func DataDir() string {
 }
 
 // LoadConfig loads configuration from environment variables.
-func LoadConfig() (*Config, error) {
+func LoadConfig() *Config {
 	cfg := &Config{
 		AuthKey:   os.Getenv("TS_AUTHKEY"),
 		DataDir:   DataDir(),
@@ -195,7 +195,7 @@ func LoadConfig() (*Config, error) {
 		)
 	}
 
-	return cfg, nil
+	return cfg
 }
 
 // GenericOptionsKey is the key Docker uses to pass driver options.

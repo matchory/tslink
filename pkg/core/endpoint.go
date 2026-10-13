@@ -105,7 +105,7 @@ func NewEndpoint(
 	opts EndpointOptions,
 	cfg *Config,
 	claims *StateClaims,
-) (*Endpoint, error) {
+) *Endpoint {
 	hostname := opts.Hostname
 	if hostname == "" {
 		// Use short endpoint ID as default hostname (will be updated when container info arrives)
@@ -125,7 +125,7 @@ func NewEndpoint(
 		sharedDir:   cfg.SharedDir,
 		IPAMAddress: opts.IPAMAddress,
 		claims:      claims,
-	}, nil
+	}
 }
 
 // vethSlots is the number of /30 subnets for veth pairs in 10.200.0.0/16,
@@ -393,9 +393,7 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 	// Double-check we didn't race with another caller
 	if e.tailscaleStarted {
 		e.mu.Unlock()
-		if stopErr := supervisor.Stop(); stopErr != nil {
-			logger.Warnf("failed to stop duplicate supervisor: %v", stopErr)
-		}
+		supervisor.Stop()
 		logger.Warnf(
 			"Tailscale was started by another goroutine for endpoint %s",
 			stringid.TruncateID(endpointID),
@@ -604,7 +602,7 @@ func (e *Endpoint) GetInfo() (string, string) {
 
 // Leave is called when a container leaves the network.
 // It stops the Tailscale supervisor and cleans up networking resources.
-func (e *Endpoint) Leave() error {
+func (e *Endpoint) Leave() {
 	// From now on a late connect event or watchdog start starts nothing:
 	// Tailscale started after stopTailscale would run until DeleteEndpoint
 	e.mu.Lock()
@@ -625,9 +623,7 @@ func (e *Endpoint) Leave() error {
 
 	// Clean up NAT rules for this veth
 	if vethName != "" {
-		if err := netutil.CleanupNAT(vethName); err != nil {
-			logger.Warnf("Failed to cleanup NAT for %s: %v", vethName, err)
-		}
+		netutil.CleanupNAT(vethName)
 	}
 
 	if sandboxKey != "" {
@@ -642,8 +638,6 @@ func (e *Endpoint) Leave() error {
 			logger.Warnf("Failed to delete veth %s: %v", vethName, err)
 		}
 	}
-
-	return nil
 }
 
 // DrainService stops new connections to the endpoint's Tailscale Service
@@ -668,7 +662,7 @@ func (e *Endpoint) DrainService() {
 }
 
 // Stop stops the endpoint and cleans up resources.
-func (e *Endpoint) Stop() error {
+func (e *Endpoint) Stop() {
 	// A start queued before the endpoint was deleted must start nothing:
 	// nothing would stop it again
 	e.mu.Lock()
@@ -688,12 +682,8 @@ func (e *Endpoint) Stop() error {
 	logger.Infof("Stopping endpoint %s", e.ID)
 
 	if supervisor != nil {
-		if err := supervisor.Stop(); err != nil {
-			logger.Warnf("Failed to stop supervisor: %v", err)
-		}
+		supervisor.Stop()
 	}
-
-	return nil
 }
 
 // setupVeth moves the container end of the veth into the container's
@@ -745,18 +735,14 @@ func (e *Endpoint) startSupervisor(supervisor *tailscale.DaemonSupervisor) (stri
 	if err := supervisor.StartContext(ctx); err != nil {
 		// The supervisor keeps retrying after a failed first start. Nothing
 		// would stop it later, since it is not stored on the endpoint.
-		if stopErr := supervisor.Stop(); stopErr != nil {
-			logger.Warnf("failed to stop supervisor after start error: %v", stopErr)
-		}
+		supervisor.Stop()
 		return "", fmt.Errorf("failed to start tailscale supervisor: %w", err)
 	}
 
 	// Wait for Tailscale to connect and get IP (can take up to 60s!)
 	status, err := supervisor.WaitForIP(ctx)
 	if err != nil {
-		if stopErr := supervisor.Stop(); stopErr != nil {
-			logger.Warnf("failed to stop supervisor after WaitForIP error: %v", stopErr)
-		}
+		supervisor.Stop()
 		return "", fmt.Errorf("failed to get Tailscale IP: %w", err)
 	}
 	return status.IP, nil
@@ -803,9 +789,7 @@ func wipeStateOnKeyChange(stateDir string, network *Network) {
 		tailscale.CheckAuthKeyMatch(stateDir, network.AuthKey) {
 		return
 	}
-	if err := tailscale.WipeState(stateDir); err != nil {
-		logger.Warnf("Failed to wipe state after auth key change: %v", err)
-	}
+	tailscale.WipeState(stateDir)
 }
 
 // prepareStateDir claims the container's state directory and readies it for
@@ -919,9 +903,7 @@ func (e *Endpoint) abandonStart() {
 	supervisor, _ := e.takeSupervisorLocked()
 	e.mu.Unlock()
 	if supervisor != nil {
-		if err := supervisor.Stop(); err != nil {
-			logger.Warnf("Failed to stop supervisor: %v", err)
-		}
+		supervisor.Stop()
 	}
 	e.releaseStateDir()
 }
@@ -993,9 +975,7 @@ func (e *Endpoint) stopTailscale() {
 			logger.Warnf("Failed to log out ephemeral node during Leave: %v", err)
 		}
 	}
-	if err := supervisor.Stop(); err != nil {
-		logger.Warnf("Failed to stop supervisor during Leave: %v", err)
-	}
+	supervisor.Stop()
 	// Nothing reuses an ephemeral node's state, and it holds the node key.
 	// stateDir is only this endpoint's once its supervisor has started.
 	if ephemeral {

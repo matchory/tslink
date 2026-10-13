@@ -218,8 +218,8 @@ func SetupNAT(vethHost string) error {
 // CleanupNAT removes the FORWARD rules and the port mapping for a specific
 // veth interface, and the port mappings of veths that are gone.
 // The global MASQUERADE rule and chain structure are intentionally left in place.
-func CleanupNAT(vethHost string) error {
-	return defaultHost.cleanupNAT(vethHost)
+func CleanupNAT(vethHost string) {
+	defaultHost.cleanupNAT(vethHost)
 }
 
 func (s *hostState) setupNAT(vethHost string) error {
@@ -396,7 +396,7 @@ func tslinkVeths() ([]string, error) {
 	return slices.Compact(names), nil
 }
 
-func (s *hostState) cleanupNAT(vethHost string) error {
+func (s *hostState) cleanupNAT(vethHost string) {
 	logger.Debugf("Cleaning up NAT rules for %s", vethHost)
 
 	f, err := s.family(iptables.ProtocolIPv4)
@@ -406,7 +406,7 @@ func (s *hostState) cleanupNAT(vethHost string) error {
 			vethHost,
 			err,
 		)
-		return nil
+		return
 	}
 
 	// Remove FORWARD rules from our custom chain (ignore errors if rules don't exist)
@@ -425,5 +425,4 @@ func (s *hostState) cleanupNAT(vethHost string) error {
 	}
 
 	logger.Debugf("NAT cleanup complete for %s", vethHost)
-	return nil
 }

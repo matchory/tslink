@@ -52,24 +52,14 @@ func TestParseNetworkOptionsMTU(t *testing.T) {
 	}
 }
 
-func TestLoadConfigIgnoresDownloadSettings(t *testing.T) {
-	// Settings of the removed runtime download must not keep the plugin
-	// from starting after an upgrade; it runs the bundled binaries.
-	t.Setenv("TS_VERSION", "1.76.6")
-	t.Setenv("TS_PATH", "/opt/tailscale/bin")
-	if _, err := LoadConfig(); err != nil {
-		t.Fatalf("LoadConfig: %v", err)
-	}
-}
-
 func TestLoadConfigDataDir(t *testing.T) {
 	t.Setenv("TS_DATA_DIR", "")
-	if cfg, err := LoadConfig(); err != nil || cfg.DataDir != "/data" {
-		t.Errorf("without TS_DATA_DIR: config %+v, err %v, want DataDir /data", cfg, err)
+	if cfg := LoadConfig(); cfg.DataDir != "/data" {
+		t.Errorf("without TS_DATA_DIR: config %+v, want DataDir /data", cfg)
 	}
 	t.Setenv("TS_DATA_DIR", "/var/lib/tslink")
-	if cfg, err := LoadConfig(); err != nil || cfg.DataDir != "/var/lib/tslink" {
-		t.Errorf("config %+v, err %v, want DataDir from TS_DATA_DIR", cfg, err)
+	if cfg := LoadConfig(); cfg.DataDir != "/var/lib/tslink" {
+		t.Errorf("config %+v, want DataDir from TS_DATA_DIR", cfg)
 	}
 }
 
@@ -80,10 +70,7 @@ func TestLoadConfigIsolateHostTailnet(t *testing.T) {
 		"": true, "true": true, "false": false, "FALSE": false, "0": true, "no": true,
 	} {
 		t.Setenv(IsolateHostTailnetSetting, value)
-		cfg, err := LoadConfig()
-		if err != nil {
-			t.Fatalf("LoadConfig: %v", err)
-		}
+		cfg := LoadConfig()
 		if cfg.IsolateHostTailnet != want {
 			t.Errorf("%s=%q: IsolateHostTailnet = %v, want %v",
 				IsolateHostTailnetSetting, value, cfg.IsolateHostTailnet, want)
@@ -101,10 +88,7 @@ func TestLoadConfigWireGuardPorts(t *testing.T) {
 		"41000-42000": netutil.DefaultPortRange, // tailscaled's own port
 	} {
 		t.Setenv(WireGuardPortsSetting, value)
-		cfg, err := LoadConfig()
-		if err != nil {
-			t.Fatalf("LoadConfig: %v", err)
-		}
+		cfg := LoadConfig()
 		if cfg.WireGuardPorts != want {
 			t.Errorf("%s=%q: WireGuardPorts = %v, want %v",
 				WireGuardPortsSetting, value, cfg.WireGuardPorts, want)
@@ -126,10 +110,7 @@ func TestLoadConfigHostEndpoints(t *testing.T) {
 		"10.10.0.2,":                          {}, // an empty entry
 	} {
 		t.Setenv(HostEndpointsSetting, value)
-		cfg, err := LoadConfig()
-		if err != nil {
-			t.Fatalf("LoadConfig: %v", err)
-		}
+		cfg := LoadConfig()
 		if cfg.HostEndpoints.Off != want.Off || !slices.Equal(cfg.HostEndpoints.Addrs, want.Addrs) {
 			t.Errorf("%s=%q: HostEndpoints = %+v, want %+v",
 				HostEndpointsSetting, value, cfg.HostEndpoints, want)

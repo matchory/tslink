@@ -335,7 +335,7 @@ func newTestDriver(t *testing.T, fake *fakeDocker) *testDriver {
 		e.SandboxKey = sandboxKey
 		return nil
 	}
-	td.runTailscale = func(e *core.Endpoint, info *core.ContainerInfo) {
+	td.runTailscale = func(e *core.Endpoint, _ context.Context, info *core.ContainerInfo) {
 		buf := make([]byte, 512)
 		header, _, _ := strings.Cut(string(buf[:runtime.Stack(buf, false)]), "\n")
 		td.runs <- tsRun{e.ID, info, header}

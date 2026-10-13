@@ -40,7 +40,7 @@ type Driver struct {
 	// replace them. newDriver sets them to the core.Endpoint methods.
 	joinEndpoint   func(e *core.Endpoint, sandboxKey string) (*network.JoinResponse, error)
 	recoverRouting func(e *core.Endpoint, sandboxKey string) error
-	runTailscale   func(e *core.Endpoint, info *core.ContainerInfo)
+	runTailscale   func(e *core.Endpoint, ctx context.Context, info *core.ContainerInfo)
 	leaveEndpoint  func(e *core.Endpoint) error
 	stopEndpoint   func(e *core.Endpoint) error
 
@@ -648,7 +648,7 @@ func (d *Driver) startTailscale(endpoint *core.Endpoint, info *core.ContainerInf
 	endpoint.MarkStartRequested()
 	labels := pprof.Labels("endpoint", endpoint.ID[:12])
 	d.wg.Go(func() {
-		pprof.Do(d.ctx, labels, func(context.Context) { d.runTailscale(endpoint, info) })
+		pprof.Do(d.ctx, labels, func(ctx context.Context) { d.runTailscale(endpoint, ctx, info) })
 	})
 }
 

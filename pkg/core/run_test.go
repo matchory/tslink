@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -30,7 +31,7 @@ func TestRunTailscaleRetriesTransientFailures(t *testing.T) {
 		}
 		return nil
 	}
-	e.RunTailscale(&ContainerInfo{Hostname: "web"})
+	e.RunTailscale(t.Context(), &ContainerInfo{Hostname: "web"})
 	if got := calls.Load(); got != 4 {
 		t.Errorf("start called %d times, want 4", got)
 	}
@@ -44,7 +45,7 @@ func TestRunTailscaleStopsOnPermanentError(t *testing.T) {
 		calls.Add(1)
 		return permanentError{errors.New("stack mismatch")}
 	}
-	e.RunTailscale(&ContainerInfo{Hostname: "web"})
+	e.RunTailscale(t.Context(), &ContainerInfo{Hostname: "web"})
 	if got := calls.Load(); got != 1 {
 		t.Errorf("start called %d times, want 1", got)
 	}
@@ -64,7 +65,7 @@ func TestRunTailscaleStopsRetryingAfterLeave(t *testing.T) {
 	}
 	done := make(chan struct{})
 	go func() {
-		e.RunTailscale(&ContainerInfo{Hostname: "web"})
+		e.RunTailscale(t.Context(), &ContainerInfo{Hostname: "web"})
 		close(done)
 	}()
 	select {
@@ -90,7 +91,7 @@ func TestRunTailscaleRefusesAfterLeave(t *testing.T) {
 	if err := e.Leave(); err != nil {
 		t.Fatalf("Leave: %v", err)
 	}
-	e.RunTailscale(&ContainerInfo{Hostname: "web"})
+	e.RunTailscale(t.Context(), &ContainerInfo{Hostname: "web"})
 	if got := calls.Load(); got != 0 {
 		t.Errorf("start called %d times after Leave, want 0", got)
 	}
@@ -109,7 +110,7 @@ func TestRunTailscaleRefusesAfterStop(t *testing.T) {
 	if err := e.Stop(); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	e.RunTailscale(&ContainerInfo{Hostname: "web"})
+	e.RunTailscale(t.Context(), &ContainerInfo{Hostname: "web"})
 	if got := calls.Load(); got != 0 {
 		t.Errorf("start called %d times after Stop, want 0", got)
 	}
@@ -151,7 +152,7 @@ func TestRunTailscaleCleansUpStartCancelledByLeave(t *testing.T) {
 		}
 		return errors.New("login cancelled")
 	}
-	e.RunTailscale(&ContainerInfo{Hostname: "app_web.1.abc", Stack: "app"})
+	e.RunTailscale(t.Context(), &ContainerInfo{Hostname: "app_web.1.abc", Stack: "app"})
 
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
 		t.Errorf("%s should be removed (err=%v)", dir, err)
@@ -198,7 +199,7 @@ func TestRunTailscaleKeepsStateOfStartCancelledByStop(t *testing.T) {
 	}
 	done := make(chan struct{})
 	go func() {
-		e.RunTailscale(&ContainerInfo{Hostname: "app_web.1.abc", Stack: "app"})
+		e.RunTailscale(t.Context(), &ContainerInfo{Hostname: "app_web.1.abc", Stack: "app"})
 		close(done)
 	}()
 	<-started
@@ -246,7 +247,7 @@ func TestRunTailscaleRunsOnce(t *testing.T) {
 	}
 	done := make(chan struct{})
 	go func() {
-		e.RunTailscale(&ContainerInfo{Hostname: "web"})
+		e.RunTailscale(t.Context(), &ContainerInfo{Hostname: "web"})
 		close(done)
 	}()
 	for calls.Load() == 0 {
@@ -254,7 +255,7 @@ func TestRunTailscaleRunsOnce(t *testing.T) {
 	}
 	// A second trigger (Docker event and Join both racing) must not start
 	// a second tailscaled for the same endpoint.
-	e.RunTailscale(&ContainerInfo{Hostname: "web"})
+	e.RunTailscale(t.Context(), &ContainerInfo{Hostname: "web"})
 	close(release)
 	<-done
 	if got := calls.Load(); got != 1 {
@@ -313,7 +314,7 @@ func TestRunTailscaleWritesStatus(t *testing.T) {
 		}
 		return nil
 	}
-	e.RunTailscale(&ContainerInfo{Hostname: "web", Stack: "app"})
+	e.RunTailscale(t.Context(), &ContainerInfo{Hostname: "web", Stack: "app"})
 	if st := read(); st.State != StatusRunning || st.Hostname != "web" || st.Stack != "app" {
 		t.Errorf("after success: %+v", st)
 	}
@@ -328,8 +329,90 @@ func TestRunTailscaleWritesStatus(t *testing.T) {
 	// A new endpoint: one that left starts nothing
 	e = &Endpoint{ID: e.ID, DataDir: data}
 	e.startFn = func(*ContainerInfo) error { return permanentError{errors.New("invalid hostname")} }
-	e.RunTailscale(&ContainerInfo{Hostname: "../x"})
+	e.RunTailscale(t.Context(), &ContainerInfo{Hostname: "../x"})
 	if st := read(); st.State != StatusFailed {
 		t.Errorf("after a permanent error: %+v", st)
+	}
+}
+
+// The run ends with its context, the driver's, which plugin shutdown
+// cancels: a start in flight returns, and its node is abandoned as on Stop,
+// not logged out, for recovery to adopt after the restart.
+func TestRunTailscaleAbandonsStartWhenContextCancelled(t *testing.T) {
+	shortRetries(t)
+	loggedOut := stubLogout(t, nil)
+	claims := NewStateClaims()
+	e := &Endpoint{
+		ID:      "0123456789abcdef",
+		DataDir: t.TempDir(),
+		Network: &Network{AuthKey: "tskey-client-x?ephemeral=true"},
+		claims:  claims,
+	}
+	var dir string
+	started := make(chan struct{})
+	e.startFn = func(info *ContainerInfo) error {
+		e.mu.RLock()
+		ctx := e.runCtx
+		e.mu.RUnlock()
+		var err error
+		if dir, err = e.prepareStateDir(info, e.Network); err != nil {
+			return err
+		}
+		close(started)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(5 * time.Second):
+			return errors.New("start not cancelled")
+		}
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() {
+		e.RunTailscale(ctx, &ContainerInfo{Hostname: "app_web.1.abc", Stack: "app"})
+		close(done)
+	}()
+	<-started
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("RunTailscale did not return after its context was cancelled")
+	}
+
+	if got := loggedOut(); len(got) != 0 {
+		t.Errorf("logged out %v on a cancelled run", got)
+	}
+	if !tailscale.IsMarkedEphemeral(dir) {
+		t.Errorf("%s lost its ephemeral mark", dir)
+	}
+	if _, ok := claims.claim(dir, "fedcba9876543210"); !ok {
+		t.Error("state directory still claimed after the run ended")
+	}
+}
+
+// A run waiting to retry stops when its context is cancelled, without
+// waiting for the backoff.
+func TestRunTailscaleStopsRetryingWhenContextCancelled(t *testing.T) {
+	var calls atomic.Int32
+	ctx, cancel := context.WithCancel(t.Context())
+	e := &Endpoint{ID: "0123456789abcdef", DataDir: t.TempDir()}
+	e.startFn = func(*ContainerInfo) error {
+		calls.Add(1)
+		cancel()
+		return errors.New("control plane unreachable")
+	}
+	done := make(chan struct{})
+	go func() {
+		e.RunTailscale(ctx, &ContainerInfo{Hostname: "web"})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("RunTailscale kept retrying after its context was cancelled")
+	}
+	if got := calls.Load(); got != 1 {
+		t.Errorf("start called %d times, want 1", got)
 	}
 }

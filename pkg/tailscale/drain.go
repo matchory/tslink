@@ -222,9 +222,10 @@ func (s *DaemonSupervisor) DrainAndWait(service string) {
 		after = 0
 	}
 
+	tm := s.cfg.times()
 	logger.Infof("Endpoint %s: %s drained, waiting for control to fetch it", id, service)
-	acked := d.waitServicesFetch(after, drain.at.Add(s.cfg.times().drainAckTimeout))
-	if wait := time.Until(drain.at.Add(s.cfg.times().drainAckFloor)); wait > 0 {
+	acked := d.waitServicesFetch(after, drain.at.Add(tm.drainAckTimeout))
+	if wait := time.Until(drain.at.Add(tm.drainAckFloor)); wait > 0 {
 		sleep(d.ctx, wait)
 	}
 	if acked {
@@ -233,5 +234,5 @@ func (s *DaemonSupervisor) DrainAndWait(service string) {
 		return
 	}
 	logger.Warnf("Endpoint %s: control did not fetch the drained %s within %v, leaving anyway",
-		id, service, s.cfg.times().drainAckTimeout)
+		id, service, tm.drainAckTimeout)
 }

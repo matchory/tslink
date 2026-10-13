@@ -378,21 +378,20 @@ func (s *DaemonSupervisor) waitBeforeRestart() bool {
 	s.recordCrash()
 
 	if s.isCrashLoop() {
+		cooldown := s.cfg.times().crashLoopCooldown
 		s.mu.Lock()
 		s.status = StatusCrashLoop
 		s.mu.Unlock()
 		logger.Errorf(
 			"Crash loop detected for endpoint %s (5+ crashes in 30s), retrying in %v",
 			stringid.TruncateID(s.cfg.EndpointID),
-			s.cfg.times().crashLoopCooldown,
+			cooldown,
 		)
 		s.signalStartup(errors.New("crash loop detected"))
 		s.stopDaemon()
 
-		select {
-		case <-s.ctx.Done():
+		if !sleep(s.ctx, cooldown) {
 			return false
-		case <-time.After(s.cfg.times().crashLoopCooldown):
 		}
 		s.mu.Lock()
 		s.crashTimes = s.crashTimes[:0]
@@ -403,12 +402,7 @@ func (s *DaemonSupervisor) waitBeforeRestart() bool {
 	delay := s.nextBackoff()
 	logger.Infof("Restarting tailscaled in %v (attempt %d)", delay, s.restartCount+1)
 
-	select {
-	case <-s.ctx.Done():
-		return false
-	case <-time.After(delay):
-		return true
-	}
+	return sleep(s.ctx, delay)
 }
 
 // startDaemon creates and starts a new daemon instance.
@@ -466,11 +460,13 @@ func (s *DaemonSupervisor) waitForExit() error {
 	if daemon == nil {
 		return errors.New("daemon is nil")
 	}
-	daemon.mu.RLock()
-	exited := daemon.exited
-	daemon.mu.RUnlock()
+	exited := daemon.exitedChan()
+	if exited == nil {
+		return errors.New("daemon process not started")
+	}
+	tm := s.cfg.times()
 
-	ticker := time.NewTicker(s.cfg.times().healthCheckInterval)
+	ticker := time.NewTicker(tm.healthCheckInterval)
 	defer ticker.Stop()
 	var login loginWatch
 	lastCheck := time.Now()
@@ -485,7 +481,7 @@ func (s *DaemonSupervisor) waitForExit() error {
 			return errors.New("daemon process exited")
 
 		case <-ticker.C:
-			if time.Since(lastCheck) >= s.cfg.times().hostEndpointsCheckInterval {
+			if time.Since(lastCheck) >= tm.hostEndpointsCheckInterval {
 				lastCheck = time.Now()
 				if s.hostEndpointsChanged(daemon) {
 					s.stopDaemon()
@@ -579,19 +575,20 @@ func (s *DaemonSupervisor) recordCrash() {
 
 // nextBackoff returns the next backoff duration using exponential backoff.
 func (s *DaemonSupervisor) nextBackoff() time.Duration {
+	tm := s.cfg.times()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if s.backoffAttempt == 0 {
 		s.backoffAttempt = 1
-		return s.cfg.times().initialBackoff
+		return tm.initialBackoff
 	}
 
 	// Exponential backoff: initialBackoff * 2^attempt. The attempt stops
 	// growing at the cap: a larger shift would overflow
-	delay := s.cfg.times().initialBackoff << s.backoffAttempt
-	if delay >= s.cfg.times().maxBackoff {
-		return s.cfg.times().maxBackoff
+	delay := tm.initialBackoff << s.backoffAttempt
+	if delay >= tm.maxBackoff {
+		return tm.maxBackoff
 	}
 	s.backoffAttempt++
 	return delay

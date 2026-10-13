@@ -224,6 +224,7 @@ func (l *certLease) release() {
 func (d *Daemon) requestCert(dir, domain string) error {
 	var lastErr string
 	start, advertised := time.Now(), false
+	tm := d.config.times()
 	for !validCert(dir, domain, time.Now()) {
 		if d.isDrained() {
 			return errDrained
@@ -244,12 +245,12 @@ func (d *Daemon) requestCert(dir, domain string) error {
 				lastErr = err.Error()
 			}
 			if !advertised && strings.Contains(err.Error(), certDomainError) &&
-				time.Since(start) >= d.config.times().certDomainGrace {
+				time.Since(start) >= tm.certDomainGrace {
 				logger.Warnf(
 					"Control has not made %s a certificate domain of %s within %v: advertising %s",
 					domain,
 					d.config.EndpointID,
-					d.config.times().certDomainGrace,
+					tm.certDomainGrace,
 					d.config.Service,
 				)
 				if err := d.advertise(d.config.Service); err != nil {
@@ -258,7 +259,7 @@ func (d *Daemon) requestCert(dir, domain string) error {
 				advertised = true
 			}
 		}
-		if !sleep(d.ctx, d.config.times().certPollInterval) {
+		if !sleep(d.ctx, tm.certPollInterval) {
 			return d.ctx.Err()
 		}
 	}

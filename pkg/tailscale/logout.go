@@ -123,8 +123,8 @@ func logoutState(raw []byte) ([]byte, error) {
 // runLogout runs tailscaled on the state in workDir until it has logged out,
 // or ctx ends. It is a variable so tests can replace it.
 var runLogout = func(ctx context.Context, tailscaledBin, workDir, socket string) error {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
 
 	// --port=0: the plugin shares the host's network, where 41641 may be taken
 	daemon := exec.CommandContext(ctx, tailscaledBin,
@@ -145,30 +145,21 @@ var runLogout = func(ctx context.Context, tailscaledBin, workDir, socket string)
 		if err := daemon.Wait(); err != nil && ctx.Err() == nil {
 			logger.Debugf("tailscaled for logout exited: %v", err)
 		}
+		cancel(errors.New("tailscaled exited before logging out"))
 	}()
 	defer func() {
-		cancel()
+		cancel(nil)
 		<-exited
 	}()
 
 	lc := &local.Client{Socket: socket, UseSocketOnly: true}
 	// The LocalAPI answers once the backend has started
-	gone := false
 	started := func() bool {
-		select {
-		case <-exited:
-			gone = true
-			return true
-		default:
-		}
 		_, err := lc.StatusWithoutPeers(ctx)
 		return err == nil
 	}
 	if !poll(ctx, 200*time.Millisecond, started) {
-		return fmt.Errorf("tailscaled did not start: %w", ctx.Err())
-	}
-	if gone {
-		return errors.New("tailscaled exited before logging out")
+		return fmt.Errorf("tailscaled did not start: %w", context.Cause(ctx))
 	}
 	if err := lc.Logout(ctx); err != nil {
 		return fmt.Errorf("tailscale logout failed: %w", err)

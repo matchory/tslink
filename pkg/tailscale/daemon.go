@@ -616,6 +616,14 @@ func (d *Daemon) waitForSocket() error {
 	return nil
 }
 
+// exitedChan returns the channel closed once tailscaled exits, or nil if it
+// was not started.
+func (d *Daemon) exitedChan() <-chan struct{} {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.exited
+}
+
 // killProcess stops tailscaled: SIGTERM, then SIGKILL if it is still running
 // stopGrace later. It waits for it to exit and removes its socket. It does not
 // take the node down first: that would persist WantRunning=false in a
@@ -627,9 +635,8 @@ func (d *Daemon) killProcess(cmd *exec.Cmd) {
 
 	// Wait for process with timeout to avoid blocking forever. If
 	// watchProcess waits for it, wait for that instead
-	d.mu.RLock()
-	waitDone := d.exited
-	d.mu.RUnlock()
+	grace := d.config.times().stopGrace
+	waitDone := d.exitedChan()
 	if waitDone == nil {
 		ch := make(chan struct{})
 		go func() {
@@ -643,8 +650,8 @@ func (d *Daemon) killProcess(cmd *exec.Cmd) {
 
 	select {
 	case <-waitDone:
-	case <-time.After(d.config.times().stopGrace):
-		logger.Warnf("tailscaled did not exit within %v, killing it", d.config.times().stopGrace)
+	case <-time.After(grace):
+		logger.Warnf("tailscaled did not exit within %v, killing it", grace)
 		if err := killError(cmd.Process.Kill()); err != nil {
 			logger.Warnf("Failed to kill tailscaled: %v", err)
 		}

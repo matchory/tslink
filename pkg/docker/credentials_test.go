@@ -3,6 +3,7 @@ package docker
 import (
 	"bytes"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"sync"
@@ -43,7 +44,12 @@ func TestCredentialsStayOutOfTheLog(t *testing.T) {
 	const oauthCanary = "tskey-client-kCANARY1CNTRL-0123456789abcdef"
 	var log lockedBuffer
 	logger.SetOutput(&log)
-	t.Cleanup(func() { logger.SetOutput(os.Stdout) })
+	// Every level: a key in a debug line leaks once someone turns debug on
+	logger.SetLevel(slog.LevelDebug)
+	t.Cleanup(func() {
+		logger.SetOutput(os.Stdout)
+		logger.SetLevel(slog.LevelInfo)
+	})
 
 	td := newTestDriver(t, newFakeDocker())
 	td.config.AuthKey = canary + "plugin"

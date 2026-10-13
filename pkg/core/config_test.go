@@ -153,6 +153,7 @@ func TestTagScopeStrict(t *testing.T) {
 
 // The log level defaults to info; an invalid value keeps it.
 func TestLoadConfigLogLevel(t *testing.T) {
+	t.Cleanup(func() { logger.SetLevel(slog.LevelInfo) })
 	for value, want := range map[string]slog.Level{
 		"":        slog.LevelInfo,
 		"debug":   slog.LevelDebug,
@@ -161,6 +162,8 @@ func TestLoadConfigLogLevel(t *testing.T) {
 		"warn":    slog.LevelWarn,
 		"error":   slog.LevelError,
 		"verbose": slog.LevelInfo,
+		"warning": slog.LevelInfo, // not one of the four
+		"error+8": slog.LevelInfo, // slog's offsets are not accepted
 	} {
 		t.Setenv(LogLevelSetting, value)
 		if got := LoadConfig().LogLevel; got != want {

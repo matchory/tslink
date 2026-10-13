@@ -68,15 +68,18 @@ const LogLevelSetting = "TSLINK_LOG_LEVEL"
 
 // logLevel parses LogLevelSetting. An invalid value keeps info.
 func logLevel(v string) slog.Level {
-	var l slog.Level
-	if v == "" {
+	switch strings.ToLower(v) {
+	case "debug":
+		return slog.LevelDebug
+	case "", "info":
 		return slog.LevelInfo
+	case "warn":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
 	}
-	if err := l.UnmarshalText([]byte(v)); err != nil {
-		logger.Warnf("%s=%q: %v; keeping info", LogLevelSetting, v, err)
-		return slog.LevelInfo
-	}
-	return l
+	logger.Warnf("%s=%q: not debug, info, warn or error; keeping info", LogLevelSetting, v)
+	return slog.LevelInfo
 }
 
 // HostEndpointsSetting is the plugin setting that selects HostEndpoints:

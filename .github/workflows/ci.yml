@@ -99,6 +99,21 @@ jobs:
             sudo "${RUNNER_TEMP}/tailscale.test" -test.v=test2json -test.count=1 \
             -test.run 'OverStale|SystemBus|Taildrop' -test.gocoverdir="${RUNNER_TEMP}/cover/netns"
 
+      # The same network namespace tests against iptables-legacy: tslink writes
+      # isolation chains with the iptables-restore of whichever backend
+      # iptables uses, and both must apply it as one transaction
+      - name: Test network namespaces (iptables-legacy)
+        id: go-test-netns-legacy
+        if: ${{ !cancelled() && steps.go-test-netns.outcome != 'skipped' }}
+        run: |
+          sudo update-alternatives --set iptables /usr/sbin/iptables-legacy
+          sudo update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy
+          iptables --version
+          go tool gotestsum --format github-actions --junitfile "${RUNNER_TEMP}/junit/netns-legacy.xml" \
+            --raw-command -- go tool test2json -t -p github.com/matchory/tslink/pkg/netutil \
+            sudo "${RUNNER_TEMP}/netutil.test" -test.v=test2json -test.count=1 \
+            -test.gocoverdir="${RUNNER_TEMP}/cover/netns"
+
       - name: Test the probe library
         id: probe-library
         run: bash test/security/lib_test.sh

@@ -233,10 +233,10 @@ return fmt.Errorf("failed to create endpoint: %w", err)
 
 - `ci.yml`: golangci-lint, pinned to the version `.golangci.toml` is written for, and the Go tests. The network
   namespace tests in `pkg/netutil` and the mount namespace test in `pkg/tailscale` skip without root, so CI runs them
-  a second time with `sudo`. It also tests the probe library, `test/security/lib_test.sh`. Lint findings go to code
-  scanning as SARIF (category `golangci-lint`); test results become annotations and a job summary (JUnit from
-  `gotestsum`); coverage of all runs is merged with `go tool covdata` into the job summary and a `coverage` artifact,
-  with no threshold.
+  a second time with `sudo`, and the netutil ones a third time with `iptables-legacy`. It also tests the probe
+  library, `test/security/lib_test.sh`. Lint findings go to code scanning as SARIF (category `golangci-lint`); test
+  results become annotations and a job summary (JUnit from `gotestsum`); coverage of all runs is merged with
+  `go tool covdata` into the job summary and a `coverage` artifact, with no threshold.
 - `govulncheck.yml`: govulncheck findings as SARIF in code scanning, on pushes, PRs and weekly. `gotestsum` and
   `govulncheck` are pinned in the `tool` block of `go.mod` (`go tool ...`), so Dependabot updates them.
 - `linter.yml`: super-linter for everything except Go (Markdown, YAML, shell, Dockerfile). Configs are in

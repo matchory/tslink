@@ -110,18 +110,18 @@ certificate exists. A drain does not wait for a serve configuration in progress:
 change holding its lock (`serviceGate.change`), which the drain calls before taking the lock, and the change runs nothing
 more once drained. Plugin shutdown stops all endpoints concurrently within its deadline (`Driver.Shutdown`), and an
 endpoint's Tailscale run derives from the driver's context, so a start in progress ends with the plugin and is
-abandoned as on `Stop`. A daemon's CLI calls and waits use its context, cancelled by `Daemon.Stop`, and its goroutines
+abandoned as on `Stop`. A daemon's CLI calls and waits use its context, cancelled by `daemon.Stop`, and its goroutines
 run under its wait group. Each state directory serves one endpoint at a time (`ClaimStateDir`).
 
 **Binaries**: the plugin image ships a pinned Tailscale (from the `tailscale/tailscale` stage of the Dockerfile, which
 Dependabot updates), and tslink runs only these binaries: it downloads nothing at runtime and ignores the old
 `TS_VERSION`/`TS_PATH` settings with a warning. tailscaled's output goes to a rotated `tailscaled.log`, read by
 `drainLines`, which never stops reading: tailscaled blocks on a full pipe. tslink talks to tailscaled through its
-LocalAPI (`tailscale.com/client/local`, `Daemon.lc`), whose module must be the bundled Tailscale's version:
+LocalAPI (`tailscale.com/client/local`, `daemon.lc`), whose module must be the bundled Tailscale's version:
 `TestLocalAPIClientMatchesBundledTailscale` fails until Dependabot's Dockerfile and Go module updates agree. Only
 `tailscale serve` still runs the CLI.
 
-**Login**: `Daemon.logIn` does what `tailscale up` does, over the LocalAPI. The node's settings are an
+**Login**: `daemon.logIn` does what `tailscale up` does, over the LocalAPI. The node's settings are an
 `ipn.ConfigVAlpha`, the format of tailscaled's config file (as the Kubernetes operator configures its proxies),
 applied as the prefs edit tailscaled would make of it, minus Services: the config file would set those on every start.
 The tags go in the same edit, and the auth key only into the LocalAPI's start request, never into arguments, the
@@ -170,7 +170,7 @@ characters of its ID), which panics and goroutine dumps show in each goroutine's
 pkg/
 ├── docker/     # Docker network driver (driver.go, events.go)
 ├── core/       # Endpoint/network logic (endpoint.go, network.go)
-├── tailscale/  # Daemon lifecycle (daemon.go, supervisor.go, binary.go)
+├── tailscale/  # Daemon lifecycle (daemon.go, command.go, output.go, supervisor.go, binary.go)
 ├── netutil/    # Linux networking (veth.go - veth, routing, NAT)
 ├── preflight/  # `tslink diag --preflight`: SECURITY.md's environment properties, via the Docker API
 └── logger/     # Structured logging

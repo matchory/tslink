@@ -480,6 +480,14 @@ var errHostEndpointsChanged = errors.New("host endpoints changed")
 // Returns nil if context was cancelled (clean shutdown).
 // Returns error if daemon exited unexpectedly.
 func (s *DaemonSupervisor) waitForExit() error {
+	daemon := s.GetDaemon()
+	if daemon == nil {
+		return errors.New("daemon is nil")
+	}
+	daemon.mu.RLock()
+	exited := daemon.exited
+	daemon.mu.RUnlock()
+
 	ticker := time.NewTicker(healthCheckInterval)
 	defer ticker.Stop()
 	var login loginWatch
@@ -491,19 +499,10 @@ func (s *DaemonSupervisor) waitForExit() error {
 			s.stopDaemon()
 			return nil
 
+		case <-exited:
+			return errors.New("daemon process exited")
+
 		case <-ticker.C:
-			s.mu.RLock()
-			daemon := s.daemon
-			s.mu.RUnlock()
-
-			if daemon == nil {
-				return errors.New("daemon is nil")
-			}
-
-			if !daemon.IsRunning() {
-				return errors.New("daemon process exited")
-			}
-
 			if time.Since(lastCheck) >= hostEndpointsCheckInterval {
 				lastCheck = time.Now()
 				if s.hostEndpointsChanged(daemon) {

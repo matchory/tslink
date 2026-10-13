@@ -133,6 +133,23 @@ func TestSupervisorRestartsCrashedDaemon(t *testing.T) {
 	}
 }
 
+// A crash is noticed when tailscaled exits, not at the next health check.
+func TestSupervisorNoticesCrashAtOnce(t *testing.T) {
+	s, f, _ := newFakeSupervisor(t)
+	setDuration(t, &healthCheckInterval, time.Hour)
+	// Registered after setDuration, so it runs first: the loop reads it
+	t.Cleanup(func() {
+		if err := s.Stop(); err != nil {
+			t.Errorf("Stop: %v", err)
+		}
+	})
+	if err := s.Start(); err != nil {
+		t.Fatal(err)
+	}
+	f.crash(t)
+	waitFor(t, "a restart", func() bool { return f.startCount() == 2 })
+}
+
 // A failed first start fails Start, but the supervisor keeps trying: the
 // endpoint stops it if it gives up on the container.
 func TestSupervisorRetriesFailedFirstStart(t *testing.T) {

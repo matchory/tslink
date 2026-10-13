@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The supervisor restarts a crashed tailscaled as soon as it exits. Before,
+  it noticed the crash at its next health check, up to 5 seconds later.
+
 ### Fixed
 
 - A `tslink.service` label that is not a valid Service name, `svc:`

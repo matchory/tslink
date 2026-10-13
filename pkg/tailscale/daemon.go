@@ -218,12 +218,15 @@ func (d *Daemon) IsRunning() bool {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
-	if !d.running || d.cmd == nil || d.cmd.Process == nil {
+	if !d.running || d.exited == nil {
 		return false
 	}
-	// Signal 0 checks if process exists without killing it
-	err := d.cmd.Process.Signal(syscall.Signal(0))
-	return err == nil
+	select {
+	case <-d.exited:
+		return false
+	default:
+		return true
+	}
 }
 
 // Stop stops the tailscaled process.

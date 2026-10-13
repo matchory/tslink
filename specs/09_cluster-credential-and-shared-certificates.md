@@ -131,9 +131,9 @@ Service, whose certificate is for `<service name>.<MagicDNS suffix>`:
 2. Otherwise tailscaled's start completes without the Service, and the replica configures it in the background. It
    tries to take the lease `<domain>.lease` in the certificate directory, created exclusively, naming the endpoint,
    and touched every 15 seconds while held.
-   - The holder applies its serve configuration, then asks tailscaled for the certificate (`tailscale cert`) until it
-     exists, and releases the lease. Serving the Service alone does not reliably start issuance: tailscaled fetches
-     certificates for served names right away only if the name is already among the node's certificate domains,
+   - The holder applies its serve configuration, then asks tailscaled for the certificate (the LocalAPI's `CertPair`)
+     until it exists, and releases the lease. Serving the Service alone does not reliably start issuance: tailscaled
+     fetches certificates for served names right away only if the name is already among the node's certificate domains,
      but control adds a Service's domain seconds after the Service is configured, and tailscaled's next attempt is
      an hour later.
    - Every other replica waits, checking every 5 seconds for a valid certificate, then applies its configuration.

@@ -237,31 +237,32 @@ func TestServesWeb(t *testing.T) {
 	}
 }
 
-// "tailscale cert" runs through the CLI seam on the daemon's socket, without
-// logging its output, which holds the private key.
-func TestRequestCertRunsCLI(t *testing.T) {
-	d, dir := newCertDaemon(t, &fakeCLI{})
+// The certificate is requested through the LocalAPI, which leaves it in
+// tailscaled's certificate directory, until it is there.
+func TestRequestCertUsesLocalAPI(t *testing.T) {
+	cli := &fakeCLI{}
+	d, dir := newCertDaemon(t, cli)
 	setTiming(&d.config, func(tm *timing) { tm.certPollInterval = 10 * time.Millisecond })
-	var calls []cliCall
-	d.runCLI = func(_ context.Context, c cliCall) (cliOutput, error) {
-		calls = append(calls, c)
-		if len(calls) == 1 {
-			return cliOutput{stderr: "not issued yet\n"}, errors.New("exit status 1")
+	api := newFakeLocalAPI(t)
+	d.lc = api.client()
+	requests := 0
+	api.cert = func() error {
+		requests++
+		if requests == 1 {
+			return errors.New("not issued yet")
 		}
 		writeCert(t, dir, certDomain, certDomain, time.Now().Add(time.Hour))
-		return cliOutput{stdout: "certificate and key"}, nil
+		return nil
 	}
 	if err := d.requestCert(dir, certDomain); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"--socket=" + testSocket, "cert", "--cert-file=-", "--key-file=-", certDomain}
-	if len(calls) != 2 {
-		t.Fatalf("ran %d commands, want 2", len(calls))
+	want := "GET " + certPath + certDomain + "?type=pair&min_validity=0s"
+	if got := api.paths(); len(got) != 2 || got[0] != want || got[1] != want {
+		t.Errorf("requests = %q, want %q twice", got, want)
 	}
-	for _, c := range calls {
-		if !slices.Equal(c.args, want) || c.prefix != "" {
-			t.Errorf("call = %q with prefix %q, want %q without one", c.args, c.prefix, want)
-		}
+	if calls := cli.snapshot(); len(calls) != 0 {
+		t.Errorf("ran %q, want no tailscale command", calls)
 	}
 }
 

@@ -119,7 +119,7 @@ Dependabot updates), and tslink runs only these binaries: it downloads nothing a
 `drainLines`, which never stops reading: tailscaled blocks on a full pipe. tslink talks to tailscaled through its
 LocalAPI (`tailscale.com/client/local`, `Daemon.lc`), whose module must be the bundled Tailscale's version:
 `TestLocalAPIClientMatchesBundledTailscale` fails until Dependabot's Dockerfile and Go module updates agree. Only
-`tailscale serve` and `tailscale cert` still run the CLI.
+`tailscale serve` still runs the CLI.
 
 **Login**: `Daemon.logIn` does what `tailscale up` does, over the LocalAPI. The node's settings are an
 `ipn.ConfigVAlpha`, the format of tailscaled's config file (as the Kubernetes operator configures its proxies),

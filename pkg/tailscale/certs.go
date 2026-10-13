@@ -39,7 +39,7 @@ const (
 	protoHTTPS         = "https"
 )
 
-// certDomainError is what "tailscale cert" fails with for a name that is not
+// certDomainError is what tailscaled fails a certificate request with for a name that is not
 // among the node's certificate domains.
 const certDomainError = "invalid domain"
 
@@ -230,16 +230,11 @@ func (d *Daemon) requestCert(dir, domain string) error {
 			return errDrained
 		}
 		ctx, cancel := context.WithTimeout(d.ctx, certLeaseStale)
-		// The certificate and its key go to stdout, which is neither logged
-		// (no prefix) nor kept
-		out, err := d.runTailscale(ctx, cliCall{args: []string{
-			"--socket=" + d.socketPath, "cert", "--cert-file=-", "--key-file=-", domain,
-		}})
+		// tailscaled keeps the pair in its certificate directory: the copy
+		// it returns is not needed
+		_, _, err := d.lc.CertPair(ctx, domain)
 		cancel()
 		if err != nil {
-			if stderr := strings.TrimSpace(out.stderr); stderr != "" {
-				err = fmt.Errorf("%w: %s", err, stderr)
-			}
 			if err.Error() != lastErr {
 				logger.Infof("Certificate for %s not issued yet: %v", domain, err)
 				lastErr = err.Error()

@@ -298,17 +298,6 @@ func TestDrainAndWaitWithoutDaemon(t *testing.T) {
 	}
 }
 
-// failingCert returns a tailscale CLI that fails "tailscale cert" with msg on
-// its standard error, as tailscale does, and passes other calls to cli.
-func failingCert(cli *fakeCLI, msg string) func(context.Context, cliCall) (cliOutput, error) {
-	return func(ctx context.Context, c cliCall) (cliOutput, error) {
-		if slices.Contains(c.args, "cert") {
-			return cliOutput{stderr: msg + "\n"}, errors.New("exit status 1")
-		}
-		return cli.run(ctx, c)
-	}
-}
-
 // newCertDaemon returns a daemon serving svc:web over HTTPS with a shared
 // certificate directory, and that directory.
 func newCertDaemon(t *testing.T, cli *fakeCLI) (*Daemon, string) {
@@ -448,7 +437,6 @@ func TestLeaseHolderAdvertisedOnlyWithCert(t *testing.T) {
 	cli := &fakeCLI{}
 	d, dir := newCertDaemon(t, cli)
 	setTiming(&d.config, func(tm *timing) { tm.certPollInterval = 10 * time.Millisecond })
-	d.runCLI = failingCert(cli, "not issued yet")
 
 	done := runAfterCert(d, dir)
 	waitFor(
@@ -488,7 +476,11 @@ func TestLeaseHolderAdvertisesWhenDomainRefused(t *testing.T) {
 		tm.certPollInterval = 10 * time.Millisecond
 		tm.certDomainGrace = 50 * time.Millisecond
 	})
-	d.runCLI = failingCert(cli, `invalid domain "api.example.ts.net"; must be one of []`)
+	api := newFakeLocalAPI(t)
+	d.lc = api.client()
+	api.cert = func() error {
+		return errors.New(`invalid domain "api.example.ts.net"; must be one of []`)
+	}
 
 	done := runAfterCert(d, dir)
 	waitFor(
@@ -510,7 +502,6 @@ func TestDrainedLeaseHolderStops(t *testing.T) {
 	cli := &fakeCLI{}
 	d, dir := newCertDaemon(t, cli)
 	setTiming(&d.config, func(tm *timing) { tm.certPollInterval = 10 * time.Millisecond })
-	d.runCLI = failingCert(cli, "not issued yet")
 
 	done := runAfterCert(d, dir)
 	waitFor(

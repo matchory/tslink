@@ -25,7 +25,14 @@ func Main(m *testing.M) {
 // Leaks returns the goroutineleak profile if it finds leaked goroutines, else
 // an empty string.
 func Leaks() string {
-	p := pprof.Lookup("goroutineleak")
+	return leaks(pprof.Lookup("goroutineleak"))
+}
+
+// leaks runs the detection of p, the goroutineleak profile or nil.
+func leaks(p *pprof.Profile) string {
+	if p == nil {
+		return "goroutineleak profile: not available in this Go\n"
+	}
 	var b bytes.Buffer
 	// Writing the profile runs the detection; Count only reports its result
 	if err := p.WriteTo(&b, 1); err != nil {

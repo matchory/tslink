@@ -21,3 +21,11 @@ func TestLeaks(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// Without the goroutineleak profile, as in a Go that lacks it, the check
+// cannot run: it says so, and fails the tests, rather than panic.
+func TestLeaksWithoutProfile(t *testing.T) {
+	if got := leaks(nil); !strings.Contains(got, "not available") {
+		t.Errorf("leaks(nil) = %q, want it to say the profile is not available", got)
+	}
+}

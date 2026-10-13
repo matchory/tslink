@@ -228,8 +228,8 @@ func TestJoinDoesNotBlockOnTailscale(t *testing.T) {
 		t.Errorf("traceback %q does not name the endpoint", r.traceback)
 	}
 	ep, _ := td.endpoint(epID)
-	if ep.GetSandboxKey() != sandbox {
-		t.Errorf("sandbox key %q", ep.GetSandboxKey())
+	if ep.SandboxKey() != sandbox {
+		t.Errorf("sandbox key %q", ep.SandboxKey())
 	}
 }
 
@@ -454,16 +454,16 @@ func TestRecoverEndpoints(t *testing.T) {
 	if _, ok := td.endpoint(fakeID("bridge-ep")); ok {
 		t.Error("recovered an endpoint of another driver")
 	}
-	if ep.Network != net || ep.GetSandboxKey() != sandbox {
-		t.Errorf("endpoint network %p (want %p), sandbox %q", ep.Network, net, ep.GetSandboxKey())
+	if ep.Network != net || ep.SandboxKey() != sandbox {
+		t.Errorf("endpoint network %p (want %p), sandbox %q", ep.Network, net, ep.SandboxKey())
 	}
 	if want := filepath.Join(
 		td.config.DataDir,
 		"by-stack",
 		"billing",
 		"billing-api-1-abc",
-	); ep.GetStateDir() != want {
-		t.Errorf("state dir %q, want %q claimed before garbage collection", ep.GetStateDir(), want)
+	); ep.StateDir() != want {
+		t.Errorf("state dir %q, want %q claimed before garbage collection", ep.StateDir(), want)
 	}
 
 	r := td.nextRun(t)

@@ -24,7 +24,7 @@ func shortRetries(t *testing.T) {
 func TestRunTailscaleRetriesTransientFailures(t *testing.T) {
 	shortRetries(t)
 	var calls atomic.Int32
-	e := &Endpoint{ID: "0123456789abcdef", DataDir: t.TempDir()}
+	e := &Endpoint{ID: "0123456789abcdef", dataDir: t.TempDir()}
 	e.startFn = func(*ContainerInfo) error {
 		if calls.Add(1) < 4 {
 			return errors.New("control plane unreachable")
@@ -40,7 +40,7 @@ func TestRunTailscaleRetriesTransientFailures(t *testing.T) {
 func TestRunTailscaleStopsOnPermanentError(t *testing.T) {
 	shortRetries(t)
 	var calls atomic.Int32
-	e := &Endpoint{ID: "0123456789abcdef", DataDir: t.TempDir()}
+	e := &Endpoint{ID: "0123456789abcdef", dataDir: t.TempDir()}
 	e.startFn = func(*ContainerInfo) error {
 		calls.Add(1)
 		return permanentError{errors.New("stack mismatch")}
@@ -54,7 +54,7 @@ func TestRunTailscaleStopsOnPermanentError(t *testing.T) {
 func TestRunTailscaleStopsRetryingAfterLeave(t *testing.T) {
 	shortRetries(t)
 	var calls atomic.Int32
-	e := &Endpoint{ID: "0123456789abcdef", DataDir: t.TempDir()}
+	e := &Endpoint{ID: "0123456789abcdef", dataDir: t.TempDir()}
 	e.startFn = func(*ContainerInfo) error {
 		if calls.Add(1) == 2 {
 			if err := e.Leave(); err != nil {
@@ -83,7 +83,7 @@ func TestRunTailscaleStopsRetryingAfterLeave(t *testing.T) {
 func TestRunTailscaleRefusesAfterLeave(t *testing.T) {
 	shortRetries(t)
 	var calls atomic.Int32
-	e := &Endpoint{ID: "0123456789abcdef", DataDir: t.TempDir()}
+	e := &Endpoint{ID: "0123456789abcdef", dataDir: t.TempDir()}
 	e.startFn = func(*ContainerInfo) error {
 		calls.Add(1)
 		return nil
@@ -102,7 +102,7 @@ func TestRunTailscaleRefusesAfterLeave(t *testing.T) {
 func TestRunTailscaleRefusesAfterStop(t *testing.T) {
 	shortRetries(t)
 	var calls atomic.Int32
-	e := &Endpoint{ID: "0123456789abcdef", DataDir: t.TempDir()}
+	e := &Endpoint{ID: "0123456789abcdef", dataDir: t.TempDir()}
 	e.startFn = func(*ContainerInfo) error {
 		calls.Add(1)
 		return nil
@@ -127,7 +127,7 @@ func TestRunTailscaleCleansUpStartCancelledByLeave(t *testing.T) {
 	claims := NewStateClaims()
 	e := &Endpoint{
 		ID:      "0123456789abcdef",
-		DataDir: t.TempDir(),
+		dataDir: t.TempDir(),
 		Network: &Network{AuthKey: "tskey-client-x?ephemeral=true"},
 		claims:  claims,
 	}
@@ -175,7 +175,7 @@ func TestRunTailscaleKeepsStateOfStartCancelledByStop(t *testing.T) {
 	claims := NewStateClaims()
 	e := &Endpoint{
 		ID:      "0123456789abcdef",
-		DataDir: t.TempDir(),
+		dataDir: t.TempDir(),
 		Network: &Network{AuthKey: "tskey-client-x?ephemeral=true"},
 		claims:  claims,
 	}
@@ -225,7 +225,7 @@ func TestRunTailscaleKeepsStateOfStartCancelledByStop(t *testing.T) {
 
 // A start that reaches tailscaled after Leave began starts none.
 func TestStartSupervisorRefusesWhileLeaving(t *testing.T) {
-	e := &Endpoint{ID: "0123456789abcdef", DataDir: t.TempDir(), leaving: true}
+	e := &Endpoint{ID: "0123456789abcdef", dataDir: t.TempDir(), leaving: true}
 	s := tailscale.NewDaemonSupervisor(tailscale.DaemonConfig{EndpointID: e.ID})
 	if _, err := e.startSupervisor(s); err == nil {
 		t.Error("started a supervisor for a leaving endpoint")
@@ -239,7 +239,7 @@ func TestRunTailscaleRunsOnce(t *testing.T) {
 	shortRetries(t)
 	var calls atomic.Int32
 	release := make(chan struct{})
-	e := &Endpoint{ID: "0123456789abcdef", DataDir: t.TempDir()}
+	e := &Endpoint{ID: "0123456789abcdef", dataDir: t.TempDir()}
 	e.startFn = func(*ContainerInfo) error {
 		calls.Add(1)
 		<-release
@@ -289,7 +289,7 @@ func TestLogoutRetriesTransientFailures(t *testing.T) {
 func TestRunTailscaleWritesStatus(t *testing.T) {
 	shortRetries(t)
 	data := t.TempDir()
-	e := &Endpoint{ID: "0123456789abcdef", DataDir: data}
+	e := &Endpoint{ID: "0123456789abcdef", dataDir: data}
 	read := func() EndpointStatusFile {
 		t.Helper()
 		var st EndpointStatusFile
@@ -327,7 +327,7 @@ func TestRunTailscaleWritesStatus(t *testing.T) {
 	}
 
 	// A new endpoint: one that left starts nothing
-	e = &Endpoint{ID: e.ID, DataDir: data}
+	e = &Endpoint{ID: e.ID, dataDir: data}
 	e.startFn = func(*ContainerInfo) error { return permanentError{errors.New("invalid hostname")} }
 	e.RunTailscale(t.Context(), &ContainerInfo{Hostname: "../x"})
 	if st := read(); st.State != StatusFailed {
@@ -344,7 +344,7 @@ func TestRunTailscaleAbandonsStartWhenContextCancelled(t *testing.T) {
 	claims := NewStateClaims()
 	e := &Endpoint{
 		ID:      "0123456789abcdef",
-		DataDir: t.TempDir(),
+		dataDir: t.TempDir(),
 		Network: &Network{AuthKey: "tskey-client-x?ephemeral=true"},
 		claims:  claims,
 	}
@@ -396,7 +396,7 @@ func TestRunTailscaleAbandonsStartWhenContextCancelled(t *testing.T) {
 func TestRunTailscaleStopsRetryingWhenContextCancelled(t *testing.T) {
 	var calls atomic.Int32
 	ctx, cancel := context.WithCancel(t.Context())
-	e := &Endpoint{ID: "0123456789abcdef", DataDir: t.TempDir()}
+	e := &Endpoint{ID: "0123456789abcdef", dataDir: t.TempDir()}
 	e.startFn = func(*ContainerInfo) error {
 		calls.Add(1)
 		cancel()
@@ -424,7 +424,7 @@ func TestRunTailscaleKeepsStartThatSucceededAsContextCancelled(t *testing.T) {
 	claims := NewStateClaims()
 	e := &Endpoint{
 		ID:      "0123456789abcdef",
-		DataDir: t.TempDir(),
+		dataDir: t.TempDir(),
 		Network: &Network{AuthKey: "tskey-auth-x"},
 		claims:  claims,
 	}
@@ -457,7 +457,7 @@ func TestRunTailscaleKeepsStartThatSucceededAsContextCancelled(t *testing.T) {
 // A run whose context is already done starts nothing.
 func TestRunTailscaleRefusesCancelledContext(t *testing.T) {
 	var calls atomic.Int32
-	e := &Endpoint{ID: "0123456789abcdef", DataDir: t.TempDir()}
+	e := &Endpoint{ID: "0123456789abcdef", dataDir: t.TempDir()}
 	e.startFn = func(*ContainerInfo) error {
 		calls.Add(1)
 		return nil

@@ -25,20 +25,22 @@ import (
 type Endpoint struct {
 	mu sync.RWMutex // Protects concurrent access to mutable fields
 
+	// Fixed when the endpoint is created
 	ID          string
 	Network     *Network
-	Hostname    string
-	Tags        []string                  // ACL tags for tailscale up --advertise-tags
-	Service     string                    // Service name (e.g., "svc:hello-world")
-	Endpoints   []tailscale.ServeEndpoint // Parsed tslink.serve.<port> labels
-	Direct      bool                      // Serve the endpoints on the task's own name too
-	TailscaleIP string
-	VethName    string
-	StateDir    string
-	SandboxKey  string // Container's network namespace path, stored during Join
-	DataDir     string // Base data directory for state
-	SharedDir   string // Directory shared between hosts; empty for none
-	IPAMAddress string // Docker's IPAM address for the endpoint; set before Join, then fixed
+	IPAMAddress string // Docker's IPAM address for the endpoint, or ""
+
+	hostname    string
+	tags        []string                  // ACL tags for tailscale up --advertise-tags
+	service     string                    // Service name (e.g., "svc:hello-world")
+	endpoints   []tailscale.ServeEndpoint // Parsed tslink.serve.<port> labels
+	direct      bool                      // Serve the endpoints on the task's own name too
+	tailscaleIP string
+	vethName    string
+	stateDir    string
+	sandboxKey  string // Container's network namespace path, stored during Join
+	dataDir     string // Base data directory for state
+	sharedDir   string // Directory shared between hosts; empty for none
 
 	claims           *StateClaims // The driver's state directory claims
 	supervisor       *tailscale.DaemonSupervisor
@@ -114,14 +116,15 @@ func NewEndpoint(
 	stateDir := filepath.Join(cfg.DataDir, "by-hostname", hostname)
 
 	return &Endpoint{
-		ID:        id,
-		Network:   net,
-		Hostname:  hostname,
-		Direct:    true, // Default to direct serve enabled
-		StateDir:  stateDir,
-		DataDir:   cfg.DataDir,
-		SharedDir: cfg.SharedDir,
-		claims:    claims,
+		ID:          id,
+		Network:     net,
+		hostname:    hostname,
+		direct:      true, // Default to direct serve enabled
+		stateDir:    stateDir,
+		dataDir:     cfg.DataDir,
+		sharedDir:   cfg.SharedDir,
+		IPAMAddress: opts.IPAMAddress,
+		claims:      claims,
 	}, nil
 }
 
@@ -231,8 +234,8 @@ func (e *Endpoint) Join(sandboxKey string) (*network.JoinResponse, error) {
 
 	// Now lock briefly to store results
 	e.mu.Lock()
-	e.SandboxKey = sandboxKey
-	e.VethName = vethHost
+	e.sandboxKey = sandboxKey
+	e.vethName = vethHost
 	e.leaving = false
 	e.left = false
 	e.mu.Unlock()
@@ -297,7 +300,7 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 		logger.Debugf("Tailscale startup already in progress for endpoint %s", e.ID[:12])
 		return nil
 	}
-	sandboxKey := e.SandboxKey
+	sandboxKey := e.sandboxKey
 	if sandboxKey == "" {
 		e.mu.Unlock()
 		return errors.New("no sandbox key set - Join() must be called first")
@@ -305,14 +308,14 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 
 	// Copy immutable config needed for supervisor creation
 	endpointID := e.ID
-	dataDir := e.DataDir
+	dataDir := e.dataDir
 	certsDir := ""
-	if e.SharedDir != "" {
-		certsDir = filepath.Join(e.SharedDir, "certs")
+	if e.sharedDir != "" {
+		certsDir = filepath.Join(e.sharedDir, "certs")
 	}
 	network := e.Network
 	tags := e.tagsFor(info)
-	vethName := e.VethName
+	vethName := e.vethName
 	e.mu.Unlock()
 
 	if err := checkStackScope(info, network, tags); err != nil {
@@ -385,13 +388,13 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 		return nil
 	}
 	e.supervisor = supervisor
-	e.TailscaleIP = tailscaleIP
-	e.Hostname = info.Hostname
-	e.Tags = tags
-	e.Service = info.Service
-	e.Endpoints = info.Endpoints
-	e.Direct = info.Direct
-	e.StateDir = stateDir
+	e.tailscaleIP = tailscaleIP
+	e.hostname = info.Hostname
+	e.tags = tags
+	e.service = info.Service
+	e.endpoints = info.Endpoints
+	e.direct = info.Direct
+	e.stateDir = stateDir
 	e.tailscaleStarted = true
 	e.mu.Unlock()
 
@@ -476,7 +479,7 @@ func (e *Endpoint) RunTailscale(ctx context.Context, info *ContainerInfo) {
 // would otherwise share one node key. An invalid name claims nothing;
 // starting fails on it.
 func (e *Endpoint) ClaimStateDir(info *ContainerInfo) error {
-	dir, err := stateDirFor(e.DataDir, info.Stack, info.Hostname)
+	dir, err := stateDirFor(e.dataDir, info.Stack, info.Hostname)
 	if err != nil {
 		return nil //nolint:nilerr // an invalid name claims nothing: starting fails on it
 	}
@@ -494,16 +497,16 @@ func (e *Endpoint) ClaimStateDir(info *ContainerInfo) error {
 	}
 
 	e.mu.Lock()
-	e.StateDir = dir
+	e.stateDir = dir
 	e.mu.Unlock()
 	return nil
 }
 
-// GetStateDir returns the endpoint's state directory safely.
-func (e *Endpoint) GetStateDir() string {
+// StateDir returns the endpoint's state directory safely.
+func (e *Endpoint) StateDir() string {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	return e.StateDir
+	return e.stateDir
 }
 
 // IsTailscaleStarted returns whether Tailscale has been started for this endpoint.
@@ -529,11 +532,19 @@ func (e *Endpoint) StartRequested() bool {
 	return e.startRequested
 }
 
-// GetSandboxKey returns the sandbox key (container netns path) safely.
-func (e *Endpoint) GetSandboxKey() string {
+// SandboxKey returns the sandbox key (container netns path) safely.
+func (e *Endpoint) SandboxKey() string {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	return e.SandboxKey
+	return e.sandboxKey
+}
+
+// SetSandboxKey records the container's network namespace path, as Join and
+// Recover do, for a driver whose join is replaced in tests.
+func (e *Endpoint) SetSandboxKey(sandboxKey string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.sandboxKey = sandboxKey
 }
 
 // Recover adopts an endpoint whose Join ran in an earlier plugin instance:
@@ -553,8 +564,8 @@ func (e *Endpoint) Recover(sandboxKey string) error {
 	}
 
 	e.mu.Lock()
-	e.SandboxKey = sandboxKey
-	e.VethName = vethHost
+	e.sandboxKey = sandboxKey
+	e.vethName = vethHost
 	e.mu.Unlock()
 
 	if err := netutil.SetupContainerSide(netutil.ContainerSide{
@@ -573,7 +584,7 @@ func (e *Endpoint) Recover(sandboxKey string) error {
 func (e *Endpoint) GetInfo() (string, string) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	return e.TailscaleIP, e.Hostname
+	return e.tailscaleIP, e.hostname
 }
 
 // Leave is called when a container leaves the network.
@@ -584,8 +595,8 @@ func (e *Endpoint) Leave() error {
 	e.mu.Lock()
 	e.leaving = true
 	e.left = true
-	vethName := e.VethName
-	sandboxKey := e.SandboxKey
+	vethName := e.vethName
+	sandboxKey := e.sandboxKey
 	e.mu.Unlock()
 
 	e.cancelRun()
@@ -624,7 +635,7 @@ func (e *Endpoint) Leave() error {
 // backend, if it has one; existing connections continue.
 func (e *Endpoint) DrainService() {
 	e.mu.RLock()
-	supervisor, service := e.supervisor, e.Service
+	supervisor, service := e.supervisor, e.service
 	e.mu.RUnlock()
 
 	if supervisor == nil || service == "" {
@@ -647,12 +658,9 @@ func (e *Endpoint) Stop() error {
 	e.stopHealth()
 
 	e.mu.Lock()
-	supervisor := e.supervisor
-	// A start in flight releases the state directory when it returns
-	inFlight := supervisor == nil && e.running
-	e.supervisor = nil
-	e.tailscaleStarted = false
+	supervisor, inFlight := e.takeSupervisorLocked()
 	e.mu.Unlock()
+	// A start in flight releases the state directory when it returns
 	if !inFlight {
 		defer e.releaseStateDir()
 	}
@@ -783,7 +791,7 @@ func wipeStateOnKeyChange(stateDir string, network *Network) {
 // prepareStateDir claims the container's state directory and readies it for
 // the network: its ephemeral marker set to match, wiped if the auth key changed.
 func (e *Endpoint) prepareStateDir(info *ContainerInfo, network *Network) (string, error) {
-	stateDir, err := stateDirFor(e.DataDir, info.Stack, info.Hostname)
+	stateDir, err := stateDirFor(e.dataDir, info.Stack, info.Hostname)
 	if err != nil {
 		return "", permanentError{err}
 	}
@@ -865,9 +873,21 @@ func (e *Endpoint) beginRun(
 	return e.runCtx, start, true
 }
 
+// takeSupervisorLocked takes the endpoint's supervisor, nil if it has none,
+// and marks Tailscale not started. inFlight reports a start that has no
+// supervisor yet: RunTailscale stops what it starts once it returns. The
+// caller holds e.mu.
+func (e *Endpoint) takeSupervisorLocked() (*tailscale.DaemonSupervisor, bool) {
+	supervisor := e.supervisor
+	inFlight := supervisor == nil && e.running
+	e.supervisor = nil
+	e.tailscaleStarted = false
+	return supervisor, inFlight
+}
+
 // releaseStateDir gives up the endpoint's claim on its state directory.
 func (e *Endpoint) releaseStateDir() {
-	e.claims.release(e.GetStateDir(), e.ID)
+	e.claims.release(e.StateDir(), e.ID)
 }
 
 // abandonStart stops a supervisor a start stored after Stop looked, and gives
@@ -875,9 +895,7 @@ func (e *Endpoint) releaseStateDir() {
 // plugin, not because its container left.
 func (e *Endpoint) abandonStart() {
 	e.mu.Lock()
-	supervisor := e.supervisor
-	e.supervisor = nil
-	e.tailscaleStarted = false
+	supervisor, _ := e.takeSupervisorLocked()
 	e.mu.Unlock()
 	if supervisor != nil {
 		if err := supervisor.Stop(); err != nil {
@@ -905,7 +923,7 @@ func (e *Endpoint) removeUnstartedState(stateDir string) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), unstartedLogoutTimeout)
 	defer cancel()
-	if err := logoutNode(ctx, e.DataDir, stateDir); err != nil {
+	if err := logoutNode(ctx, e.dataDir, stateDir); err != nil {
 		logger.Warnf("Failed to log out ephemeral node of %s, removing its state anyway: %v",
 			stateDir, err)
 	}
@@ -920,13 +938,10 @@ func (e *Endpoint) removeUnstartedState(stateDir string) {
 // since nothing will reuse it.
 func (e *Endpoint) stopTailscale() {
 	e.mu.Lock()
-	stateDir := e.StateDir
-	service := e.Service
+	stateDir := e.stateDir
+	service := e.service
 	ephemeral := e.Network != nil && e.Network.Ephemeral()
-	supervisor := e.supervisor
-	inFlight := supervisor == nil && e.running
-	e.supervisor = nil
-	e.tailscaleStarted = false
+	supervisor, inFlight := e.takeSupervisorLocked()
 	e.mu.Unlock()
 
 	if inFlight {

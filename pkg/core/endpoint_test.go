@@ -54,8 +54,8 @@ func TestStartTailscaleRejectsForeignStack(t *testing.T) {
 	e := &Endpoint{
 		ID:         "0123456789abcdef",
 		Network:    &Network{ID: "net", AuthKey: "tskey-test"},
-		SandboxKey: "/var/run/docker/netns/test",
-		DataDir:    t.TempDir(),
+		sandboxKey: "/var/run/docker/netns/test",
+		dataDir:    t.TempDir(),
 	}
 	for _, stack := range []string{"other", ""} {
 		info := &ContainerInfo{Hostname: "web", Stack: stack, NetworkStack: "billing"}

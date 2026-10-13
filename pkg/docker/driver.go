@@ -206,19 +206,18 @@ func (d *Driver) CreateEndpoint(
 
 	// Parse endpoint options for hostname override
 	opts := core.ParseEndpointOptions(req.Options)
-
-	endpoint, err := core.NewEndpoint(req.EndpointID, net, opts, d.config, d.claims)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create endpoint: %w", err)
-	}
-
 	if req.Interface != nil && req.Interface.Address != "" {
 		prefix, err := netip.ParsePrefix(req.Interface.Address)
 		if err != nil {
 			logger.Warnf("Ignoring IPAM address %q: %v", req.Interface.Address, err)
 		} else {
-			endpoint.IPAMAddress = prefix.Addr().String()
+			opts.IPAMAddress = prefix.Addr().String()
 		}
+	}
+
+	endpoint, err := core.NewEndpoint(req.EndpointID, net, opts, d.config, d.claims)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create endpoint: %w", err)
 	}
 
 	d.endpoints[req.EndpointID] = endpoint
@@ -618,7 +617,7 @@ func (d *Driver) onContainerInfo(endpointID string, info *core.ContainerInfo) {
 		return
 	}
 
-	if endpoint.GetSandboxKey() == "" {
+	if endpoint.SandboxKey() == "" {
 		logger.Debugf(
 			"onContainerInfo: endpoint %s has no sandbox key (Join not called yet)",
 			endpointID[:12],
@@ -691,7 +690,7 @@ func (d *Driver) collectGarbage(ctx context.Context) {
 	sockets := make(map[string]bool, len(endpoints))
 	for _, ep := range endpoints {
 		sockets[ep.ID[:12]] = true
-		state[ep.GetStateDir()] = true
+		state[ep.StateDir()] = true
 	}
 
 	core.CollectGarbage(ctx, d.config, d.claims, state, sockets, gcMinAge)
@@ -821,7 +820,7 @@ func (d *Driver) recoverAttachment(
 	d.mu.RUnlock()
 
 	if exists {
-		if known.GetSandboxKey() != "" && !known.StartRequested() {
+		if known.SandboxKey() != "" && !known.StartRequested() {
 			if err := d.startMissedEndpoint(
 				ctx,
 				containerID,

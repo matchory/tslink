@@ -9,7 +9,7 @@ import (
 func readStatus(t *testing.T, e *Endpoint) EndpointStatusFile {
 	t.Helper()
 	var st EndpointStatusFile
-	b, err := os.ReadFile(StatusPath(e.DataDir, e.ID))
+	b, err := os.ReadFile(StatusPath(e.dataDir, e.ID))
 	if err != nil {
 		t.Fatalf("read status: %v", err)
 	}
@@ -29,11 +29,11 @@ func warningKeys(st EndpointStatusFile) []string {
 }
 
 func TestStatusWarnings(t *testing.T) {
-	e := &Endpoint{ID: "0123456789abcdef", DataDir: t.TempDir()}
+	e := &Endpoint{ID: "0123456789abcdef", dataDir: t.TempDir()}
 
 	// A warning before the first status is kept for it
 	e.setWarning("renewal-blocked/b.example.ts.net", "blocked")
-	if _, err := os.Stat(StatusPath(e.DataDir, e.ID)); !os.IsNotExist(err) {
+	if _, err := os.Stat(StatusPath(e.dataDir, e.ID)); !os.IsNotExist(err) {
 		t.Fatalf("a warning wrote a status before the start (err=%v)", err)
 	}
 	e.writeStatus(&ContainerInfo{Hostname: "web", Stack: "app"}, StatusRunning, 0, nil)
@@ -75,7 +75,7 @@ func TestStatusWarnings(t *testing.T) {
 	// Once the endpoint left, warnings write nothing
 	e.removeStatus()
 	e.setWarning("cert-expiry/a.example.ts.net", "expires soon")
-	if _, err := os.Stat(StatusPath(e.DataDir, e.ID)); !os.IsNotExist(err) {
+	if _, err := os.Stat(StatusPath(e.dataDir, e.ID)); !os.IsNotExist(err) {
 		t.Errorf("a warning after Leave wrote the status (err=%v)", err)
 	}
 }

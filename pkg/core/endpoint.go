@@ -461,10 +461,11 @@ func (e *Endpoint) RunTailscale(ctx context.Context, info *ContainerInfo) {
 		return
 	}
 
+	started := false
 	defer func() {
 		e.mu.Lock()
 		e.running = false
-		left := e.left
+		left, leaving := e.left, e.leaving
 		e.mu.Unlock()
 		switch {
 		case ctx.Err() == nil:
@@ -473,6 +474,8 @@ func (e *Endpoint) RunTailscale(ctx context.Context, info *ContainerInfo) {
 			// supervisor stored after it looked, to the run
 			logger.Infof("Endpoint %s left while Tailscale started, stopping it", e.ID[:12])
 			e.stopTailscale() //nolint:contextcheck // ctx is done: cleanup outlives it
+		case started && !leaving:
+			// Started as the plugin began to stop: Stop drains and stops it
 		default:
 			// Stopped with the plugin: the container keeps running, and
 			// recovery adopts its node with its state
@@ -487,6 +490,7 @@ func (e *Endpoint) RunTailscale(ctx context.Context, info *ContainerInfo) {
 	for attempt := 1; ; attempt++ {
 		err := start(info)
 		if err == nil {
+			started = true
 			e.writeStatus(info, StatusRunning, attempt-1, nil)
 			return
 		}
@@ -858,22 +862,20 @@ func (e *Endpoint) cancelRun() {
 
 // beginRun marks a RunTailscale active and returns its context, cancelled
 // by ctx, Leave and Stop, and the start function. It reports false if a run
-// is active, Tailscale started or the endpoint is leaving.
+// is active, Tailscale started, the endpoint is leaving or ctx is done.
 func (e *Endpoint) beginRun(
 	ctx context.Context,
 ) (context.Context, func(*ContainerInfo) error, bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.running || e.tailscaleStarted || e.leaving {
+	if e.running || e.tailscaleStarted || e.leaving || ctx.Err() != nil {
 		return nil, nil, false
 	}
-	// A context a previous run's caller cancelled must not end this one
-	if e.runCtx == nil || e.runCtx.Err() != nil {
-		if e.stopRun != nil {
-			e.stopRun()
-		}
-		e.runCtx, e.stopRun = context.WithCancel(ctx)
+	// Only a run uses runCtx: a previous run's ended with it
+	if e.stopRun != nil {
+		e.stopRun()
 	}
+	e.runCtx, e.stopRun = context.WithCancel(ctx)
 	start := e.startFn
 	if start == nil {
 		start = e.StartTailscale

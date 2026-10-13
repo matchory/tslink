@@ -416,3 +416,56 @@ func TestRunTailscaleStopsRetryingWhenContextCancelled(t *testing.T) {
 		t.Errorf("start called %d times, want 1", got)
 	}
 }
+
+// A start that succeeded as its context was cancelled, as the plugin began
+// to stop, is left to Stop, which drains and stops it: the run does not stop
+// it, or give up its state directory, itself.
+func TestRunTailscaleKeepsStartThatSucceededAsContextCancelled(t *testing.T) {
+	claims := NewStateClaims()
+	e := &Endpoint{
+		ID:      "0123456789abcdef",
+		DataDir: t.TempDir(),
+		Network: &Network{AuthKey: "tskey-auth-x"},
+		claims:  claims,
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	var dir string
+	e.startFn = func(info *ContainerInfo) error {
+		var err error
+		if dir, err = e.prepareStateDir(info, e.Network); err != nil {
+			return err
+		}
+		e.mu.Lock()
+		e.tailscaleStarted = true
+		e.mu.Unlock()
+		cancel()
+		return nil
+	}
+	e.RunTailscale(ctx, &ContainerInfo{Hostname: "web"})
+
+	e.mu.RLock()
+	started := e.tailscaleStarted
+	e.mu.RUnlock()
+	if !started {
+		t.Error("the run abandoned a start that succeeded")
+	}
+	if _, ok := claims.claim(dir, "fedcba9876543210"); ok {
+		t.Error("the run gave up the state directory of a start that succeeded")
+	}
+}
+
+// A run whose context is already done starts nothing.
+func TestRunTailscaleRefusesCancelledContext(t *testing.T) {
+	var calls atomic.Int32
+	e := &Endpoint{ID: "0123456789abcdef", DataDir: t.TempDir()}
+	e.startFn = func(*ContainerInfo) error {
+		calls.Add(1)
+		return nil
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	e.RunTailscale(ctx, &ContainerInfo{Hostname: "web"})
+	if got := calls.Load(); got != 0 {
+		t.Errorf("start called %d times with a cancelled context, want 0", got)
+	}
+}

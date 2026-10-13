@@ -24,6 +24,8 @@ type fakeDocker struct {
 	gone       map[string]bool // containers and networks removed after the listing
 	rootDir    string          // Docker's data root
 	infoErr    error
+
+	pluginLists int // How often PluginList was called
 }
 
 func newFakeDocker() *fakeDocker {
@@ -52,6 +54,7 @@ func (f *fakeDocker) Info(
 func (f *fakeDocker) PluginList(
 	context.Context, dockerclient.PluginListOptions,
 ) (dockerclient.PluginListResult, error) {
+	f.pluginLists++
 	if f.pluginErr != nil {
 		return dockerclient.PluginListResult{}, f.pluginErr
 	}

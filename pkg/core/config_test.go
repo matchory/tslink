@@ -1,10 +1,14 @@
 package core
 
 import (
+	"bytes"
 	"net/netip"
+	"os"
 	"slices"
+	"strings"
 	"testing"
 
+	"github.com/matchory/tslink/pkg/logger"
 	"github.com/matchory/tslink/pkg/netutil"
 )
 
@@ -48,6 +52,23 @@ func TestParseNetworkOptionsMTU(t *testing.T) {
 		)
 		if opts.MTU != want || (err != nil) != (want == 0) {
 			t.Errorf("MTU %q parsed as %d, error %v; want %d", in, opts.MTU, err, want)
+		}
+	}
+}
+
+// Settings of the removed runtime download do not keep the plugin from
+// starting after an upgrade, and are logged as ignored: it runs the bundled
+// binaries.
+func TestLoadConfigIgnoresDownloadSettings(t *testing.T) {
+	var log bytes.Buffer
+	logger.SetOutput(&log)
+	t.Cleanup(func() { logger.SetOutput(os.Stdout) })
+	t.Setenv("TS_VERSION", "1.76.6")
+	t.Setenv("TS_PATH", "/opt/tailscale/bin")
+	LoadConfig()
+	for _, want := range []string{"Ignoring TS_VERSION=1.76.6", "Ignoring TS_PATH=/opt/tailscale/bin"} {
+		if !strings.Contains(log.String(), want) {
+			t.Errorf("log does not contain %q:\n%s", want, log.String())
 		}
 	}
 }

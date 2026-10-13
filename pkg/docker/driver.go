@@ -402,16 +402,21 @@ func (d *Driver) Shutdown(ctx context.Context) error {
 		}
 	}
 
-	for _, ep := range endpoints {
-		logger.Infof("Stopping endpoint %s", ep.ID[:12])
-		if err := ep.Stop(); err != nil {
-			logger.Warnf("Failed to stop endpoint %s: %v", ep.ID[:12], err)
-		}
-	}
-
-	// Wait for all goroutines to finish (or context timeout)
+	// Each stop can take seconds, tailscaled's grace period: stop the
+	// endpoints concurrently, and wait for them and the driver's goroutines
+	// no longer than ctx allows
 	done := make(chan struct{})
 	go func() {
+		var stops sync.WaitGroup
+		for _, ep := range endpoints {
+			stops.Go(func() {
+				logger.Infof("Stopping endpoint %s", ep.ID[:12])
+				if err := d.stopEndpoint(ep); err != nil {
+					logger.Warnf("Failed to stop endpoint %s: %v", ep.ID[:12], err)
+				}
+			})
+		}
+		stops.Wait()
 		d.wg.Wait()
 		close(done)
 	}()

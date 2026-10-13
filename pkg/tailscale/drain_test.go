@@ -396,7 +396,9 @@ func TestDrainSurvivesDaemonRestart(t *testing.T) {
 	}
 }
 
-// A drain waits for a configuration in progress, so it is not undone by it.
+// A drain is not undone by a configuration in progress: should its serve
+// call not end when cancelled, the drain waits for it, and the configuration
+// stops before the next call.
 func TestDrainAfterConfigureInProgress(t *testing.T) {
 	cli := &fakeCLI{}
 	d := newTestDaemon(t, cli, "svc:web")
@@ -416,8 +418,8 @@ func TestDrainAfterConfigureInProgress(t *testing.T) {
 	go func() { drained <- d.Drain("svc:web") }()
 	time.Sleep(20 * time.Millisecond)
 	close(release)
-	if err := <-configured; err != nil {
-		t.Fatal(err)
+	if err := <-configured; !errors.Is(err, errDrained) {
+		t.Fatalf("configureService = %v, want errDrained", err)
 	}
 	if err := <-drained; err != nil {
 		t.Fatal(err)
@@ -516,5 +518,42 @@ func TestDrainedLeaseHolderStops(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, certDomain+".lease")); !os.IsNotExist(err) {
 		t.Errorf("lease kept: %v", err)
+	}
+}
+
+// A drain does not wait for the serve configuration in progress: it cancels
+// it, and nothing is configured or advertised after the drain.
+func TestDrainCancelsConfigureInProgress(t *testing.T) {
+	cli := &fakeCLI{}
+	d := newTestDaemon(t, cli, "svc:web")
+	api := newFakeLocalAPI(t)
+	api.loggedIn(ipn.Prefs{AdvertiseServices: []string{"svc:web"}})
+	d.lc = api.client()
+	d.config.Endpoints = []ServeEndpoint{
+		{Proto: "tcp", Port: "22", Target: "22"},
+		{Proto: "tcp", Port: "23", Target: "23"},
+	}
+	started := make(chan struct{})
+	d.runCLI = blockOn(cli, "--tcp=22", started)
+	configured := make(chan error, 1)
+	go func() { configured <- d.configureService() }()
+	<-started
+
+	if err := returnsWithin(t, time.Second, "Drain", func() error {
+		return d.Drain("svc:web")
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := returnsWithin(t, time.Second, "the configuration", func() error {
+		return <-configured
+	}); !errors.Is(err, errDrained) {
+		t.Errorf("configureService = %v, want errDrained", err)
+	}
+	want := [][]string{{"serve", "drain", "svc:web"}}
+	if got := cli.snapshot(); !slices.EqualFunc(got, want, slices.Equal) {
+		t.Errorf("calls = %q, want only the drain", got)
+	}
+	if err := d.advertise("svc:web"); !errors.Is(err, errDrained) {
+		t.Errorf("advertise after the drain = %v, want errDrained", err)
 	}
 }

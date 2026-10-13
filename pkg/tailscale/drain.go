@@ -49,6 +49,46 @@ type serviceGate struct {
 	// advertisement, so a drain cannot slip between a check and a change
 	mu    sync.Mutex
 	drain drainRecord // the drain that took effect; protected by mu
+
+	// Cancels the CLI calls of the change holding mu, so a drain need not
+	// wait for them; nil while no change runs
+	cancelMu sync.Mutex
+	cancel   context.CancelFunc
+}
+
+// lock takes the gate's lock for a change of d's Service, and returns the
+// context of the change's CLI calls, which a drain cancels, and the function
+// that ends the change. Once the backend is drained, it returns errDrained
+// and holds nothing.
+func (g *serviceGate) lock(d *Daemon) (context.Context, func(), error) {
+	g.mu.Lock()
+	ctx, cancel := context.WithCancel(d.ctx)
+	g.cancelMu.Lock()
+	g.cancel = cancel
+	g.cancelMu.Unlock()
+	unlock := func() {
+		g.cancelMu.Lock()
+		g.cancel = nil
+		g.cancelMu.Unlock()
+		cancel()
+		g.mu.Unlock()
+	}
+	// Checked after the cancel func is in place: a drain that set drained
+	// later finds it
+	if g.drained.Load() {
+		unlock()
+		return nil, nil, errDrained
+	}
+	return ctx, unlock, nil
+}
+
+// cancelChange cancels the CLI calls of the change in progress, if any.
+func (g *serviceGate) cancelChange() {
+	g.cancelMu.Lock()
+	defer g.cancelMu.Unlock()
+	if g.cancel != nil {
+		g.cancel()
+	}
 }
 
 // drainRecord is a drain that took effect.
@@ -72,10 +112,12 @@ func (d *Daemon) isDrained() bool {
 // existing connections continue. The backend stays drained: tslink does not
 // advertise it again. Draining again does nothing once a drain took effect,
 // and neither does a drain of a Service the node's prefs no longer advertise,
-// as one drained outside tslink.
+// as one drained outside tslink. A serve configuration in progress is
+// cancelled rather than waited for.
 func (d *Daemon) Drain(service string) error {
 	g := d.config.gate
 	g.drained.Store(true)
+	g.cancelChange()
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if !g.drain.at.IsZero() {

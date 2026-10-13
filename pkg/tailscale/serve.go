@@ -122,30 +122,37 @@ func (d *Daemon) configureServiceBackend(advertise bool) error {
 		return nil
 	}
 
-	g := d.config.gate
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if d.isDrained() {
+	ctx, unlock, err := d.config.gate.lock(d)
+	if err != nil {
 		logger.Infof("Not configuring %s for %s: drained", d.config.Service, d.config.EndpointID)
-		return errDrained
+		return err
 	}
+	defer unlock()
 
 	logger.Infof("Configuring Tailscale Service %s with %d endpoint(s) for %s",
 		d.config.Service, len(d.config.Endpoints), d.config.EndpointID)
 
-	// Configure each endpoint
+	// Configure each endpoint. A drain cancels the call in progress and
+	// waits for this to return: run nothing more once it began
 	for i, ep := range d.config.Endpoints {
-		if err := d.configureServeEndpoint(d.ctx, ep); err != nil {
+		err := d.configureServeEndpoint(ctx, ep)
+		if d.isDrained() {
+			return errDrained
+		}
+		if err != nil {
 			return fmt.Errorf("failed to configure endpoint %d (%s:%s): %w",
 				i, ep.Proto, ep.Port, err)
 		}
 	}
 
+	if d.isDrained() {
+		return errDrained
+	}
 	if !advertise {
 		// "tailscale serve --service" advertises the Service by itself
-		return d.runServe(d.ctx, "serve-unadvertise", "drain", d.config.Service)
+		return d.runServe(ctx, "serve-unadvertise", "drain", d.config.Service)
 	}
-	return d.runAdvertise(d.ctx, d.config.Service)
+	return d.runAdvertise(ctx, d.config.Service)
 }
 
 // runAdvertise runs "tailscale serve advertise" and notes that the backend
@@ -170,13 +177,12 @@ func (d *Daemon) noteSurvivingState() {
 // A drained service stays drained in the node's state, as after a plugin
 // restart: advertise it again once its endpoints are configured.
 func (d *Daemon) advertise(service string) error {
-	g := d.config.gate
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if d.isDrained() {
-		return errDrained
+	ctx, unlock, err := d.config.gate.lock(d)
+	if err != nil {
+		return err
 	}
-	return d.runAdvertise(d.ctx, service)
+	defer unlock()
+	return d.runAdvertise(ctx, service)
 }
 
 // configureDirectServe runs "tailscale serve" without --service flag to configure

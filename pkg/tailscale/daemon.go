@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"tailscale.com/client/local"
-	"tailscale.com/ipn"
 
 	"github.com/matchory/tslink/pkg/logger"
 )
@@ -29,6 +28,10 @@ const (
 	maxLogLine            = 16 << 10
 	tailscaledLogMaxBytes = 10 << 20
 )
+
+// stopGrace is how long Stop waits for tailscaled to exit on SIGTERM before
+// it kills it; a variable, so tests can shorten it.
+var stopGrace = 5 * time.Second
 
 // DaemonConfig holds configuration for a tailscaled instance.
 type DaemonConfig struct {
@@ -88,10 +91,6 @@ type Daemon struct {
 	fetchMu sync.Mutex
 	fetches int64
 	fetched chan struct{}
-
-	// Pipe references for cleanup (closing unblocks reader goroutines)
-	stdoutPipe io.ReadCloser
-	stderrPipe io.ReadCloser
 
 	// Closed when watchProcess has waited for tailscaled to exit: only one
 	// goroutine may wait for a process
@@ -180,37 +179,9 @@ func (d *Daemon) Start() error {
 	}
 	d.noteSurvivingState()
 
-	d.cmd = d.tailscaledCommand(d.tailscaledArgs())
-
-	// Set up streaming output - logs each line as it arrives
-	stdoutPipe, err := d.cmd.StdoutPipe()
-	if err != nil {
-		return fmt.Errorf("failed to get stdout pipe: %w", err)
+	if err := d.startProcess(d.tailscaledCommand(d.tailscaledArgs())); err != nil {
+		return err
 	}
-	stderrPipe, err := d.cmd.StderrPipe()
-	if err != nil {
-		return fmt.Errorf("failed to get stderr pipe: %w", err)
-	}
-
-	// Store pipe references for cleanup in Stop()
-	d.mu.Lock()
-	d.stdoutPipe = stdoutPipe
-	d.stderrPipe = stderrPipe
-	d.mu.Unlock()
-
-	if err := d.cmd.Start(); err != nil {
-		return fmt.Errorf("failed to start tailscaled: %w", err)
-	}
-
-	d.mu.Lock()
-	d.running = true
-	d.mu.Unlock()
-
-	logger.Infof("tailscaled started with PID %d", d.cmd.Process.Pid)
-
-	d.drainOutput(stdoutPipe, stderrPipe)
-
-	d.watchProcess()
 
 	if err := d.waitForSocket(); err != nil {
 		// Write timeout debug info
@@ -257,10 +228,6 @@ func (d *Daemon) Stop() error {
 	d.mu.Lock()
 	d.running = false
 	cmd := d.cmd
-	stdoutPipe := d.stdoutPipe
-	stderrPipe := d.stderrPipe
-	d.stdoutPipe = nil
-	d.stderrPipe = nil
 	d.mu.Unlock()
 
 	// Cancel context to signal all goroutines to stop
@@ -270,18 +237,6 @@ func (d *Daemon) Stop() error {
 
 	if cmd != nil && cmd.Process != nil {
 		d.killProcess(cmd)
-	}
-
-	// Close pipes to unblock reader goroutines
-	if stdoutPipe != nil {
-		if err := stdoutPipe.Close(); err != nil {
-			logger.Debugf("Failed to close stdout pipe: %v", err)
-		}
-	}
-	if stderrPipe != nil {
-		if err := stderrPipe.Close(); err != nil {
-			logger.Debugf("Failed to close stderr pipe: %v", err)
-		}
 	}
 
 	// Wait for all goroutines to finish (with timeout)
@@ -302,9 +257,52 @@ func (d *Daemon) Stop() error {
 	return nil
 }
 
+// startProcess starts cmd as tailscaled, drains its output and watches for
+// its exit.
+func (d *Daemon) startProcess(cmd *exec.Cmd) error {
+	d.cmd = cmd
+
+	// Graceful stop: tailscaled gets SIGTERM when its context is cancelled,
+	// and is killed only if it is still running stopGrace later. unshare, sh
+	// and nsenter exec each other, so the signal reaches tailscaled itself
+	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+	cmd.WaitDelay = stopGrace
+
+	// Both streams go through one pipe to one reader. Wait returns only once
+	// exec has copied everything tailscaled wrote into it: a pipe from
+	// StdoutPipe is closed by Wait as soon as tailscaled exits, losing what
+	// the reader had not read yet, often the lines that tell why it exited
+	output, out := io.Pipe()
+	d.cmd.Stdout = out
+	d.cmd.Stderr = out
+
+	if err := d.cmd.Start(); err != nil {
+		closePipe(output, out)
+		return fmt.Errorf("failed to start tailscaled: %w", err)
+	}
+
+	d.mu.Lock()
+	d.running = true
+	d.mu.Unlock()
+
+	logger.Infof("tailscaled started with PID %d", d.cmd.Process.Pid)
+
+	d.drainOutput(output)
+
+	d.watchProcess(out)
+	return nil
+}
+
+// closePipe closes both ends of an output pipe that has no writer.
+func closePipe(r *io.PipeReader, w *io.PipeWriter) {
+	if err := errors.Join(r.Close(), w.Close()); err != nil {
+		logger.Debugf("Failed to close the output pipe: %v", err)
+	}
+}
+
 // drainOutput writes tailscaled's output to its own size-capped log, until
-// tailscaled exits or Stop closes the pipes.
-func (d *Daemon) drainOutput(stdoutPipe, stderrPipe io.ReadCloser) {
+// watchProcess closes the pipe after tailscaled exited.
+func (d *Daemon) drainOutput(output io.Reader) {
 	// tailscaled's output goes to its own size-capped log: it is verbose, and
 	// the plugin log is shared by every endpoint on the node
 	logPath := filepath.Join(d.config.StateDir, "tailscaled.log")
@@ -321,12 +319,8 @@ func (d *Daemon) drainOutput(stdoutPipe, stderrPipe io.ReadCloser) {
 		}
 	}
 
-	// Drain both pipes until tailscaled exits or Stop() closes them
-	var drains sync.WaitGroup
-	drains.Go(func() { drainLines(stdoutPipe, maxLogLine, writeLine) })
-	drains.Go(func() { drainLines(stderrPipe, maxLogLine, writeLine) })
 	d.wg.Go(func() {
-		drains.Wait()
+		drainLines(output, maxLogLine, writeLine)
 		if logFile != nil {
 			if err := logFile.Close(); err != nil {
 				logger.Debugf("Failed to close %s: %v", logPath, err)
@@ -336,8 +330,9 @@ func (d *Daemon) drainOutput(stdoutPipe, stderrPipe io.ReadCloser) {
 }
 
 // watchProcess records tailscaled's PID, and its exit if it fails, in the
-// debug file.
-func (d *Daemon) watchProcess() {
+// debug file. Once tailscaled exited and all its output is in the pipe, it
+// closes out, so the reader ends after the last line.
+func (d *Daemon) watchProcess(out *io.PipeWriter) {
 	// Write debug info to a file (cancellable via context)
 	d.wg.Go(func() {
 		select {
@@ -357,7 +352,11 @@ func (d *Daemon) watchProcess() {
 	d.wg.Go(func() {
 		done := make(chan error, 1)
 		go func() {
-			done <- d.cmd.Wait()
+			err := d.cmd.Wait()
+			if cerr := out.Close(); cerr != nil {
+				logger.Debugf("Failed to close the output pipe: %v", cerr)
+			}
+			done <- err
 			close(exited)
 		}()
 
@@ -610,22 +609,13 @@ func (d *Daemon) waitForSocket() error {
 	}
 }
 
-// killProcess takes tailscaled down, kills it, waits for it to exit and
-// removes its socket.
+// killProcess stops tailscaled: SIGTERM, then SIGKILL if it is still running
+// stopGrace later. It waits for it to exit and removes its socket. It does not
+// take the node down first: that would persist WantRunning=false in a
+// persistent node's state.
 func (d *Daemon) killProcess(cmd *exec.Cmd) {
-	// Try graceful shutdown first. It fails if tailscaled has crashed: kill
-	// it anyway
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if _, err := d.lc.EditPrefs(ctx, &ipn.MaskedPrefs{
-		WantRunningSet: true,
-	}); err != nil {
-		logger.Debugf("tailscale down failed: %v", err)
-	}
-
-	// Kill the process
-	if err := killError(cmd.Process.Kill()); err != nil {
-		logger.Warnf("Failed to kill tailscaled: %v", err)
+	if err := killError(cmd.Process.Signal(syscall.SIGTERM)); err != nil {
+		logger.Warnf("Failed to stop tailscaled: %v", err)
 	}
 
 	// Wait for process with timeout to avoid blocking forever. If
@@ -646,9 +636,16 @@ func (d *Daemon) killProcess(cmd *exec.Cmd) {
 
 	select {
 	case <-waitDone:
-		// Process exited cleanly
-	case <-time.After(5 * time.Second):
-		logger.Warnf("Timeout waiting for tailscaled to exit")
+	case <-time.After(stopGrace):
+		logger.Warnf("tailscaled did not exit within %v, killing it", stopGrace)
+		if err := killError(cmd.Process.Kill()); err != nil {
+			logger.Warnf("Failed to kill tailscaled: %v", err)
+		}
+		select {
+		case <-waitDone:
+		case <-time.After(5 * time.Second):
+			logger.Warnf("Timeout waiting for tailscaled to exit")
+		}
 	}
 
 	// The socket outlives a killed tailscaled; sockets no longer sit in

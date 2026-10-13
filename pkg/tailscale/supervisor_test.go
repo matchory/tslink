@@ -38,15 +38,9 @@ func (f *fakeTailscaled) start(d *Daemon) error {
 	}
 	d.runCLI = f.cli.run
 	d.lc = f.api.client()
-	cmd := exec.Command("sleep", "60")
-	if err := cmd.Start(); err != nil {
+	if err := d.startProcess(exec.CommandContext(d.ctx, "sleep", "60")); err != nil {
 		return err
 	}
-	d.mu.Lock()
-	d.cmd = cmd
-	d.running = true
-	d.mu.Unlock()
-	d.watchProcess()
 	if f.onStart != nil {
 		f.onStart(d)
 	}
@@ -349,9 +343,10 @@ func TestSupervisorBackoff(t *testing.T) {
 			t.Errorf("backoff %d = %v, want %v", i, got, w)
 		}
 	}
-	for range 20 {
-		if got := s.nextBackoff(); got > maxBackoff {
-			t.Fatalf("backoff %v exceeds %v", got, maxBackoff)
+	// Past 2^63 ns the shift would wrap to zero or below
+	for range 100 {
+		if got := s.nextBackoff(); got <= 0 || got > maxBackoff {
+			t.Fatalf("backoff %v, want within (0, %v]", got, maxBackoff)
 		}
 	}
 	if got := s.nextBackoff(); got != maxBackoff {

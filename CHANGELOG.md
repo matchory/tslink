@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- An OAuth client secret with `?ephemeral=1` (or `TRUE`, or an empty value)
+  registered ephemeral nodes, but tslink treated them as persistent and never
+  logged them out when their containers left. tslink now reads the attribute as
+  Tailscale does, and `docker network create` refuses a secret with an empty or
+  invalid `ephemeral` or `preauthorized` value.
+- tailscaled was killed with SIGKILL whenever its container left or the plugin
+  stopped. It now gets SIGTERM and up to 5 s to shut down cleanly.
+- The last lines tailscaled wrote before it exited could be missing from
+  `tailscaled.log`, often the ones that say why it exited.
+- After many failed restarts of tailscaled in a row, the supervisor restarted
+  it without pausing.
+- A container that left while its node was starting could keep its readiness
+  endpoint (`tslink.health`) listening, and its network namespace alive.
+
 ## [0.2.3] - 2026-10-13
 
 ### Fixed

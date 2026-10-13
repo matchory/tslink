@@ -23,6 +23,7 @@ If the option is not set, tslink uses the cluster credential or `TS_AUTHKEY`. Se
 | --- | --- |
 | No credential is available | `docker network create` fails. |
 | The credential is an auth key with parameters appended (`?…`) | `docker network create` fails. Only OAuth client secrets take parameters. |
+| The credential is an OAuth client secret with an unknown parameter, or a value of `ephemeral` or `preauthorized` that is not a boolean (empty included) | `docker network create` fails. |
 
 ## tslink.tags
 

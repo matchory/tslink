@@ -94,7 +94,12 @@ tailscaled logs `c2n: GET /vip-services received`, at least 1 s and at most 10 s
 stop tailscaled. A node gone before control processed its drain leaves callers pointed at it for minutes. A drain is
 final for the supervisor (`serviceGate`, shared by its daemons): neither a certificate that appears later nor a
 restarted tailscaled advertises the backend again, and the certificate lease holder is advertised only once its
-certificate exists. Each state directory serves one endpoint at a time (`ClaimStateDir`).
+certificate exists. A drain does not wait for a serve configuration in progress: the gate holds the cancel func of the
+change holding its lock (`serviceGate.change`), which the drain calls before taking the lock, and the change runs nothing
+more once drained. Plugin shutdown stops all endpoints concurrently within its deadline (`Driver.Shutdown`), and an
+endpoint's Tailscale run derives from the driver's context, so a start in progress ends with the plugin and is
+abandoned as on `Stop`. A daemon's CLI calls and waits use its context, cancelled by `Daemon.Stop`, and its goroutines
+run under its wait group. Each state directory serves one endpoint at a time (`ClaimStateDir`).
 
 **Binaries**: the plugin image ships a pinned Tailscale (from the `tailscale/tailscale` stage of the Dockerfile, which
 Dependabot updates), and tslink runs only these binaries: it downloads nothing at runtime and ignores the old

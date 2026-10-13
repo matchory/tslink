@@ -49,6 +49,53 @@ type serviceGate struct {
 	// advertisement, so a drain cannot slip between a check and a change
 	mu    sync.Mutex
 	drain drainRecord // the drain that took effect; protected by mu
+
+	// Cancels the CLI calls of the change holding mu, so a drain need not
+	// wait for them; nil while no change runs
+	cancelMu sync.Mutex
+	cancel   context.CancelFunc
+}
+
+// change runs fn, a change of d's Service, under the gate's lock, with the
+// context of its CLI calls, which a drain cancels. Once the backend is
+// drained, before fn or while it runs, it returns errDrained: a call the
+// drain cancelled is no failure.
+func (g *serviceGate) change(d *Daemon, fn func(ctx context.Context) error) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	ctx, cancel := context.WithCancel(d.ctx)
+	defer cancel()
+	g.setCancel(cancel)
+	defer g.setCancel(nil)
+	// Checked after the cancel func is in place: a drain that set drained
+	// later finds it
+	if g.drained.Load() {
+		return errDrained
+	}
+	if err := fn(ctx); err != nil {
+		if g.drained.Load() {
+			return errDrained
+		}
+		return err
+	}
+	return nil
+}
+
+func (g *serviceGate) setCancel(cancel context.CancelFunc) {
+	g.cancelMu.Lock()
+	defer g.cancelMu.Unlock()
+	g.cancel = cancel
+}
+
+// markDrained marks the backend drained, and cancels the CLI calls of the
+// change in progress, if any.
+func (g *serviceGate) markDrained() {
+	g.drained.Store(true)
+	g.cancelMu.Lock()
+	defer g.cancelMu.Unlock()
+	if g.cancel != nil {
+		g.cancel()
+	}
 }
 
 // drainRecord is a drain that took effect.
@@ -72,10 +119,11 @@ func (d *Daemon) isDrained() bool {
 // existing connections continue. The backend stays drained: tslink does not
 // advertise it again. Draining again does nothing once a drain took effect,
 // and neither does a drain of a Service the node's prefs no longer advertise,
-// as one drained outside tslink.
+// as one drained outside tslink. A serve configuration in progress is
+// cancelled rather than waited for.
 func (d *Daemon) Drain(service string) error {
 	g := d.config.gate
-	g.drained.Store(true)
+	g.markDrained()
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if !g.drain.at.IsZero() {
@@ -89,7 +137,7 @@ func (d *Daemon) Drain(service string) error {
 	}
 
 	fetches, _ := d.servicesFetches()
-	if err := d.runServe(context.Background(), "serve-drain", "drain", service); err != nil {
+	if err := d.runServe(d.ctx, "serve-drain", "drain", service); err != nil {
 		return err
 	}
 	g.drain = drainRecord{at: time.Now(), daemon: d, fetches: fetches}
@@ -99,7 +147,7 @@ func (d *Daemon) Drain(service string) error {
 // notAdvertised reports whether the node's prefs do not advertise service;
 // false if tailscaled cannot tell.
 func (d *Daemon) notAdvertised(service string) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(d.ctx, 10*time.Second)
 	defer cancel()
 	prefs, err := d.lc.GetPrefs(ctx)
 	if err != nil {
@@ -183,7 +231,7 @@ func (s *DaemonSupervisor) DrainAndWait(service string) {
 	logger.Infof("Endpoint %s: %s drained, waiting for control to fetch it", id, service)
 	acked := d.waitServicesFetch(after, drain.at.Add(drainAckTimeout))
 	if wait := time.Until(drain.at.Add(drainAckFloor)); wait > 0 {
-		time.Sleep(wait)
+		sleep(d.ctx, wait)
 	}
 	if acked {
 		logger.Infof("Endpoint %s: control fetched the drained %s, %v after the drain",

@@ -166,10 +166,9 @@ func (d *Daemon) waitBackendState() string {
 		if err == nil && st.BackendState != "NoState" {
 			return st.BackendState
 		}
-		if time.Now().After(deadline) || d.ctx.Err() != nil {
+		if time.Now().After(deadline) || !sleep(d.ctx, 200*time.Millisecond) {
 			return ""
 		}
-		time.Sleep(200 * time.Millisecond)
 	}
 }
 

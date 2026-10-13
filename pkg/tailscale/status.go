@@ -37,7 +37,7 @@ func (d *Daemon) WaitForIP(ctx context.Context) (*Status, error) {
 			if err == nil && status.IP != "" {
 				return status, nil
 			}
-			time.Sleep(500 * time.Millisecond)
+			sleep(ctx, 500*time.Millisecond)
 		}
 	}
 }

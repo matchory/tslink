@@ -40,7 +40,7 @@ type Driver struct {
 	// replace them. newDriver sets them to the core.Endpoint methods.
 	joinEndpoint   func(e *core.Endpoint, sandboxKey string) (*network.JoinResponse, error)
 	recoverRouting func(e *core.Endpoint, sandboxKey string) error
-	runTailscale   func(e *core.Endpoint, info *core.ContainerInfo)
+	runTailscale   func(e *core.Endpoint, ctx context.Context, info *core.ContainerInfo)
 	leaveEndpoint  func(e *core.Endpoint) error
 	stopEndpoint   func(e *core.Endpoint) error
 
@@ -402,16 +402,21 @@ func (d *Driver) Shutdown(ctx context.Context) error {
 		}
 	}
 
-	for _, ep := range endpoints {
-		logger.Infof("Stopping endpoint %s", ep.ID[:12])
-		if err := ep.Stop(); err != nil {
-			logger.Warnf("Failed to stop endpoint %s: %v", ep.ID[:12], err)
-		}
-	}
-
-	// Wait for all goroutines to finish (or context timeout)
+	// Each stop can take seconds, tailscaled's grace period: stop the
+	// endpoints concurrently, and wait for them and the driver's goroutines
+	// no longer than ctx allows
 	done := make(chan struct{})
 	go func() {
+		var stops sync.WaitGroup
+		for _, ep := range endpoints {
+			stops.Go(func() {
+				logger.Infof("Stopping endpoint %s", ep.ID[:12])
+				if err := d.stopEndpoint(ep); err != nil {
+					logger.Warnf("Failed to stop endpoint %s: %v", ep.ID[:12], err)
+				}
+			})
+		}
+		stops.Wait()
 		d.wg.Wait()
 		close(done)
 	}()
@@ -643,7 +648,7 @@ func (d *Driver) startTailscale(endpoint *core.Endpoint, info *core.ContainerInf
 	endpoint.MarkStartRequested()
 	labels := pprof.Labels("endpoint", endpoint.ID[:12])
 	d.wg.Go(func() {
-		pprof.Do(d.ctx, labels, func(context.Context) { d.runTailscale(endpoint, info) })
+		pprof.Do(d.ctx, labels, func(ctx context.Context) { d.runTailscale(endpoint, ctx, info) })
 	})
 }
 

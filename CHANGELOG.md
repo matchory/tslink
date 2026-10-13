@@ -32,6 +32,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   call of the event handling gives up after 10 s.
 - The watchdog inspected the network of every network attachment of every
   container on the host each minute. It now lists the networks once per scan.
+- Plugin shutdown stopped containers' tailscaled one after another, up to 5 s
+  each, and ran out of time on a host with several containers. It now stops
+  them in parallel within its deadline, and a start still in progress ends
+  with the plugin instead of retrying until its container was stopped.
+- Draining a Service backend on the container's stop signal waited for its
+  serve configuration to finish, up to 30 s per serve endpoint. The drain now
+  cancels the configuration.
+- Stopping a node waited for serve, advertise and drain commands in progress
+  to time out, up to 30 s.
+- A node logged in again after control deleted it started a second
+  certificate watcher for its Service.
 
 ### Security
 

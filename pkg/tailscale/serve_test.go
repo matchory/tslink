@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"tailscale.com/client/local"
 )
@@ -95,7 +96,7 @@ func serveCall(t *testing.T, ep ServeEndpoint, service string) ([]string, error)
 	if service == "" {
 		err = d.configureDirectServeEndpoint(ep)
 	} else {
-		err = d.configureServeEndpoint(ep)
+		err = d.configureServeEndpoint(t.Context(), ep)
 	}
 	switch len(cli.calls) {
 	case 0:
@@ -472,11 +473,11 @@ func TestServeDebugLogKeepsEarlierAttempts(t *testing.T) {
 	cli := &fakeCLI{}
 	d := newTestDaemon(t, cli, "svc:web")
 	ep := ServeEndpoint{Proto: "tcp", Port: "22", Target: "22"}
-	if err := d.configureServeEndpoint(ep); err != nil {
+	if err := d.configureServeEndpoint(t.Context(), ep); err != nil {
 		t.Fatal(err)
 	}
 	cli.out, cli.err = "boom", errors.New("exit status 1")
-	if err := d.configureServeEndpoint(ep); err == nil {
+	if err := d.configureServeEndpoint(t.Context(), ep); err == nil {
 		t.Fatal("second attempt succeeded, want an error")
 	}
 	log, err := os.ReadFile(filepath.Join(d.config.StateDir, "serve-debug.log"))
@@ -502,6 +503,7 @@ func TestServeDebugLogIsBounded(t *testing.T) {
 	d := newTestDaemon(t, cli, "svc:web")
 	for range 10 {
 		if err := d.configureServeEndpoint(
+			t.Context(),
 			ServeEndpoint{Proto: "tcp", Port: "22", Target: "22"},
 		); err != nil {
 			t.Fatal(err)
@@ -516,5 +518,105 @@ func TestServeDebugLogIsBounded(t *testing.T) {
 		if st.Size() > serveDebugLogMaxBytes {
 			t.Errorf("%s is %d bytes, want at most %d", p, st.Size(), serveDebugLogMaxBytes)
 		}
+	}
+}
+
+// blockOn returns a tailscale CLI that passes calls to cli, after blocking a
+// call with arg until its context is done, as an exec'd command would be
+// killed, or 5 seconds passed. It closes started when such a call begins.
+func blockOn(
+	cli *fakeCLI,
+	arg string,
+	started chan<- struct{},
+) func(context.Context, cliCall) (cliOutput, error) {
+	var once sync.Once
+	return func(ctx context.Context, c cliCall) (cliOutput, error) {
+		if slices.Contains(c.args, arg) {
+			once.Do(func() { close(started) })
+			select {
+			case <-ctx.Done():
+				return cliOutput{}, ctx.Err()
+			case <-time.After(5 * time.Second):
+			}
+		}
+		return cli.run(ctx, c)
+	}
+}
+
+// returnsWithin fails the test unless fn returns within d, and returns its
+// error.
+func returnsWithin(t *testing.T, d time.Duration, what string, fn func() error) error {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() { done <- fn() }()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(d):
+		t.Fatalf("%s did not return within %v", what, d)
+		return nil
+	}
+}
+
+// The serve configuration's CLI calls end when the daemon stops, rather than
+// keep a stopping endpoint waiting for their timeout.
+func TestServeCallsEndWithDaemon(t *testing.T) {
+	for _, tc := range []struct {
+		name, service string
+		configure     func(*Daemon) error
+	}{
+		{"service", "svc:web", (*Daemon).configureService},
+		{"direct", "", (*Daemon).configureDirectServe},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cli := &fakeCLI{}
+			d := newTestDaemon(t, cli, tc.service)
+			d.config.Endpoints = []ServeEndpoint{{Proto: "tcp", Port: "22", Target: "22"}}
+			started := make(chan struct{})
+			d.runCLI = blockOn(cli, "--tcp=22", started)
+			go func() {
+				<-started
+				d.cancel()
+			}()
+			err := returnsWithin(t, time.Second, "the serve configuration",
+				func() error { return tc.configure(d) })
+			if err == nil {
+				t.Error("cancelled serve configuration succeeded")
+			}
+		})
+	}
+}
+
+// Drain's CLI call ends when the daemon stops.
+func TestDrainCallEndsWithDaemon(t *testing.T) {
+	cli := &fakeCLI{}
+	d := newTestDaemon(t, cli, "svc:web")
+	started := make(chan struct{})
+	d.runCLI = blockOn(cli, "drain", started)
+	go func() {
+		<-started
+		d.cancel()
+	}()
+	// Reading the prefs first fails after about a second: nothing listens
+	err := returnsWithin(t, 3*time.Second, "Drain", func() error { return d.Drain("svc:web") })
+	if err == nil {
+		t.Error("cancelled drain succeeded")
+	}
+}
+
+// sleep waits for its duration, or until ctx is done.
+func TestSleep(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	if !sleep(ctx, time.Millisecond) {
+		t.Error("sleep with a live context reported cancellation")
+	}
+	cancel()
+	var slept bool
+	returnsWithin(t, time.Second, "sleep with a cancelled context", func() error {
+		slept = sleep(ctx, 3*time.Second)
+		return nil
+	})
+	if slept {
+		t.Error("sleep with a cancelled context reported a full sleep")
 	}
 }

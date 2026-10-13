@@ -222,7 +222,7 @@ func (s *DaemonSupervisor) Logout() error {
 // The backend stays drained, even if tailscaled is down and the drain fails:
 // a daemon the supervisor starts later does not advertise it.
 func (s *DaemonSupervisor) Drain(service string) error {
-	s.cfg.gate.drained.Store(true)
+	s.cfg.gate.markDrained()
 	d := s.GetDaemon()
 	if d == nil {
 		return errors.New("tailscaled is not running")

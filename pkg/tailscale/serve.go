@@ -122,41 +122,42 @@ func (d *Daemon) configureServiceBackend(advertise bool) error {
 		return nil
 	}
 
-	g := d.config.gate
-	g.mu.Lock()
-	defer g.mu.Unlock()
 	if d.isDrained() {
 		logger.Infof("Not configuring %s for %s: drained", d.config.Service, d.config.EndpointID)
 		return errDrained
 	}
+	return d.config.gate.change(d, func(ctx context.Context) error {
+		logger.Infof("Configuring Tailscale Service %s with %d endpoint(s) for %s",
+			d.config.Service, len(d.config.Endpoints), d.config.EndpointID)
 
-	logger.Infof("Configuring Tailscale Service %s with %d endpoint(s) for %s",
-		d.config.Service, len(d.config.Endpoints), d.config.EndpointID)
-
-	// Configure each endpoint
-	for i, ep := range d.config.Endpoints {
-		if err := d.configureServeEndpoint(ep); err != nil {
-			return fmt.Errorf("failed to configure endpoint %d (%s:%s): %w",
-				i, ep.Proto, ep.Port, err)
+		// Configure each endpoint. A drain cancels the call in progress and
+		// waits for this to return: run nothing more once it began
+		for i, ep := range d.config.Endpoints {
+			err := d.configureServeEndpoint(ctx, ep)
+			if d.isDrained() {
+				return errDrained
+			}
+			if err != nil {
+				return fmt.Errorf("failed to configure endpoint %d (%s:%s): %w",
+					i, ep.Proto, ep.Port, err)
+			}
 		}
-	}
 
-	if !advertise {
-		// "tailscale serve --service" advertises the Service by itself
-		return d.runServe(context.Background(), "serve-unadvertise", "drain", d.config.Service)
-	}
-	return d.runAdvertise(d.config.Service)
+		if d.isDrained() {
+			return errDrained
+		}
+		if !advertise {
+			// "tailscale serve --service" advertises the Service by itself
+			return d.runServe(ctx, "serve-unadvertise", "drain", d.config.Service)
+		}
+		return d.runAdvertise(ctx, d.config.Service)
+	})
 }
 
 // runAdvertise runs "tailscale serve advertise" and notes that the backend
 // was advertised. The caller holds the gate's lock.
-func (d *Daemon) runAdvertise(service string) error {
-	if err := d.runServe(
-		context.Background(),
-		"serve-advertise",
-		"advertise",
-		service,
-	); err != nil {
+func (d *Daemon) runAdvertise(ctx context.Context, service string) error {
+	if err := d.runServe(ctx, "serve-advertise", "advertise", service); err != nil {
 		return err
 	}
 	d.config.gate.advertised.Store(true)
@@ -175,13 +176,9 @@ func (d *Daemon) noteSurvivingState() {
 // A drained service stays drained in the node's state, as after a plugin
 // restart: advertise it again once its endpoints are configured.
 func (d *Daemon) advertise(service string) error {
-	g := d.config.gate
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if d.isDrained() {
-		return errDrained
-	}
-	return d.runAdvertise(service)
+	return d.config.gate.change(d, func(ctx context.Context) error {
+		return d.runAdvertise(ctx, service)
+	})
 }
 
 // configureDirectServe runs "tailscale serve" without --service flag to configure
@@ -230,7 +227,7 @@ func (d *Daemon) configureDirectServeEndpoint(ep ServeEndpoint) error {
 	}
 	args = append([]string{"--socket=" + d.socketPath}, args...)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(d.ctx, 30*time.Second)
 	defer cancel()
 
 	// Use streaming to see output as it arrives
@@ -247,7 +244,7 @@ func (d *Daemon) configureDirectServeEndpoint(ep ServeEndpoint) error {
 
 // configureServeEndpoint configures a single serve endpoint for a service backend.
 // Supports L3 (tun), L4 (tcp, tls-terminated-tcp), and L7 (http, https).
-func (d *Daemon) configureServeEndpoint(ep ServeEndpoint) error {
+func (d *Daemon) configureServeEndpoint(ctx context.Context, ep ServeEndpoint) error {
 	logger.Debugf("configureServeEndpoint: proto=%s port=%s target=%s path=%s service=%s",
 		ep.Proto, ep.Port, ep.Target, ep.Path, d.config.Service)
 
@@ -262,7 +259,7 @@ func (d *Daemon) configureServeEndpoint(ep ServeEndpoint) error {
 
 	d.serveDebugf("Running: %s %v\n", d.config.TailscaleBin, args)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
 	// Use streaming to see output as it arrives

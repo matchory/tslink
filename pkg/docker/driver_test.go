@@ -3,12 +3,14 @@ package docker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -859,5 +861,62 @@ func TestRecoverEndpointsTimesOut(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("RecoverEndpoints still waits for Docker")
+	}
+}
+
+// Shutdown stops the endpoints concurrently: each stop can take seconds
+// (tailscaled's grace period), and one after another they would exceed the
+// shutdown deadline.
+func TestShutdownStopsEndpointsConcurrently(t *testing.T) {
+	td := newTestDriver(t, newFakeDocker())
+	const n, stopTime = 5, time.Second
+	var stopped atomic.Int32
+	td.stopEndpoint = func(*core.Endpoint) error {
+		time.Sleep(stopTime)
+		stopped.Add(1)
+		return nil
+	}
+	netID := fakeID("net")
+	td.createNetwork(t, netID, map[string]string{"tslink.authkey": "k"})
+	for i := range n {
+		td.join(t, netID, fakeID(fmt.Sprintf("ep%d", i)), sandbox)
+	}
+
+	start := time.Now()
+	if err := td.Shutdown(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(start); elapsed > drainGrace+2*stopTime {
+		t.Errorf("Shutdown took %v for %d stops of %v each", elapsed, n, stopTime)
+	}
+	if got := stopped.Load(); got != n {
+		t.Errorf("stopped %d endpoints, want %d", got, n)
+	}
+}
+
+// Shutdown waits for the stops no longer than its context allows.
+func TestShutdownStopsWithinDeadline(t *testing.T) {
+	td := newTestDriver(t, newFakeDocker())
+	release := make(chan struct{})
+	defer close(release)
+	td.stopEndpoint = func(*core.Endpoint) error {
+		<-release
+		return nil
+	}
+	netID := fakeID("net")
+	td.createNetwork(t, netID, map[string]string{"tslink.authkey": "k"})
+	td.join(t, netID, fakeID("ep"), sandbox)
+
+	ctx, cancel := context.WithTimeout(t.Context(), drainGrace+500*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- td.Shutdown(ctx) }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("Shutdown = %v, want the deadline exceeded", err)
+		}
+	case <-time.After(drainGrace + 2*time.Second):
+		t.Fatal("Shutdown waited past its deadline for a stop")
 	}
 }

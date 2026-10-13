@@ -48,7 +48,7 @@ type Endpoint struct {
 	running bool                       // Whether RunTailscale is active
 	leaving bool                       // Leave or Stop began: RunTailscale starts nothing until a Join
 	left    bool                       // Leave began: the container is gone, not just the plugin
-	runCtx  context.Context            //nolint:containedctx // Cancelled when the endpoint leaves
+	runCtx  context.Context            //nolint:containedctx // Cancelled on Leave, Stop or by the run's caller
 	stopRun context.CancelFunc         // Cancels runCtx
 	startFn func(*ContainerInfo) error // Replaces StartTailscale in tests
 
@@ -453,28 +453,19 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 // transient failure, such as the control plane being unreachable when the task
 // starts, must not leave the task without its identity for good. Only one run
 // is active per endpoint, however often it is triggered, and none once the
-// endpoint has begun to leave.
-func (e *Endpoint) RunTailscale(info *ContainerInfo) {
-	e.mu.Lock()
-	if e.running || e.tailscaleStarted || e.leaving {
-		e.mu.Unlock()
+// endpoint has begun to leave. The run also ends with ctx, cancelled when the
+// plugin stops: the container keeps running, and recovery adopts its node.
+func (e *Endpoint) RunTailscale(ctx context.Context, info *ContainerInfo) {
+	ctx, start, ok := e.beginRun(ctx)
+	if !ok {
 		return
 	}
-	if e.runCtx == nil {
-		e.runCtx, e.stopRun = context.WithCancel(context.Background())
-	}
-	ctx := e.runCtx
-	start := e.startFn
-	if start == nil {
-		start = e.StartTailscale
-	}
-	e.running = true
-	e.mu.Unlock()
 
+	started := false
 	defer func() {
 		e.mu.Lock()
 		e.running = false
-		left := e.left
+		left, leaving := e.left, e.leaving
 		e.mu.Unlock()
 		switch {
 		case ctx.Err() == nil:
@@ -483,6 +474,8 @@ func (e *Endpoint) RunTailscale(info *ContainerInfo) {
 			// supervisor stored after it looked, to the run
 			logger.Infof("Endpoint %s left while Tailscale started, stopping it", e.ID[:12])
 			e.stopTailscale() //nolint:contextcheck // ctx is done: cleanup outlives it
+		case started && !leaving:
+			// Started as the plugin began to stop: Stop drains and stops it
 		default:
 			// Stopped with the plugin: the container keeps running, and
 			// recovery adopts its node with its state
@@ -497,6 +490,7 @@ func (e *Endpoint) RunTailscale(info *ContainerInfo) {
 	for attempt := 1; ; attempt++ {
 		err := start(info)
 		if err == nil {
+			started = true
 			e.writeStatus(info, StatusRunning, attempt-1, nil)
 			return
 		}
@@ -864,6 +858,30 @@ func (e *Endpoint) cancelRun() {
 		e.stopRun()
 	}
 	e.runCtx, e.stopRun = nil, nil
+}
+
+// beginRun marks a RunTailscale active and returns its context, cancelled
+// by ctx, Leave and Stop, and the start function. It reports false if a run
+// is active, Tailscale started, the endpoint is leaving or ctx is done.
+func (e *Endpoint) beginRun(
+	ctx context.Context,
+) (context.Context, func(*ContainerInfo) error, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.running || e.tailscaleStarted || e.leaving || ctx.Err() != nil {
+		return nil, nil, false
+	}
+	// Only a run uses runCtx: a previous run's ended with it
+	if e.stopRun != nil {
+		e.stopRun()
+	}
+	e.runCtx, e.stopRun = context.WithCancel(ctx)
+	start := e.startFn
+	if start == nil {
+		start = e.StartTailscale
+	}
+	e.running = true
+	return e.runCtx, start, true
 }
 
 // releaseStateDir gives up the endpoint's claim on its state directory.

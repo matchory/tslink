@@ -237,3 +237,26 @@ func TestHealthHalfClosedClient(t *testing.T) {
 		t.Errorf("half-closed client got %q, want ready", answer)
 	}
 }
+
+// A start that reaches startHealth after Stop listens on nothing: Stop has
+// stopped the readiness endpoint already, and nothing would close a new one.
+// Guards the window between RunTailscale's unlock and startHealth.
+func TestHealthNotStartedAfterStop(t *testing.T) {
+	var listened atomic.Bool
+	old := listenInNetNS
+	listenInNetNS = func(_, addr string) (net.Listener, error) {
+		listened.Store(true)
+		return net.Listen("tcp", addr)
+	}
+	t.Cleanup(func() { listenInNetNS = old })
+
+	e := &Endpoint{ID: "0123456789abcdef", DataDir: t.TempDir(), SandboxKey: "/run/netns/x"}
+	if err := e.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	e.startHealth(&ContainerInfo{HealthPort: 0x7fff})
+	t.Cleanup(e.stopHealth)
+	if listened.Load() {
+		t.Error("readiness endpoint started after Stop")
+	}
+}

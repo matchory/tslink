@@ -70,12 +70,13 @@ func (e *Endpoint) startHealth(info *ContainerInfo) {
 }
 
 // listenHealth starts the readiness endpoint on addr, unless it runs
-// already. It holds mu, so two starts do not both listen; statusMu, never held
-// with mu, is the caller's.
+// already or the endpoint is leaving: Leave and Stop set leaving before they
+// stop it, and nothing would stop one started later. It holds mu, so two
+// starts do not both listen; statusMu, never held with mu, is the caller's.
 func (e *Endpoint) listenHealth(addr string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.health != nil || e.SandboxKey == "" {
+	if e.health != nil || e.SandboxKey == "" || e.leaving {
 		return nil
 	}
 	ln, err := listenInNetNS(e.SandboxKey, addr)

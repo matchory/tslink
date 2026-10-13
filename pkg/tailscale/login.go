@@ -158,15 +158,18 @@ func isStateError(err error) bool {
 // waitBackendState returns tailscaled's backend state once it has loaded its
 // state, or "" if it cannot tell within a few seconds.
 func (d *Daemon) waitBackendState() string {
-	ctx, cancel := context.WithTimeout(d.ctx, 5*time.Second)
-	defer cancel()
+	// Each query may take up to 5 s, as tailscaled may be slow to answer
+	// when many start at once; asking stops 5 s in
+	deadline := time.Now().Add(5 * time.Second)
 	state := ""
-	poll(ctx, 200*time.Millisecond, func() bool {
+	poll(d.ctx, 200*time.Millisecond, func() bool {
+		ctx, cancel := context.WithTimeout(d.ctx, 5*time.Second)
 		st, err := d.lc.StatusWithoutPeers(ctx)
+		cancel()
 		if err == nil && st.BackendState != "NoState" {
 			state = st.BackendState
 		}
-		return state != ""
+		return state != "" || time.Now().After(deadline)
 	})
 	return state
 }

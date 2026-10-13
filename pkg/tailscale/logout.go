@@ -120,6 +120,9 @@ func logoutState(raw []byte) ([]byte, error) {
 	})
 }
 
+// errLogoutDaemonExited ends a logout whose tailscaled exited first.
+var errLogoutDaemonExited = errors.New("tailscaled exited before logging out")
+
 // runLogout runs tailscaled on the state in workDir until it has logged out,
 // or ctx ends. It is a variable so tests can replace it.
 var runLogout = func(ctx context.Context, tailscaledBin, workDir, socket string) error {
@@ -145,7 +148,7 @@ var runLogout = func(ctx context.Context, tailscaledBin, workDir, socket string)
 		if err := daemon.Wait(); err != nil && ctx.Err() == nil {
 			logger.Debugf("tailscaled for logout exited: %v", err)
 		}
-		cancel(errors.New("tailscaled exited before logging out"))
+		cancel(errLogoutDaemonExited)
 	}()
 	defer func() {
 		cancel(nil)
@@ -159,9 +162,15 @@ var runLogout = func(ctx context.Context, tailscaledBin, workDir, socket string)
 		return err == nil
 	}
 	if !poll(ctx, 200*time.Millisecond, started) {
-		return fmt.Errorf("tailscaled did not start: %w", context.Cause(ctx))
+		if cause := context.Cause(ctx); errors.Is(cause, errLogoutDaemonExited) {
+			return cause
+		}
+		return fmt.Errorf("tailscaled did not start: %w", ctx.Err())
 	}
 	if err := lc.Logout(ctx); err != nil {
+		if cause := context.Cause(ctx); errors.Is(cause, errLogoutDaemonExited) {
+			return cause
+		}
 		return fmt.Errorf("tailscale logout failed: %w", err)
 	}
 	return nil

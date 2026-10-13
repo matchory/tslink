@@ -17,7 +17,7 @@ const servicesFetchLine = "2026/10/07 12:00:00 c2n: GET /vip-services received"
 
 // setTiming gives cfg its own copy of its timing, changed by set.
 func setTiming(cfg *DaemonConfig, set func(*timing)) {
-	tm := *cfg.times()
+	tm := cfg.times()
 	set(&tm)
 	cfg.timing = &tm
 }

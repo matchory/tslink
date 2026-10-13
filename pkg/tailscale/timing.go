@@ -59,10 +59,11 @@ var defaultTiming = timing{
 	drainAckTimeout:            10 * time.Second,
 }
 
-// times returns the config's timing, or the defaults without one.
-func (c *DaemonConfig) times() *timing {
+// times returns a copy of the config's timing, or of the defaults without
+// one: changing it changes nobody's timing.
+func (c *DaemonConfig) times() timing {
 	if c.timing == nil {
-		return &defaultTiming
+		return defaultTiming
 	}
-	return c.timing
+	return *c.timing
 }

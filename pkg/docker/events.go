@@ -23,8 +23,9 @@ import (
 
 // dockerCallTimeout bounds each Docker API call of the event handlers, which
 // run one at a time: a call Docker does not answer would hold up every event
-// after it. The host isolation's network listing and the inspect that
-// rebuilds a network use it too. A variable for tests.
+// after it. The host isolation's network listing, the inspect that rebuilds
+// a network and the recovery scan's listings use it too. A variable for
+// tests.
 var dockerCallTimeout = 10 * time.Second
 
 // ContainerCache caches container info for quick lookup during Join().

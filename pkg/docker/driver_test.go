@@ -838,3 +838,26 @@ func TestWatchdogShutdownNotAnError(t *testing.T) {
 		t.Errorf("the watchdog logged an error at shutdown:\n%s", log.String())
 	}
 }
+
+// A Docker listing that never returns fails the scan instead of holding
+// recoverMu, and with it every later watchdog scan, for good.
+func TestRecoverEndpointsTimesOut(t *testing.T) {
+	old := dockerCallTimeout
+	dockerCallTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { dockerCallTimeout = old })
+	fake := newFakeDocker()
+	fake.addNetwork("a", pluginName, map[string]string{"tslink.authkey": "k"}, nil)
+	fake.hangList = true
+	td := newTestDriver(t, fake)
+
+	done := make(chan error, 1)
+	go func() { done <- td.RecoverEndpoints(t.Context()) }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Error("a scan whose network listing timed out succeeded")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("RecoverEndpoints still waits for Docker")
+	}
+}

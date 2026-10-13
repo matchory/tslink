@@ -450,8 +450,11 @@ func (d *Driver) RecoverEndpoints(ctx context.Context) error {
 		return err
 	}
 
-	// List all running containers
-	containerList, err := d.docker.ContainerList(ctx, dockerclient.ContainerListOptions{})
+	// List all running containers. Each listing is bounded: a scan holds
+	// recoverMu, and one that waited for good would stop every later scan
+	listCtx, cancel := context.WithTimeout(ctx, dockerCallTimeout)
+	containerList, err := d.docker.ContainerList(listCtx, dockerclient.ContainerListOptions{})
+	cancel()
 	if err != nil {
 		return fmt.Errorf("failed to list containers: %w", err)
 	}
@@ -550,6 +553,8 @@ func (d *Driver) ownsNetwork(id string) bool {
 // If several tslink plugins are enabled at once, each recovers the others'
 // networks too.
 func (d *Driver) ownPluginNames(ctx context.Context) (map[string]bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, dockerCallTimeout)
+	defer cancel()
 	plugins, err := d.docker.PluginList(ctx, dockerclient.PluginListOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list plugins: %w", err)
@@ -570,6 +575,8 @@ func (d *Driver) ownNetworks(
 	ctx context.Context,
 	ownNames map[string]bool,
 ) (map[string]dockerclient.NetworkInspectResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, dockerCallTimeout)
+	defer cancel()
 	list, err := d.docker.NetworkList(ctx, dockerclient.NetworkListOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list networks: %w", err)

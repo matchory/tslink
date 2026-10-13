@@ -7,10 +7,8 @@ import (
 	"net"
 	"net/netip"
 	"slices"
-	"sync"
 	"syscall"
 
-	"github.com/coreos/go-iptables/iptables"
 	"github.com/vishvananda/netlink"
 )
 
@@ -32,25 +30,33 @@ type HostEndpointsConfig struct {
 	Addrs []netip.Addr
 }
 
-var (
-	hostEndpointsMu sync.Mutex
-	hostEndpoints   HostEndpointsConfig
-)
-
 // ConfigureHostEndpoints sets the addresses HostEndpointAddrs returns.
 func ConfigureHostEndpoints(c HostEndpointsConfig) {
-	hostEndpointsMu.Lock()
-	defer hostEndpointsMu.Unlock()
-	hostEndpoints = c
+	defaultHost.hostEndpointsMu.Lock()
+	defer defaultHost.hostEndpointsMu.Unlock()
+	defaultHost.hostEndpoints = c
 }
 
 // HostEndpointAddrs returns the addresses tslink nodes advertise, as
 // configured: none, the given ones, or the host's private addresses
 // (selectHostAddrs).
 func HostEndpointAddrs() ([]netip.Addr, error) {
-	hostEndpointsMu.Lock()
-	c := hostEndpoints
-	hostEndpointsMu.Unlock()
+	return defaultHost.hostEndpointAddrs()
+}
+
+// HostEndpoints returns the endpoints the tailscaled behind vethHost
+// advertises: each of HostEndpointAddrs with its external port. None if no
+// address is configured or found. The port comes from the mappings tslink
+// wrote or last listed, so it starts no process: a rule another program
+// removed counts until the next SyncPortMappings maps the container again.
+func HostEndpoints(vethHost string) ([]netip.AddrPort, error) {
+	return defaultHost.hostEndpointsOf(vethHost)
+}
+
+func (s *hostState) hostEndpointAddrs() ([]netip.Addr, error) {
+	s.hostEndpointsMu.Lock()
+	c := s.hostEndpoints
+	s.hostEndpointsMu.Unlock()
 	switch {
 	case c.Off:
 		return nil, nil
@@ -135,11 +141,8 @@ func hostLinks() ([]hostLink, error) {
 // missing until the next SyncPortMappings.
 var ErrNoPortMapping = errors.New("no external port mapped")
 
-// HostEndpoints returns the endpoints the tailscaled behind vethHost
-// advertises: each of HostEndpointAddrs with its external port. None if no
-// address is configured or found.
-func HostEndpoints(vethHost string) ([]netip.AddrPort, error) {
-	addrs, err := HostEndpointAddrs()
+func (s *hostState) hostEndpointsOf(vethHost string) ([]netip.AddrPort, error) {
+	addrs, err := s.hostEndpointAddrs()
 	if err != nil || len(addrs) == 0 {
 		return nil, err
 	}
@@ -147,17 +150,9 @@ func HostEndpoints(vethHost string) ([]netip.AddrPort, error) {
 	if err != nil {
 		return nil, err
 	}
-	ipt, err := iptables.NewWithProtocol(iptables.ProtocolIPv4)
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize iptables: %w", err)
-	}
-	portMapMu.Lock()
-	mapped, err := listMappings(ipt)
-	portMapMu.Unlock()
-	if err != nil {
-		return nil, err
-	}
-	port, ok := mapped[src]
+	s.portMapMu.Lock()
+	port, ok := s.ports[src]
+	s.portMapMu.Unlock()
 	if !ok {
 		return nil, fmt.Errorf("%s: %w", src, ErrNoPortMapping)
 	}

@@ -45,27 +45,32 @@ func TestChainWriteScriptRejectsUnsafeArguments(t *testing.T) {
 	}
 }
 
-// The restore binary writes to the backend iptables uses.
-func TestRestoreFor(t *testing.T) {
+// The save and restore binaries use the backend iptables uses.
+func TestBackendTool(t *testing.T) {
 	dir := t.TempDir()
-	for _, name := range []string{"iptables-nft-restore", "iptables-legacy-restore"} {
+	for _, name := range []string{
+		"iptables-nft-restore", "iptables-legacy-restore", "iptables-nft-save", "iptables-legacy-save",
+	} {
 		if err := os.WriteFile(filepath.Join(dir, name), nil, 0o700); err != nil { // #nosec G306
 			t.Fatal(err)
 		}
 	}
 	t.Setenv("PATH", dir)
-	tests := map[string]string{
-		"iptables v1.8.10 (nf_tables)": filepath.Join(dir, "iptables-nft-restore"),
-		"iptables v1.8.10 (legacy)":    filepath.Join(dir, "iptables-legacy-restore"),
-		"iptables v1.6.1":              "iptables-restore",
-	}
-	for version, want := range tests {
-		if got := restoreFor("iptables", version); got != want {
-			t.Errorf("%s: %s, want %s", version, got, want)
+	for _, tool := range []string{"save", "restore"} {
+		tests := map[string]string{
+			"iptables v1.8.10 (nf_tables)": filepath.Join(dir, "iptables-nft-"+tool),
+			"iptables v1.8.10 (legacy)":    filepath.Join(dir, "iptables-legacy-"+tool),
+			"iptables v1.6.1":              "iptables-" + tool,
+		}
+		for version, want := range tests {
+			if got := backendTool("iptables", version, tool); got != want {
+				t.Errorf("%s %s: %s, want %s", version, tool, got, want)
+			}
 		}
 	}
 	// Not installed: the plain one
-	if got := restoreFor("ip6tables", "ip6tables v1.8.10 (nf_tables)"); got != "ip6tables-restore" {
+	got := backendTool("ip6tables", "ip6tables v1.8.10 (nf_tables)", "restore")
+	if got != "ip6tables-restore" {
 		t.Errorf("without ip6tables-nft-restore: %s", got)
 	}
 }

@@ -72,16 +72,21 @@ MASQUERADE would remap a container's port towards destinations another flow from
 it towards others, and hole punching between hosts would fail. So `SetupNAT` maps each container's `--sport 41641` to
 a port of its own (`MASQUERADE --to-ports P`, chain `TSLINK-WG-SNAT` jumped to first in nat `POSTROUTING`), from
 `TSLINK_WIREGUARD_PORTS` (default 61000-65535): from a hash of the container's veth address on, the first port no rule
-uses, under `portMapMu`. Each tailscaled also advertises the host's private addresses with that port
-(`netutil.HostEndpoints`, `TS_DEBUG_PRETENDPOINT`), read at start; the supervisor restarts tailscaled when they change.
+uses, under `portMapMu`, which also guards an in-memory copy of the mappings. Each tailscaled also advertises the
+host's private addresses with that port (`netutil.HostEndpoints`, `TS_DEBUG_PRETENDPOINT`, the port from that copy, so
+without an iptables process), read at start; the supervisor restarts tailscaled when they change.
 `TSLINK-WG-IN` (mangle INPUT, always on) drops new UDP to the port range, so a peer's probe that arrives first leaves
 no conntrack entry blocking the container's own NAT. Adding a rule deletes the container's UDP conntrack entries from
-port 41641, whose NAT would otherwise outlive it (keepalives never let them expire); an existing rule is kept and its
-flows too. A rule's `-s` is the container's address, so a restarted plugin keeps the port; `CleanupNAT` removes it,
-and `SyncPortMappings` (run by `SetupVethIsolation`, so at start and by the watchdog) maps veths without a rule and
-removes rules of addresses no veth has. `SetupVethIsolation` likewise restores the forwarding a firewall reload removes
-(`syncForwarding`, under `forwardMu`): `TSLINK-FORWARD`, its jump from filter `FORWARD`, the veths' ACCEPT rules and
-MASQUERADE of `10.200.0.0/16`.
+port 41641, whose NAT would otherwise outlive it (keepalives never let them expire), for all containers mapped at once
+in one pass through the conntrack table, after `portMapMu` is released; an existing rule is kept and its flows too. A
+rule's `-s` is the container's address, so a restarted plugin keeps the port; `CleanupNAT` removes it, and
+`SyncPortMappings` (run by `SetupVethIsolation`, so at start and by the watchdog) maps veths without a rule, removes
+rules of addresses no veth has and rebuilds the copy. `SetupVethIsolation` likewise restores the forwarding a firewall
+reload removes (`syncForwarding`, under `forwardMu`): `TSLINK-FORWARD`, its jump from filter `FORWARD`, the veths'
+ACCEPT rules and MASQUERADE of `10.200.0.0/16`. These checks list each table once with the backend's `iptables-save`
+(`ipFamily.list`); a chain whose rules are listed as they were when tslink last found them in place or wrote them
+counts as in place, and any other listing is checked rule by rule with `-C`, as before. The iptables of each family,
+these listings, the mappings and their locks live in `netutil.hostState` (`defaultHost`; tests make their own).
 
 **Self-healing**: `Endpoint.RunTailscale` retries a failed start with backoff until the endpoint leaves, unless the
 error is a `permanentError` (wrong stack, invalid hostname). The supervisor restarts a crashed tailscaled, resumes after

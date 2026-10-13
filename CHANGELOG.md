@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- A watchdog run that finds the iptables rules in place starts 6 iptables
+  processes instead of 66: it lists each table once with `iptables-save` and
+  checks a chain's rules one by one only when its listing changed. Setting up
+  a container starts 6 instead of 12, and the host endpoints a container's
+  tailscaled advertises are read without starting any, instead of 3 each
+  time.
+- The conntrack entries of newly mapped containers are deleted with one pass
+  through the conntrack table per batch, after the port mappings are written,
+  instead of one pass per container with the mapping lock held.
+
 ### Fixed
 
 - An OAuth client secret with `?ephemeral=1` (or `TRUE`, or an empty value)

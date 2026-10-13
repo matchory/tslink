@@ -171,110 +171,7 @@ func (f isolationFamily) rules(chain string, ifcs []string) [][]string {
 // interface names of Docker's bridge networks, which containerInterfaces may
 // not match. It changes nothing that is in place, so it can run periodically.
 func SetupHostIsolation(bridges []string) error {
-	ifcs := isolatedInterfaces(bridges)
-	var errs []error
-	for _, f := range isolationFamilies {
-		if err := setupIsolation(f, ifcs); err != nil {
-			errs = append(errs, fmt.Errorf("%s: %w", f.name, err))
-		}
-	}
-	return errors.Join(errs...)
-}
-
-func setupIsolation(f isolationFamily, ifcs []string) error {
-	ipt, err := iptables.NewWithProtocol(f.proto)
-	if err != nil {
-		return fmt.Errorf("failed to initialize iptables: %w", err)
-	}
-	for _, c := range []struct{ chain, from string }{
-		{isolateForwardChain, forwardChain},
-		{isolateInputChain, inputChain},
-	} {
-		if err := ensureFirstChain(ipt, c.from, c.chain, f.rules(c.chain, ifcs)); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// ensureFirstChain makes chain in the mangle table hold exactly rules, and a
-// jump to it the first rule of the built-in chain from, so no rule ahead of it
-// accepts the traffic first. What is not in place is written in one
-// iptables-restore: emptying the chain and adding its rules one by one, or
-// deleting the jump and inserting it again, would let through for a moment
-// what the chain drops.
-func ensureFirstChain(ipt *iptables.IPTables, from, chain string, rules [][]string) error {
-	w := chainWrite{table: "mangle", chain: chain, rules: rules, setRules: true}
-	exists, err := ipt.ChainExists("mangle", chain)
-	if err != nil {
-		return fmt.Errorf("failed to check chain %s: %w", chain, err)
-	}
-	if exists {
-		ok, err := chainHolds(ipt, chain, rules)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			logger.Warnf("Restoring the rules of %s", chain)
-		}
-		w.setRules = !ok
-	}
-	first, jumps, err := jumpPosition(ipt, from, chain)
-	if err != nil {
-		return err
-	}
-	if !first {
-		w.from, w.jumpExists = from, jumps
-	}
-	if !w.setRules && w.from == "" {
-		return nil
-	}
-	if err := applyChainWrite(ipt, w); err != nil {
-		return fmt.Errorf("failed to write %s: %w", chain, err)
-	}
-	return nil
-}
-
-// chainHolds reports whether chain holds rules and no others. iptables lists
-// rules in its own normal form, so they are checked with -C.
-func chainHolds(ipt *iptables.IPTables, chain string, rules [][]string) (bool, error) {
-	listed, err := ipt.List("mangle", chain)
-	if err != nil {
-		return false, fmt.Errorf("failed to list chain %s: %w", chain, err)
-	}
-	if len(listed) != len(rules)+1 { // and "-N <chain>"
-		return false, nil
-	}
-	for _, rule := range rules {
-		ok, err := ipt.Exists("mangle", chain, rule...)
-		if err != nil || !ok {
-			return false, err
-		}
-	}
-	return true, nil
-}
-
-// jumpPosition reports whether the built-in chain from jumps to chain first,
-// and whether it jumps to it at all.
-func jumpPosition(ipt *iptables.IPTables, from, chain string) (bool, bool, error) {
-	listed, err := ipt.List("mangle", from)
-	if err != nil {
-		return false, false, fmt.Errorf("failed to list chain %s: %w", from, err)
-	}
-	jump := "-A " + from + " -j " + chain
-	// After "-P <chain> <policy>", the leading rules may be jumps to any of
-	// tslink's chains, so two of them do not keep pushing each other down
-	leading := true
-	for _, rule := range listed[min(1, len(listed)):] {
-		if leading {
-			target, ok := strings.CutPrefix(rule, "-A "+from+" -j ")
-			leading = ok && slices.Contains(tslinkChains, target)
-		}
-		if rule == jump {
-			return leading, true, nil
-		}
-	}
-	return false, false, nil
+	return defaultHost.setupHostIsolation(bridges)
 }
 
 // SetupVethIsolation installs the veth isolation, or restores it, letting
@@ -285,9 +182,110 @@ func jumpPosition(ipt *iptables.IPTables, from, chain string) (bool, bool, error
 // link-local IPv6 ones. It changes nothing that is in place, so it can run
 // periodically.
 func SetupVethIsolation(port int) error {
-	ipt, err := iptables.NewWithProtocol(iptables.ProtocolIPv4)
+	return defaultHost.setupVethIsolation(port)
+}
+
+func (s *hostState) setupHostIsolation(bridges []string) error {
+	ifcs := isolatedInterfaces(bridges)
+	var errs []error
+	for _, f := range isolationFamilies {
+		if err := s.setupIsolation(f, ifcs); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", f.name, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (s *hostState) setupIsolation(fam isolationFamily, ifcs []string) error {
+	f, err := s.family(fam.proto)
 	if err != nil {
-		return fmt.Errorf("failed to initialize iptables: %w", err)
+		return err
+	}
+	mangle, err := f.list("mangle")
+	if err != nil {
+		return err
+	}
+	for _, c := range []struct{ chain, from string }{
+		{isolateForwardChain, forwardChain},
+		{isolateInputChain, inputChain},
+	} {
+		mangle, err = s.ensureFirstChain(f, mangle, c.from, c.chain, fam.rules(c.chain, ifcs))
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ensureFirstChain makes chain in the mangle table hold exactly rules, and a
+// jump to it the first rule of the built-in chain from, so no rule ahead of it
+// accepts the traffic first. mangle is the table as listed, and it returns the
+// table as it is then. What is not in place is written in one
+// iptables-restore: emptying the chain and adding its rules one by one, or
+// deleting the jump and inserting it again, would let through for a moment
+// what the chain drops.
+func (s *hostState) ensureFirstChain(
+	f *ipFamily, mangle tableRules, from, chain string, rules [][]string,
+) (tableRules, error) {
+	w := chainWrite{table: "mangle", chain: chain, rules: rules, setRules: true}
+	if mangle.chains[chain] {
+		ok, err := s.chainHolds(f, "mangle", chain, mangle.rules[chain], rules)
+		if err != nil {
+			return mangle, err
+		}
+		if !ok {
+			logger.Warnf("Restoring the rules of %s", chain)
+		}
+		w.setRules = !ok
+	}
+	first, jumps := jumpPosition(mangle.rules[from], from, chain)
+	if !first {
+		w.from, w.jumpExists = from, jumps
+	}
+	if !w.setRules && w.from == "" {
+		return mangle, nil
+	}
+	if err := f.apply(w); err != nil {
+		return mangle, fmt.Errorf("failed to write %s: %w", chain, err)
+	}
+	// What it wrote, as iptables lists it, for the next check
+	mangle, err := f.list("mangle")
+	if err != nil {
+		return mangle, err
+	}
+	if lines := mangle.rules[chain]; w.setRules && len(lines) == len(rules) {
+		s.remember(f, "mangle", chain, lines, rules)
+	}
+	return mangle, nil
+}
+
+// jumpPosition reports whether the built-in chain from, whose rules are
+// listed, jumps to chain first, and whether it jumps to it at all.
+func jumpPosition(listed []string, from, chain string) (bool, bool) {
+	jump := "-A " + from + " -j " + chain
+	// The leading rules may be jumps to any of tslink's chains, so two of
+	// them do not keep pushing each other down
+	leading := true
+	for _, rule := range listed {
+		if leading {
+			target, ok := strings.CutPrefix(rule, "-A "+from+" -j ")
+			leading = ok && slices.Contains(tslinkChains, target)
+		}
+		if rule == jump {
+			return leading, true
+		}
+	}
+	return false, false
+}
+
+func (s *hostState) setupVethIsolation(port int) error {
+	f, err := s.family(iptables.ProtocolIPv4)
+	if err != nil {
+		return err
+	}
+	mangle, err := f.list("mangle")
+	if err != nil {
+		return err
 	}
 	dst := vethRange.String()
 	rules := [][]string{
@@ -297,21 +295,22 @@ func SetupVethIsolation(port int) error {
 		{"-i", "veth+", "-d", dst, "-p", "udp", dportFlag, strconv.Itoa(port), "-j", returnTarget},
 		{"-d", dst, "-j", dropTarget},
 	}
-	if err := ensureFirstChain(ipt, forwardChain, vethIsolateChain, rules); err != nil {
+	mangle, err = s.ensureFirstChain(f, mangle, forwardChain, vethIsolateChain, rules)
+	if err != nil {
 		return err
 	}
-	input := [][]string{wireGuardInputRule(configuredPorts())}
-	if err := ensureFirstChain(ipt, inputChain, wireGuardInputChain, input); err != nil {
+	input := [][]string{wireGuardInputRule(s.configuredPorts())}
+	if _, err := s.ensureFirstChain(f, mangle, inputChain, wireGuardInputChain, input); err != nil {
 		return err
 	}
 	// So do the forwarding and MASQUERADE the veths need, which a firewall
 	// reload removes as well
-	if err := syncForwarding(ipt); err != nil {
+	if err := s.syncForwarding(f); err != nil {
 		return fmt.Errorf("forwarding: %w", err)
 	}
 	// It runs when the plugin starts and on every watchdog run, as the port
 	// mappings of the veths need to
-	if err := SyncPortMappings(); err != nil {
+	if err := s.syncPortMappings(f); err != nil {
 		return fmt.Errorf("WireGuard port mappings: %w", err)
 	}
 	return nil
@@ -322,9 +321,9 @@ func SetupVethIsolation(port int) error {
 func RemoveHostIsolation() error {
 	var errs []error
 	for _, f := range isolationFamilies {
-		ipt, err := iptables.NewWithProtocol(f.proto)
+		ipt, err := defaultHost.family(f.proto)
 		if err != nil {
-			errs = append(errs, fmt.Errorf("%s: failed to initialize iptables: %w", f.name, err))
+			errs = append(errs, fmt.Errorf("%s: %w", f.name, err))
 			continue
 		}
 		for _, c := range []struct{ chain, from string }{

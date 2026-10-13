@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/docker/go-plugins-helpers/network"
+	"github.com/moby/moby/client/pkg/stringid"
 	"tailscale.com/tailcfg"
 
 	"github.com/matchory/tslink/pkg/logger"
@@ -108,7 +109,7 @@ func NewEndpoint(
 	hostname := opts.Hostname
 	if hostname == "" {
 		// Use short endpoint ID as default hostname (will be updated when container info arrives)
-		hostname = id[:12]
+		hostname = stringid.TruncateID(id)
 	}
 
 	// Use hostname-based state directory for Tailscale identity reuse
@@ -241,7 +242,7 @@ func (e *Endpoint) Join(sandboxKey string) (*network.JoinResponse, error) {
 
 	logger.Infof(
 		"Network setup complete for endpoint %s, Tailscale will be configured when container info arrives",
-		e.ID[:12],
+		stringid.TruncateID(e.ID),
 	)
 
 	// Return immediately - Tailscale setup will be triggered by Docker event.
@@ -276,7 +277,7 @@ func stateDirFor(dataDir, stack, hostname string) (string, error) {
 // out of the state directory because Unix socket paths are limited to 108
 // bytes, and stack and hostname can make the state directory longer than that.
 func socketPathFor(dataDir, endpointID string) string {
-	return filepath.Join(dataDir, "sock", endpointID[:12]+".sock")
+	return filepath.Join(dataDir, "sock", stringid.TruncateID(endpointID)+".sock")
 }
 
 // checkService checks the container's Service, if it has one: a valid name
@@ -310,12 +311,15 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 	e.mu.Lock()
 	if e.tailscaleStarted {
 		e.mu.Unlock()
-		logger.Debugf("Tailscale already started for endpoint %s", e.ID[:12])
+		logger.Debugf("Tailscale already started for endpoint %s", stringid.TruncateID(e.ID))
 		return nil
 	}
 	if e.supervisor != nil {
 		e.mu.Unlock()
-		logger.Debugf("Tailscale startup already in progress for endpoint %s", e.ID[:12])
+		logger.Debugf(
+			"Tailscale startup already in progress for endpoint %s",
+			stringid.TruncateID(e.ID),
+		)
 		return nil
 	}
 	sandboxKey := e.sandboxKey
@@ -349,8 +353,16 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 		return err
 	}
 
-	logger.Infof("StartTailscale: endpoint=%s hostname=%s service=%s endpoints=%d direct=%v",
-		endpointID[:12], info.Hostname, info.Service, len(info.Endpoints), info.Direct)
+	logger.Infof(
+		"StartTailscale: endpoint=%s hostname=%s service=%s endpoints=%d direct=%v",
+		stringid.TruncateID(
+			endpointID,
+		),
+		info.Hostname,
+		info.Service,
+		len(info.Endpoints),
+		info.Direct,
+	)
 
 	tailscaleBin, tailscaledBin, err := tailscale.BundledBinaries()
 	if err != nil {
@@ -398,7 +410,10 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 		if stopErr := supervisor.Stop(); stopErr != nil {
 			logger.Warnf("failed to stop duplicate supervisor: %v", stopErr)
 		}
-		logger.Warnf("Tailscale was started by another goroutine for endpoint %s", endpointID[:12])
+		logger.Warnf(
+			"Tailscale was started by another goroutine for endpoint %s",
+			stringid.TruncateID(endpointID),
+		)
 		return nil
 	}
 	e.supervisor = supervisor
@@ -411,7 +426,7 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 
 	logger.Infof(
 		"Endpoint %s got Tailscale IP: %s (hostname=%s)",
-		endpointID[:12],
+		stringid.TruncateID(endpointID),
 		tailscaleIP,
 		info.Hostname,
 	)
@@ -442,7 +457,10 @@ func (e *Endpoint) RunTailscale(ctx context.Context, info *ContainerInfo) {
 		case left:
 			// Left while starting: Leave left the state directory, and a
 			// supervisor stored after it looked, to the run
-			logger.Infof("Endpoint %s left while Tailscale started, stopping it", e.ID[:12])
+			logger.Infof(
+				"Endpoint %s left while Tailscale started, stopping it",
+				stringid.TruncateID(e.ID),
+			)
 			e.stopTailscale() //nolint:contextcheck // ctx is done: cleanup outlives it
 		case started && !leaving:
 			// Started as the plugin began to stop: Stop drains and stops it
@@ -468,13 +486,13 @@ func (e *Endpoint) RunTailscale(ctx context.Context, info *ContainerInfo) {
 			return
 		}
 		if _, ok := errors.AsType[permanentError](err); ok {
-			logger.Errorf("Endpoint %s: cannot start Tailscale: %v", e.ID[:12], err)
+			logger.Errorf("Endpoint %s: cannot start Tailscale: %v", stringid.TruncateID(e.ID), err)
 			e.writeStatus(info, StatusFailed, attempt, err)
 			return
 		}
 		e.writeStatus(info, StatusRetrying, attempt, err)
 		logger.Errorf("Endpoint %s: starting Tailscale failed (attempt %d), retrying in %v: %v",
-			e.ID[:12], attempt, delay, err)
+			stringid.TruncateID(e.ID), attempt, delay, err)
 		select {
 		case <-ctx.Done():
 			return
@@ -502,7 +520,7 @@ func (e *Endpoint) ClaimStateDir(info *ContainerInfo) error {
 		return fmt.Errorf(
 			"state directory %s is in use by endpoint %s: is tslink.hostname %q set on a replicated service?",
 			dir,
-			owner[:12],
+			stringid.TruncateID(owner),
 			info.Hostname,
 		)
 	}
@@ -652,9 +670,14 @@ func (e *Endpoint) DrainService() {
 	if supervisor == nil || service == "" {
 		return
 	}
-	logger.Infof("Endpoint %s stopping, draining %s", e.ID[:12], service)
+	logger.Infof("Endpoint %s stopping, draining %s", stringid.TruncateID(e.ID), service)
 	if err := supervisor.Drain(service); err != nil {
-		logger.Warnf("Failed to drain %s for endpoint %s: %v", service, e.ID[:12], err)
+		logger.Warnf(
+			"Failed to drain %s for endpoint %s: %v",
+			service,
+			stringid.TruncateID(e.ID),
+			err,
+		)
 	}
 }
 
@@ -826,7 +849,7 @@ func (e *Endpoint) tagsFor(info *ContainerInfo) []string {
 	}
 	if len(info.Tags) > 0 && !slices.Equal(info.Tags, e.Network.Tags) {
 		logger.Warnf("Endpoint %s: ignoring tslink.tags label %v, network sets %v",
-			e.ID[:12], info.Tags, e.Network.Tags)
+			stringid.TruncateID(e.ID), info.Tags, e.Network.Tags)
 	}
 	return e.Network.Tags
 }
@@ -979,7 +1002,7 @@ func (e *Endpoint) stopTailscale() {
 	// An ephemeral node would linger offline until Tailscale removes it;
 	// logging out deletes it now
 	if ephemeral {
-		logger.Infof("Endpoint %s: logging out ephemeral node", e.ID[:12])
+		logger.Infof("Endpoint %s: logging out ephemeral node", stringid.TruncateID(e.ID))
 		if err := logoutWithRetry(supervisor.Logout); err != nil {
 			logger.Warnf("Failed to log out ephemeral node during Leave: %v", err)
 		}

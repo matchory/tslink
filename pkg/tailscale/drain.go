@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/moby/moby/client/pkg/stringid"
+
 	"github.com/matchory/tslink/pkg/logger"
 )
 
@@ -205,7 +207,7 @@ func (d *Daemon) waitServicesFetch(after int64, deadline time.Time) bool {
 // drainAckFloor and at most drainAckTimeout after the drain. A backend never
 // advertised has nothing for control to fetch, and is not waited for.
 func (s *DaemonSupervisor) DrainAndWait(service string) {
-	id := s.cfg.EndpointID[:min(12, len(s.cfg.EndpointID))]
+	id := stringid.TruncateID(s.cfg.EndpointID)
 	if err := s.Drain(service); err != nil {
 		logger.Warnf("Endpoint %s: failed to drain %s before leaving: %v", id, service, err)
 	}

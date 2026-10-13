@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/moby/moby/client/pkg/stringid"
 	"tailscale.com/client/local"
 
 	"github.com/matchory/tslink/pkg/logger"
@@ -162,7 +163,7 @@ func NewDaemon(cfg DaemonConfig) (*Daemon, error) {
 		eps, err := cfg.HostEndpoints()
 		if err != nil {
 			logger.Warnf("Endpoint %s: advertising no host endpoints: %v",
-				cfg.EndpointID[:min(12, len(cfg.EndpointID))], err)
+				stringid.TruncateID(cfg.EndpointID), err)
 			eps = nil
 		}
 		d.hostEndpoints = eps
@@ -509,7 +510,7 @@ func (d *Daemon) tailscaledCommand(args []string) *exec.Cmd {
 	if warning != "" {
 		logger.Warnf(
 			"Endpoint %s: %s",
-			d.config.EndpointID[:min(12, len(d.config.EndpointID))],
+			stringid.TruncateID(d.config.EndpointID),
 			warning,
 		)
 	}
@@ -583,7 +584,7 @@ netns=$2; shift 3; exec nsenter --net="$netns" -- "$@"`,
 	if len(pretendpoint) > 0 && os.Getenv("TS_DEBUG_PRETENDPOINT") != "" {
 		logger.Warnf(
 			"Endpoint %s: TS_DEBUG_PRETENDPOINT is overridden by the host endpoints",
-			d.config.EndpointID[:min(12, len(d.config.EndpointID))],
+			stringid.TruncateID(d.config.EndpointID),
 		)
 	}
 	cmd.Env = append(withoutAuthKey(os.Environ()), pretendpoint...)

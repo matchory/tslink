@@ -17,6 +17,7 @@ import (
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/events"
 	dockerclient "github.com/moby/moby/client"
+	"github.com/moby/moby/client/pkg/stringid"
 	"golang.org/x/sys/unix"
 
 	"github.com/matchory/tslink/pkg/core"
@@ -52,7 +53,7 @@ func (c *ContainerCache) Store(endpointID string, info *core.ContainerInfo) {
 	c.byEndpoint[endpointID] = info
 	logger.Infof(
 		"ContainerCache: stored info for endpoint %s (hostname=%s service=%s endpoints=%d direct=%v)",
-		endpointID[:12],
+		stringid.TruncateID(endpointID),
 		info.Hostname,
 		info.Service,
 		len(info.Endpoints),
@@ -255,7 +256,7 @@ func handleConnect(
 
 	logger.Infof(
 		"Event: network connect - container=%s network=%s",
-		containerID[:12],
+		stringid.TruncateID(containerID),
 		networkName,
 	)
 
@@ -269,20 +270,24 @@ func handleConnect(
 	)
 	cancel()
 	if err != nil {
-		logger.Errorf("Failed to inspect container %s: %v", containerID[:12], err)
+		logger.Errorf("Failed to inspect container %s: %v", stringid.TruncateID(containerID), err)
 		return
 	}
 
 	// Find the endpoint ID for this network
 	if info.Container.NetworkSettings == nil ||
 		info.Container.NetworkSettings.Networks == nil {
-		logger.Warnf("Container %s has no network settings", containerID[:12])
+		logger.Warnf("Container %s has no network settings", stringid.TruncateID(containerID))
 		return
 	}
 
 	netSettings, ok := info.Container.NetworkSettings.Networks[networkName]
 	if !ok {
-		logger.Warnf("Container %s not found in network %s", containerID[:12], networkName)
+		logger.Warnf(
+			"Container %s not found in network %s",
+			stringid.TruncateID(containerID),
+			networkName,
+		)
 		return
 	}
 
@@ -290,13 +295,17 @@ func handleConnect(
 	if endpointID == "" {
 		logger.Warnf(
 			"Container %s has no endpoint ID for network %s",
-			containerID[:12],
+			stringid.TruncateID(containerID),
 			networkName,
 		)
 		return
 	}
 
-	logger.Debugf("Container %s has endpoint ID %s", containerID[:12], endpointID[:12])
+	logger.Debugf(
+		"Container %s has endpoint ID %s",
+		stringid.TruncateID(containerID),
+		stringid.TruncateID(endpointID),
+	)
 
 	// The network's stack decides which tasks may use it
 	callCtx, cancel = context.WithTimeout(ctx, dockerCallTimeout)

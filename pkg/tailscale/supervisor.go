@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/moby/moby/client/pkg/stringid"
+
 	"github.com/matchory/tslink/pkg/logger"
 )
 
@@ -183,7 +185,7 @@ func (s *DaemonSupervisor) StartContext(ctx context.Context) error {
 
 // Stop gracefully stops the supervisor and daemon.
 func (s *DaemonSupervisor) Stop() error {
-	logger.Infof("Stopping supervisor for endpoint %s", s.cfg.EndpointID[:8])
+	logger.Infof("Stopping supervisor for endpoint %s", stringid.TruncateID(s.cfg.EndpointID))
 
 	// Signal supervision loop to stop
 	s.cancel()
@@ -399,7 +401,7 @@ func (s *DaemonSupervisor) waitBeforeRestart() bool {
 		s.mu.Unlock()
 		logger.Errorf(
 			"Crash loop detected for endpoint %s (5+ crashes in 30s), retrying in %v",
-			s.cfg.EndpointID[:8],
+			stringid.TruncateID(s.cfg.EndpointID),
 			crashLoopCooldown,
 		)
 		s.signalStartup(errors.New("crash loop detected"))
@@ -521,9 +523,16 @@ func (s *DaemonSupervisor) checkLogin(daemon *Daemon, login *loginWatch) {
 	if !login.observe(daemon.LoggedOut()) {
 		return
 	}
-	logger.Warnf("Endpoint %s: node is logged out, logging in again", s.cfg.EndpointID[:8])
+	logger.Warnf(
+		"Endpoint %s: node is logged out, logging in again",
+		stringid.TruncateID(s.cfg.EndpointID),
+	)
 	if err := daemon.Reauthenticate(); err != nil {
-		logger.Errorf("Endpoint %s: logging in again failed: %v", s.cfg.EndpointID[:8], err)
+		logger.Errorf(
+			"Endpoint %s: logging in again failed: %v",
+			stringid.TruncateID(s.cfg.EndpointID),
+			err,
+		)
 		login.failed()
 	}
 }
@@ -539,7 +548,11 @@ func (s *DaemonSupervisor) hostEndpointsChanged(daemon *Daemon) bool {
 	}
 	eps, err := s.cfg.HostEndpoints()
 	if err != nil {
-		logger.Debugf("Endpoint %s: host endpoints unknown: %v", s.cfg.EndpointID[:8], err)
+		logger.Debugf(
+			"Endpoint %s: host endpoints unknown: %v",
+			stringid.TruncateID(s.cfg.EndpointID),
+			err,
+		)
 		return false
 	}
 	if slices.Equal(eps, daemon.HostEndpoints()) {
@@ -547,7 +560,7 @@ func (s *DaemonSupervisor) hostEndpointsChanged(daemon *Daemon) bool {
 	}
 	logger.Infof(
 		"Endpoint %s: host endpoints changed from %v to %v, restarting tailscaled",
-		s.cfg.EndpointID[:8],
+		stringid.TruncateID(s.cfg.EndpointID),
 		daemon.HostEndpoints(),
 		eps,
 	)

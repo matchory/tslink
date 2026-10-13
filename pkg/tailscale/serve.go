@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/moby/moby/client/pkg/stringid"
+
 	"github.com/matchory/tslink/pkg/logger"
 )
 
@@ -195,7 +197,7 @@ func (d *Daemon) configureDirectServe() error {
 		logger.Warnf(
 			"Endpoint %s serves HTTP on its own name %s: tailscaled issues a certificate for it, "+
 				"even for plain HTTP, and every new task's name counts against Let's Encrypt's weekly limit for the tailnet",
-			d.config.EndpointID[:12],
+			stringid.TruncateID(d.config.EndpointID),
 			d.config.Hostname,
 		)
 	}

@@ -211,60 +211,11 @@ func (e *Endpoint) Join(sandboxKey string) (*network.JoinResponse, error) {
 
 	logger.Infof("Created veth pair: host=%s container=%s", vethHost, vethContainer)
 
-	// Move container end of veth into container's network namespace
-	if err := netutil.MoveToNetNS(vethContainer, sandboxKey); err != nil {
+	if err := e.setupVeth(sandboxKey, vethHost, vethContainer); err != nil {
 		if cleanupErr := netutil.DeleteVeth(vethHost); cleanupErr != nil {
 			logger.Warnf("failed to cleanup veth %s after error: %v", vethHost, cleanupErr)
 		}
-		return nil, fmt.Errorf("failed to move veth to container ns: %w", err)
-	}
-
-	// Set up host side of veth with IP
-	hostVethIP, containerVethIP, err := assignVethSubnet(e.ID, vethHost)
-	if err != nil {
-		if cleanupErr := netutil.DeleteVeth(vethHost); cleanupErr != nil {
-			logger.Warnf("failed to cleanup veth %s after error: %v", vethHost, cleanupErr)
-		}
-		return nil, fmt.Errorf("failed to set up host routing: %w", err)
-	}
-	logger.Infof("Using veth IPs: host=%s container=%s", hostVethIP, containerVethIP)
-
-	// Set up container side with IP, bring it up, and add default route
-	if err := netutil.SetupInterfaceInNS(sandboxKey, vethContainer, ""); err != nil {
-		if cleanupErr := netutil.DeleteVeth(vethHost); cleanupErr != nil {
-			logger.Warnf("failed to cleanup veth %s after error: %v", vethHost, cleanupErr)
-		}
-		return nil, fmt.Errorf("failed to set up container interface: %w", err)
-	}
-
-	if err := netutil.SetupContainerRouting(
-		sandboxKey,
-		vethContainer,
-		containerVethIP,
-		hostVethIP,
-	); err != nil {
-		if cleanupErr := netutil.DeleteVeth(vethHost); cleanupErr != nil {
-			logger.Warnf("failed to cleanup veth %s after error: %v", vethHost, cleanupErr)
-		}
-		return nil, fmt.Errorf("failed to set up container routing: %w", err)
-	}
-
-	// tailscaled's own traffic must not depend on the container's other networks
-	if err := netutil.SetupBypassRoute(sandboxKey, vethContainer, hostVethIP); err != nil {
-		if cleanupErr := netutil.DeleteVeth(vethHost); cleanupErr != nil {
-			logger.Warnf("failed to cleanup veth %s after error: %v", vethHost, cleanupErr)
-		}
-		return nil, fmt.Errorf("failed to route tailscaled via veth: %w", err)
-	}
-
-	e.addIPAMAddress(sandboxKey, vethContainer)
-
-	// Fail closed: tailnet traffic must not fall through to the host's tailscaled
-	if err := netutil.SetupTailnetBlackhole(sandboxKey); err != nil {
-		if cleanupErr := netutil.DeleteVeth(vethHost); cleanupErr != nil {
-			logger.Warnf("failed to cleanup veth %s after error: %v", vethHost, cleanupErr)
-		}
-		return nil, fmt.Errorf("failed to blackhole tailnet ranges: %w", err)
+		return nil, err
 	}
 
 	// Set up NAT/MASQUERADE for internet access
@@ -582,8 +533,8 @@ func (e *Endpoint) GetSandboxKey() string {
 
 // Recover adopts an endpoint whose Join ran in an earlier plugin instance:
 // it records the namespace and the veth Join created, so Leave cleans them
-// up, and reapplies the routes Join installs, which an older version may not
-// have.
+// up, and reapplies Join's setup of the container's veth, which an older
+// version may not have done in full.
 func (e *Endpoint) Recover(sandboxKey string) error {
 	vethHost, vethContainer := "veth"+e.ID[:8], "veth"+e.ID[:8]+"c"
 	// Join may have picked another subnet than the preferred one
@@ -591,17 +542,24 @@ func (e *Endpoint) Recover(sandboxKey string) error {
 	if err != nil {
 		return fmt.Errorf("failed to read the address of %s: %w", vethHost, err)
 	}
+	host, err := netip.ParseAddr(hostVethIP)
+	if err != nil {
+		return fmt.Errorf("failed to parse the address of %s: %w", vethHost, err)
+	}
 
 	e.mu.Lock()
 	e.SandboxKey = sandboxKey
 	e.VethName = vethHost
 	e.mu.Unlock()
 
-	if err := netutil.SetupBypassRoute(sandboxKey, vethContainer, hostVethIP); err != nil {
-		return fmt.Errorf("failed to route tailscaled via veth: %w", err)
-	}
-	if err := netutil.SetupTailnetBlackhole(sandboxKey); err != nil {
-		return fmt.Errorf("failed to blackhole tailnet ranges: %w", err)
+	if err := netutil.SetupContainerSide(netutil.ContainerSide{
+		NSPath:      sandboxKey,
+		Interface:   vethContainer,
+		Address:     host.Next().String(),
+		Gateway:     hostVethIP,
+		IPAMAddress: e.IPAMAddress,
+	}); err != nil {
+		return fmt.Errorf("failed to set up the container's veth: %w", err)
 	}
 	return nil
 }
@@ -705,16 +663,34 @@ func (e *Endpoint) Stop() error {
 	return nil
 }
 
-// addIPAMAddress puts Docker's IPAM address for the endpoint on the
-// container's veth. Docker lists it in the container's /etc/hosts, and a
-// process resolving its own name to it must reach itself.
-func (e *Endpoint) addIPAMAddress(sandboxKey, vethContainer string) {
-	if e.IPAMAddress == "" {
-		return
+// setupVeth moves the container end of the veth into the container's
+// namespace, assigns the pair a subnet and configures the container end: its
+// address, tailscaled's route through it, the tailnet blackhole and the IPAM
+// address.
+func (e *Endpoint) setupVeth(sandboxKey, vethHost, vethContainer string) error {
+	if err := netutil.MoveToNetNS(vethContainer, sandboxKey); err != nil {
+		return fmt.Errorf("failed to move veth to container ns: %w", err)
 	}
-	if err := netutil.AddIPAMAddress(sandboxKey, vethContainer, e.IPAMAddress); err != nil {
-		logger.Warnf("Failed to add IPAM address %s to the container: %v", e.IPAMAddress, err)
+
+	hostVethIP, containerVethIP, err := assignVethSubnet(e.ID, vethHost)
+	if err != nil {
+		return fmt.Errorf("failed to set up host routing: %w", err)
 	}
+	logger.Infof("Using veth IPs: host=%s container=%s", hostVethIP, containerVethIP)
+
+	// Fails closed: tailnet traffic must not fall through to the host's
+	// tailscaled, and tailscaled's own traffic must not depend on the
+	// container's other networks
+	if err := netutil.SetupContainerSide(netutil.ContainerSide{
+		NSPath:      sandboxKey,
+		Interface:   vethContainer,
+		Address:     containerVethIP,
+		Gateway:     hostVethIP,
+		IPAMAddress: e.IPAMAddress,
+	}); err != nil {
+		return fmt.Errorf("failed to set up the container's veth: %w", err)
+	}
+	return nil
 }
 
 // startSupervisor starts the supervisor and waits for the node's Tailscale

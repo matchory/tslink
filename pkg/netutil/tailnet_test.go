@@ -88,12 +88,13 @@ func TestTailnetBlackhole(t *testing.T) {
 		t.Fatalf("precondition: expected tailnet address to route via default, got %v", err)
 	}
 
-	if err := SetupTailnetBlackhole(nsPath); err != nil {
-		t.Fatalf("SetupTailnetBlackhole: %v", err)
+	h, _ := testHandle(t, nsPath, "dummy0")
+	if err := setupTailnetBlackhole(h); err != nil {
+		t.Fatalf("setupTailnetBlackhole: %v", err)
 	}
 	// Join may be retried; setup must be idempotent.
-	if err := SetupTailnetBlackhole(nsPath); err != nil {
-		t.Fatalf("SetupTailnetBlackhole (second call): %v", err)
+	if err := setupTailnetBlackhole(h); err != nil {
+		t.Fatalf("setupTailnetBlackhole (second call): %v", err)
 	}
 
 	for _, dst := range []string{"100.64.0.1", "100.100.1.1", "100.127.255.254"} {

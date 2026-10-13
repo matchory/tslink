@@ -43,6 +43,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to time out, up to 30 s.
 - A node logged in again after control deleted it started a second
   certificate watcher for its Service.
+- An address the kernel refused on the container's veth was ignored, and the
+  container joined without it. The join now fails with the error.
+- A thread that could not switch back from a container's network namespace
+  went back to the plugin's thread pool, where other work then ran in that
+  container's namespace. Such a thread now ends.
+- A container's network namespace path that is a link with a relative target
+  failed to resolve.
 
 ### Security
 

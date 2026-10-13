@@ -11,14 +11,15 @@ import (
 )
 
 // Docker lists the address its IPAM assigned to the endpoint in the
-// container's /etc/hosts. Once AddIPAMAddress put it on the container, a
+// container's /etc/hosts. Once addIPAMAddress put it on the container, a
 // process reaching its own name gets an answer, as RabbitMQ's epmd needs.
 func TestAddIPAMAddress(t *testing.T) {
 	nsPath := newTestNetNS(t)
 
+	h, link := testHandle(t, nsPath, "dummy0")
 	for range 2 { // Join may be retried
-		if err := AddIPAMAddress(nsPath, "dummy0", "10.42.6.51"); err != nil {
-			t.Fatalf("AddIPAMAddress: %v", err)
+		if err := addIPAMAddress(h, link, "10.42.6.51"); err != nil {
+			t.Fatalf("addIPAMAddress: %v", err)
 		}
 	}
 
@@ -82,7 +83,8 @@ func TestAddIPAMAddress(t *testing.T) {
 
 func TestAddIPAMAddressRejectsBadAddress(t *testing.T) {
 	nsPath := newTestNetNS(t)
-	if err := AddIPAMAddress(nsPath, "dummy0", "not-an-ip"); err == nil {
-		t.Error("AddIPAMAddress accepted an invalid address")
+	h, link := testHandle(t, nsPath, "dummy0")
+	if err := addIPAMAddress(h, link, "not-an-ip"); err == nil {
+		t.Error("addIPAMAddress accepted an invalid address")
 	}
 }

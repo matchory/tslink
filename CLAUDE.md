@@ -42,8 +42,13 @@ container restarts with the same name, it keeps its Tailscale identity and IP.
 **Veth IP allocation**: Each container gets a /30 subnet from 10.200.0.0/16: the one its endpoint ID hashes to, or
 the first one after it that no host interface uses, chosen and assigned under one lock. Recovery reads the address back
 from the host veth. The address Docker's IPAM assigns the endpoint, which Docker lists in the container's `/etc/hosts`,
-goes on the container's veth as a /32 (`netutil.AddIPAMAddress`), so a process resolving its own name reaches itself;
-a /32 adds no route.
+goes on the container's veth as a /32, so a process resolving its own name reaches itself; a /32 adds no route.
+
+**Container side**: `netutil.SetupContainerSide` configures the container's end of the veth, for Join and again for
+recovery: link up, its /30 address, the bypass route and rule, the IPAM /32 (a failure only logged) and the tailnet
+blackhole (see Routing), all through one netlink handle in the container's namespace. Opening that handle is the only
+time Join switches a thread into the namespace. `inNetNS` (also for `ListenInNetNS`) does that on a goroutine of its
+own, and a thread that cannot switch back stays locked, so Go terminates it instead of reusing it.
 
 **Routing**: Docker gives the container its usual gateway (`docker_gwbridge` on Swarm); without one, its embedded DNS
 server refuses to resolve public names. tslink's veth carries only tailscaled's own traffic: tailscaled marks its

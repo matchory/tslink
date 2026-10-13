@@ -478,6 +478,8 @@ func (s *DaemonSupervisor) waitForExit() error {
 			return nil
 
 		case <-exited:
+			// Its goroutines would otherwise run on beside the next daemon's
+			s.stopDaemon()
 			return errors.New("daemon process exited")
 
 		case <-ticker.C:

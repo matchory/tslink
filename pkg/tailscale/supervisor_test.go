@@ -145,6 +145,21 @@ func TestSupervisorNoticesCrashAtOnce(t *testing.T) {
 	waitFor(t, "a restart", func() bool { return f.startCount() == 2 })
 }
 
+// A crashed daemon is stopped before the next one starts: its goroutines,
+// such as the certificate watch, would otherwise run on beside the new one's.
+func TestSupervisorStopsCrashedDaemon(t *testing.T) {
+	s, f, _ := newFakeSupervisor(t)
+	if err := s.Start(); err != nil {
+		t.Fatal(err)
+	}
+	first := s.GetDaemon()
+	f.crash(t)
+	waitFor(t, "a restart", func() bool { return f.startCount() == 2 })
+	if first.ctx.Err() == nil {
+		t.Error("the crashed daemon's context is still live")
+	}
+}
+
 // A failed first start fails Start, but the supervisor keeps trying: the
 // endpoint stops it if it gives up on the container.
 func TestSupervisorRetriesFailedFirstStart(t *testing.T) {

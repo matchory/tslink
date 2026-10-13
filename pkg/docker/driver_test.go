@@ -174,11 +174,11 @@ func TestCreateEndpointKeepsIPAMAddress(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		iface *network.EndpointInterface
-		want  string
+		want  netip.Addr
 	}{
-		{"assigned", &network.EndpointInterface{Address: "10.42.6.51/24"}, "10.42.6.51"},
-		{"none", nil, ""},
-		{"empty", &network.EndpointInterface{}, ""},
+		{"assigned", &network.EndpointInterface{Address: "10.42.6.51/24"}, netip.MustParseAddr("10.42.6.51")},
+		{"none", nil, netip.Addr{}},
+		{"empty", &network.EndpointInterface{}, netip.Addr{}},
 	} {
 		epID := fakeID(tc.name)
 		if _, err := td.CreateEndpoint(
@@ -188,7 +188,7 @@ func TestCreateEndpointKeepsIPAMAddress(t *testing.T) {
 		}
 		ep, _ := td.endpoint(epID)
 		if ep.IPAMAddress != tc.want {
-			t.Errorf("%s: IPAMAddress %q, want %q", tc.name, ep.IPAMAddress, tc.want)
+			t.Errorf("%s: IPAMAddress %s, want %s", tc.name, ep.IPAMAddress, tc.want)
 		}
 	}
 }
@@ -457,8 +457,8 @@ func TestRecoverEndpoints(t *testing.T) {
 		t.Errorf("endpoint network %p (want %p), sandbox %q", ep.Network, net, ep.SandboxKey())
 	}
 	// Recover puts it on the container's veth, as Join does
-	if ep.IPAMAddress != "10.0.9.7" {
-		t.Errorf("IPAM address %q, want Docker's 10.0.9.7", ep.IPAMAddress)
+	if ep.IPAMAddress != netip.MustParseAddr("10.0.9.7") {
+		t.Errorf("IPAM address %s, want Docker's 10.0.9.7", ep.IPAMAddress)
 	}
 	if want := filepath.Join(
 		td.config.DataDir,

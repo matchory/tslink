@@ -214,7 +214,7 @@ func (d *Driver) CreateEndpoint(
 		if err != nil {
 			logger.Warnf("Ignoring IPAM address %q: %v", req.Interface.Address, err)
 		} else {
-			opts.IPAMAddress = prefix.Addr().String()
+			opts.IPAMAddress = prefix.Addr()
 		}
 	}
 
@@ -872,7 +872,7 @@ func (d *Driver) startMissedEndpoint(
 type inspectedAttachment struct {
 	info        *core.ContainerInfo // the container's Tailscale configuration
 	sandboxKey  string              // its network namespace
-	ipamAddress string              // Docker's IPAM address for it on the network, or ""
+	ipamAddress netip.Addr          // Docker's IPAM address for it on the network, if any
 }
 
 // inspectContainer returns the Tailscale configuration of a container on a
@@ -916,9 +916,7 @@ func (d *Driver) inspectContainer(
 		),
 		sandboxKey: settings.SandboxKey,
 	}
-	if netSettings.IPAddress.IsValid() {
-		a.ipamAddress = netSettings.IPAddress.String()
-	}
+	a.ipamAddress = netSettings.IPAddress
 	return a, nil
 }
 

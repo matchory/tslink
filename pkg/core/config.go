@@ -152,8 +152,8 @@ func ParseMTU(s string) int {
 // EndpointOptions holds options for endpoint creation.
 type EndpointOptions struct {
 	Hostname string
-	// IPAMAddress is the address Docker's IPAM assigned to the endpoint, or ""
-	IPAMAddress string
+	// IPAMAddress is the address Docker's IPAM assigned to the endpoint, if any
+	IPAMAddress netip.Addr
 }
 
 // DataDir returns the plugin's data directory: TS_DATA_DIR, or /data.

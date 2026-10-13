@@ -4,21 +4,20 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"syscall"
-
-	"github.com/vishvananda/netlink"
 
 	"github.com/matchory/tslink/pkg/logger"
 )
 
 // ContainerSide is the container's end of a tslink veth.
 type ContainerSide struct {
-	NSPath    string // the container's network namespace
-	Interface string // the container end of the veth, already in NSPath
-	Address   string // its address in the veth's /30
-	Gateway   string // the host end's address
-	// IPAMAddress is the address Docker's IPAM assigned to the endpoint, or ""
-	IPAMAddress string
+	NSPath    string     // the container's network namespace
+	Interface string     // the container end of the veth, already in NSPath
+	Address   netip.Addr // its address in the veth's /30
+	Gateway   netip.Addr // the host end's address
+	// IPAMAddress is the address Docker's IPAM assigned to the endpoint, if any
+	IPAMAddress netip.Addr
 }
 
 // SetupContainerSide configures the container's end of the veth, through one
@@ -32,14 +31,7 @@ type ContainerSide struct {
 // It sets no default route: Docker connects the container to its gateway
 // network like any other.
 func SetupContainerSide(c ContainerSide) error {
-	addr, err := netlink.ParseAddr(c.Address + "/30")
-	if err != nil {
-		return fmt.Errorf("failed to parse container IP: %w", err)
-	}
-	gw := net.ParseIP(c.Gateway)
-	if gw == nil {
-		return fmt.Errorf("failed to parse gateway IP: %s", c.Gateway)
-	}
+	addr := netlinkAddr(c.Address, 30)
 
 	h, err := handleAt(c.NSPath)
 	if err != nil {
@@ -57,10 +49,10 @@ func SetupContainerSide(c ContainerSide) error {
 	if err := h.AddrAdd(link, addr); err != nil && !errors.Is(err, syscall.EEXIST) {
 		return fmt.Errorf("failed to add %s to %s: %w", addr.IPNet, c.Interface, err)
 	}
-	if err := setupBypassRoute(h, link, gw); err != nil {
+	if err := setupBypassRoute(h, link, net.IP(c.Gateway.AsSlice())); err != nil {
 		return err
 	}
-	if c.IPAMAddress != "" {
+	if c.IPAMAddress.IsValid() {
 		if err := addIPAMAddress(h, link, c.IPAMAddress); err != nil {
 			logger.Warnf("Failed to add IPAM address %s to the container: %v", c.IPAMAddress, err)
 		}

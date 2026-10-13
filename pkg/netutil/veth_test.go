@@ -273,14 +273,14 @@ func TestUsedVethSubnets(t *testing.T) {
 			t.Errorf("used = %v, want %v", used, want)
 		}
 		ip, err := VethIPv4("dummy2")
-		if err != nil || ip != "10.200.2.9" {
-			t.Errorf("VethIPv4 = %q, %v", ip, err)
+		if err != nil || ip != netip.MustParseAddr("10.200.2.9") {
+			t.Errorf("VethIPv4 = %s, %v", ip, err)
 		}
 		// The address is the host side's: a second link may not get it
-		if err := SetupHostRouting("dummy3", "10.200.1.5"); err != nil {
+		if err := SetupHostRouting("dummy3", netip.MustParseAddr("10.200.1.5")); err != nil {
 			t.Errorf("SetupHostRouting on a free link: %v", err)
 		}
-		if err := SetupHostRouting("dummy3", "10.200.1.5"); err == nil {
+		if err := SetupHostRouting("dummy3", netip.MustParseAddr("10.200.1.5")); err == nil {
 			t.Error("SetupHostRouting did not fail adding an address the link has")
 		}
 		return nil

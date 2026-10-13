@@ -5,6 +5,7 @@ package netutil
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"os"
 	"slices"
@@ -141,7 +142,7 @@ func DeleteVeth(name string) error {
 }
 
 // SetupHostRouting sets up routing on the host side for internet access.
-func SetupHostRouting(vethHost string, hostIP string) error {
+func SetupHostRouting(vethHost string, hostIP netip.Addr) error {
 	logger.Debugf("Setting up host routing for %s with IP %s", vethHost, hostIP)
 
 	link, err := netlink.LinkByName(vethHost)
@@ -149,11 +150,7 @@ func SetupHostRouting(vethHost string, hostIP string) error {
 		return fmt.Errorf("failed to get host veth: %w", err)
 	}
 
-	addr, err := netlink.ParseAddr(hostIP + "/30")
-	if err != nil {
-		return fmt.Errorf("failed to parse host IP: %w", err)
-	}
-
+	addr := netlinkAddr(hostIP, 30)
 	if err := netlink.AddrAdd(link, addr); err != nil {
 		return fmt.Errorf("failed to add %s to %s: %w", addr, vethHost, err)
 	}
@@ -182,21 +179,28 @@ func UsedVethSubnets() (map[netip.Prefix]bool, error) {
 }
 
 // VethIPv4 returns the IPv4 address in tslink's veth range of the link name.
-func VethIPv4(name string) (string, error) {
+func VethIPv4(name string) (netip.Addr, error) {
 	link, err := netlink.LinkByName(name)
 	if err != nil {
-		return "", fmt.Errorf("failed to get %s: %w", name, err)
+		return netip.Addr{}, fmt.Errorf("failed to get %s: %w", name, err)
 	}
 	addrs, err := netlink.AddrList(link, syscall.AF_INET)
 	if err != nil {
-		return "", fmt.Errorf("failed to list addresses of %s: %w", name, err)
+		return netip.Addr{}, fmt.Errorf("failed to list addresses of %s: %w", name, err)
 	}
 	for _, a := range addrs {
 		if ip, ok := netip.AddrFromSlice(a.IP.To4()); ok && vethRange.Contains(ip) {
-			return ip.String(), nil
+			return ip, nil
 		}
 	}
-	return "", fmt.Errorf("%s has no address in %s", name, vethRange)
+	return netip.Addr{}, fmt.Errorf("%s has no address in %s", name, vethRange)
+}
+
+// netlinkAddr returns addr with a prefix of bits, as netlink takes it.
+func netlinkAddr(addr netip.Addr, bits int) *netlink.Addr {
+	return &netlink.Addr{
+		IPNet: &net.IPNet{IP: addr.AsSlice(), Mask: net.CIDRMask(bits, addr.BitLen())},
+	}
 }
 
 // chainName is the custom iptables chain for tslink forwarding rules.

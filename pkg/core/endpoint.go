@@ -30,9 +30,9 @@ type Endpoint struct {
 	// Fixed when the endpoint is created: read without the lock
 	ID          string
 	Network     *Network
-	IPAMAddress string // Docker's IPAM address for the endpoint, or ""
-	dataDir     string // Base data directory for state
-	sharedDir   string // Directory shared between hosts; empty for none
+	IPAMAddress netip.Addr // Docker's IPAM address for the endpoint, if any
+	dataDir     string     // Base data directory for state
+	sharedDir   string     // Directory shared between hosts; empty for none
 
 	hostname    string
 	service     string // Service name (e.g., "svc:hello-world")
@@ -177,21 +177,21 @@ var vethAllocMu sync.Mutex
 
 // assignVethSubnet picks a subnet no host link uses and assigns its host
 // address to vethHost.
-func assignVethSubnet(endpointID, vethHost string) (string, string, error) {
+func assignVethSubnet(endpointID, vethHost string) (netip.Addr, netip.Addr, error) {
 	vethAllocMu.Lock()
 	defer vethAllocMu.Unlock()
 	used, err := netutil.UsedVethSubnets()
 	if err != nil {
-		return "", "", err
+		return netip.Addr{}, netip.Addr{}, err
 	}
 	host, ctr, err := pickVethSubnet(endpointID, used)
 	if err != nil {
-		return "", "", err
+		return netip.Addr{}, netip.Addr{}, err
 	}
-	if err := netutil.SetupHostRouting(vethHost, host.String()); err != nil {
-		return "", "", err
+	if err := netutil.SetupHostRouting(vethHost, host); err != nil {
+		return netip.Addr{}, netip.Addr{}, err
 	}
-	return host.String(), ctr.String(), nil
+	return host, ctr, nil
 }
 
 // Join is called when a container joins the network.
@@ -567,13 +567,9 @@ func (e *Endpoint) SetSandboxKey(sandboxKey string) {
 func (e *Endpoint) Recover(sandboxKey string) error {
 	vethHost, vethContainer := netutil.VethNames(vethBaseName(e.ID))
 	// Join may have picked another subnet than the preferred one
-	hostVethIP, err := netutil.VethIPv4(vethHost)
+	host, err := netutil.VethIPv4(vethHost)
 	if err != nil {
 		return fmt.Errorf("failed to read the address of %s: %w", vethHost, err)
-	}
-	host, err := netip.ParseAddr(hostVethIP)
-	if err != nil {
-		return fmt.Errorf("failed to parse the address of %s: %w", vethHost, err)
 	}
 
 	e.mu.Lock()
@@ -584,8 +580,8 @@ func (e *Endpoint) Recover(sandboxKey string) error {
 	if err := netutil.SetupContainerSide(netutil.ContainerSide{
 		NSPath:      sandboxKey,
 		Interface:   vethContainer,
-		Address:     host.Next().String(),
-		Gateway:     hostVethIP,
+		Address:     host.Next(),
+		Gateway:     host,
 		IPAMAddress: e.IPAMAddress,
 	}); err != nil {
 		return fmt.Errorf("failed to set up the container's veth: %w", err)

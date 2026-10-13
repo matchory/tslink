@@ -148,7 +148,6 @@ func vethTopology(t *testing.T, id, bridge string) (string, string, string) {
 		if err := ipt.ChangePolicy("filter", "FORWARD", "DROP"); err != nil {
 			return err
 		}
-		resetChainInitialized()
 		return SetupNAT("vethtest0")
 	}); err != nil {
 		t.Fatal(err)
@@ -269,23 +268,7 @@ func TestHostIsolationBlocksEveryBridge(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			hostNS, bridgedNS, _ := vethTopology(t, "h"+strconv.Itoa(i), tt.bridge)
-			// The host's tailscaled: its interface and tailnet address
-			if err := inNetNS(hostNS, func() error {
-				ts := &netlink.Dummy{Name: "tailscale0"}
-				if err := netlink.LinkAdd(ts); err != nil {
-					return err
-				}
-				addr, err := netlink.ParseAddr("100.64.0.1/32")
-				if err != nil {
-					return err
-				}
-				if err := netlink.AddrAdd(ts, addr); err != nil {
-					return err
-				}
-				return netlink.LinkSetUp(ts)
-			}); err != nil {
-				t.Fatal(err)
-			}
+			addHostTailnet(t, hostNS)
 			if tt.isolate {
 				if err := inNetNS(hostNS, func() error {
 					return SetupHostIsolation(tt.bridges)

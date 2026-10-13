@@ -67,6 +67,12 @@ func wireGuardInputRule(r PortRange) []string {
 	}
 }
 
+// The built-in chains tslink jumps from.
+const (
+	forwardChain = "FORWARD"
+	inputChain   = "INPUT"
+)
+
 // dportFlag is iptables' destination port match flag.
 const dportFlag = "--dport"
 
@@ -181,8 +187,8 @@ func setupIsolation(f isolationFamily, ifcs []string) error {
 		return fmt.Errorf("failed to initialize iptables: %w", err)
 	}
 	for _, c := range []struct{ chain, from string }{
-		{isolateForwardChain, "FORWARD"},
-		{isolateInputChain, "INPUT"},
+		{isolateForwardChain, forwardChain},
+		{isolateInputChain, inputChain},
 	} {
 		if err := ensureFirstChain(ipt, c.from, c.chain, f.rules(c.chain, ifcs)); err != nil {
 			return err
@@ -273,7 +279,8 @@ func jumpPosition(ipt *iptables.IPTables, from, chain string) (bool, bool, error
 
 // SetupVethIsolation installs the veth isolation, or restores it, letting
 // only replies and UDP to port from tslink's veths through to them. It also
-// installs TSLINK-WG-IN and syncs the veths' WireGuard port mappings
+// installs TSLINK-WG-IN, restores the veths' forwarding and MASQUERADE
+// (syncForwarding) and syncs their WireGuard port mappings
 // (SyncPortMappings). IPv4 only: the veths have no other addresses than
 // link-local IPv6 ones. It changes nothing that is in place, so it can run
 // periodically.
@@ -290,12 +297,17 @@ func SetupVethIsolation(port int) error {
 		{"-i", "veth+", "-d", dst, "-p", "udp", dportFlag, strconv.Itoa(port), "-j", returnTarget},
 		{"-d", dst, "-j", dropTarget},
 	}
-	if err := ensureFirstChain(ipt, "FORWARD", vethIsolateChain, rules); err != nil {
+	if err := ensureFirstChain(ipt, forwardChain, vethIsolateChain, rules); err != nil {
 		return err
 	}
 	input := [][]string{wireGuardInputRule(configuredPorts())}
-	if err := ensureFirstChain(ipt, "INPUT", wireGuardInputChain, input); err != nil {
+	if err := ensureFirstChain(ipt, inputChain, wireGuardInputChain, input); err != nil {
 		return err
+	}
+	// So do the forwarding and MASQUERADE the veths need, which a firewall
+	// reload removes as well
+	if err := syncForwarding(ipt); err != nil {
+		return fmt.Errorf("forwarding: %w", err)
 	}
 	// It runs when the plugin starts and on every watchdog run, as the port
 	// mappings of the veths need to
@@ -316,8 +328,8 @@ func RemoveHostIsolation() error {
 			continue
 		}
 		for _, c := range []struct{ chain, from string }{
-			{isolateForwardChain, "FORWARD"},
-			{isolateInputChain, "INPUT"},
+			{isolateForwardChain, forwardChain},
+			{isolateInputChain, inputChain},
 		} {
 			// iptables cannot look for a jump to a chain that does not exist,
 			// and there is none

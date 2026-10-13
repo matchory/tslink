@@ -72,7 +72,9 @@ no conntrack entry blocking the container's own NAT. Adding a rule deletes the c
 port 41641, whose NAT would otherwise outlive it (keepalives never let them expire); an existing rule is kept and its
 flows too. A rule's `-s` is the container's address, so a restarted plugin keeps the port; `CleanupNAT` removes it,
 and `SyncPortMappings` (run by `SetupVethIsolation`, so at start and by the watchdog) maps veths without a rule and
-removes rules of addresses no veth has.
+removes rules of addresses no veth has. `SetupVethIsolation` likewise restores the forwarding a firewall reload removes
+(`syncForwarding`, under `forwardMu`): `TSLINK-FORWARD`, its jump from filter `FORWARD`, the veths' ACCEPT rules and
+MASQUERADE of `10.200.0.0/16`.
 
 **Self-healing**: `Endpoint.RunTailscale` retries a failed start with backoff until the endpoint leaves, unless the
 error is a `permanentError` (wrong stack, invalid hostname). The supervisor restarts a crashed tailscaled, resumes after

@@ -298,7 +298,7 @@ func checkService(info *ContainerInfo) error {
 // It uses the correct hostname and state directory for identity reuse.
 func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 	// NOTE: We intentionally do NOT hold the lock during blocking operations.
-	// Binary download can take seconds, supervisor startup can take 90s, WaitForIP can take 60s.
+	// Supervisor startup can take 90s, WaitForIP can take 60s.
 	// We only lock briefly to check/update state.
 
 	// Quick check if already started (avoids duplicate work)
@@ -765,9 +765,6 @@ func checkStackScope(info *ContainerInfo, network *Network, tags []string) error
 	return nil
 }
 
-// wipeStateOnKeyChange wipes the state if the network's auth key changed, for
-// a fresh registration. A replaced cluster credential is a rotation, which a
-// logged-in node survives, so its state is kept.
 // syncEphemeralMarker marks stateDir as holding an ephemeral node, or clears
 // the mark, as the network using it says. A hostname's directory may move from
 // an ephemeral network to a persistent one; a stale mark would have garbage
@@ -784,6 +781,9 @@ func syncEphemeralMarker(stateDir string, ephemeral bool) {
 	}
 }
 
+// wipeStateOnKeyChange wipes the state if the network's auth key changed, for
+// a fresh registration. A replaced cluster credential is a rotation, which a
+// logged-in node survives, so its state is kept.
 func wipeStateOnKeyChange(stateDir string, network *Network) {
 	if network.UsesClusterCredential() || !tailscale.StateExists(stateDir) ||
 		tailscale.CheckAuthKeyMatch(stateDir, network.AuthKey) {

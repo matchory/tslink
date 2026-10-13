@@ -130,7 +130,7 @@ API). The login waits on the IPN bus for Running, and when logging in as a new d
 
 **Readiness endpoint**: with the label `tslink.health=<port>`, `Endpoint.startHealth` serves `GET /ready` on that port
 of the container's loopback, from a listener the plugin opens in the container's netns (`netutil.ListenInNetNS`).
-Readiness comes from tailscaled (`DaemonSupervisor.Readiness`: backend state, `serve status --json`, the advertised
+Readiness comes from tailscaled (`DaemonSupervisor.Readiness`: backend state, the serve config, the advertised
 Services in its prefs, and the `service-host` node capability for control's approval), cached for 2 s. Once ready, the
 endpoint latches: `status/<endpoint-id[:12]>.ready` records it, so it answers 200 until the backend is drained or the
 container leaves, also after a plugin restart.

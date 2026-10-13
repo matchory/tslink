@@ -449,7 +449,7 @@ func parseContainerInfo(name string, labels map[string]string) *core.ContainerIn
 
 // hostnameFromName turns a container name into a DNS label Tailscale accepts.
 // Swarm task names such as "stack_svc.1.<task-id>" contain underscores and
-// dots, which tailscale up rejects.
+// dots, which Tailscale rejects.
 func hostnameFromName(name string) string {
 	var b strings.Builder
 	for _, r := range name {

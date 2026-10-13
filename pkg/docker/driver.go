@@ -122,7 +122,7 @@ func newDriver(cfg *core.Config, docker dockerAPI) *Driver {
 func (d *Driver) GetCapabilities() (*network.CapabilitiesResponse, error) {
 	logger.Infof("GetCapabilities called")
 	return &network.CapabilitiesResponse{
-		Scope:             "global", // spike: so swarm carries driver options to nodes
+		Scope:             "global", // So Swarm carries driver options to nodes
 		ConnectivityScope: "global", // Containers can reach the tailnet
 	}, nil
 }
@@ -169,7 +169,7 @@ func (d *Driver) AllocateNetwork(
 	req *network.AllocateNetworkRequest,
 ) (*network.AllocateNetworkResponse, error) {
 	logger.Infof("AllocateNetwork: %s", req.NetworkID)
-	// spike: hand the options back so swarm stores them as driver state
+	// Hand the options back so Swarm stores them as driver state
 	return &network.AllocateNetworkResponse{Options: req.Options}, nil
 }
 

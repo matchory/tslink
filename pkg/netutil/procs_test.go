@@ -178,6 +178,33 @@ func TestNewMappingsForgetFlowsOnce(t *testing.T) {
 	}
 }
 
+// A container whose mapping is in the chain but not in the cache, as when
+// the sync at start failed, gets its port into the cache when SetupNAT finds
+// the mapping, rather than only with the next watchdog run.
+func TestSetupNATCachesExistingMapping(t *testing.T) {
+	nsPath := newTestNetNS(t)
+	if err := inNetNS(nsPath, func() error {
+		if err := addLinks(map[string]string{"vethtslinka": "10.200.0.1/30"}); err != nil {
+			return err
+		}
+		if err := newHostState().setupNAT("vethtslinka"); err != nil {
+			return err
+		}
+		s := newHostState()
+		s.hostEndpoints = HostEndpointsConfig{Addrs: []netip.Addr{netip.MustParseAddr("192.0.2.1")}}
+		if err := s.setupNAT("vethtslinka"); err != nil {
+			return err
+		}
+		eps, err := s.hostEndpointsOf("vethtslinka")
+		if err == nil && len(eps) != 1 {
+			err = fmt.Errorf("HostEndpoints = %v, want one", eps)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // Once the watchdog remembered the chains as it found them, another
 // program's changes are still found and repaired: a rule added, a rule
 // removed, a rule replaced by another, and a rule put ahead of the jumps.

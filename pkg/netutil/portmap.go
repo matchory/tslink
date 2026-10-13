@@ -273,7 +273,8 @@ func (s *hostState) addMappings(
 	var added []netip.Addr
 	var errs []error
 	for _, src := range srcs {
-		if _, ok := mapped[src]; ok {
+		if port, ok := mapped[src]; ok {
+			s.ports[src] = port
 			continue
 		}
 		if err := s.mapContainer(f, src, mapped); err != nil {

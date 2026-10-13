@@ -41,7 +41,9 @@ container restarts with the same name, it keeps its Tailscale identity and IP.
 
 **Veth IP allocation**: Each container gets a /30 subnet from 10.200.0.0/16: the one its endpoint ID hashes to, or
 the first one after it that no host interface uses, chosen and assigned under one lock. Recovery reads the address back
-from the host veth.
+from the host veth. The address Docker's IPAM assigns the endpoint, which Docker lists in the container's `/etc/hosts`,
+goes on the container's veth as a /32 (`netutil.AddIPAMAddress`), so a process resolving its own name reaches itself;
+a /32 adds no route.
 
 **Routing**: Docker gives the container its usual gateway (`docker_gwbridge` on Swarm); without one, its embedded DNS
 server refuses to resolve public names. tslink's veth carries only tailscaled's own traffic: tailscaled marks its

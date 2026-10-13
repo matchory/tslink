@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A container could not reach its own name: Docker lists the address it
+  assigns on a tslink network in the container's `/etc/hosts`, but tslink
+  never configured it. tslink now puts it on the container's veth as a /32.
+  A RabbitMQ node resolved its own name to that address and failed to start.
+
 ### Security
 
 - `tslink diag --preflight` also checks the other containers of a stack that

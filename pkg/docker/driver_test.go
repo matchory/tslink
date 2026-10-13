@@ -160,6 +160,35 @@ func TestCreateEndpointUnknownNetwork(t *testing.T) {
 	}
 }
 
+// CreateEndpoint keeps the address Docker's IPAM assigned, which Join puts on
+// the container: Docker lists it in the container's /etc/hosts.
+func TestCreateEndpointKeepsIPAMAddress(t *testing.T) {
+	td := newTestDriver(t, newFakeDocker())
+	netID := fakeID("net")
+	td.createNetwork(t, netID, map[string]string{"tslink.authkey": "k"})
+
+	for _, tc := range []struct {
+		name  string
+		iface *network.EndpointInterface
+		want  string
+	}{
+		{"assigned", &network.EndpointInterface{Address: "10.42.6.51/24"}, "10.42.6.51"},
+		{"none", nil, ""},
+		{"empty", &network.EndpointInterface{}, ""},
+	} {
+		epID := fakeID(tc.name)
+		if _, err := td.CreateEndpoint(
+			&network.CreateEndpointRequest{NetworkID: netID, EndpointID: epID, Interface: tc.iface},
+		); err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		ep, _ := td.endpoint(epID)
+		if ep.IPAMAddress != tc.want {
+			t.Errorf("%s: IPAMAddress %q, want %q", tc.name, ep.IPAMAddress, tc.want)
+		}
+	}
+}
+
 // Join must not wait for Tailscale, which can take a minute to come up: with
 // the container's info already known it starts Tailscale in the background.
 func TestJoinDoesNotBlockOnTailscale(t *testing.T) {

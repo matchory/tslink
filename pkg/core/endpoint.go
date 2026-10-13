@@ -38,6 +38,7 @@ type Endpoint struct {
 	SandboxKey  string // Container's network namespace path, stored during Join
 	DataDir     string // Base data directory for state
 	SharedDir   string // Directory shared between hosts; empty for none
+	IPAMAddress string // Docker's IPAM address for the endpoint; set before Join, then fixed
 
 	claims           *StateClaims // The driver's state directory claims
 	supervisor       *tailscale.DaemonSupervisor
@@ -255,6 +256,8 @@ func (e *Endpoint) Join(sandboxKey string) (*network.JoinResponse, error) {
 		}
 		return nil, fmt.Errorf("failed to route tailscaled via veth: %w", err)
 	}
+
+	e.addIPAMAddress(sandboxKey, vethContainer)
 
 	// Fail closed: tailnet traffic must not fall through to the host's tailscaled
 	if err := netutil.SetupTailnetBlackhole(sandboxKey); err != nil {
@@ -706,6 +709,18 @@ func (e *Endpoint) Stop() error {
 	}
 
 	return nil
+}
+
+// addIPAMAddress puts Docker's IPAM address for the endpoint on the
+// container's veth. Docker lists it in the container's /etc/hosts, and a
+// process resolving its own name to it must reach itself.
+func (e *Endpoint) addIPAMAddress(sandboxKey, vethContainer string) {
+	if e.IPAMAddress == "" {
+		return
+	}
+	if err := netutil.AddIPAMAddress(sandboxKey, vethContainer, e.IPAMAddress); err != nil {
+		logger.Warnf("Failed to add IPAM address %s to the container: %v", e.IPAMAddress, err)
+	}
 }
 
 // startSupervisor starts the supervisor and waits for the node's Tailscale

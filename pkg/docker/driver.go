@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"runtime/pprof"
 	"slices"
 	"strings"
@@ -205,6 +206,15 @@ func (d *Driver) CreateEndpoint(
 	endpoint, err := core.NewEndpoint(req.EndpointID, net, opts, d.config, d.claims)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create endpoint: %w", err)
+	}
+
+	if req.Interface != nil && req.Interface.Address != "" {
+		prefix, err := netip.ParsePrefix(req.Interface.Address)
+		if err != nil {
+			logger.Warnf("Ignoring IPAM address %q: %v", req.Interface.Address, err)
+		} else {
+			endpoint.IPAMAddress = prefix.Addr().String()
+		}
 	}
 
 	d.endpoints[req.EndpointID] = endpoint

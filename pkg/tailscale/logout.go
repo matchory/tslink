@@ -130,22 +130,22 @@ var runLogout = func(ctx context.Context, tailscaledBin, workDir, socket string)
 	defer cancel(nil)
 
 	// --port=0: the plugin shares the host's network, where 41641 may be taken
-	daemon := exec.CommandContext(ctx, tailscaledBin,
+	tailscaled := exec.CommandContext(ctx, tailscaledBin,
 		"--state="+filepath.Join(workDir, "tailscaled.state"),
 		"--statedir="+workDir,
 		"--socket="+socket,
 		"--tun=userspace-networking",
 		"--port=0",
 	)
-	daemon.Env = withoutAuthKey(os.Environ())
-	if err := daemon.Start(); err != nil {
+	tailscaled.Env = withoutAuthKey(os.Environ())
+	if err := tailscaled.Start(); err != nil {
 		return fmt.Errorf("failed to start tailscaled: %w", err)
 	}
 	exited := make(chan struct{})
 	go func() {
 		defer close(exited)
 		// Killed below once the logout is done: its exit status says nothing
-		if err := daemon.Wait(); err != nil && ctx.Err() == nil {
+		if err := tailscaled.Wait(); err != nil && ctx.Err() == nil {
 			logger.Debugf("tailscaled for logout exited: %v", err)
 		}
 		cancel(errLogoutDaemonExited)

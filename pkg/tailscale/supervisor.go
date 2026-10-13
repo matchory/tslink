@@ -229,25 +229,25 @@ func (s *DaemonSupervisor) Drained() bool {
 // Readiness reports how far the node is from serving what its container asks
 // for. A daemon not started, or restarting, is starting.
 func (s *DaemonSupervisor) Readiness(ctx context.Context) Readiness {
-	daemon := s.getDaemon()
-	if daemon == nil || !daemon.IsRunning() {
+	d := s.getDaemon()
+	if d == nil || !d.IsRunning() {
 		return ReadyStarting
 	}
-	return daemon.readiness(ctx)
+	return d.readiness(ctx)
 }
 
 // WaitForIP waits for the daemon to get a Tailscale IP, or ctx to be done.
 // Delegates to the underlying daemon.
 func (s *DaemonSupervisor) WaitForIP(ctx context.Context) (*Status, error) {
 	s.mu.RLock()
-	daemon := s.daemon
+	d := s.daemon
 	s.mu.RUnlock()
 
-	if daemon == nil {
+	if d == nil {
 		return nil, errors.New("no daemon running")
 	}
 
-	return daemon.WaitForIP(ctx)
+	return d.WaitForIP(ctx)
 }
 
 // getDaemon returns the current daemon (may be nil if not running).
@@ -412,22 +412,22 @@ func (s *DaemonSupervisor) startDaemon() error {
 	if err := s.ctx.Err(); err != nil {
 		return err
 	}
-	daemon, err := newDaemon(s.cfg)
+	d, err := newDaemon(s.cfg)
 	if err != nil {
 		return fmt.Errorf("failed to create daemon: %w", err)
 	}
 
 	// Stopping the supervisor aborts the start, and its login. Once started,
 	// the daemon's own context lets Stop take tailscaled down gracefully.
-	stop := context.AfterFunc(s.ctx, daemon.cancel)
-	err = s.start(daemon)
+	stop := context.AfterFunc(s.ctx, d.cancel)
+	err = s.start(d)
 	stop()
 	if err != nil {
 		return fmt.Errorf("failed to start daemon: %w", err)
 	}
 
 	s.mu.Lock()
-	s.daemon = daemon
+	s.daemon = d
 	s.mu.Unlock()
 
 	return nil
@@ -436,12 +436,12 @@ func (s *DaemonSupervisor) startDaemon() error {
 // stopDaemon stops the current daemon if running.
 func (s *DaemonSupervisor) stopDaemon() {
 	s.mu.Lock()
-	daemon := s.daemon
+	d := s.daemon
 	s.daemon = nil
 	s.mu.Unlock()
 
-	if daemon != nil {
-		if err := daemon.Stop(); err != nil {
+	if d != nil {
+		if err := d.Stop(); err != nil {
 			logger.Warnf("Error stopping daemon: %v", err)
 		}
 	}
@@ -456,11 +456,11 @@ var errHostEndpointsChanged = errors.New("host endpoints changed")
 // Returns nil if context was cancelled (clean shutdown).
 // Returns error if daemon exited unexpectedly.
 func (s *DaemonSupervisor) waitForExit() error {
-	daemon := s.getDaemon()
-	if daemon == nil {
+	d := s.getDaemon()
+	if d == nil {
 		return errors.New("daemon is nil")
 	}
-	exited := daemon.exitedChan()
+	exited := d.exitedChan()
 	if exited == nil {
 		return errors.New("daemon process not started")
 	}
@@ -485,28 +485,28 @@ func (s *DaemonSupervisor) waitForExit() error {
 		case <-ticker.C:
 			if time.Since(lastCheck) >= tm.hostEndpointsCheckInterval {
 				lastCheck = time.Now()
-				if s.hostEndpointsChanged(daemon) {
+				if s.hostEndpointsChanged(d) {
 					s.stopDaemon()
 					return errHostEndpointsChanged
 				}
 			}
 
-			s.checkLogin(daemon, &login)
+			s.checkLogin(d, &login)
 		}
 	}
 }
 
 // checkLogin logs the daemon's node in again once login observes it is
 // logged out, as when its device was deleted or expired.
-func (s *DaemonSupervisor) checkLogin(daemon *daemon, login *loginWatch) {
-	if !login.observe(daemon.LoggedOut()) {
+func (s *DaemonSupervisor) checkLogin(d *daemon, login *loginWatch) {
+	if !login.observe(d.LoggedOut()) {
 		return
 	}
 	logger.Warnf(
 		"Endpoint %s: node is logged out, logging in again",
 		stringid.TruncateID(s.cfg.EndpointID),
 	)
-	if err := daemon.Reauthenticate(); err != nil {
+	if err := d.Reauthenticate(); err != nil {
 		logger.Errorf(
 			"Endpoint %s: logging in again failed: %v",
 			stringid.TruncateID(s.cfg.EndpointID),
@@ -521,7 +521,7 @@ func (s *DaemonSupervisor) checkLogin(daemon *daemon, login *loginWatch) {
 // drained Service backend: the node is on its way out, and DrainAndWait may
 // be waiting on this very daemon for control to fetch the drain. Restarting
 // it would strand that wait with no daemon to wait on.
-func (s *DaemonSupervisor) hostEndpointsChanged(daemon *daemon) bool {
+func (s *DaemonSupervisor) hostEndpointsChanged(d *daemon) bool {
 	if s.cfg.HostEndpoints == nil || s.cfg.gate.drained.Load() {
 		return false
 	}
@@ -534,13 +534,13 @@ func (s *DaemonSupervisor) hostEndpointsChanged(daemon *daemon) bool {
 		)
 		return false
 	}
-	if slices.Equal(eps, daemon.HostEndpoints()) {
+	if slices.Equal(eps, d.HostEndpoints()) {
 		return false
 	}
 	logger.Infof(
 		"Endpoint %s: host endpoints changed from %v to %v, restarting tailscaled",
 		stringid.TruncateID(s.cfg.EndpointID),
-		daemon.HostEndpoints(),
+		d.HostEndpoints(),
 		eps,
 	)
 	return true

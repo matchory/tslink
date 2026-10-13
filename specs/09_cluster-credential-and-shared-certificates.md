@@ -299,7 +299,7 @@ Key files:
 - `pkg/tailscale/daemon.go` — `DaemonConfig.AuthKey` is a function, so a re-login reads the current file
 - `pkg/tailscale/certs.go` — certs link, ACME account key, lease, requesting the certificate, and configuring the
   Service once certified
-- `pkg/tailscale/daemon.go` — tailscaled's own mount namespace and `resolv.conf`
+- `pkg/tailscale/command.go` — tailscaled's own mount namespace and `resolv.conf`
 - `pkg/tailscale/warnings.go` — blocked renewals and certificates close to expiry; `pkg/core/status.go` writes them
   to the status file, `pkg/diag` lists them
 - `pkg/core/gc.go` — collects the certificate directory, including tailscaled's `<file>.tmp<digits>` files

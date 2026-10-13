@@ -536,7 +536,7 @@ func (e *Endpoint) GetSandboxKey() string {
 // up, and reapplies Join's setup of the container's veth, which an older
 // version may not have done in full.
 func (e *Endpoint) Recover(sandboxKey string) error {
-	vethHost, vethContainer := "veth"+e.ID[:8], "veth"+e.ID[:8]+"c"
+	vethHost, vethContainer := netutil.VethNames(e.ID[:8])
 	// Join may have picked another subnet than the preferred one
 	hostVethIP, err := netutil.VethIPv4(vethHost)
 	if err != nil {

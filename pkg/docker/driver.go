@@ -6,10 +6,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/netip"
 	"runtime/pprof"
 	"slices"
-	"strings"
 	"sync"
 	"time"
 
@@ -43,6 +43,7 @@ type Driver struct {
 	runTailscale   func(e *core.Endpoint, ctx context.Context, info *core.ContainerInfo)
 	leaveEndpoint  func(e *core.Endpoint) error
 	stopEndpoint   func(e *core.Endpoint) error
+	drainService   func(e *core.Endpoint)
 
 	// Installs (true) or removes (false) the host's tailnet isolation, given
 	// the interface names of Docker's bridge networks
@@ -113,6 +114,7 @@ func newDriver(cfg *core.Config, docker dockerAPI) *Driver {
 		runTailscale:   (*core.Endpoint).RunTailscale,
 		leaveEndpoint:  (*core.Endpoint).Leave,
 		stopEndpoint:   (*core.Endpoint).Stop,
+		drainService:   (*core.Endpoint).DrainService,
 		hostIsolation:  applyHostIsolation,
 		ctx:            ctx,
 		cancel:         cancel,
@@ -380,19 +382,13 @@ func (d *Driver) Shutdown(ctx context.Context) error {
 	// Cancel internal context to stop event watcher and pending operations
 	d.cancel()
 
-	// Stop all endpoints
-	d.mu.Lock()
-	endpoints := make([]*core.Endpoint, 0, len(d.endpoints))
-	for _, ep := range d.endpoints {
-		endpoints = append(endpoints, ep)
-	}
-	d.mu.Unlock()
+	endpoints := d.endpointList()
 
 	// tailscaled stops with the plugin. Drain Service backends first, so
 	// callers use other nodes' backends until the plugin is back.
 	var drains sync.WaitGroup
 	for _, ep := range endpoints {
-		drains.Go(ep.DrainService)
+		drains.Go(func() { d.drainService(ep) })
 	}
 	drains.Wait()
 	if len(endpoints) > 0 {
@@ -672,23 +668,25 @@ func (d *Driver) onContainerStop(_ string, inspected *container.InspectResponse)
 		endpoint, ok := d.endpoints[settings.EndpointID]
 		d.mu.RUnlock()
 		if ok {
-			d.wg.Go(endpoint.DrainService)
+			d.wg.Go(func() { d.drainService(endpoint) })
 		}
 	}
+}
+
+// endpointList returns the driver's endpoints, for calling their methods
+// after driver.mu is released.
+func (d *Driver) endpointList() []*core.Endpoint {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return slices.Collect(maps.Values(d.endpoints))
 }
 
 // collectGarbage removes state and sockets of endpoints that are gone without
 // a Leave, as after a host crash. It runs once recovery knows every endpoint,
 // and after each watchdog scan.
 func (d *Driver) collectGarbage(ctx context.Context) {
-	d.mu.RLock()
-	endpoints := make([]*core.Endpoint, 0, len(d.endpoints))
-	for _, ep := range d.endpoints {
-		endpoints = append(endpoints, ep)
-	}
-	d.mu.RUnlock()
-
 	// Endpoint methods take the endpoint's lock: never under driver.mu
+	endpoints := d.endpointList()
 	state := make(map[string]bool, len(endpoints))
 	sockets := make(map[string]bool, len(endpoints))
 	for _, ep := range endpoints {
@@ -904,18 +902,7 @@ func (d *Driver) inspectContainer(
 		return nil, "", errors.New("container has no sandbox key (not fully started?)")
 	}
 
-	// Parse container info for Tailscale config
-	name := strings.TrimPrefix(containerInfo.Container.Name, "/")
-
-	labels := make(map[string]string)
-	if containerInfo.Container.Config != nil && containerInfo.Container.Config.Labels != nil {
-		labels = containerInfo.Container.Config.Labels
-	}
-
-	tsInfo := parseContainerInfo(name, labels)
-	if containerInfo.Container.HostConfig != nil {
-		tsInfo.DNS = containerInfo.Container.HostConfig.DNS
-	}
+	tsInfo := inspectedContainerInfo(&containerInfo.Container)
 	tsInfo.NetworkStack = networkResult.Network.Labels[core.StackLabel]
 	return tsInfo, settings.SandboxKey, nil
 }
@@ -973,7 +960,7 @@ func (d *Driver) recoverEndpoint(
 		delete(d.endpoints, endpointID)
 		d.mu.Unlock()
 		// Give the state directory up: the container's next endpoint needs it
-		if stopErr := endpoint.Stop(); stopErr != nil {
+		if stopErr := d.stopEndpoint(endpoint); stopErr != nil {
 			logger.Warnf(
 				"recoverEndpoint: failed to stop endpoint %s: %v",
 				endpointID[:12],

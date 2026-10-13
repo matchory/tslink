@@ -283,18 +283,7 @@ func handleConnect(
 
 	logger.Debugf("Container %s has endpoint ID %s", containerID[:12], endpointID[:12])
 
-	// Parse container info
-	name := strings.TrimPrefix(info.Container.Name, "/")
-
-	labels := make(map[string]string)
-	if info.Container.Config != nil && info.Container.Config.Labels != nil {
-		labels = info.Container.Config.Labels
-	}
-
-	containerInfo := parseContainerInfo(name, labels)
-	if info.Container.HostConfig != nil {
-		containerInfo.DNS = info.Container.HostConfig.DNS
-	}
+	containerInfo := inspectedContainerInfo(&info.Container)
 
 	// The network's stack decides which tasks may use it
 	callCtx, cancel = context.WithTimeout(ctx, dockerCallTimeout)
@@ -364,6 +353,20 @@ func isStopSignal(signal, stopSignal string) bool {
 		name = "SIG" + name
 	}
 	return unix.SignalNum(name) == syscall.Signal(n)
+}
+
+// inspectedContainerInfo returns the Tailscale configuration of an inspected
+// container: from its name and labels, and its DNS servers.
+func inspectedContainerInfo(c *container.InspectResponse) *core.ContainerInfo {
+	labels := map[string]string{}
+	if c.Config != nil && c.Config.Labels != nil {
+		labels = c.Config.Labels
+	}
+	info := parseContainerInfo(strings.TrimPrefix(c.Name, "/"), labels)
+	if c.HostConfig != nil {
+		info.DNS = c.HostConfig.DNS
+	}
+	return info
 }
 
 // parseContainerInfo extracts tslink.* labels into structured ContainerInfo.

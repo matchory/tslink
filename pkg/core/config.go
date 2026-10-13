@@ -218,34 +218,14 @@ func ParseNetworkOptions(opts map[string]any) NetworkOptions {
 		}
 	}
 
-	if v, ok := genericOpts["tslink.authkey"]; ok {
-		if s, ok := v.(string); ok {
-			options.AuthKey = s
-		}
+	options.AuthKey, _ = stringOption(genericOpts, "tslink.authkey")
+	if s, ok := stringOption(genericOpts, MTUOption); ok {
+		options.MTU = ParseMTU(s)
 	}
-
-	if v, ok := genericOpts[MTUOption]; ok {
-		if s, ok := v.(string); ok {
-			options.MTU = ParseMTU(s)
-		}
-	}
-
-	if v, ok := genericOpts[LoginServerOption]; ok {
-		if s, ok := v.(string); ok {
-			options.LoginServer = s
-		}
-	}
-
-	if v, ok := genericOpts[EphemeralOption]; ok {
-		if s, ok := v.(string); ok {
-			options.Ephemeral = s
-		}
-	}
-
-	if v, ok := genericOpts["tslink.tags"]; ok {
-		if s, ok := v.(string); ok {
-			options.Tags = ParseTags(s)
-		}
+	options.LoginServer, _ = stringOption(genericOpts, LoginServerOption)
+	options.Ephemeral, _ = stringOption(genericOpts, EphemeralOption)
+	if s, ok := stringOption(genericOpts, "tslink.tags"); ok {
+		options.Tags = ParseTags(s)
 	}
 
 	return options
@@ -265,12 +245,12 @@ func ParseTags(s string) []string {
 // ParseEndpointOptions parses endpoint creation options.
 func ParseEndpointOptions(opts map[string]any) EndpointOptions {
 	options := EndpointOptions{}
-
-	if v, ok := opts["tslink.hostname"]; ok {
-		if s, ok := v.(string); ok {
-			options.Hostname = s
-		}
-	}
-
+	options.Hostname, _ = stringOption(opts, "tslink.hostname")
 	return options
+}
+
+// stringOption returns the option key of opts, and whether it is a string.
+func stringOption(opts map[string]any, key string) (string, bool) {
+	s, ok := opts[key].(string)
+	return s, ok
 }

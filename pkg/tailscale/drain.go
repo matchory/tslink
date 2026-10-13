@@ -89,7 +89,7 @@ func (d *Daemon) Drain(service string) error {
 	}
 
 	fetches, _ := d.servicesFetches()
-	if err := d.runServe(context.Background(), "serve-drain", "drain", service); err != nil {
+	if err := d.runServe(d.ctx, "serve-drain", "drain", service); err != nil {
 		return err
 	}
 	g.drain = drainRecord{at: time.Now(), daemon: d, fetches: fetches}
@@ -99,7 +99,7 @@ func (d *Daemon) Drain(service string) error {
 // notAdvertised reports whether the node's prefs do not advertise service;
 // false if tailscaled cannot tell.
 func (d *Daemon) notAdvertised(service string) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(d.ctx, 10*time.Second)
 	defer cancel()
 	prefs, err := d.lc.GetPrefs(ctx)
 	if err != nil {
@@ -183,7 +183,7 @@ func (s *DaemonSupervisor) DrainAndWait(service string) {
 	logger.Infof("Endpoint %s: %s drained, waiting for control to fetch it", id, service)
 	acked := d.waitServicesFetch(after, drain.at.Add(drainAckTimeout))
 	if wait := time.Until(drain.at.Add(drainAckFloor)); wait > 0 {
-		time.Sleep(wait)
+		sleep(d.ctx, wait)
 	}
 	if acked {
 		logger.Infof("Endpoint %s: control fetched the drained %s, %v after the drain",

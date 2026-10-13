@@ -406,7 +406,9 @@ func (d *Daemon) setUp() error {
 	logger.Infof("Checking service: Service=%q", d.config.Service)
 	if d.config.Service != "" {
 		logger.Infof("Waiting for control plane sync before configuring service backend...")
-		time.Sleep(2 * time.Second)
+		if !sleep(d.ctx, 2*time.Second) {
+			return fmt.Errorf("failed to configure Tailscale service: %w", d.ctx.Err())
+		}
 		logger.Infof("Configuring service backend...")
 		if err := d.configureServiceWhenCertified(); err != nil {
 			return fmt.Errorf("failed to configure Tailscale service: %w", err)
@@ -601,10 +603,12 @@ func (d *Daemon) waitForSocket() error {
 			if _, err := os.Stat(d.socketPath); err == nil {
 				logger.Infof("tailscaled socket is ready")
 				// Give it a bit more time to fully initialize
-				time.Sleep(500 * time.Millisecond)
+				if !sleep(d.ctx, 500*time.Millisecond) {
+					return d.ctx.Err()
+				}
 				return nil
 			}
-			time.Sleep(100 * time.Millisecond)
+			sleep(ctx, 100*time.Millisecond)
 		}
 	}
 }
@@ -662,4 +666,17 @@ func killError(err error) error {
 		return nil
 	}
 	return err
+}
+
+// sleep waits for d, or until ctx is done. It reports whether it slept the
+// whole time.
+func sleep(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
 }

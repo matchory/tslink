@@ -135,7 +135,7 @@ func (d *Daemon) configureServiceBackend(advertise bool) error {
 
 	// Configure each endpoint
 	for i, ep := range d.config.Endpoints {
-		if err := d.configureServeEndpoint(ep); err != nil {
+		if err := d.configureServeEndpoint(d.ctx, ep); err != nil {
 			return fmt.Errorf("failed to configure endpoint %d (%s:%s): %w",
 				i, ep.Proto, ep.Port, err)
 		}
@@ -143,20 +143,15 @@ func (d *Daemon) configureServiceBackend(advertise bool) error {
 
 	if !advertise {
 		// "tailscale serve --service" advertises the Service by itself
-		return d.runServe(context.Background(), "serve-unadvertise", "drain", d.config.Service)
+		return d.runServe(d.ctx, "serve-unadvertise", "drain", d.config.Service)
 	}
-	return d.runAdvertise(d.config.Service)
+	return d.runAdvertise(d.ctx, d.config.Service)
 }
 
 // runAdvertise runs "tailscale serve advertise" and notes that the backend
 // was advertised. The caller holds the gate's lock.
-func (d *Daemon) runAdvertise(service string) error {
-	if err := d.runServe(
-		context.Background(),
-		"serve-advertise",
-		"advertise",
-		service,
-	); err != nil {
+func (d *Daemon) runAdvertise(ctx context.Context, service string) error {
+	if err := d.runServe(ctx, "serve-advertise", "advertise", service); err != nil {
 		return err
 	}
 	d.config.gate.advertised.Store(true)
@@ -181,7 +176,7 @@ func (d *Daemon) advertise(service string) error {
 	if d.isDrained() {
 		return errDrained
 	}
-	return d.runAdvertise(service)
+	return d.runAdvertise(d.ctx, service)
 }
 
 // configureDirectServe runs "tailscale serve" without --service flag to configure
@@ -230,7 +225,7 @@ func (d *Daemon) configureDirectServeEndpoint(ep ServeEndpoint) error {
 	}
 	args = append([]string{"--socket=" + d.socketPath}, args...)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(d.ctx, 30*time.Second)
 	defer cancel()
 
 	// Use streaming to see output as it arrives
@@ -247,7 +242,7 @@ func (d *Daemon) configureDirectServeEndpoint(ep ServeEndpoint) error {
 
 // configureServeEndpoint configures a single serve endpoint for a service backend.
 // Supports L3 (tun), L4 (tcp, tls-terminated-tcp), and L7 (http, https).
-func (d *Daemon) configureServeEndpoint(ep ServeEndpoint) error {
+func (d *Daemon) configureServeEndpoint(ctx context.Context, ep ServeEndpoint) error {
 	logger.Debugf("configureServeEndpoint: proto=%s port=%s target=%s path=%s service=%s",
 		ep.Proto, ep.Port, ep.Target, ep.Path, d.config.Service)
 
@@ -262,7 +257,7 @@ func (d *Daemon) configureServeEndpoint(ep ServeEndpoint) error {
 
 	d.serveDebugf("Running: %s %v\n", d.config.TailscaleBin, args)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
 	// Use streaming to see output as it arrives

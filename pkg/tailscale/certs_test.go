@@ -240,8 +240,8 @@ func TestServesWeb(t *testing.T) {
 // "tailscale cert" runs through the CLI seam on the daemon's socket, without
 // logging its output, which holds the private key.
 func TestRequestCertRunsCLI(t *testing.T) {
-	setDuration(t, &certPollInterval, 10*time.Millisecond)
 	d, dir := newCertDaemon(t, &fakeCLI{})
+	setTiming(&d.config, func(tm *timing) { tm.certPollInterval = 10 * time.Millisecond })
 	var calls []cliCall
 	d.runCLI = func(_ context.Context, c cliCall) (cliOutput, error) {
 		calls = append(calls, c)
@@ -366,9 +366,9 @@ func TestCertExpiryWatcherStartsOnce(t *testing.T) {
 // Configuring the Service again while it waits for its certificate starts
 // no second waiter.
 func TestCertWaiterStartsOnce(t *testing.T) {
-	setDuration(t, &certPollInterval, 10*time.Millisecond)
 	fake := &fakeCLI{}
 	d, dir := newDomainDaemon(t, fake)
+	setTiming(&d.config, func(tm *timing) { tm.certPollInterval = 10 * time.Millisecond })
 	other, err := tryLease(dir, webDomain, "other")
 	if err != nil {
 		t.Fatal(err)
@@ -431,9 +431,9 @@ func TestStopWaitsForConfigurationAfterCert(t *testing.T) {
 // Once the wait for the certificate ended, configuring the Service again
 // without a valid certificate, as Reauthenticate does, waits for it again.
 func TestCertWaiterStartsAgainAfterItEnded(t *testing.T) {
-	setDuration(t, &certPollInterval, 10*time.Millisecond)
 	fake := &fakeCLI{}
 	d, dir := newDomainDaemon(t, fake)
+	setTiming(&d.config, func(tm *timing) { tm.certPollInterval = 10 * time.Millisecond })
 	other, err := tryLease(dir, webDomain, "other")
 	if err != nil {
 		t.Fatal(err)

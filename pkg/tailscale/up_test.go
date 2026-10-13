@@ -171,10 +171,10 @@ func TestLogInFails(t *testing.T) {
 
 // A login that never gets the node running times out.
 func TestLogInTimesOut(t *testing.T) {
-	setDuration(t, &loginTimeout, time.Second)
 	api := newFakeLocalAPI(t)
 	api.loggedOut()
 	d, _ := loginDaemon(t, api, DaemonConfig{Hostname: "web"})
+	setTiming(&d.config, func(tm *timing) { tm.loginTimeout = time.Second })
 	// Without a key or a node key, tailscaled keeps needing a login
 	if err := d.logIn(false, false); err == nil || !strings.Contains(err.Error(), "timeout") {
 		t.Errorf("err = %v, want a timeout", err)

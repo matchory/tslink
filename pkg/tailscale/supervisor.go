@@ -27,30 +27,12 @@ const (
 	StatusCrashLoop SupervisorStatus = "crash_loop"
 )
 
-// Backoff configuration; variables, so tests can shorten them.
-var (
-	initialBackoff = 100 * time.Millisecond
-	maxBackoff     = 30 * time.Second
-
+const (
 	// Crash loop detection: crashLoopThreshold crashes in crashLoopWindow.
 	crashLoopWindow = 30 * time.Second
 
-	// Pause after a crash loop before trying again; the container keeps
-	// running, so giving up would leave it without its identity for good.
-	crashLoopCooldown = 5 * time.Minute
-
-	// Health check interval.
-	healthCheckInterval = 5 * time.Second
-
-	// hostEndpointsCheckInterval is how often the supervisor compares the
-	// endpoints on the host tailscaled advertises with the current ones.
-	hostEndpointsCheckInterval = 60 * time.Second
-
 	// Minimum uptime before backoff is reset (prevents rapid restart loops from resetting backoff).
 	minUptimeForBackoffReset = 30 * time.Second
-
-	// Startup jitter to prevent thundering herd on host reboot (0-500ms).
-	maxStartupJitter = 500 * time.Millisecond
 )
 
 const crashLoopThreshold = 5
@@ -285,7 +267,7 @@ func (s *DaemonSupervisor) signalStartup(err error) {
 // applyStartupJitter adds random delay to prevent thundering herd on mass restart.
 func (s *DaemonSupervisor) applyStartupJitter() {
 	//nolint:gosec // jitter needs no crypto randomness
-	jitter := time.Duration(rand.Int64N(int64(maxStartupJitter)))
+	jitter := time.Duration(rand.Int64N(int64(s.cfg.times().maxStartupJitter)))
 	if jitter > 0 {
 		logger.Debugf("Applying startup jitter: %v", jitter)
 		sleep(s.ctx, jitter)
@@ -402,7 +384,7 @@ func (s *DaemonSupervisor) waitBeforeRestart() bool {
 		logger.Errorf(
 			"Crash loop detected for endpoint %s (5+ crashes in 30s), retrying in %v",
 			stringid.TruncateID(s.cfg.EndpointID),
-			crashLoopCooldown,
+			s.cfg.times().crashLoopCooldown,
 		)
 		s.signalStartup(errors.New("crash loop detected"))
 		s.stopDaemon()
@@ -410,7 +392,7 @@ func (s *DaemonSupervisor) waitBeforeRestart() bool {
 		select {
 		case <-s.ctx.Done():
 			return false
-		case <-time.After(crashLoopCooldown):
+		case <-time.After(s.cfg.times().crashLoopCooldown):
 		}
 		s.mu.Lock()
 		s.crashTimes = s.crashTimes[:0]
@@ -488,7 +470,7 @@ func (s *DaemonSupervisor) waitForExit() error {
 	exited := daemon.exited
 	daemon.mu.RUnlock()
 
-	ticker := time.NewTicker(healthCheckInterval)
+	ticker := time.NewTicker(s.cfg.times().healthCheckInterval)
 	defer ticker.Stop()
 	var login loginWatch
 	lastCheck := time.Now()
@@ -503,7 +485,7 @@ func (s *DaemonSupervisor) waitForExit() error {
 			return errors.New("daemon process exited")
 
 		case <-ticker.C:
-			if time.Since(lastCheck) >= hostEndpointsCheckInterval {
+			if time.Since(lastCheck) >= s.cfg.times().hostEndpointsCheckInterval {
 				lastCheck = time.Now()
 				if s.hostEndpointsChanged(daemon) {
 					s.stopDaemon()
@@ -602,14 +584,14 @@ func (s *DaemonSupervisor) nextBackoff() time.Duration {
 
 	if s.backoffAttempt == 0 {
 		s.backoffAttempt = 1
-		return initialBackoff
+		return s.cfg.times().initialBackoff
 	}
 
 	// Exponential backoff: initialBackoff * 2^attempt. The attempt stops
 	// growing at the cap: a larger shift would overflow
-	delay := initialBackoff << s.backoffAttempt
-	if delay >= maxBackoff {
-		return maxBackoff
+	delay := s.cfg.times().initialBackoff << s.backoffAttempt
+	if delay >= s.cfg.times().maxBackoff {
+		return s.cfg.times().maxBackoff
 	}
 	s.backoffAttempt++
 	return delay

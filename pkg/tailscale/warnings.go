@@ -33,14 +33,12 @@ const (
 
 var certLogDomain = regexp.MustCompile(`cert\("([^"]+)"\): `)
 
-// How often the node's log repeats a warning per domain, how close to expiry
-// a certificate is warned about, and how often that is checked. Variables for
-// tests.
-var (
+// How often the node's log repeats a warning per domain, and how close to
+// expiry a certificate is warned about.
+const (
 	renewalWarnEvery    = time.Hour
 	certExpiryWarnEvery = 24 * time.Hour
 	certExpiryMargin    = 14 * 24 * time.Hour
-	certCheckInterval   = time.Hour
 )
 
 // warnLimiter lets a warning through once per period and key.
@@ -103,7 +101,7 @@ func (d *Daemon) handleCertLine(line string) {
 // watchCertExpiry checks the certificate for domain in dir at once and then
 // every certCheckInterval, until the daemon stops.
 func (d *Daemon) watchCertExpiry(dir, domain string) {
-	poll(d.ctx, certCheckInterval, func() bool {
+	poll(d.ctx, d.config.times().certCheckInterval, func() bool {
 		d.checkCertExpiry(dir, domain, time.Now())
 		return false
 	})

@@ -171,9 +171,6 @@ func (d *Daemon) waitBackendState() string {
 	return state
 }
 
-// loginTimeout bounds a login, from the settings to a running node.
-var loginTimeout = 60 * time.Second
-
 // logIn logs the node in as "tailscale up" does: it applies the settings and
 // tags, starts tailscaled's login and waits until the node runs. Without
 // withKey, it relies on the node still having its node key. With
@@ -184,7 +181,7 @@ var loginTimeout = 60 * time.Second
 // single-use key with the node's tags.
 func (d *Daemon) logIn(withKey, forceReauth bool) error {
 	logger.Infof("Bringing up Tailscale for endpoint %s", d.config.EndpointID)
-	ctx, cancel := context.WithTimeout(d.ctx, loginTimeout)
+	ctx, cancel := context.WithTimeout(d.ctx, d.config.times().loginTimeout)
 	defer cancel()
 
 	// Watch first, or the notifications the login causes may be missed

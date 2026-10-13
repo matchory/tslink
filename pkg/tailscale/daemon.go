@@ -30,10 +30,6 @@ const (
 	tailscaledLogMaxBytes = 10 << 20
 )
 
-// stopGrace is how long Stop waits for tailscaled to exit on SIGTERM before
-// it kills it; a variable, so tests can shorten it.
-var stopGrace = 5 * time.Second
-
 // DaemonConfig holds configuration for a tailscaled instance.
 type DaemonConfig struct {
 	EndpointID    string
@@ -63,7 +59,8 @@ type DaemonConfig struct {
 	// if message is empty; nil ignores warnings
 	Warn func(key, message string)
 
-	gate *serviceGate // Shared by the daemons of one supervisor; NewDaemon creates one if nil
+	gate   *serviceGate // Shared by the daemons of one supervisor; NewDaemon creates one if nil
+	timing *timing      // Shared like gate; nil for defaultTiming
 }
 
 // Daemon manages a tailscaled process.
@@ -275,7 +272,7 @@ func (d *Daemon) startProcess(cmd *exec.Cmd) error {
 	// and is killed only if it is still running stopGrace later. unshare, sh
 	// and nsenter exec each other, so the signal reaches tailscaled itself
 	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
-	cmd.WaitDelay = stopGrace
+	cmd.WaitDelay = d.config.times().stopGrace
 
 	// Both streams go through one pipe to one reader. Wait returns only once
 	// exec has copied everything tailscaled wrote into it: a pipe from
@@ -646,8 +643,8 @@ func (d *Daemon) killProcess(cmd *exec.Cmd) {
 
 	select {
 	case <-waitDone:
-	case <-time.After(stopGrace):
-		logger.Warnf("tailscaled did not exit within %v, killing it", stopGrace)
+	case <-time.After(d.config.times().stopGrace):
+		logger.Warnf("tailscaled did not exit within %v, killing it", d.config.times().stopGrace)
 		if err := killError(cmd.Process.Kill()); err != nil {
 			logger.Warnf("Failed to kill tailscaled: %v", err)
 		}

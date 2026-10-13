@@ -39,14 +39,6 @@ const (
 	protoHTTPS         = "https"
 )
 
-// certPollInterval spaces the checks for a certificate, and certDomainGrace is
-// how long the lease holder waits, unadvertised, for control to make the
-// Service's name one of its certificate domains. Variables for tests.
-var (
-	certPollInterval = 5 * time.Second
-	certDomainGrace  = 30 * time.Second
-)
-
 // certDomainError is what "tailscale cert" fails with for a name that is not
 // among the node's certificate domains.
 const certDomainError = "invalid domain"
@@ -252,12 +244,12 @@ func (d *Daemon) requestCert(dir, domain string) error {
 				lastErr = err.Error()
 			}
 			if !advertised && strings.Contains(err.Error(), certDomainError) &&
-				time.Since(start) >= certDomainGrace {
+				time.Since(start) >= d.config.times().certDomainGrace {
 				logger.Warnf(
 					"Control has not made %s a certificate domain of %s within %v: advertising %s",
 					domain,
 					d.config.EndpointID,
-					certDomainGrace,
+					d.config.times().certDomainGrace,
 					d.config.Service,
 				)
 				if err := d.advertise(d.config.Service); err != nil {
@@ -266,7 +258,7 @@ func (d *Daemon) requestCert(dir, domain string) error {
 				advertised = true
 			}
 		}
-		if !sleep(d.ctx, certPollInterval) {
+		if !sleep(d.ctx, d.config.times().certPollInterval) {
 			return d.ctx.Err()
 		}
 	}
@@ -320,7 +312,7 @@ func ignoreDrained(err error) error {
 }
 
 func (d *Daemon) configureServiceAfterCert(dir, domain string) {
-	poll(d.ctx, certPollInterval, func() bool {
+	poll(d.ctx, d.config.times().certPollInterval, func() bool {
 		err := d.configureServiceWithCert(dir, domain)
 		if errors.Is(err, errDrained) {
 			logger.Infof("%s drained for %s: no longer waiting for the certificate for %s",

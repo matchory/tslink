@@ -26,14 +26,6 @@ import (
 // list (ipn/ipnlocal/serve.go, handleC2NVIPServicesGet, in Tailscale 1.102).
 const servicesFetchLog = "c2n: GET /vip-services received"
 
-// How long leaving waits after a drain: at least drainAckFloor, and up to
-// drainAckTimeout for control to fetch the drained Service list. Variables
-// for tests.
-var (
-	drainAckFloor   = time.Second
-	drainAckTimeout = 10 * time.Second
-)
-
 // errDrained stops configuring a Service backend that was drained meanwhile.
 var errDrained = errors.New("service backend is drained")
 
@@ -231,8 +223,8 @@ func (s *DaemonSupervisor) DrainAndWait(service string) {
 	}
 
 	logger.Infof("Endpoint %s: %s drained, waiting for control to fetch it", id, service)
-	acked := d.waitServicesFetch(after, drain.at.Add(drainAckTimeout))
-	if wait := time.Until(drain.at.Add(drainAckFloor)); wait > 0 {
+	acked := d.waitServicesFetch(after, drain.at.Add(s.cfg.times().drainAckTimeout))
+	if wait := time.Until(drain.at.Add(s.cfg.times().drainAckFloor)); wait > 0 {
 		sleep(d.ctx, wait)
 	}
 	if acked {
@@ -241,5 +233,5 @@ func (s *DaemonSupervisor) DrainAndWait(service string) {
 		return
 	}
 	logger.Warnf("Endpoint %s: control did not fetch the drained %s within %v, leaving anyway",
-		id, service, drainAckTimeout)
+		id, service, s.cfg.times().drainAckTimeout)
 }

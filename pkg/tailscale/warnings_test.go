@@ -146,9 +146,9 @@ func TestCertExpiryWarning(t *testing.T) {
 // The watch checks at once and then every certCheckInterval, until the daemon
 // stops.
 func TestWatchCertExpiry(t *testing.T) {
-	setDuration(t, &certCheckInterval, 10*time.Millisecond)
 	const domain, key = "web.example.ts.net", "cert-expiry/web.example.ts.net"
 	d, rec := newWarningDaemon(t)
+	setTiming(&d.config, func(tm *timing) { tm.certCheckInterval = 10 * time.Millisecond })
 	dir := filepath.Join(d.config.StateDir, certsDirName)
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		t.Fatal(err)

@@ -320,3 +320,110 @@ func TestServiceDomainRejectsNonDNSNames(t *testing.T) {
 		t.Errorf("control: serviceDomain() = %v", err)
 	}
 }
+
+// newDomainDaemon is newCertDaemon with a LocalAPI that gives the Service
+// the domain web.example.ts.net.
+func newDomainDaemon(t *testing.T, cli *fakeCLI) (*Daemon, string) {
+	t.Helper()
+	d, dir := newCertDaemon(t, cli)
+	api := newFakeLocalAPI(t)
+	api.set(statusPath, `{"CurrentTailnet":{"MagicDNSSuffix":"example.ts.net"}}`)
+	d.lc = api.client()
+	return d, dir
+}
+
+const webDomain = "web.example.ts.net"
+
+// Configuring the Service again, as Reauthenticate does, starts no second
+// certificate expiry watcher.
+func TestCertExpiryWatcherStartsOnce(t *testing.T) {
+	d, dir := newDomainDaemon(t, &fakeCLI{})
+	writeCert(t, dir, webDomain, webDomain, time.Now().Add(90*24*time.Hour))
+	var mu sync.Mutex
+	checks := 0
+	d.config.Warn = func(key, _ string) {
+		if key == "cert-expiry/"+webDomain {
+			mu.Lock()
+			checks++
+			mu.Unlock()
+		}
+	}
+	for range 2 {
+		if err := d.configureServiceWhenCertified(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := d.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if checks != 1 {
+		t.Errorf("certificate checked %d times, want once: one watcher, checking at once", checks)
+	}
+}
+
+// Configuring the Service again while it waits for its certificate starts
+// no second waiter.
+func TestCertWaiterStartsOnce(t *testing.T) {
+	setDuration(t, &certPollInterval, 10*time.Millisecond)
+	fake := &fakeCLI{}
+	d, dir := newDomainDaemon(t, fake)
+	other, err := tryLease(dir, webDomain, "other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.release()
+	for range 2 {
+		if err := d.configureServiceWhenCertified(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	time.Sleep(30 * time.Millisecond)
+	writeCert(t, dir, webDomain, webDomain, time.Now().Add(90*24*time.Hour))
+	time.Sleep(100 * time.Millisecond)
+	if err := d.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	serves := 0
+	for _, c := range fake.snapshot() {
+		if slices.Contains(c, "--https=443") {
+			serves++
+		}
+	}
+	if serves != 1 {
+		t.Errorf("Service configured %d times once the certificate existed, want once", serves)
+	}
+}
+
+// The configuration once the certificate exists is one of the daemon's
+// goroutines: when Stop returns, it has ended, and released its lease.
+func TestStopWaitsForConfigurationAfterCert(t *testing.T) {
+	cli := &fakeCLI{}
+	d, dir := newDomainDaemon(t, cli)
+	started := make(chan struct{})
+	var once sync.Once
+	d.runCLI = func(ctx context.Context, c cliCall) (cliOutput, error) {
+		if slices.Contains(c.args, "--https=443") {
+			once.Do(func() { close(started) })
+			<-ctx.Done()
+			time.Sleep(100 * time.Millisecond) // The command takes a moment to exit
+			return cliOutput{}, ctx.Err()
+		}
+		return cli.run(ctx, c)
+	}
+	if err := d.configureServiceWhenCertified(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("the Service was not configured to issue its certificate")
+	}
+	if err := d.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, webDomain+".lease")); !os.IsNotExist(err) {
+		t.Errorf("Stop returned before the configuration ended: lease kept (%v)", err)
+	}
+}

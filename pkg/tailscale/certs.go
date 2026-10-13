@@ -290,16 +290,19 @@ func (d *Daemon) configureServiceWhenCertified() error {
 		return err
 	}
 	dir := filepath.Join(d.config.StateDir, certsDirName)
-	d.wg.Go(func() { d.watchCertExpiry(dir, domain) })
+	// Once per daemon: Reauthenticate configures the Service again
+	d.certWatch.Do(func() { d.wg.Go(func() { d.watchCertExpiry(dir, domain) }) })
 	if validCert(dir, domain, time.Now()) {
 		return ignoreDrained(d.configureService())
 	}
-	logger.Infof(
-		"No certificate for %s yet: configuring %s once there is one",
-		domain,
-		d.config.Service,
-	)
-	go d.configureServiceAfterCert(dir, domain)
+	d.certWait.Do(func() {
+		logger.Infof(
+			"No certificate for %s yet: configuring %s once there is one",
+			domain,
+			d.config.Service,
+		)
+		d.wg.Go(func() { d.configureServiceAfterCert(dir, domain) })
+	})
 	return nil
 }
 

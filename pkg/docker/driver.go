@@ -902,8 +902,10 @@ func (d *Driver) inspectContainer(
 		return nil, "", errors.New("container has no sandbox key (not fully started?)")
 	}
 
-	tsInfo := inspectedContainerInfo(&containerInfo.Container)
-	tsInfo.NetworkStack = networkResult.Network.Labels[core.StackLabel]
+	tsInfo := inspectedContainerInfo(
+		&containerInfo.Container,
+		networkResult.Network.Labels[core.StackLabel],
+	)
 	return tsInfo, settings.SandboxKey, nil
 }
 

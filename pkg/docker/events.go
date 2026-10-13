@@ -283,8 +283,6 @@ func handleConnect(
 
 	logger.Debugf("Container %s has endpoint ID %s", containerID[:12], endpointID[:12])
 
-	containerInfo := inspectedContainerInfo(&info.Container)
-
 	// The network's stack decides which tasks may use it
 	callCtx, cancel = context.WithTimeout(ctx, dockerCallTimeout)
 	netInfo, err := cli.NetworkInspect(
@@ -297,7 +295,10 @@ func handleConnect(
 		logger.Errorf("Failed to inspect network %s: %v", networkName, err)
 		return
 	}
-	containerInfo.NetworkStack = netInfo.Network.Labels[core.StackLabel]
+	containerInfo := inspectedContainerInfo(
+		&info.Container,
+		netInfo.Network.Labels[core.StackLabel],
+	)
 
 	// Store in cache
 	cache.Store(endpointID, containerInfo)
@@ -356,8 +357,13 @@ func isStopSignal(signal, stopSignal string) bool {
 }
 
 // inspectedContainerInfo returns the Tailscale configuration of an inspected
-// container: from its name and labels, and its DNS servers.
-func inspectedContainerInfo(c *container.InspectResponse) *core.ContainerInfo {
+// container: from its name and labels, and its DNS servers. networkStack is
+// the stack label of the tslink network, which decides which tasks may use
+// it.
+func inspectedContainerInfo(
+	c *container.InspectResponse,
+	networkStack string,
+) *core.ContainerInfo {
 	labels := map[string]string{}
 	if c.Config != nil && c.Config.Labels != nil {
 		labels = c.Config.Labels
@@ -366,6 +372,7 @@ func inspectedContainerInfo(c *container.InspectResponse) *core.ContainerInfo {
 	if c.HostConfig != nil {
 		info.DNS = c.HostConfig.DNS
 	}
+	info.NetworkStack = networkStack
 	return info
 }
 

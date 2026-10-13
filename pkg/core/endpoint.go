@@ -147,6 +147,11 @@ func vethSlotIPs(slot int) (netip.Addr, netip.Addr) {
 	return host, host.Next()
 }
 
+// vethBaseName is the base name of the endpoint's veth pair (netutil.VethNames).
+func vethBaseName(endpointID string) string {
+	return endpointID[:8]
+}
+
 // generateVethIPs returns the addresses of the endpoint's preferred subnet.
 func generateVethIPs(endpointID string) (string, string) {
 	host, ctr := vethSlotIPs(vethSlot(endpointID))
@@ -204,7 +209,7 @@ func (e *Endpoint) Join(sandboxKey string) (*network.JoinResponse, error) {
 	logger.Infof("Endpoint %s joining with sandbox %s", e.ID, sandboxKey)
 
 	// Create veth pair (blocking network operation - no lock held)
-	vethHost, vethContainer, err := netutil.CreateVethPair(e.ID[:8], e.Network.MTU)
+	vethHost, vethContainer, err := netutil.CreateVethPair(vethBaseName(e.ID), e.Network.MTU)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create veth pair: %w", err)
 	}
@@ -536,7 +541,7 @@ func (e *Endpoint) GetSandboxKey() string {
 // up, and reapplies Join's setup of the container's veth, which an older
 // version may not have done in full.
 func (e *Endpoint) Recover(sandboxKey string) error {
-	vethHost, vethContainer := netutil.VethNames(e.ID[:8])
+	vethHost, vethContainer := netutil.VethNames(vethBaseName(e.ID))
 	// Join may have picked another subnet than the preferred one
 	hostVethIP, err := netutil.VethIPv4(vethHost)
 	if err != nil {

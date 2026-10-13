@@ -10,11 +10,14 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/docker/go-plugins-helpers/network"
+	"github.com/moby/moby/api/types/container"
+	dockernetwork "github.com/moby/moby/api/types/network"
 	dockerclient "github.com/moby/moby/client"
 
 	"github.com/matchory/tslink/pkg/core"
@@ -918,5 +921,55 @@ func TestShutdownStopsWithinDeadline(t *testing.T) {
 		}
 	case <-time.After(drainGrace + 2*time.Second):
 		t.Fatal("Shutdown waited past its deadline for a stop")
+	}
+}
+
+// Shutdown and a stop signal drain through the driver's drainService, and a
+// recovery that fails stops its endpoint through stopEndpoint, as every other
+// caller does: tests that replace them see every call.
+func TestEndpointOpsUseDriverHooks(t *testing.T) {
+	fake := newFakeDocker()
+	netID := fake.addNetwork("net", pluginName, map[string]string{"tslink.authkey": "k"}, nil)
+	recovered := fakeID("recovered")
+	fake.addContainer("web", nil, attachment{"net", netID, recovered})
+	td := newTestDriver(t, fake)
+	var mu sync.Mutex
+	var drained, stopped []string
+	td.drainService = func(e *core.Endpoint) {
+		mu.Lock()
+		defer mu.Unlock()
+		drained = append(drained, e.ID)
+	}
+	td.stopEndpoint = func(e *core.Endpoint) error {
+		mu.Lock()
+		defer mu.Unlock()
+		stopped = append(stopped, e.ID)
+		return nil
+	}
+	td.recoverErr = errors.New("no such netns")
+	if err := td.RecoverEndpoints(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(stopped, []string{recovered}) {
+		t.Errorf("failed recovery stopped %v, want the recovered endpoint", stopped)
+	}
+
+	joined := fakeID("joined")
+	td.join(t, netID, joined, sandbox)
+	td.onContainerStop("web", &container.InspectResponse{
+		NetworkSettings: &container.NetworkSettings{
+			Networks: map[string]*dockernetwork.EndpointSettings{
+				"net": {NetworkID: netID, EndpointID: joined},
+			},
+		},
+	})
+	td.wg.Wait()
+	if err := td.Shutdown(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !slices.Equal(drained, []string{joined, joined}) {
+		t.Errorf("drained %v, want the joined endpoint on its stop and on shutdown", drained)
 	}
 }

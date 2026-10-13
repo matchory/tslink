@@ -67,27 +67,43 @@ func TestStartTailscaleRejectsForeignStack(t *testing.T) {
 	}
 }
 
-// A Service without serve endpoints fails before the endpoint claims or
-// creates a state directory.
-func TestStartTailscaleRejectsServiceWithoutEndpoints(t *testing.T) {
-	dataDir := t.TempDir()
-	claims := NewStateClaims()
-	e := &Endpoint{
-		ID:         "0123456789abcdef",
-		Network:    &Network{ID: "net", AuthKey: "tskey-test"},
-		sandboxKey: "/var/run/docker/netns/test",
-		dataDir:    dataDir,
-		claims:     claims,
-	}
-	err := e.StartTailscale(&ContainerInfo{Hostname: "web", Service: "svc:web"})
-	if _, ok := errors.AsType[permanentError](err); !ok {
-		t.Fatalf("got %v, want a permanent error", err)
-	}
-	if entries, err := os.ReadDir(dataDir); err != nil || len(entries) != 0 {
-		t.Errorf("data directory holds %v (%v), want nothing", entries, err)
-	}
-	if e.StateDir() != "" {
-		t.Errorf("state directory %q, want none", e.StateDir())
+// A Service with an invalid name, or without serve endpoints, fails before
+// the endpoint claims or creates a state directory.
+func TestStartTailscaleRejectsInvalidService(t *testing.T) {
+	serve := []tailscale.ServeEndpoint{{Proto: "https", Port: "443", Target: "8080"}}
+	for _, info := range []ContainerInfo{
+		{Service: "svc:web"},
+		{Service: "web", Endpoints: serve},
+		{Service: "svc", Endpoints: serve},
+		{Service: "svc:", Endpoints: serve},
+		{Service: "svc:-web", Endpoints: serve},
+		{Service: "svc:a.b", Endpoints: serve},
+		{Service: "svc:web_1", Endpoints: serve},
+	} {
+		dataDir := t.TempDir()
+		e := &Endpoint{
+			ID:         "0123456789abcdef",
+			Network:    &Network{ID: "net", AuthKey: "tskey-test"},
+			sandboxKey: "/var/run/docker/netns/test",
+			dataDir:    dataDir,
+			claims:     NewStateClaims(),
+		}
+		info.Hostname = "web"
+		err := e.StartTailscale(&info)
+		if _, ok := errors.AsType[permanentError](err); !ok {
+			t.Errorf("service %q: got %v, want a permanent error", info.Service, err)
+		}
+		if entries, err := os.ReadDir(dataDir); err != nil || len(entries) != 0 {
+			t.Errorf(
+				"service %q: data directory holds %v (%v), want nothing",
+				info.Service,
+				entries,
+				err,
+			)
+		}
+		if e.StateDir() != "" {
+			t.Errorf("service %q: state directory %q, want none", info.Service, e.StateDir())
+		}
 	}
 }
 

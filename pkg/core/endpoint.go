@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/docker/go-plugins-helpers/network"
+	"tailscale.com/tailcfg"
 
 	"github.com/matchory/tslink/pkg/logger"
 	"github.com/matchory/tslink/pkg/netutil"
@@ -278,6 +279,25 @@ func socketPathFor(dataDir, endpointID string) string {
 	return filepath.Join(dataDir, "sock", endpointID[:12]+".sock")
 }
 
+// checkService checks the container's Service, if it has one: a valid name
+// and something to serve on it.
+func checkService(info *ContainerInfo) error {
+	if info.Service == "" {
+		return nil
+	}
+	if err := tailcfg.ServiceName(info.Service).Validate(); err != nil {
+		return fmt.Errorf("invalid %s: %w", ServiceLabel, err)
+	}
+	if len(info.Endpoints) == 0 {
+		return fmt.Errorf(
+			"%s requires at least one %s<port> endpoint",
+			ServiceLabel,
+			ServeLabelPrefix,
+		)
+	}
+	return nil
+}
+
 // StartTailscale starts the Tailscale daemon with the provided container info.
 // This is called by the event handler when container info becomes available.
 // It uses the correct hostname and state directory for identity reuse.
@@ -319,10 +339,8 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 	if err := checkStackScope(info, network, tags); err != nil {
 		return permanentError{err}
 	}
-	if info.Service != "" && len(info.Endpoints) == 0 {
-		return permanentError{
-			errors.New("tslink.service requires at least one tslink.serve.<port> endpoint"),
-		}
+	if err := checkService(info); err != nil {
+		return permanentError{err}
 	}
 	authKey := func() (string, error) { return network.Credential(dataDir) }
 

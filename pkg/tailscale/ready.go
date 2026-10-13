@@ -81,7 +81,7 @@ func (d *Daemon) pendingService(suffix string) Readiness {
 	if d.config.Service == "" || !servesHTTPS(d.config.Endpoints) || suffix == "" {
 		return ReadyServingPending
 	}
-	domain := d.config.Service[len("svc:"):] + "." + suffix
+	domain := d.serviceDomainIn(suffix)
 	if !validCert(filepath.Join(d.config.StateDir, certsDirName), domain, time.Now()) {
 		return ReadyCertificatePending
 	}

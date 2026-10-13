@@ -17,6 +17,8 @@ import (
 	"strings"
 	"time"
 
+	"tailscale.com/tailcfg"
+
 	"github.com/matchory/tslink/pkg/logger"
 )
 
@@ -396,6 +398,12 @@ func servesWeb(endpoints []ServeEndpoint) bool {
 	return false
 }
 
+// serviceDomainIn returns the domain of the endpoint's Service in the tailnet
+// with the MagicDNS suffix suffix.
+func (d *Daemon) serviceDomainIn(suffix string) string {
+	return tailcfg.ServiceName(d.config.Service).WithoutPrefix() + "." + suffix
+}
+
 // serviceDomain returns the Service's DNS name, which its certificate is for.
 func (d *Daemon) serviceDomain() (string, error) {
 	ctx, cancel := context.WithTimeout(d.ctx, 10*time.Second)
@@ -408,7 +416,7 @@ func (d *Daemon) serviceDomain() (string, error) {
 	if suffix == "" {
 		return "", errors.New("tailscale status has no MagicDNS suffix: HTTPS needs MagicDNS")
 	}
-	domain := strings.TrimPrefix(d.config.Service, "svc:") + "." + suffix
+	domain := d.serviceDomainIn(suffix)
 	// The domain names files the plugin writes and deletes as root: the
 	// Service name comes from a label, the suffix from control
 	if !dnsName.MatchString(domain) {

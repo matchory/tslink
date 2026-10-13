@@ -23,8 +23,8 @@ import (
 
 // dockerCallTimeout bounds each Docker API call of the event handlers, which
 // run one at a time: a call Docker does not answer would hold up every event
-// after it. The host isolation's network listing uses it too. A variable for
-// tests.
+// after it. The host isolation's network listing and the inspect that
+// rebuilds a network use it too. A variable for tests.
 var dockerCallTimeout = 10 * time.Second
 
 // ContainerCache caches container info for quick lookup during Join().
@@ -334,6 +334,7 @@ func inspectKilled(
 	defer cancel()
 	info, err := cli.ContainerInspect(ctx, containerID, dockerclient.ContainerInspectOptions{})
 	if err != nil {
+		logger.Debugf("Failed to inspect killed container %s: %v", containerID[:12], err)
 		return nil
 	}
 	return &info.Container

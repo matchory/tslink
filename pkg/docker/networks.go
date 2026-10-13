@@ -3,16 +3,12 @@ package docker
 import (
 	"context"
 	"fmt"
-	"time"
 
 	dockerclient "github.com/moby/moby/client"
 
 	"github.com/matchory/tslink/pkg/core"
 	"github.com/matchory/tslink/pkg/logger"
 )
-
-// networkInspectTimeout bounds the Docker API call that rebuilds a network.
-const networkInspectTimeout = 10 * time.Second
 
 // networkFromInspect rebuilds a network from the options Docker stored when
 // it was created. It is the only place that builds one from inspect data.
@@ -62,7 +58,7 @@ func (d *Driver) networkFor(ctx context.Context, id string) (*core.Network, erro
 	}
 
 	// Outside the lock: the Docker API can take a while
-	ctx, cancel := context.WithTimeout(ctx, networkInspectTimeout)
+	ctx, cancel := context.WithTimeout(ctx, dockerCallTimeout)
 	defer cancel()
 	res, err := d.docker.NetworkInspect(ctx, id, dockerclient.NetworkInspectOptions{})
 	if err != nil {

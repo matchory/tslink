@@ -509,6 +509,7 @@ func TestRecoverEndpointsListsNetworksOnce(t *testing.T) {
 	for range containers * 2 {
 		td.nextRun(t)
 	}
+	td.noRun(t) // nothing on the bridge network
 	if n := fake.networkInspects(); n != 0 {
 		t.Errorf("inspected networks %d times, want none", n)
 	}

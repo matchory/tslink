@@ -7,8 +7,6 @@ import (
 	"os/exec"
 	"strings"
 	"time"
-
-	"github.com/coreos/go-iptables/iptables"
 )
 
 // chainWrite is a change to a chain that iptables-restore applies at once, so
@@ -56,63 +54,26 @@ func (w chainWrite) script() (string, error) {
 }
 
 // restoreTimeout bounds one iptables-restore run, waiting for the xtables
-// lock included.
+// lock included, and one iptables-save run.
 const restoreTimeout = 30 * time.Second
 
-// applyChainWrite applies w with the iptables-restore of ipt's family and
-// backend, without flushing anything else.
-func applyChainWrite(ipt *iptables.IPTables, w chainWrite) error {
+// apply applies w with the iptables-restore of f's family and backend,
+// without flushing anything else.
+func (f *ipFamily) apply(w chainWrite) error {
 	script, err := w.script()
-	if err != nil {
-		return err
-	}
-	bin, err := restoreCommand(ipt.Proto())
 	if err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), restoreTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, bin, "--noflush", "--wait") // #nosec G204 -- a fixed binary
+	cmd := exec.CommandContext( // #nosec G204 -- a fixed binary
+		ctx, f.restore, "--noflush", "--wait",
+	)
 	cmd.Stdin = strings.NewReader(script)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("%s: %w: %s", bin, err, strings.TrimSpace(stderr.String()))
+		return fmt.Errorf("%s: %w: %s", f.restore, err, strings.TrimSpace(stderr.String()))
 	}
 	return nil
-}
-
-// restoreCommand returns the iptables-restore that writes to the same backend
-// as iptables, which go-iptables runs: the plugin image links iptables to
-// iptables-nft, but not iptables-restore.
-func restoreCommand(proto iptables.Protocol) (string, error) {
-	name := "iptables"
-	if proto == iptables.ProtocolIPv6 {
-		name = "ip6tables"
-	}
-	out, err := exec.CommandContext( // #nosec G204 -- a fixed binary
-		context.Background(), name, "--version",
-	).Output()
-	if err != nil {
-		return "", fmt.Errorf("failed to get the version of %s: %w", name, err)
-	}
-	return restoreFor(name, string(out)), nil
-}
-
-// restoreFor returns the iptables-restore matching the backend name's version
-// output names, as in "iptables v1.8.10 (nf_tables)", if it is installed.
-func restoreFor(name, version string) string {
-	backend := ""
-	switch {
-	case strings.Contains(version, "(nf_tables)"):
-		backend = "-nft"
-	case strings.Contains(version, "(legacy)"):
-		backend = "-legacy"
-	}
-	if backend != "" {
-		if path, err := exec.LookPath(name + backend + "-restore"); err == nil {
-			return path
-		}
-	}
-	return name + "-restore"
 }

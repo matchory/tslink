@@ -8,6 +8,6 @@ import (
 )
 
 // forgetUDPFlows needs Linux conntrack.
-func forgetUDPFlows(_ netip.Addr, _ int) (uint, error) {
+func forgetUDPFlows(_ []netip.Addr, _ int) (uint, error) {
 	return 0, errors.New("conntrack requires Linux")
 }

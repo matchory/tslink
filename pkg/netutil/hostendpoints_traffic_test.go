@@ -258,9 +258,10 @@ func TestHostLinksGroupsAddressesByLink(t *testing.T) {
 	}
 }
 
-// The endpoint follows the task's port mapping rule: present while it exists,
-// ErrNoPortMapping once it is flushed, and back once SyncPortMappings
-// restores it.
+// The endpoint follows the task's port mapping: present while it exists,
+// ErrNoPortMapping once CleanupNAT removed it, and back once SyncPortMappings
+// restores it. A rule another program flushes counts until then: the
+// mappings come from what tslink wrote or listed, not from iptables.
 func TestHostEndpointsFollowPortMapping(t *testing.T) {
 	hosts := lanTopology(t, "rd")
 	ConfigureHostEndpoints(HostEndpointsConfig{Addrs: []netip.Addr{hosts[0].lan}})
@@ -274,11 +275,7 @@ func TestHostEndpointsFollowPortMapping(t *testing.T) {
 		if len(got) != 1 || got[0] != want {
 			return fmt.Errorf("HostEndpoints = %v, want [%v]", got, want)
 		}
-		ipt, err := iptables.New()
-		if err != nil {
-			return err
-		}
-		if err := ipt.ClearChain("nat", portMapChain); err != nil {
+		if err := CleanupNAT("vethln0"); err != nil {
 			return err
 		}
 		if _, err := HostEndpoints("vethln0"); !errors.Is(err, ErrNoPortMapping) {
@@ -290,6 +287,27 @@ func TestHostEndpointsFollowPortMapping(t *testing.T) {
 		got, err = HostEndpoints("vethln0")
 		if err != nil || len(got) != 1 || got[0].Addr() != hosts[0].lan {
 			return fmt.Errorf("after sync: %v, %w", got, err)
+		}
+		// A flushed chain goes unnoticed until the watchdog's sync, which
+		// maps the task again
+		ipt, err := iptables.New()
+		if err != nil {
+			return err
+		}
+		if err := ipt.ClearChain("nat", portMapChain); err != nil {
+			return err
+		}
+		if err := SyncPortMappings(); err != nil {
+			return err
+		}
+		mapped, err := listMappings(ipt)
+		if err != nil {
+			return err
+		}
+		port := mapped[netip.MustParseAddr("10.200.0.2")]
+		got, err = HostEndpoints("vethln0")
+		if err != nil || len(got) != 1 || port == 0 || int(got[0].Port()) != port {
+			return fmt.Errorf("after a flush and sync: %v, %w, want port %d", got, err, port)
 		}
 		return nil
 	}); err != nil {

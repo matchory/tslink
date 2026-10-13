@@ -4,11 +4,11 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"maps"
 	"net/netip"
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/coreos/go-iptables/iptables"
 
@@ -83,27 +83,33 @@ func (m portMapping) rule(src netip.Addr, port int) []string {
 	}
 }
 
-var (
-	// portMapMu makes choosing a port and adding its rule one step.
-	portMapMu sync.Mutex
-	// portMap is the mapping SetupNAT installs.
-	portMap = portMapping{sport: 41641, ports: DefaultPortRange}
-)
-
 // ConfigurePortMapping sets tailscaled's UDP port in the containers and the
 // range of external ports SetupNAT maps it to. Rules in place keep their
 // ports.
 func ConfigurePortMapping(sport int, ports PortRange) {
-	portMapMu.Lock()
-	defer portMapMu.Unlock()
-	portMap = portMapping{sport: sport, ports: ports}
+	defaultHost.portMapMu.Lock()
+	defer defaultHost.portMapMu.Unlock()
+	defaultHost.portMap = portMapping{sport: sport, ports: ports}
+}
+
+// SyncPortMappings maps the tailscaled behind each of the host's veths to a
+// port of its own, unless it has one, and removes the mappings of addresses
+// no veth has. It changes nothing that is in place, so it can run
+// periodically: it maps containers whose veth an older version set up, and
+// removes the mappings of veths that went away with their container.
+func SyncPortMappings() error {
+	f, err := defaultHost.family(iptables.ProtocolIPv4)
+	if err != nil {
+		return err
+	}
+	return defaultHost.syncPortMappings(f)
 }
 
 // configuredPorts returns the range of external ports SetupNAT maps to.
-func configuredPorts() PortRange {
-	portMapMu.Lock()
-	defer portMapMu.Unlock()
-	return portMap.ports
+func (s *hostState) configuredPorts() PortRange {
+	s.portMapMu.Lock()
+	defer s.portMapMu.Unlock()
+	return s.portMap.ports
 }
 
 // preferredPort is the port src's search starts at.
@@ -156,32 +162,21 @@ func parseMappings(listed []string) map[netip.Addr]int {
 	return mapped
 }
 
-// listMappings returns the mappings in portMapChain, none if it does not exist.
-func listMappings(ipt *iptables.IPTables) (map[netip.Addr]int, error) {
-	exists, err := ipt.ChainExists("nat", portMapChain)
-	if err != nil || !exists {
-		return map[netip.Addr]int{}, err
-	}
-	listed, err := ipt.List("nat", portMapChain)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list chain %s: %w", portMapChain, err)
-	}
-	return parseMappings(listed), nil
-}
-
-// ensurePortMapChain creates portMapChain unless it exists, and jumps to it
-// from the start of nat POSTROUTING, ahead of the global MASQUERADE.
-func ensurePortMapChain(ipt *iptables.IPTables) error {
-	exists, err := ipt.ChainExists("nat", portMapChain)
-	if err != nil {
-		return fmt.Errorf("failed to check chain %s: %w", portMapChain, err)
-	}
-	if !exists {
-		if err := ipt.NewChain("nat", portMapChain); err != nil {
+// ensurePortMapChain creates portMapChain unless nat, the table as listed,
+// has it, and jumps to it from the start of nat POSTROUTING, ahead of the
+// global MASQUERADE, unless it does.
+func ensurePortMapChain(f *ipFamily, nat tableRules) error {
+	if !nat.chains[portMapChain] {
+		if err := f.NewChain("nat", portMapChain); err != nil {
 			return fmt.Errorf("failed to create chain %s: %w", portMapChain, err)
 		}
 	}
-	if err := ipt.InsertUnique("nat", "POSTROUTING", 1, "-j", portMapChain); err != nil {
+	jump := []string{"-j", portMapChain}
+	ok, err := hasRule(f, "nat", "POSTROUTING", nat.rules["POSTROUTING"], jump)
+	if err != nil || ok {
+		return err
+	}
+	if err := f.Insert("nat", "POSTROUTING", 1, jump...); err != nil {
 		return fmt.Errorf("failed to add jump to %s: %w", portMapChain, err)
 	}
 	return nil
@@ -203,24 +198,17 @@ func containerAddr(vethHost string) (netip.Addr, error) {
 
 // setupPortMapping maps the tailscaled behind vethHost to a port of its own,
 // or keeps the port it has.
-func setupPortMapping(ipt *iptables.IPTables, vethHost string) error {
+func (s *hostState) setupPortMapping(f *ipFamily, vethHost string) error {
 	src, err := containerAddr(vethHost)
 	if err != nil {
 		return err
 	}
-	return mapContainers(ipt, []netip.Addr{src})
+	return s.mapContainers(f, []netip.Addr{src}, false)
 }
 
-// SyncPortMappings maps the tailscaled behind each of the host's veths to a
-// port of its own, unless it has one, and removes the mappings of addresses
-// no veth has. It changes nothing that is in place, so it can run
-// periodically: it maps containers whose veth an older version set up, and
-// removes the mappings of veths that went away with their container.
-func SyncPortMappings() error {
-	ipt, err := iptables.NewWithProtocol(iptables.ProtocolIPv4)
-	if err != nil {
-		return fmt.Errorf("failed to initialize iptables: %w", err)
-	}
+// syncPortMappings is SyncPortMappings, which also rebuilds the cache of the
+// mappings from the chain.
+func (s *hostState) syncPortMappings(f *ipFamily) error {
 	used, err := UsedVethSubnets()
 	if err != nil {
 		return err
@@ -230,64 +218,95 @@ func SyncPortMappings() error {
 		// The host's address is the first in the /30, the container's the second
 		srcs = append(srcs, subnet.Addr().Next().Next())
 	}
-	return mapContainers(ipt, srcs)
+	return s.mapContainers(f, srcs, true)
 }
 
 // mapContainers maps the tailscaled at each address in srcs to a port of its
 // own, unless it has one. It first removes the mappings of addresses no veth
-// has any more, whose ports are free again.
-func mapContainers(ipt *iptables.IPTables, srcs []netip.Addr) error {
-	portMapMu.Lock()
-	defer portMapMu.Unlock()
-	if err := ensurePortMapChain(ipt); err != nil {
-		return err
-	}
-	mapped, err := pruneMappings(ipt)
-	if err != nil {
-		return err
-	}
-	var errs []error
-	for _, src := range srcs {
-		if _, ok := mapped[src]; !ok {
-			errs = append(errs, mapContainer(ipt, src, mapped))
+// has any more, whose ports are free again. With rebuild, the cache of the
+// mappings is then what the chain holds.
+//
+// The flows the newly mapped tailscaleds have already, as one an older
+// version set up or a restarted tailscaled on the same port, keep their NAT
+// until their conntrack entries go, which tailscaled's keepalives never let
+// happen: mapContainers deletes them, so their next packets leave on the new
+// port. It does so for all of them at once, as each deletion goes through the
+// whole conntrack table, and without portMapMu held.
+func (s *hostState) mapContainers(f *ipFamily, srcs []netip.Addr, rebuild bool) error {
+	added, sport, err := s.addMappings(f, srcs, rebuild)
+	if len(added) > 0 {
+		n, ferr := s.forgetFlows(added, sport)
+		if ferr != nil {
+			logger.Warnf(
+				"Failed to reset the flows of %v to their new WireGuard ports: %v",
+				added,
+				ferr,
+			)
+		} else if n > 0 {
+			logger.Infof("Reset %d flows of %v to their new WireGuard ports", n, added)
 		}
 	}
-	return errors.Join(errs...)
+	return err
+}
+
+// addMappings is mapContainers' part under portMapMu. It returns the
+// addresses it mapped, and tailscaled's port in the containers.
+func (s *hostState) addMappings(
+	f *ipFamily, srcs []netip.Addr, rebuild bool,
+) ([]netip.Addr, int, error) {
+	s.portMapMu.Lock()
+	defer s.portMapMu.Unlock()
+	nat, err := f.list("nat")
+	if err != nil {
+		return nil, 0, err
+	}
+	if err := ensurePortMapChain(f, nat); err != nil {
+		return nil, 0, err
+	}
+	mapped, err := s.pruneMappings(f, nat.rules[portMapChain])
+	if err != nil {
+		return nil, 0, err
+	}
+	if rebuild {
+		s.ports = maps.Clone(mapped)
+	}
+	var added []netip.Addr
+	var errs []error
+	for _, src := range srcs {
+		if _, ok := mapped[src]; ok {
+			continue
+		}
+		if err := s.mapContainer(f, src, mapped); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		added = append(added, src)
+	}
+	return added, s.portMap.sport, errors.Join(errs...)
 }
 
 // mapContainer maps the tailscaled at src, which mapped has no port for, to a
-// free one, and records it in mapped. The flows it has already, as one an
-// older version set up or a restarted tailscaled on the same port, keep their
-// NAT until their conntrack entries go, which tailscaled's keepalives never
-// let happen: mapContainer deletes them, so their next packets leave on the
-// new port.
-func mapContainer(ipt *iptables.IPTables, src netip.Addr, mapped map[netip.Addr]int) error {
-	port, err := pickPort(src, portMap.ports, mapped)
+// free one, and records it in mapped and the cache. The caller holds
+// portMapMu.
+func (s *hostState) mapContainer(f *ipFamily, src netip.Addr, mapped map[netip.Addr]int) error {
+	port, err := pickPort(src, s.portMap.ports, mapped)
 	if err != nil {
 		return fmt.Errorf("failed to map %s: %w", src, err)
 	}
-	if err := ipt.Append("nat", portMapChain, portMap.rule(src, port)...); err != nil {
+	if err := f.Append("nat", portMapChain, s.portMap.rule(src, port)...); err != nil {
 		return fmt.Errorf("failed to map %s to port %d: %w", src, port, err)
 	}
 	mapped[src] = port
+	s.ports[src] = port
 	logger.Infof("Mapped the WireGuard port of %s to %d", src, port)
-	n, err := forgetUDPFlows(src, portMap.sport)
-	if err != nil {
-		return err
-	}
-	if n > 0 {
-		logger.Infof("Reset %d flows of %s to its new WireGuard port", n, src)
-	}
 	return nil
 }
 
 // pruneMappings removes the mappings of addresses outside the /30s of the
-// host's veths, and returns the others. The caller holds portMapMu.
-func pruneMappings(ipt *iptables.IPTables) (map[netip.Addr]int, error) {
-	mapped, err := listMappings(ipt)
-	if err != nil {
-		return nil, err
-	}
+// host's veths among listed, portMapChain's rules, and returns the others.
+// The caller holds portMapMu.
+func (s *hostState) pruneMappings(f *ipFamily, listed []string) (map[netip.Addr]int, error) {
+	mapped := parseMappings(listed)
 	used, err := UsedVethSubnets()
 	if err != nil {
 		return nil, err
@@ -298,28 +317,25 @@ func pruneMappings(ipt *iptables.IPTables) (map[netip.Addr]int, error) {
 			continue
 		}
 		logger.Infof("Removing the WireGuard port mapping of %s: no veth has its address", src)
-		if err := deleteMapping(ipt, src, port); err != nil {
+		if err := deleteMapping(f, listed, src, port); err != nil {
 			errs = append(errs, err)
 		}
 		delete(mapped, src)
+		delete(s.ports, src)
 	}
 	return mapped, errors.Join(errs...)
 }
 
-// deleteMapping removes the rule that maps src to port, whatever port its
-// tailscaled has.
-func deleteMapping(ipt *iptables.IPTables, src netip.Addr, port int) error {
-	listed, err := ipt.List("nat", portMapChain)
-	if err != nil {
-		return fmt.Errorf("failed to list chain %s: %w", portMapChain, err)
-	}
+// deleteMapping removes the rules among listed, portMapChain's rules, that map
+// src to port, whatever port its tailscaled has.
+func deleteMapping(f *ipFamily, listed []string, src netip.Addr, port int) error {
 	for _, rule := range listed {
 		m := mappingRule.FindStringSubmatch(rule)
 		if m == nil || m[1] != src.String() || m[2] != strconv.Itoa(port) {
 			continue
 		}
 		spec := strings.Fields(strings.TrimPrefix(rule, "-A "+portMapChain+" "))
-		if err := ipt.Delete("nat", portMapChain, spec...); err != nil {
+		if err := f.Delete("nat", portMapChain, spec...); err != nil {
 			return fmt.Errorf("failed to remove the mapping of %s: %w", src, err)
 		}
 	}
@@ -328,19 +344,25 @@ func deleteMapping(ipt *iptables.IPTables, src netip.Addr, port int) error {
 
 // removePortMapping removes the mapping of the tailscaled behind vethHost, and
 // those of addresses no veth has any more, as when vethHost is gone already.
-func removePortMapping(ipt *iptables.IPTables, vethHost string) error {
-	portMapMu.Lock()
-	defer portMapMu.Unlock()
-	mapped, err := listMappings(ipt)
-	if err != nil || len(mapped) == 0 {
+func (s *hostState) removePortMapping(f *ipFamily, vethHost string) error {
+	s.portMapMu.Lock()
+	defer s.portMapMu.Unlock()
+	nat, err := f.list("nat")
+	if err != nil {
 		return err
+	}
+	listed := nat.rules[portMapChain]
+	mapped := parseMappings(listed)
+	if len(mapped) == 0 {
+		return nil
 	}
 	var errs []error
 	if src, err := containerAddr(vethHost); err == nil {
 		if port, ok := mapped[src]; ok {
-			errs = append(errs, deleteMapping(ipt, src, port))
+			errs = append(errs, deleteMapping(f, listed, src, port))
 		}
+		delete(s.ports, src)
 	}
-	_, err = pruneMappings(ipt)
+	_, err = s.pruneMappings(f, listed)
 	return errors.Join(append(errs, err)...)
 }

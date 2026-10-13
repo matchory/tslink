@@ -69,6 +69,19 @@ func assertRules(t *testing.T, what string, got, want []string) {
 	}
 }
 
+// listMappings returns the mappings in portMapChain, none if it does not exist.
+func listMappings(ipt *iptables.IPTables) (map[netip.Addr]int, error) {
+	exists, err := ipt.ChainExists("nat", portMapChain)
+	if err != nil || !exists {
+		return map[netip.Addr]int{}, err
+	}
+	listed, err := ipt.List("nat", portMapChain)
+	if err != nil {
+		return nil, err
+	}
+	return parseMappings(listed), nil
+}
+
 func TestNATRules(t *testing.T) {
 	nsPath := newTestNetNS(t)
 
@@ -171,13 +184,16 @@ func TestNATRules(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if err := ipt.Delete("nat", portMapChain, portMap.rule(ctrB, mapped[ctrB])...); err != nil {
+		if err := ipt.Delete(
+			"nat",
+			portMapChain,
+			defaultHost.portMap.rule(ctrB, mapped[ctrB])...); err != nil {
 			return err
 		}
 		return ipt.Append(
 			"nat",
 			portMapChain,
-			portMap.rule(netip.MustParseAddr("10.200.9.2"), 1)...)
+			defaultHost.portMap.rule(netip.MustParseAddr("10.200.9.2"), 1)...)
 	})
 	inNS("SyncPortMappings", SyncPortMappings)
 	r = listNATRules(t, nsPath)

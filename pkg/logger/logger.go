@@ -30,7 +30,9 @@ func Init(logPath string) error {
 	if err != nil {
 		return err
 	}
-	SetOutput(io.MultiWriter(file, os.Stdout))
+	// Stdout first: MultiWriter stops at a writer that fails, as the file
+	// does on a full disk, and the Docker daemon's log keeps the lines
+	SetOutput(io.MultiWriter(os.Stdout, file))
 	return nil
 }
 

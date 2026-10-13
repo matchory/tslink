@@ -57,3 +57,26 @@ func TestRotatingFileWritesOnAfterFailedRotation(t *testing.T) {
 		t.Errorf("log = %q, want %q", got, want)
 	}
 }
+
+// A log whose file is gone, as after a rotation that renamed it but could not
+// open the new one, gets a new file at the next rotation.
+func TestRotatingFileRecreatesMissingFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "x.log")
+	f, err := OpenRotating(path, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := f.Write([]byte("first line\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Write([]byte("second line\n")); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(path); err != nil || string(got) != "second line\n" {
+		t.Errorf("log = %q, %v; want the second line in a new file", got, err)
+	}
+}

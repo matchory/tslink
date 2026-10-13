@@ -99,11 +99,16 @@ func TestHostIsolation(t *testing.T) {
 			"",
 		},
 		{
-			// TSLINK-WG-IN (pkg/netutil's wireGuardInputChain) is always on and
+			// TSLINK-WG-IN (netutil.WireGuardInputChain) is always on and
 			// leads INPUT ahead of TSLINK-ISOLATE-IN on an upgraded host; it
 			// must not make LeadingJumps stop before the isolation jump.
 			"TSLINK-WG-IN ahead of the isolation jump", "iptables -t mangle -S INPUT",
 			"-P INPUT ACCEPT\n-A INPUT -j TSLINK-WG-IN\n-A INPUT -j TSLINK-ISOLATE-IN\n",
+			"",
+		},
+		{
+			"a blank line before the listing", "iptables -t mangle -S FORWARD",
+			"\n-P FORWARD ACCEPT\n-A FORWARD -j TSLINK-VETH-FWD\n-A FORWARD -j TSLINK-ISOLATE-FWD\n",
 			"",
 		},
 	} {

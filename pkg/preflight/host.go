@@ -61,6 +61,9 @@ const (
 )
 
 // isolationJump is a jump the isolation needs at the head of a built-in chain.
+// TSLINK-WG-IN (netutil.WireGuardInputChain) is always on, like
+// TSLINK-VETH-FWD, but is not one of these: E5 does not check for it, it only
+// tolerates it leading INPUT (netutil.LeadingJumps).
 type isolationJump struct {
 	cmd, from, to string
 	always        bool // the veth isolation does not depend on the setting
@@ -102,7 +105,8 @@ func missingJumps(
 				failed[key] = true
 				continue
 			}
-			jumps = netutil.LeadingJumps(strings.Split(string(out), "\n"), j.from)
+			jumps = netutil.LeadingJumps(
+				strings.Split(strings.TrimSpace(string(out)), "\n"), j.from)
 			listings[key] = jumps
 		}
 		if !slices.Contains(jumps, j.to) {

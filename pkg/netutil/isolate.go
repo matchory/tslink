@@ -33,31 +33,30 @@ const (
 )
 
 // VethIsolateChain holds the veth isolation, which keeps containers from
-// reaching each other through tslink's veths. The host forwards between the veths' /30s in vethRange, so without
-// it a container reaches another tslink container's veth address, past
-// Docker's network isolation and past the tailnet's ACLs, with an ordinary
-// socket through its Docker gateway or with raw frames through its veth.
-// Nothing opens a connection to a veth address but a colocated node's
-// tailscaled, to tailscaled's WireGuard port through its own veth, so
-// colocated nodes keep their direct path instead of falling back to DERP;
-// WireGuard drops what is not from a peer. Everything else forwarded there is
-// dropped unless it answers a connection the container opened, whatever
-// interface it arrives on: a stack file names a bridge as it likes, and a LAN
-// host may route vethRange through the host. It does not depend on
-// TSLINK_ISOLATE_HOST_TAILNET.
+// reaching each other through tslink's veths. The host forwards between the
+// veths' /30s in vethRange, so without it a container reaches another tslink
+// container's veth address, past Docker's network isolation and past the
+// tailnet's ACLs, with an ordinary socket through its Docker gateway or with
+// raw frames through its veth. Nothing opens a connection to a veth address
+// but a colocated node's tailscaled, to tailscaled's WireGuard port through
+// its own veth, so colocated nodes keep their direct path instead of falling
+// back to DERP; WireGuard drops what is not from a peer. Everything else
+// forwarded there is dropped unless it answers a connection the container
+// opened, whatever interface it arrives on: a stack file names a bridge as it
+// likes, and a LAN host may route vethRange through the host. It does not
+// depend on TSLINK_ISOLATE_HOST_TAILNET.
 const VethIsolateChain = "TSLINK-VETH-FWD"
 
 // WireGuardInputChain makes the external ports of containers' tailscaled
 // (portMapChain) take only packets on flows the containers opened, which the
-// host forwards. A packet
-// that arrives first, from a peer probing a port the container advertises,
-// has no NAT to undo and goes to the host itself: conntrack keeps an entry
-// for it, whose reply is the tuple the container's own packets to that peer
-// need, and as each container has a single port, they are dropped for as
-// long as the peer keeps probing. Dropping such packets before conntrack
-// confirms them leaves no entry behind; the container's first packet to the
-// peer then opens the path for the peer's next. It does not depend on
-// TSLINK_ISOLATE_HOST_TAILNET.
+// host forwards. A packet that arrives first, from a peer probing a port the
+// container advertises, has no NAT to undo and goes to the host itself:
+// conntrack keeps an entry for it, whose reply is the tuple the container's
+// own packets to that peer need, and as each container has a single port, they
+// are dropped for as long as the peer keeps probing. Dropping such packets
+// before conntrack confirms them leaves no entry behind; the container's first
+// packet to the peer then opens the path for the peer's next. It does not
+// depend on TSLINK_ISOLATE_HOST_TAILNET.
 const WireGuardInputChain = "TSLINK-WG-IN"
 
 // wireGuardInputRule drops new UDP to the ports in r.

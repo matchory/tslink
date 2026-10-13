@@ -29,9 +29,10 @@ func TestBypassRoute(t *testing.T) {
 		t.Fatalf("set up veth stand-in: %v", err)
 	}
 
+	h, link := testHandle(t, nsPath, "dummy1")
 	for range 2 { // Join may be retried; setup must be idempotent
-		if err := SetupBypassRoute(nsPath, "dummy1", "10.200.0.1"); err != nil {
-			t.Fatalf("SetupBypassRoute: %v", err)
+		if err := setupBypassRoute(h, link, net.ParseIP("10.200.0.1")); err != nil {
+			t.Fatalf("setupBypassRoute: %v", err)
 		}
 	}
 

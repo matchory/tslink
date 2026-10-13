@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/netip"
 	"os"
-	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -15,8 +14,6 @@ import (
 
 	"github.com/coreos/go-iptables/iptables"
 	"github.com/vishvananda/netlink"
-	"github.com/vishvananda/netns"
-	"golang.org/x/sys/unix"
 
 	"github.com/matchory/tslink/pkg/logger"
 )
@@ -24,8 +21,14 @@ import (
 // DefaultMTU is the veth MTU when the network sets none.
 const DefaultMTU = 1500
 
+// Seam for tests: bringing up a new veth.
+var linkSetUp = netlink.LinkSetUp
+
 // CreateVethPair creates a veth pair with the given base name and MTU (0 for
-// DefaultMTU). Returns the host-side name and container-side name.
+// DefaultMTU). Returns the host-side name and container-side name. A link
+// with the host-side name and no address in tslink's veth range is a leftover
+// and replaced; one with such an address belongs to a live endpoint, and
+// CreateVethPair fails rather than delete it.
 func CreateVethPair(baseName string, mtu int) (string, string, error) {
 	if mtu == 0 {
 		mtu = DefaultMTU
@@ -33,11 +36,8 @@ func CreateVethPair(baseName string, mtu int) (string, string, error) {
 	hostName := "veth" + baseName
 	containerName := "veth" + baseName + "c"
 
-	// Delete existing interfaces if they exist
-	if link, err := netlink.LinkByName(hostName); err == nil {
-		if err := netlink.LinkDel(link); err != nil {
-			logger.Warnf("failed to delete existing veth %s: %v", hostName, err)
-		}
+	if err := removeLeftoverVeth(hostName); err != nil {
+		return "", "", err
 	}
 
 	veth := &netlink.Veth{
@@ -45,17 +45,13 @@ func CreateVethPair(baseName string, mtu int) (string, string, error) {
 		MTU:      mtu,
 		PeerName: containerName,
 	}
-
 	if err := netlink.LinkAdd(veth); err != nil {
 		return "", "", fmt.Errorf("failed to create veth pair: %w", err)
 	}
-
-	link, err := netlink.LinkByName(hostName)
-	if err != nil {
-		return "", "", fmt.Errorf("failed to get host veth: %w", err)
-	}
-
-	if err := netlink.LinkSetUp(link); err != nil {
+	if err := linkSetUp(veth); err != nil {
+		if delErr := DeleteVeth(hostName); delErr != nil {
+			logger.Warnf("failed to delete veth %s after error: %v", hostName, delErr)
+		}
 		return "", "", fmt.Errorf("failed to bring up host veth: %w", err)
 	}
 
@@ -64,150 +60,56 @@ func CreateVethPair(baseName string, mtu int) (string, string, error) {
 	return hostName, containerName, nil
 }
 
+// removeLeftoverVeth deletes the link name unless it has an address in
+// tslink's veth range: Join assigns one before it returns, so a link without
+// one is left over from a Join that failed.
+func removeLeftoverVeth(name string) error {
+	link, err := netlink.LinkByName(name)
+	if _, ok := errors.AsType[netlink.LinkNotFoundError](
+		err,
+	); ok ||
+		errors.Is(err, syscall.ENODEV) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("failed to get %s: %w", name, err)
+	}
+	addrs, err := netlink.AddrList(link, syscall.AF_INET)
+	if err != nil {
+		return fmt.Errorf("failed to list addresses of %s: %w", name, err)
+	}
+	for _, a := range addrs {
+		if ip, ok := netip.AddrFromSlice(a.IP.To4()); ok && vethRange.Contains(ip) {
+			return fmt.Errorf(
+				"veth %s exists with %s: another endpoint's ID starts with the same 8 characters",
+				name, ip,
+			)
+		}
+	}
+	if err := netlink.LinkDel(link); err != nil {
+		return fmt.Errorf("failed to delete leftover veth %s: %w", name, err)
+	}
+	return nil
+}
+
 // MoveToNetNS moves a network interface to the specified network namespace.
 func MoveToNetNS(ifName string, nsPath string) error {
-	logger.Debugf("MoveToNetNS: interface=%s nsPath=%s", ifName, nsPath)
-
-	// Try the given path first, then fallback to alternate path if needed
-	// (handles Alpine Linux where /var/run and /run are separate)
-	pathsToTry := []string{nsPath}
-	if strings.HasPrefix(nsPath, "/var/run/docker/netns/") {
-		alternatePath := strings.Replace(nsPath, "/var/run/docker/netns/", "/run/docker/netns/", 1)
-		pathsToTry = append(pathsToTry, alternatePath)
-	} else if strings.HasPrefix(nsPath, "/run/docker/netns/") {
-		alternatePath := strings.Replace(nsPath, "/run/docker/netns/", "/var/run/docker/netns/", 1)
-		pathsToTry = append(pathsToTry, alternatePath)
-	}
-
-	// Get the interface once before trying paths
 	link, err := netlink.LinkByName(ifName)
 	if err != nil {
 		return fmt.Errorf("interface %s not found: %w", ifName, err)
 	}
-	logger.Debugf("MoveToNetNS: found interface %s (index=%d, type=%s)",
-		ifName, link.Attrs().Index, link.Type())
-
-	var lastErr error
-	for i, tryPath := range pathsToTry {
-		// Validate the netns path exists and is accessible
-		fi, err := os.Lstat(tryPath)
-		if err != nil {
-			lastErr = fmt.Errorf("netns path %s: %w", tryPath, err)
-			continue
-		}
-		logger.Debugf("MoveToNetNS: path %s exists, mode=%s isSymlink=%v",
-			tryPath, fi.Mode().String(), fi.Mode()&os.ModeSymlink != 0)
-
-		// If it's a symlink, resolve it
-		realPath := tryPath
-		if fi.Mode()&os.ModeSymlink != 0 {
-			realPath, err = os.Readlink(tryPath)
-			if err != nil {
-				lastErr = fmt.Errorf("failed to resolve symlink %s: %w", tryPath, err)
-				continue
-			}
-			logger.Debugf("MoveToNetNS: resolved symlink to %s", realPath)
-		}
-
-		// Open the network namespace
-		ns, err := netns.GetFromPath(realPath)
-		if err != nil {
-			lastErr = fmt.Errorf("failed to get netns from %s: %w", realPath, err)
-			continue
-		}
-		logger.Debugf("MoveToNetNS: opened netns fd=%d", int(ns))
-
-		// Verify it's actually a network namespace by checking the fd type
-		var stat unix.Stat_t
-		if err := unix.Fstat(int(ns), &stat); err != nil {
-			logger.Warnf("MoveToNetNS: fstat on netns fd failed: %v", err)
-		} else {
-			logger.Debugf("MoveToNetNS: netns fd stat: mode=%o", stat.Mode)
-		}
-
-		// Move the interface to the namespace
-		if err := netlink.LinkSetNsFd(link, int(ns)); err != nil {
-			if closeErr := ns.Close(); closeErr != nil { // Clean up fd immediately on failure
-				logger.Debugf("MoveToNetNS: failed to close netns fd: %v", closeErr)
-			}
-
-			// Log additional debug info on failure
-			logger.Errorf("MoveToNetNS: LinkSetNsFd failed: interface=%s fd=%d err=%v",
-				ifName, int(ns), err)
-
-			// Check if the interface is still in the current namespace
-			if _, checkErr := netlink.LinkByName(ifName); checkErr != nil {
-				logger.Debugf("MoveToNetNS: interface no longer in current namespace after error")
-			} else {
-				logger.Debugf("MoveToNetNS: interface still in current namespace")
-			}
-
-			lastErr = fmt.Errorf("failed to move %s to netns (fd=%d, path=%s): %w",
-				ifName, int(ns), realPath, err)
-			continue
-		}
-
-		// Success! Clean up and return
-		if err := ns.Close(); err != nil {
-			logger.Debugf("MoveToNetNS: failed to close netns fd: %v", err)
-		}
-		if i > 0 {
-			logger.Warnf("MoveToNetNS: WARNING - Docker passed %s but namespace was at %s. "+
-				"This may indicate /var/run is not symlinked to /run on your system. "+
-				"Consider running: ln -sf /run /var/run", nsPath, tryPath)
-		}
-		logger.Debugf("Moved interface %s to netns %s", ifName, tryPath)
-		return nil
-	}
-
-	// All paths failed
-	return lastErr
-}
-
-// SetupInterfaceInNS sets up an interface inside a network namespace.
-func SetupInterfaceInNS(nsPath string, ifName string, newName string) error {
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-
-	// Get current namespace
-	origNS, err := netns.Get()
+	ns, opened, err := openNetNS(nsPath)
 	if err != nil {
-		return fmt.Errorf("failed to get current netns: %w", err)
+		return err
 	}
-	defer origNS.Close()
-
-	// Switch to target namespace
-	targetNS, err := netns.GetFromPath(nsPath)
-	if err != nil {
-		return fmt.Errorf("failed to get target netns: %w", err)
+	defer ns.Close()
+	if opened != nsPath {
+		logger.Warnf("Docker passed %s but the namespace is at %s: "+
+			"/var/run may not be a link to /run on this system", nsPath, opened)
 	}
-	defer targetNS.Close()
-
-	if err := netns.Set(targetNS); err != nil {
-		return fmt.Errorf("failed to switch to target netns: %w", err)
+	if err := netlink.LinkSetNsFd(link, int(ns)); err != nil {
+		return fmt.Errorf("failed to move %s to netns %s: %w", ifName, opened, err)
 	}
-	defer func() {
-		if err := netns.Set(origNS); err != nil {
-			logger.Warnf("failed to restore original netns: %v", err)
-		}
-	}()
-
-	link, err := netlink.LinkByName(ifName)
-	if err != nil {
-		return fmt.Errorf("interface %s not found in target netns: %w", ifName, err)
-	}
-
-	if newName != "" && newName != ifName {
-		if err := netlink.LinkSetName(link, newName); err != nil {
-			return fmt.Errorf("failed to rename interface: %w", err)
-		}
-		link, _ = netlink.LinkByName(newName)
-	}
-
-	if err := netlink.LinkSetUp(link); err != nil {
-		return fmt.Errorf("failed to bring up interface: %w", err)
-	}
-
 	return nil
 }
 
@@ -291,60 +193,6 @@ func VethIPv4(name string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("%s has no address in %s", name, vethRange)
-}
-
-// SetupContainerRouting sets up routing inside the container namespace.
-func SetupContainerRouting(
-	nsPath string,
-	ifName string,
-	containerIP string,
-	gatewayIP string,
-) error {
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-
-	// Get current namespace
-	origNS, err := netns.Get()
-	if err != nil {
-		return fmt.Errorf("failed to get current netns: %w", err)
-	}
-	defer origNS.Close()
-
-	// Switch to container namespace
-	targetNS, err := netns.GetFromPath(nsPath)
-	if err != nil {
-		return fmt.Errorf("failed to get target netns: %w", err)
-	}
-	defer targetNS.Close()
-
-	if err := netns.Set(targetNS); err != nil {
-		return fmt.Errorf("failed to switch to target netns: %w", err)
-	}
-	defer func() {
-		if err := netns.Set(origNS); err != nil {
-			logger.Warnf("failed to restore original netns: %v", err)
-		}
-	}()
-
-	link, err := netlink.LinkByName(ifName)
-	if err != nil {
-		return fmt.Errorf("interface %s not found: %w", ifName, err)
-	}
-
-	addr, err := netlink.ParseAddr(containerIP + "/30")
-	if err != nil {
-		return fmt.Errorf("failed to parse container IP: %w", err)
-	}
-
-	if err := netlink.AddrAdd(link, addr); err != nil {
-		logger.Debugf("Warning: failed to add IP to container interface: %v", err)
-	}
-
-	// No default route: Docker connects the container to its gateway network
-	// like any other, and SetupBypassRoute sends tailscaled's own traffic
-	// through this veth.
-	logger.Debugf("Container routing setup: %s, peer %s", containerIP, gatewayIP)
-	return nil
 }
 
 // chainName is the custom iptables chain for tslink forwarding rules.

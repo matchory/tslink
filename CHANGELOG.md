@@ -26,6 +26,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rules and MASQUERADE of its veth range came back only when a container
   joined after a plugin restart, and containers' tailscaled lost its
   connections until then. The watchdog now restores them every minute.
+- Stopping any container on the host made the plugin inspect it twice, and a
+  Docker API call that did not return stalled the plugin's handling of every
+  Docker event after it. A stopping container is now inspected once, and each
+  call of the event handling gives up after 10 s.
+- The watchdog inspected the network of every network attachment of every
+  container on the host each minute. It now lists the networks once per scan.
 
 ### Security
 

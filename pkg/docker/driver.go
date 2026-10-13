@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/docker/go-plugins-helpers/network"
+	"github.com/moby/moby/api/types/container"
+	dockernetwork "github.com/moby/moby/api/types/network"
 	dockerclient "github.com/moby/moby/client"
 
 	"github.com/matchory/tslink/pkg/core"
@@ -448,10 +450,19 @@ func (d *Driver) RecoverEndpoints(ctx context.Context) error {
 		return err
 	}
 
-	// List all running containers
-	containerList, err := d.docker.ContainerList(ctx, dockerclient.ContainerListOptions{})
+	// List all running containers. Each listing is bounded: a scan holds
+	// recoverMu, and one that waited for good would stop every later scan
+	listCtx, cancel := context.WithTimeout(ctx, dockerCallTimeout)
+	containerList, err := d.docker.ContainerList(listCtx, dockerclient.ContainerListOptions{})
+	cancel()
 	if err != nil {
 		return fmt.Errorf("failed to list containers: %w", err)
+	}
+
+	// After the containers: a network their attachments name exists by now
+	networks, err := d.ownNetworks(ctx, ownNames)
+	if err != nil {
+		return err
 	}
 
 	recovered := 0
@@ -467,7 +478,7 @@ func (d *Driver) RecoverEndpoints(ctx context.Context) error {
 			}
 			if d.recoverAttachment(
 				ctx,
-				ownNames,
+				networks,
 				container.ID,
 				netName,
 				netSettings.NetworkID,
@@ -542,6 +553,8 @@ func (d *Driver) ownsNetwork(id string) bool {
 // If several tslink plugins are enabled at once, each recovers the others'
 // networks too.
 func (d *Driver) ownPluginNames(ctx context.Context) (map[string]bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, dockerCallTimeout)
+	defer cancel()
 	plugins, err := d.docker.PluginList(ctx, dockerclient.PluginListOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list plugins: %w", err)
@@ -553,6 +566,30 @@ func (d *Driver) ownPluginNames(ctx context.Context) (map[string]bool, error) {
 		}
 	}
 	return names, nil
+}
+
+// ownNetworks returns the networks whose driver is one of ownNames, by ID,
+// from a single listing. Its entries carry all recovery uses of a network:
+// its ID, driver, options and labels.
+func (d *Driver) ownNetworks(
+	ctx context.Context,
+	ownNames map[string]bool,
+) (map[string]dockerclient.NetworkInspectResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, dockerCallTimeout)
+	defer cancel()
+	list, err := d.docker.NetworkList(ctx, dockerclient.NetworkListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list networks: %w", err)
+	}
+	networks := make(map[string]dockerclient.NetworkInspectResult)
+	for _, n := range list.Items {
+		if ownNames[n.Driver] {
+			networks[n.ID] = dockerclient.NetworkInspectResult{
+				Network: dockernetwork.Inspect{Network: n.Network},
+			}
+		}
+	}
+	return networks, nil
 }
 
 // onContainerInfo is called by the event watcher when container info is stored.
@@ -616,17 +653,13 @@ const gcMinAge = 2 * time.Minute
 // onContainerStop drains the Tailscale Service backends of a stopping
 // container. Docker sends the stop signal before it tears down the network,
 // so callers move to other backends while the application can still finish
-// its requests, instead of when the backend disappears.
-func (d *Driver) onContainerStop(containerID string) {
-	info, err := d.docker.ContainerInspect(
-		d.ctx,
-		containerID,
-		dockerclient.ContainerInspectOptions{},
-	)
-	if err != nil || info.Container.NetworkSettings == nil {
+// its requests, instead of when the backend disappears. It takes the
+// container as the event watcher inspected it, nil if that failed.
+func (d *Driver) onContainerStop(_ string, inspected *container.InspectResponse) {
+	if inspected == nil || inspected.NetworkSettings == nil {
 		return
 	}
-	for _, settings := range info.Container.NetworkSettings.Networks {
+	for _, settings := range inspected.NetworkSettings.Networks {
 		if settings == nil || !d.ownsNetwork(settings.NetworkID) {
 			continue
 		}
@@ -695,6 +728,8 @@ const bridgeNameOption = "com.docker.network.bridge.name"
 // bridgeNames returns the bridge names Docker's bridge networks set, the
 // default network's docker0 among them.
 func bridgeNames(ctx context.Context, cli dockerAPI) ([]string, error) {
+	ctx, cancel := context.WithTimeout(ctx, dockerCallTimeout)
+	defer cancel()
 	res, err := cli.NetworkList(ctx, dockerclient.NetworkListOptions{
 		Filters: dockerclient.Filters{}.Add("driver", "bridge"),
 	})
@@ -764,25 +799,16 @@ func (d *Driver) runWatchdog(ctx context.Context) {
 }
 
 // recoverAttachment recovers the container's endpoint on a network, if the
-// network is tslink's, and reports whether it recovered one the driver did not
-// know. A known endpoint that joined and was never started missed its connect
-// event: it starts Tailscale for it.
+// network is tslink's, one of networks, and reports whether it recovered one
+// the driver did not know. A known endpoint that joined and was never started
+// missed its connect event: it starts Tailscale for it.
 func (d *Driver) recoverAttachment(
 	ctx context.Context,
-	ownNames map[string]bool,
+	networks map[string]dockerclient.NetworkInspectResult,
 	containerID, netName, networkID, endpointID string,
 ) bool {
-	// Check if this network uses our driver
-	networkResult, err := d.docker.NetworkInspect(
-		ctx,
-		networkID,
-		dockerclient.NetworkInspectOptions{},
-	)
-	if err != nil {
-		logger.Debugf("RecoverEndpoints: failed to inspect network %s: %v", networkID[:12], err)
-		return false
-	}
-	if !ownNames[networkResult.Network.Driver] {
+	networkResult, ok := networks[networkID]
+	if !ok {
 		return false
 	}
 

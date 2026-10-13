@@ -48,6 +48,10 @@ type fakeDocker struct {
 	networkInspect int  // NetworkInspect calls
 	noSettings     bool // ContainerInspect returns no network settings
 
+	containerInspects map[string]int  // ContainerInspect calls, by container ID
+	hang              map[string]bool // IDs whose inspect blocks until its context ends
+	hangList          bool            // NetworkList blocks until its context ends
+
 	events      chan events.Message
 	errs        chan error
 	eventsCalls []dockerclient.EventsListOptions
@@ -123,12 +127,19 @@ func (f *fakeDocker) ContainerList(
 }
 
 func (f *fakeDocker) ContainerInspect(
-	_ context.Context,
+	ctx context.Context,
 	id string,
 	_ dockerclient.ContainerInspectOptions,
 ) (dockerclient.ContainerInspectResult, error) {
+	if err := f.block(ctx, id); err != nil {
+		return dockerclient.ContainerInspectResult{}, err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.containerInspects == nil {
+		f.containerInspects = make(map[string]int)
+	}
+	f.containerInspects[id]++
 	for _, c := range f.containers {
 		if c.ID == id {
 			if f.noSettings {
@@ -141,10 +152,13 @@ func (f *fakeDocker) ContainerInspect(
 }
 
 func (f *fakeDocker) NetworkInspect(
-	_ context.Context,
+	ctx context.Context,
 	id string,
 	_ dockerclient.NetworkInspectOptions,
 ) (dockerclient.NetworkInspectResult, error) {
+	if err := f.block(ctx, id); err != nil {
+		return dockerclient.NetworkInspectResult{}, err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.networkInspect++
@@ -156,9 +170,16 @@ func (f *fakeDocker) NetworkInspect(
 }
 
 func (f *fakeDocker) NetworkList(
-	_ context.Context,
+	ctx context.Context,
 	options dockerclient.NetworkListOptions,
 ) (dockerclient.NetworkListResult, error) {
+	f.mu.Lock()
+	hang := f.hangList
+	f.mu.Unlock()
+	if hang {
+		<-ctx.Done()
+		return dockerclient.NetworkListResult{}, ctx.Err()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.networkLists = append(f.networkLists, options)
@@ -187,6 +208,26 @@ func (f *fakeDocker) Close() error {
 	defer f.mu.Unlock()
 	f.closed = true
 	return nil
+}
+
+// block waits until ctx ends if the inspect of id hangs, as a Docker daemon
+// that does not answer would, and returns ctx's error.
+func (f *fakeDocker) block(ctx context.Context, id string) error {
+	f.mu.Lock()
+	hang := f.hang[id]
+	f.mu.Unlock()
+	if !hang {
+		return nil
+	}
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// inspects returns the number of ContainerInspect calls for the container.
+func (f *fakeDocker) inspects(containerID string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.containerInspects[containerID]
 }
 
 // addNetwork adds a network with the given driver and returns its ID.
@@ -320,8 +361,8 @@ func (td *testDriver) watch(handled chan<- string, stopped chan<- string) {
 					handled <- endpointID
 				}
 			},
-			func(containerID string) {
-				td.onContainerStop(containerID)
+			func(containerID string, inspected *container.InspectResponse) {
+				td.onContainerStop(containerID, inspected)
 				if stopped != nil {
 					stopped <- containerID
 				}

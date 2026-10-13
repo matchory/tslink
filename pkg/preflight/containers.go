@@ -10,6 +10,8 @@ import (
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/moby/moby/api/types/container"
 	dockerclient "github.com/moby/moby/client"
+
+	"github.com/matchory/tslink/pkg/core"
 )
 
 // protectedPaths are host paths no container may bind-mount, nor a directory
@@ -221,10 +223,6 @@ func onTslinkNetwork(
 	return attached, nil
 }
 
-func containerName(c container.InspectResponse) string {
-	return strings.TrimPrefix(c.Name, "/")
-}
-
 // checkPrivileges checks E1: no container is privileged or has NET_ADMIN or
 // SYS_ADMIN.
 func checkPrivileges(containers []container.InspectResponse) Result {
@@ -235,12 +233,12 @@ func checkPrivileges(containers []container.InspectResponse) Result {
 			continue
 		}
 		if hc.Privileged {
-			violations = append(violations, containerName(c)+": privileged")
+			violations = append(violations, core.ContainerName(c.Name)+": privileged")
 		}
 		for _, capability := range hc.CapAdd {
 			switch strings.TrimPrefix(strings.ToUpper(capability), "CAP_") {
 			case "NET_ADMIN", "SYS_ADMIN", "ALL":
-				violations = append(violations, containerName(c)+": cap_add "+capability)
+				violations = append(violations, core.ContainerName(c.Name)+": cap_add "+capability)
 			}
 		}
 	}
@@ -289,7 +287,7 @@ func checkMounts(
 			case string(m.Type) == "bind" && prot.exposes(m.Source):
 				violations = append(
 					violations,
-					fmt.Sprintf("%s: mounts %s", containerName(c), m.Source),
+					fmt.Sprintf("%s: mounts %s", core.ContainerName(c.Name), m.Source),
 				)
 			case string(m.Type) == "volume" && m.Driver == "local":
 				device, err := bindVolumeDevice(ctx, d, m.Name)
@@ -298,13 +296,16 @@ func checkMounts(
 				}
 				if device != "" && prot.exposes(device) {
 					violations = append(violations, fmt.Sprintf(
-						"%s: volume %s mounts %s", containerName(c), m.Name, device,
+						"%s: volume %s mounts %s", core.ContainerName(c.Name), m.Name, device,
 					))
 				}
 			}
 		}
 		if c.HostConfig != nil && string(c.HostConfig.PidMode) == "host" {
-			violations = append(violations, containerName(c)+": shares the host's PID namespace")
+			violations = append(
+				violations,
+				core.ContainerName(c.Name)+": shares the host's PID namespace",
+			)
 		}
 	}
 	return outcome(
@@ -345,7 +346,7 @@ func checkStackLabels(containers []container.InspectResponse) Result {
 		labels := c.Config.Labels
 		if labels["com.docker.swarm.service.id"] != "" &&
 			labels[stackLabel] == "" {
-			loose = append(loose, containerName(c))
+			loose = append(loose, core.ContainerName(c.Name))
 		}
 	}
 	if len(loose) > 0 {

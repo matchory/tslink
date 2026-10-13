@@ -375,7 +375,7 @@ func inspectedContainerInfo(
 	if c.Config != nil && c.Config.Labels != nil {
 		labels = c.Config.Labels
 	}
-	info := parseContainerInfo(strings.TrimPrefix(c.Name, "/"), labels)
+	info := parseContainerInfo(core.ContainerName(c.Name), labels)
 	info.ID = c.ID
 	if c.Config != nil {
 		info.StopSignal = c.Config.StopSignal

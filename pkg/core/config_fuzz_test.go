@@ -9,8 +9,8 @@ import (
 // FuzzParseNetworkOptions checks what ParseNetworkOptions hands on from
 // network options: the key, login server and ephemeral setting unchanged,
 // tags as single non-empty elements of a comma-separated list, an MTU in
-// range, and a login server ValidateLoginServer accepts only if it is an
-// http or https URL with a host.
+// range or an error, and a login server ValidateLoginServer accepts only if
+// it is an http or https URL with a host.
 //
 // Guards: G3
 func FuzzParseNetworkOptions(f *testing.F) {
@@ -18,10 +18,13 @@ func FuzzParseNetworkOptions(f *testing.F) {
 	f.Add("", " , tag:a ,,", "575", "ftp://x", "")
 	f.Add("k?ephemeral=false", "tag:a\ntag:b", "65536", "http://u:p@h:8080/x", "maybe")
 	f.Fuzz(func(t *testing.T, key, tags, mtu, login, ephemeral string) {
-		o := ParseNetworkOptions(map[string]any{GenericOptionsKey: map[string]any{
-			"tslink.authkey": key, "tslink.tags": tags, MTUOption: mtu,
+		o, err := ParseNetworkOptions(map[string]any{GenericOptionsKey: map[string]any{
+			AuthKeyOption: key, TagsOption: tags, MTUOption: mtu,
 			LoginServerOption: login, EphemeralOption: ephemeral,
 		}})
+		if (err != nil) != (ParseMTU(mtu) == 0) {
+			t.Fatalf("MTU %q: error %v", mtu, err)
+		}
 		if o.AuthKey != key || o.LoginServer != login || o.Ephemeral != ephemeral {
 			t.Fatalf("ParseNetworkOptions changed a value: %+v", o)
 		}

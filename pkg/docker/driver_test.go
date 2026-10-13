@@ -831,6 +831,36 @@ func (c cancelingDocker) PluginList(
 	return dockerclient.PluginListResult{}, ctx.Err()
 }
 
+// A misspelt network option fails docker network create, and an endpoint
+// option under tslink's prefix fails the endpoint: neither leaves a network
+// or container with other settings than meant.
+func TestCreateRejectsUnknownOptions(t *testing.T) {
+	td := newTestDriver(t, newFakeDocker())
+	netID := fakeID("net")
+	if err := td.CreateNetwork(&network.CreateNetworkRequest{
+		NetworkID: netID,
+		Options: map[string]any{core.GenericOptionsKey: map[string]any{
+			core.AuthKeyOption: "k", "tslink.tag": "tag:web",
+		}},
+	}); err == nil {
+		t.Error("network with tslink.tag created")
+	}
+	if _, ok := td.network(netID); ok {
+		t.Error("refused network stored")
+	}
+
+	td.createNetwork(t, netID, map[string]string{core.AuthKeyOption: "k"})
+	epID := fakeID("ep")
+	if _, err := td.CreateEndpoint(&network.CreateEndpointRequest{
+		NetworkID: netID, EndpointID: epID, Options: map[string]any{core.HostnameLabel: "web"},
+	}); err == nil {
+		t.Error("endpoint with the endpoint option tslink.hostname created")
+	}
+	if _, ok := td.endpoint(epID); ok {
+		t.Error("refused endpoint stored")
+	}
+}
+
 // A watchdog scan cut short by the plugin's shutdown is not an error.
 func TestWatchdogShutdownNotAnError(t *testing.T) {
 	old := watchdogInterval

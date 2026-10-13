@@ -146,7 +146,10 @@ func (d *Driver) CreateNetwork(req *network.CreateNetworkRequest) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	opts := core.ParseNetworkOptions(req.Options)
+	opts, err := core.ParseNetworkOptions(req.Options)
+	if err != nil {
+		return err
+	}
 	logger.Debugf("Parsed opts: authkey=%s", redactKey(opts.AuthKey))
 
 	net, err := core.NewNetwork(req.NetworkID, opts, d.config)
@@ -200,11 +203,14 @@ func (d *Driver) CreateEndpoint(
 		return nil, err
 	}
 
+	if err := core.CheckEndpointOptions(req.Options); err != nil {
+		return nil, err
+	}
+
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	// Parse endpoint options for hostname override
-	opts := core.ParseEndpointOptions(req.Options)
+	var opts core.EndpointOptions
 	if req.Interface != nil && req.Interface.Address != "" {
 		prefix, err := netip.ParsePrefix(req.Interface.Address)
 		if err != nil {

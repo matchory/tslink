@@ -18,11 +18,6 @@ import (
 	"github.com/matchory/tslink/pkg/tailscale"
 )
 
-// HealthLabel is the container label that turns on the readiness endpoint on
-// a loopback port of the container's own, for a Docker healthcheck such as
-// wget -q -O- http://127.0.0.1:<port>/ready.
-const HealthLabel = "tslink.health"
-
 // healthWarning is the status warning key for a readiness endpoint tslink
 // cannot serve.
 const healthWarning = "health"

@@ -2,6 +2,9 @@
 
 Network options configure all containers on a tslink network. Set them with `--opt` on `docker network create`, or
 with `driver_opts` in a Compose or stack file. You cannot change an option after you create the network.
+`docker network create` fails for an option that starts with `tslink.` and is not in this table, so a misspelt
+option does not leave the network with another credential or other tags than you meant. tslink takes no
+`--driver-opt` options on `docker network connect`: set a container's options as [labels](container-labels.md).
 
 | Option | Value | Default |
 | --- | --- | --- |
@@ -59,8 +62,8 @@ tailscaled logs in to this server. The URL must use `http` or `https` and must h
 
 ## com.docker.network.driver.mtu
 
-The MTU of the interface that tslink adds to the container. tslink ignores a value that is not a number from 576 to
-65535, and uses 1500.
+The MTU of the interface that tslink adds to the container. `docker network create` fails for a value that is not a
+number from 576 to 65535.
 
 ## Stack networks
 

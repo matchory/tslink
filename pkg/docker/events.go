@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -377,54 +378,63 @@ func inspectedContainerInfo(
 	return info
 }
 
-// parseContainerInfo extracts tslink.* labels into structured ContainerInfo.
-func parseContainerInfo(name string, labels map[string]string) *core.ContainerInfo {
-	info := &core.ContainerInfo{
-		Name:   name,
-		Labels: labels,
-		Stack:  labels[core.StackLabel],
-	}
-
-	// tslink.hostname - override Tailscale hostname
-	if v, ok := labels["tslink.hostname"]; ok && v != "" {
-		info.Hostname = v
-	} else {
-		info.Hostname = hostnameFromName(name)
-	}
-
-	// tslink.tags - comma-separated ACL tags (e.g., "tag:web,tag:prod")
-	if v, ok := labels["tslink.tags"]; ok && v != "" {
+// containerLabels sets each of tslink's container labels on a container's
+// info from its value. The labels tslink.serve.<port> are
+// parseServeEndpoints'.
+var containerLabels = map[string]func(info *core.ContainerInfo, v string){
+	core.HostnameLabel: func(info *core.ContainerInfo, v string) {
+		if v != "" {
+			info.Hostname = v
+		}
+	},
+	// Comma-separated ACL tags, e.g. "tag:web,tag:prod"
+	core.TagsLabel: func(info *core.ContainerInfo, v string) {
 		info.Tags = core.ParseTags(v)
-	}
-
-	// tslink.service - service name (e.g., "svc:hello-world")
-	if v, ok := labels["tslink.service"]; ok && v != "" {
+	},
+	core.ServiceLabel: func(info *core.ContainerInfo, v string) {
 		info.Service = v
-	}
-
-	// tslink.direct - serve the endpoints on the task's own name too. Defaults
-	// to true without a Service only: with one, it would double what is
-	// served, and every task would get a certificate of its own, even for
-	// plain HTTP (https://github.com/tailscale/tailscale/issues/21693)
-	if v, ok := labels["tslink.direct"]; ok {
+	},
+	// Serve the endpoints on the task's own name too. Defaults to true
+	// without a Service only: with one, it would double what is served, and
+	// every task would get a certificate of its own, even for plain HTTP
+	// (https://github.com/tailscale/tailscale/issues/21693)
+	core.DirectLabel: func(info *core.ContainerInfo, v string) {
 		info.Direct = v != "false" && v != "0" && v != "no"
-	} else {
-		info.Direct = info.Service == ""
-	}
-
-	// tslink.health - serve the readiness endpoint on this loopback port
-	if v, ok := labels[core.HealthLabel]; ok {
+	},
+	// Serve the readiness endpoint on this loopback port
+	core.HealthLabel: func(info *core.ContainerInfo, v string) {
 		port, err := strconv.ParseUint(v, 10, 16)
 		if err != nil || port == 0 {
-			logger.Warnf("Container %s: ignoring %s=%q: not a port", name, core.HealthLabel, v)
-		} else {
-			info.HealthPort = int(port)
+			logger.Warnf("Container %s: ignoring %s=%q: not a port", info.Name, core.HealthLabel, v)
+			return
+		}
+		info.HealthPort = int(port)
+	},
+}
+
+// parseContainerInfo reads a container's tslink labels into its info. A label
+// under tslink's prefix that it does not know is logged and ignored.
+func parseContainerInfo(name string, labels map[string]string) *core.ContainerInfo {
+	info := &core.ContainerInfo{
+		Name:     name,
+		Labels:   labels,
+		Stack:    labels[core.StackLabel],
+		Hostname: hostnameFromName(name),
+	}
+	for _, key := range slices.Sorted(maps.Keys(labels)) {
+		set, known := containerLabels[key]
+		switch {
+		case known:
+			set(info, labels[key])
+		case strings.HasPrefix(key, core.ServeLabelPrefix):
+		case strings.HasPrefix(key, core.KeyPrefix):
+			logger.Warnf("Container %s: ignoring unknown label %s", name, key)
 		}
 	}
-
-	// Parse serve endpoints from tslink.serve.<port> labels
+	if _, ok := labels[core.DirectLabel]; !ok {
+		info.Direct = info.Service == ""
+	}
 	info.Endpoints = parseServeEndpoints(name, labels)
-
 	return info
 }
 
@@ -460,13 +470,8 @@ func parseServeEndpoints(containerName string, labels map[string]string) []tails
 	var endpoints []tailscale.ServeEndpoint
 
 	for key, value := range labels {
-		if !strings.HasPrefix(key, "tslink.serve.") {
-			continue
-		}
-
-		// Extract external port from key
-		externalPort := strings.TrimPrefix(key, "tslink.serve.")
-		if externalPort == "" {
+		externalPort, ok := strings.CutPrefix(key, core.ServeLabelPrefix)
+		if !ok {
 			continue
 		}
 

@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- tslink checks option and label keys against the ones it knows.
+  `docker network create` fails for a network option under `tslink.` that
+  tslink does not know, such as a misspelt `tslink.authkye`, which left the
+  network with the cluster or plugin credential, and for an MTU that is not
+  a number from 576 to 65535, which tslink replaced with 1500. An endpoint
+  option under `tslink.` fails the endpoint: the undocumented endpoint option
+  `tslink.hostname` is gone, use the label. A container label under
+  `tslink.` that tslink does not know is logged as a warning. Tests check
+  the reference pages against the keys tslink reads.
 - A kill event costs no Docker inspect: the stop signal and endpoints of a
   container on a tslink network come from its connect event or recovery,
   and kills of other containers are ignored. Before, every kill on the host

@@ -140,13 +140,6 @@ type NetworkOptions struct {
 	Ephemeral   string // tslink.ephemeral as given; NewNetwork validates it
 }
 
-// EphemeralOption says whether a network's nodes are ephemeral, for keys
-// that do not say so themselves.
-const EphemeralOption = "tslink.ephemeral"
-
-// MTUOption is Docker's standard network option for the interface MTU.
-const MTUOption = "com.docker.network.driver.mtu"
-
 // ParseMTU returns the MTU an option value sets, or 0 if it is not a valid one.
 func ParseMTU(s string) int {
 	mtu, err := strconv.Atoi(s)
@@ -208,31 +201,6 @@ func LoadConfig() (*Config, error) {
 // GenericOptionsKey is the key Docker uses to pass driver options.
 const GenericOptionsKey = "com.docker.network.generic"
 
-// ParseNetworkOptions parses network creation options.
-// Docker passes --opt values nested under "com.docker.network.generic".
-func ParseNetworkOptions(opts map[string]any) NetworkOptions {
-	options := NetworkOptions{}
-
-	genericOpts := opts
-	if nested, ok := opts[GenericOptionsKey]; ok {
-		if nestedMap, ok := nested.(map[string]any); ok {
-			genericOpts = nestedMap
-		}
-	}
-
-	options.AuthKey, _ = stringOption(genericOpts, "tslink.authkey")
-	if s, ok := stringOption(genericOpts, MTUOption); ok {
-		options.MTU = ParseMTU(s)
-	}
-	options.LoginServer, _ = stringOption(genericOpts, LoginServerOption)
-	options.Ephemeral, _ = stringOption(genericOpts, EphemeralOption)
-	if s, ok := stringOption(genericOpts, "tslink.tags"); ok {
-		options.Tags = ParseTags(s)
-	}
-
-	return options
-}
-
 // ParseTags splits a comma-separated tag list (e.g. "tag:web, tag:prod").
 func ParseTags(s string) []string {
 	var tags []string
@@ -242,17 +210,4 @@ func ParseTags(s string) []string {
 		}
 	}
 	return tags
-}
-
-// ParseEndpointOptions parses endpoint creation options.
-func ParseEndpointOptions(opts map[string]any) EndpointOptions {
-	options := EndpointOptions{}
-	options.Hostname, _ = stringOption(opts, "tslink.hostname")
-	return options
-}
-
-// stringOption returns the option key of opts, and whether it is a string.
-func stringOption(opts map[string]any, key string) (string, bool) {
-	s, ok := opts[key].(string)
-	return s, ok
 }

@@ -1,10 +1,14 @@
 package docker
 
 import (
+	"os"
+	"regexp"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/matchory/tslink/pkg/core"
+	"github.com/matchory/tslink/pkg/logger"
 	"github.com/matchory/tslink/pkg/tailscale"
 )
 
@@ -214,5 +218,51 @@ func TestParseServeEndpointsInPortOrder(t *testing.T) {
 		if want := []string{"22", "80", "0443", "443", "5432", "8443"}; !slices.Equal(got, want) {
 			t.Fatalf("ports %v, want %v", got, want)
 		}
+	}
+}
+
+// A label under tslink's prefix that tslink does not know is logged with the
+// container's name, and changes nothing.
+func TestParseContainerInfoWarnsOfUnknownLabels(t *testing.T) {
+	var log lockedBuffer
+	logger.SetOutput(&log)
+	t.Cleanup(func() { logger.SetOutput(os.Stdout) })
+
+	info := parseContainerInfo("web", map[string]string{
+		"tslink.servce":     "svc:web",
+		core.ServiceLabel:   "svc:web",
+		"tslink.serve.443":  "https:8080",
+		"com.example.label": "x",
+	})
+	if info.Service != "svc:web" || len(info.Endpoints) != 1 {
+		t.Errorf("parsed %+v", info)
+	}
+	out := log.String()
+	if !strings.Contains(out, "Container web: ignoring unknown label tslink.servce") {
+		t.Errorf("no warning of the unknown label in %q", out)
+	}
+	if strings.Count(out, "unknown label") != 1 {
+		t.Errorf("warned of other labels: %q", out)
+	}
+}
+
+// The container labels reference lists exactly the labels tslink reads.
+func TestContainerLabelsMatchReference(t *testing.T) {
+	keys := []string{core.ServeLabelPrefix + "<port>"}
+	for key := range containerLabels {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	b, err := os.ReadFile("../../docs/reference/container-labels.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var listed []string
+	for _, m := range regexp.MustCompile("(?m)^\\| \\[`([^`]+)`\\]").FindAllStringSubmatch(string(b), -1) {
+		listed = append(listed, m[1])
+	}
+	slices.Sort(listed)
+	if !slices.Equal(listed, keys) {
+		t.Errorf("container-labels.md lists %q, tslink reads %q", listed, keys)
 	}
 }

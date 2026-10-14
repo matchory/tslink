@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The plugin image bundles Tailscale v1.104.1 (was v1.102.5).
 - The plugin warns at startup of certificates and keys left in the data
   directory's `certs/` once `shared.source` points elsewhere; it leaves
   them for the operator to remove.

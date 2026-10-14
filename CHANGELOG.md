@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The plugin warns at startup of certificates and keys left in the data
+  directory's `certs/` once `shared.source` points elsewhere; it leaves
+  them for the operator to remove.
+- A Service backend waiting for control's approval is logged at the info
+  level, and warned of only if control has not approved it after two
+  minutes. Before, every start warned, before control had caught up.
+- A start of tailscaled abandoned because the endpoint stopped, as when the
+  plugin restarts while endpoints start, is logged at the info level, not
+  as an error.
+
 ## [0.3.1] - 2026-10-14
 
 ### Changed

@@ -19,31 +19,32 @@ type Status struct {
 }
 
 // WaitForIP waits for Tailscale to get an IP address, or ctx to be done.
-func (d *Daemon) WaitForIP(ctx context.Context) (*Status, error) {
+func (d *daemon) WaitForIP(ctx context.Context) (*Status, error) {
 	logger.Debugf("Waiting for Tailscale IP for endpoint %s", d.config.EndpointID)
 
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
-	for {
-		select {
-		case <-ctx.Done():
-			if errors.Is(ctx.Err(), context.Canceled) {
-				return nil, fmt.Errorf("waiting for Tailscale IP: %w", ctx.Err())
-			}
-			return nil, errors.New("timeout waiting for Tailscale IP")
-		default:
-			status, err := d.getStatus(ctx)
-			if err == nil && status.IP != "" {
-				return status, nil
-			}
-			sleep(ctx, 500*time.Millisecond)
+	var status *Status
+	hasIP := func() bool {
+		s, err := d.getStatus(ctx)
+		if err != nil || s.IP == "" {
+			return false
 		}
+		status = s
+		return true
 	}
+	if poll(ctx, 500*time.Millisecond, hasIP) {
+		return status, nil
+	}
+	if errors.Is(ctx.Err(), context.Canceled) {
+		return nil, fmt.Errorf("waiting for Tailscale IP: %w", ctx.Err())
+	}
+	return nil, errors.New("timeout waiting for Tailscale IP")
 }
 
 // getStatus gets the current Tailscale status.
-func (d *Daemon) getStatus(ctx context.Context) (*Status, error) {
+func (d *daemon) getStatus(ctx context.Context) (*Status, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
@@ -63,7 +64,7 @@ func (d *Daemon) getStatus(ctx context.Context) (*Status, error) {
 
 // BackendState returns tailscaled's backend state, such as Running or
 // NeedsLogin.
-func (d *Daemon) BackendState() (string, error) {
+func (d *daemon) BackendState() (string, error) {
 	ctx, cancel := context.WithTimeout(d.ctx, 5*time.Second)
 	defer cancel()
 	st, err := d.lc.StatusWithoutPeers(ctx)

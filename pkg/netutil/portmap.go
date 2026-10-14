@@ -189,11 +189,7 @@ func containerAddr(vethHost string) (netip.Addr, error) {
 	if err != nil {
 		return netip.Addr{}, err
 	}
-	ip, err := netip.ParseAddr(host)
-	if err != nil {
-		return netip.Addr{}, fmt.Errorf("failed to parse the address of %s: %w", vethHost, err)
-	}
-	return ip.Next(), nil
+	return host.Next(), nil
 }
 
 // setupPortMapping maps the tailscaled behind vethHost to a port of its own,

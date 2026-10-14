@@ -17,6 +17,8 @@ import (
 	"strings"
 	"time"
 
+	"tailscale.com/tailcfg"
+
 	"github.com/matchory/tslink/pkg/logger"
 )
 
@@ -37,15 +39,7 @@ const (
 	protoHTTPS         = "https"
 )
 
-// certPollInterval spaces the checks for a certificate, and certDomainGrace is
-// how long the lease holder waits, unadvertised, for control to make the
-// Service's name one of its certificate domains. Variables for tests.
-var (
-	certPollInterval = 5 * time.Second
-	certDomainGrace  = 30 * time.Second
-)
-
-// certDomainError is what "tailscale cert" fails with for a name that is not
+// certDomainError is what tailscaled fails a certificate request with for a name that is not
 // among the node's certificate domains.
 const certDomainError = "invalid domain"
 
@@ -227,35 +221,31 @@ func (l *certLease) release() {
 // The holder asks unadvertised. Should control keep refusing the name for
 // certDomainGrace, the holder advertises the Service, in case control makes it
 // a certificate domain only of hosts that advertise it.
-func (d *Daemon) requestCert(dir, domain string) error {
+func (d *daemon) requestCert(dir, domain string) error {
 	var lastErr string
 	start, advertised := time.Now(), false
+	tm := d.config.times()
 	for !validCert(dir, domain, time.Now()) {
 		if d.isDrained() {
 			return errDrained
 		}
 		ctx, cancel := context.WithTimeout(d.ctx, certLeaseStale)
-		// The certificate and its key go to stdout, which is neither logged
-		// (no prefix) nor kept
-		out, err := d.runTailscale(ctx, cliCall{args: []string{
-			"--socket=" + d.socketPath, "cert", "--cert-file=-", "--key-file=-", domain,
-		}})
+		// tailscaled keeps the pair in its certificate directory: the copy
+		// it returns is not needed
+		_, _, err := d.lc.CertPair(ctx, domain)
 		cancel()
 		if err != nil {
-			if stderr := strings.TrimSpace(out.stderr); stderr != "" {
-				err = fmt.Errorf("%w: %s", err, stderr)
-			}
 			if err.Error() != lastErr {
 				logger.Infof("Certificate for %s not issued yet: %v", domain, err)
 				lastErr = err.Error()
 			}
 			if !advertised && strings.Contains(err.Error(), certDomainError) &&
-				time.Since(start) >= certDomainGrace {
+				time.Since(start) >= tm.certDomainGrace {
 				logger.Warnf(
 					"Control has not made %s a certificate domain of %s within %v: advertising %s",
 					domain,
 					d.config.EndpointID,
-					certDomainGrace,
+					tm.certDomainGrace,
 					d.config.Service,
 				)
 				if err := d.advertise(d.config.Service); err != nil {
@@ -264,10 +254,8 @@ func (d *Daemon) requestCert(dir, domain string) error {
 				advertised = true
 			}
 		}
-		select {
-		case <-d.ctx.Done():
+		if !sleep(d.ctx, tm.certPollInterval) {
 			return d.ctx.Err()
-		case <-time.After(certPollInterval):
 		}
 	}
 	return nil
@@ -277,7 +265,7 @@ func (d *Daemon) requestCert(dir, domain string) error {
 // serves no HTTPS or its certificate exists, and otherwise in the background
 // once it does or this replica holds the lease to issue it: waiting here would
 // hold up the daemon's start. A drained backend is left alone.
-func (d *Daemon) configureServiceWhenCertified() error {
+func (d *daemon) configureServiceWhenCertified() error {
 	if d.isDrained() {
 		logger.Infof("Not configuring %s for %s: drained", d.config.Service, d.config.EndpointID)
 		return nil
@@ -319,33 +307,29 @@ func ignoreDrained(err error) error {
 	return err
 }
 
-func (d *Daemon) configureServiceAfterCert(dir, domain string) {
-	for {
+func (d *daemon) configureServiceAfterCert(dir, domain string) {
+	poll(d.ctx, d.config.times().certPollInterval, func() bool {
 		err := d.configureServiceWithCert(dir, domain)
 		if errors.Is(err, errDrained) {
 			logger.Infof("%s drained for %s: no longer waiting for the certificate for %s",
 				d.config.Service, d.config.EndpointID, domain)
-			return
+			return true
 		}
 		if err == nil || d.ctx.Err() != nil {
-			return
+			return true
 		}
 		if !errors.Is(err, errLeaseHeld) {
 			logger.Warnf("Failed to configure %s, retrying: %v", d.config.Service, err)
 		}
-		select {
-		case <-d.ctx.Done():
-			return
-		case <-time.After(certPollInterval):
-		}
-	}
+		return false
+	})
 }
 
 // configureServiceWithCert configures the Service if its certificate exists,
 // or if this replica takes the lease to issue it. It returns errLeaseHeld if
 // another replica holds the lease, and errDrained once the backend is drained.
 // No replica is advertised before the certificate exists.
-func (d *Daemon) configureServiceWithCert(dir, domain string) error {
+func (d *daemon) configureServiceWithCert(dir, domain string) error {
 	if d.isDrained() {
 		return errDrained
 	}
@@ -396,8 +380,14 @@ func servesWeb(endpoints []ServeEndpoint) bool {
 	return false
 }
 
+// serviceDomainIn returns the domain of the endpoint's Service in the tailnet
+// with the MagicDNS suffix suffix.
+func (d *daemon) serviceDomainIn(suffix string) string {
+	return tailcfg.ServiceName(d.config.Service).WithoutPrefix() + "." + suffix
+}
+
 // serviceDomain returns the Service's DNS name, which its certificate is for.
-func (d *Daemon) serviceDomain() (string, error) {
+func (d *daemon) serviceDomain() (string, error) {
 	ctx, cancel := context.WithTimeout(d.ctx, 10*time.Second)
 	defer cancel()
 	st, err := d.lc.StatusWithoutPeers(ctx)
@@ -408,7 +398,7 @@ func (d *Daemon) serviceDomain() (string, error) {
 	if suffix == "" {
 		return "", errors.New("tailscale status has no MagicDNS suffix: HTTPS needs MagicDNS")
 	}
-	domain := strings.TrimPrefix(d.config.Service, "svc:") + "." + suffix
+	domain := d.serviceDomainIn(suffix)
 	// The domain names files the plugin writes and deletes as root: the
 	// Service name comes from a label, the suffix from control
 	if !dnsName.MatchString(domain) {

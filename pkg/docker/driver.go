@@ -16,6 +16,7 @@ import (
 	"github.com/docker/go-plugins-helpers/network"
 	dockernetwork "github.com/moby/moby/api/types/network"
 	dockerclient "github.com/moby/moby/client"
+	"github.com/moby/moby/client/pkg/stringid"
 
 	"github.com/matchory/tslink/pkg/core"
 	"github.com/matchory/tslink/pkg/logger"
@@ -40,8 +41,8 @@ type Driver struct {
 	joinEndpoint   func(e *core.Endpoint, sandboxKey string) (*network.JoinResponse, error)
 	recoverRouting func(e *core.Endpoint, sandboxKey string) error
 	runTailscale   func(e *core.Endpoint, ctx context.Context, info *core.ContainerInfo)
-	leaveEndpoint  func(e *core.Endpoint) error
-	stopEndpoint   func(e *core.Endpoint) error
+	leaveEndpoint  func(e *core.Endpoint)
+	stopEndpoint   func(e *core.Endpoint)
 	drainService   func(e *core.Endpoint)
 
 	// Installs (true) or removes (false) the host's tailnet isolation, given
@@ -80,10 +81,7 @@ func redactKey(key string) string {
 
 // NewDriver creates a new Docker network driver.
 func NewDriver() (*Driver, error) {
-	cfg, err := core.LoadConfig()
-	if err != nil {
-		return nil, fmt.Errorf("failed to load config: %w", err)
-	}
+	cfg := core.LoadConfig()
 	core.RemoveDownloadCache(cfg.DataDir)
 
 	// Create Docker client for container inspection and recovery
@@ -124,7 +122,7 @@ func newDriver(cfg *core.Config, docker dockerAPI) *Driver {
 func (d *Driver) GetCapabilities() (*network.CapabilitiesResponse, error) {
 	logger.Infof("GetCapabilities called")
 	return &network.CapabilitiesResponse{
-		Scope:             "global", // spike: so swarm carries driver options to nodes
+		Scope:             "global", // So Swarm carries driver options to nodes
 		ConnectivityScope: "global", // Containers can reach the tailnet
 	}, nil
 }
@@ -171,7 +169,7 @@ func (d *Driver) AllocateNetwork(
 	req *network.AllocateNetworkRequest,
 ) (*network.AllocateNetworkResponse, error) {
 	logger.Infof("AllocateNetwork: %s", req.NetworkID)
-	// spike: hand the options back so swarm stores them as driver state
+	// Hand the options back so Swarm stores them as driver state
 	return &network.AllocateNetworkResponse{Options: req.Options}, nil
 }
 
@@ -216,14 +214,11 @@ func (d *Driver) CreateEndpoint(
 		if err != nil {
 			logger.Warnf("Ignoring IPAM address %q: %v", req.Interface.Address, err)
 		} else {
-			opts.IPAMAddress = prefix.Addr().String()
+			opts.IPAMAddress = prefix.Addr()
 		}
 	}
 
-	endpoint, err := core.NewEndpoint(req.EndpointID, net, opts, d.config, d.claims)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create endpoint: %w", err)
-	}
+	endpoint := core.NewEndpoint(req.EndpointID, net, opts, d.config, d.claims)
 
 	d.endpoints[req.EndpointID] = endpoint
 
@@ -248,9 +243,7 @@ func (d *Driver) DeleteEndpoint(req *network.DeleteEndpointRequest) error {
 		return nil
 	}
 
-	if err := d.stopEndpoint(endpoint); err != nil {
-		logger.Warnf("Failed to stop endpoint: %v", err)
-	}
+	d.stopEndpoint(endpoint)
 	return nil
 }
 
@@ -313,7 +306,7 @@ func (d *Driver) Join(req *network.JoinRequest) (*network.JoinResponse, error) {
 	} else {
 		logger.Infof(
 			"Join: waiting for Docker event to trigger Tailscale setup for endpoint %s",
-			req.EndpointID[:12],
+			stringid.TruncateID(req.EndpointID),
 		)
 	}
 
@@ -335,9 +328,7 @@ func (d *Driver) Leave(req *network.LeaveRequest) error {
 		return nil
 	}
 
-	if err := d.leaveEndpoint(endpoint); err != nil {
-		logger.Warnf("Failed to leave: %v", err)
-	}
+	d.leaveEndpoint(endpoint)
 
 	return nil
 }
@@ -410,10 +401,8 @@ func (d *Driver) Shutdown(ctx context.Context) error {
 		var stops sync.WaitGroup
 		for _, ep := range endpoints {
 			stops.Go(func() {
-				logger.Infof("Stopping endpoint %s", ep.ID[:12])
-				if err := d.stopEndpoint(ep); err != nil {
-					logger.Warnf("Failed to stop endpoint %s: %v", ep.ID[:12], err)
-				}
+				logger.Infof("Stopping endpoint %s", stringid.TruncateID(ep.ID))
+				d.stopEndpoint(ep)
 			})
 		}
 		stops.Wait()
@@ -611,28 +600,31 @@ func (d *Driver) onContainerInfo(endpointID string, info *core.ContainerInfo) {
 	if !ok {
 		logger.Debugf(
 			"onContainerInfo: endpoint %s not found (may have already left)",
-			endpointID[:12],
+			stringid.TruncateID(endpointID),
 		)
 		return
 	}
 
 	// Call endpoint methods without holding driver.mu
 	if endpoint.IsTailscaleStarted() {
-		logger.Debugf("onContainerInfo: Tailscale already started for endpoint %s", endpointID[:12])
+		logger.Debugf(
+			"onContainerInfo: Tailscale already started for endpoint %s",
+			stringid.TruncateID(endpointID),
+		)
 		return
 	}
 
 	if endpoint.SandboxKey() == "" {
 		logger.Debugf(
 			"onContainerInfo: endpoint %s has no sandbox key (Join not called yet)",
-			endpointID[:12],
+			stringid.TruncateID(endpointID),
 		)
 		return
 	}
 
 	logger.Infof(
 		"onContainerInfo: triggering Tailscale setup for endpoint %s (hostname=%s)",
-		endpointID[:12],
+		stringid.TruncateID(endpointID),
 		info.Hostname,
 	)
 
@@ -646,7 +638,7 @@ func (d *Driver) onContainerInfo(endpointID string, info *core.ContainerInfo) {
 // ID as a label, which tracebacks show.
 func (d *Driver) startTailscale(endpoint *core.Endpoint, info *core.ContainerInfo) {
 	endpoint.MarkStartRequested()
-	labels := pprof.Labels("endpoint", endpoint.ID[:12])
+	labels := pprof.Labels("endpoint", stringid.TruncateID(endpoint.ID))
 	d.wg.Go(func() {
 		pprof.Do(d.ctx, labels, func(ctx context.Context) { d.runTailscale(endpoint, ctx, info) })
 	})
@@ -688,7 +680,7 @@ func (d *Driver) collectGarbage(ctx context.Context) {
 	state := make(map[string]bool, len(endpoints))
 	sockets := make(map[string]bool, len(endpoints))
 	for _, ep := range endpoints {
-		sockets[ep.ID[:12]] = true
+		sockets[stringid.TruncateID(ep.ID)] = true
 		state[ep.StateDir()] = true
 	}
 
@@ -829,7 +821,7 @@ func (d *Driver) recoverAttachment(
 			); err != nil {
 				logger.Errorf(
 					"RecoverEndpoints: failed to start endpoint %s: %v",
-					endpointID[:12],
+					stringid.TruncateID(endpointID),
 					err,
 				)
 			}
@@ -839,10 +831,14 @@ func (d *Driver) recoverAttachment(
 
 	// Found orphaned endpoint - recover it
 	logger.Infof("RecoverEndpoints: found orphaned endpoint %s for container %s on network %s",
-		endpointID[:12], containerID[:12], netName)
+		stringid.TruncateID(endpointID), stringid.TruncateID(containerID), netName)
 
 	if err := d.recoverEndpoint(ctx, containerID, netName, endpointID, networkResult); err != nil {
-		logger.Errorf("RecoverEndpoints: failed to recover endpoint %s: %v", endpointID[:12], err)
+		logger.Errorf(
+			"RecoverEndpoints: failed to recover endpoint %s: %v",
+			stringid.TruncateID(endpointID),
+			err,
+		)
 		return false
 	}
 	return true
@@ -863,7 +859,7 @@ func (d *Driver) startMissedEndpoint(
 	tsInfo := a.info
 	logger.Infof(
 		"RecoverEndpoints: endpoint %s joined without its connect event, starting Tailscale (hostname=%s)",
-		endpoint.ID[:12],
+		stringid.TruncateID(endpoint.ID),
 		tsInfo.Hostname,
 	)
 	d.cache.Store(endpoint.ID, tsInfo)
@@ -876,7 +872,7 @@ func (d *Driver) startMissedEndpoint(
 type inspectedAttachment struct {
 	info        *core.ContainerInfo // the container's Tailscale configuration
 	sandboxKey  string              // its network namespace
-	ipamAddress string              // Docker's IPAM address for it on the network, or ""
+	ipamAddress netip.Addr          // Docker's IPAM address for it on the network, if any
 }
 
 // inspectContainer returns the Tailscale configuration of a container on a
@@ -920,9 +916,7 @@ func (d *Driver) inspectContainer(
 		),
 		sandboxKey: settings.SandboxKey,
 	}
-	if netSettings.IPAddress.IsValid() {
-		a.ipamAddress = netSettings.IPAddress.String()
-	}
+	a.ipamAddress = netSettings.IPAddress
 	return a, nil
 }
 
@@ -946,7 +940,7 @@ func (d *Driver) recoverEndpoint(
 	}
 
 	// Create endpoint
-	endpoint, err := core.NewEndpoint(
+	endpoint := core.NewEndpoint(
 		endpointID,
 		net,
 		// Recover puts the IPAM address on the container's veth, as Join
@@ -955,16 +949,16 @@ func (d *Driver) recoverEndpoint(
 		d.config,
 		d.claims,
 	)
-	if err != nil {
-		return fmt.Errorf("failed to create endpoint: %w", err)
-	}
 
 	// Store endpoint
 	d.mu.Lock()
 	// Double-check someone else didn't create it
 	if _, exists := d.endpoints[endpointID]; exists {
 		d.mu.Unlock()
-		logger.Debugf("recoverEndpoint: endpoint %s already exists (race)", endpointID[:12])
+		logger.Debugf(
+			"recoverEndpoint: endpoint %s already exists (race)",
+			stringid.TruncateID(endpointID),
+		)
 		return nil
 	}
 	d.endpoints[endpointID] = endpoint
@@ -982,13 +976,7 @@ func (d *Driver) recoverEndpoint(
 		delete(d.endpoints, endpointID)
 		d.mu.Unlock()
 		// Give the state directory up: the container's next endpoint needs it
-		if stopErr := d.stopEndpoint(endpoint); stopErr != nil {
-			logger.Warnf(
-				"recoverEndpoint: failed to stop endpoint %s: %v",
-				endpointID[:12],
-				stopErr,
-			)
-		}
+		d.stopEndpoint(endpoint)
 		return fmt.Errorf("failed to recover routing: %w", err)
 	}
 
@@ -1000,7 +988,7 @@ func (d *Driver) recoverEndpoint(
 	// the container needs to be restarted anyway. We only recover Tailscale.
 	logger.Infof(
 		"recoverEndpoint: triggering Tailscale setup for endpoint %s (hostname=%s)",
-		endpointID[:12],
+		stringid.TruncateID(endpointID),
 		tsInfo.Hostname,
 	)
 

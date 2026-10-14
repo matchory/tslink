@@ -80,15 +80,15 @@ func Run(dataDir string, w io.Writer) error {
 	}
 
 	info, err := os.Stat(dataDir)
-	if err != nil {
-		result.DataDirExists = false
-		return outputResult(result, w)
+	result.DataDirExists = err == nil && info.IsDir()
+	if !result.DataDirExists {
+		outputResult(result, w)
+		return nil
 	}
-	result.DataDirExists = info.IsDir()
 
 	// Each state directory links to its daemon's socket under <dataDir>/sock
-	// (see tailscale.NewDaemon). Sockets no state directory links to are
-	// reported on their own.
+	// (see the tailscale package's newDaemon). Sockets no state directory
+	// links to are reported on their own.
 	linked := make(map[string]bool)
 	for _, stateDir := range stateDirs(dataDir) {
 		status, socketPath := checkStateDir(dataDir, stateDir)
@@ -127,7 +127,8 @@ func Run(dataDir string, w io.Writer) error {
 		}
 	}
 
-	return outputResult(result, w)
+	outputResult(result, w)
+	return nil
 }
 
 // readStatusFiles adds the endpoints whose Tailscale is not running, which
@@ -252,19 +253,19 @@ func getTailscaleStatus(socketPath string) (*tailscaleStatusResult, error) {
 	return status, nil
 }
 
-func outputResult(result *Result, w io.Writer) error {
+func outputResult(result *Result, w io.Writer) {
 	fmt.Fprintf(w, "=== tslink Diagnostic Report ===\n")
 	fmt.Fprintf(w, "Timestamp: %s\n", result.Timestamp.Format(time.RFC3339))
 	fmt.Fprintf(w, "Data Dir:  %s (exists: %v)\n\n", result.DataDir, result.DataDirExists)
 
 	if !result.DataDirExists {
 		fmt.Fprintf(w, "ERROR: Data directory does not exist\n")
-		return nil
+		return
 	}
 
 	if len(result.Endpoints) == 0 && len(result.NotRunning) == 0 && len(result.Warned) == 0 {
 		fmt.Fprintf(w, "No endpoints found.\n")
-		return nil
+		return
 	}
 
 	fmt.Fprintf(w, "=== Summary ===\n")
@@ -296,8 +297,6 @@ func outputResult(result *Result, w io.Writer) error {
 	for _, ep := range result.Endpoints {
 		writeEndpoint(w, ep)
 	}
-
-	return nil
 }
 
 // name returns the endpoint's hostname, after its stack if it has one.

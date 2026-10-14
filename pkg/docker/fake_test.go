@@ -318,7 +318,7 @@ type tsRun struct {
 // testDriver is a driver on a fake Docker whose endpoint operations need
 // neither root nor tailscaled: Join and Recover only record the sandbox key,
 // and starting Tailscale reports on runs and then blocks until the test ends,
-// as a slow tailscale up would.
+// as a slow login would.
 type testDriver struct {
 	*Driver
 	fake       *fakeDocker

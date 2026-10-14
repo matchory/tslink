@@ -67,27 +67,59 @@ func TestStartTailscaleRejectsForeignStack(t *testing.T) {
 	}
 }
 
-// A Service without serve endpoints fails before the endpoint claims or
-// creates a state directory.
-func TestStartTailscaleRejectsServiceWithoutEndpoints(t *testing.T) {
-	dataDir := t.TempDir()
-	claims := NewStateClaims()
-	e := &Endpoint{
-		ID:         "0123456789abcdef",
-		Network:    &Network{ID: "net", AuthKey: "tskey-test"},
-		sandboxKey: "/var/run/docker/netns/test",
-		dataDir:    dataDir,
-		claims:     claims,
+// A Service with an invalid name, or without serve endpoints, fails before
+// the endpoint claims or creates a state directory.
+func TestStartTailscaleRejectsInvalidService(t *testing.T) {
+	serve := []tailscale.ServeEndpoint{{Proto: "https", Port: "443", Target: "8080"}}
+	for _, info := range []ContainerInfo{
+		{Service: "svc:web"},
+		{Service: "web", Endpoints: serve},
+		{Service: "svc", Endpoints: serve},
+		{Service: "svc:", Endpoints: serve},
+		{Service: "svc:-web", Endpoints: serve},
+		{Service: "svc:a.b", Endpoints: serve},
+		{Service: "svc:web_1", Endpoints: serve},
+	} {
+		dataDir := t.TempDir()
+		e := &Endpoint{
+			ID:         "0123456789abcdef",
+			Network:    &Network{ID: "net", AuthKey: "tskey-test"},
+			sandboxKey: "/var/run/docker/netns/test",
+			dataDir:    dataDir,
+			claims:     NewStateClaims(),
+		}
+		info.Hostname = "web"
+		err := e.StartTailscale(&info)
+		if _, ok := errors.AsType[permanentError](err); !ok ||
+			!strings.Contains(err.Error(), ServiceLabel) {
+			t.Errorf("service %q: got %v, want a permanent error naming %s",
+				info.Service, err, ServiceLabel)
+		}
+		if entries, err := os.ReadDir(dataDir); err != nil || len(entries) != 0 {
+			t.Errorf(
+				"service %q: data directory holds %v (%v), want nothing",
+				info.Service,
+				entries,
+				err,
+			)
+		}
+		if e.StateDir() != "" {
+			t.Errorf("service %q: state directory %q, want none", info.Service, e.StateDir())
+		}
 	}
-	err := e.StartTailscale(&ContainerInfo{Hostname: "web", Service: "svc:web"})
-	if _, ok := errors.AsType[permanentError](err); !ok {
-		t.Fatalf("got %v, want a permanent error", err)
-	}
-	if entries, err := os.ReadDir(dataDir); err != nil || len(entries) != 0 {
-		t.Errorf("data directory holds %v (%v), want nothing", entries, err)
-	}
-	if e.StateDir() != "" {
-		t.Errorf("state directory %q, want none", e.StateDir())
+}
+
+// A valid Service with something to serve, or none at all, passes.
+func TestCheckServiceAcceptsValid(t *testing.T) {
+	serve := []tailscale.ServeEndpoint{{Proto: "https", Port: "443", Target: "8080"}}
+	for _, info := range []ContainerInfo{
+		{},
+		{Service: "svc:web", Endpoints: serve},
+		{Service: "svc:my-api-2", Endpoints: serve},
+	} {
+		if err := checkService(&info); err != nil {
+			t.Errorf("service %q: %v, want none", info.Service, err)
+		}
 	}
 }
 
@@ -117,8 +149,8 @@ func TestPickVethSubnetSkipsUsed(t *testing.T) {
 	}
 	// Unused: the subnet the hash names, as before, so recovered endpoints
 	// of older versions keep theirs
-	wantHost, wantCtr := generateVethIPs(id)
-	if host.String() != wantHost || ctr.String() != wantCtr {
+	wantHost, wantCtr := vethSlotIPs(vethSlot(id))
+	if host != wantHost || ctr != wantCtr {
 		t.Errorf("got %s %s, want %s %s", host, ctr, wantHost, wantCtr)
 	}
 	if netip.PrefixFrom(host, 30).Masked() != netip.PrefixFrom(ctr, 30).Masked() {
@@ -182,7 +214,9 @@ func TestWipeStateOnKeyChange(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := newState(t, "tskey-auth-a")
-			wipeStateOnKeyChange(dir, tt.network)
+			if err := wipeStateOnKeyChange(dir, tt.network); err != nil {
+				t.Fatal(err)
+			}
 			if got := !tailscale.StateExists(dir); got != tt.wiped {
 				t.Errorf("wiped = %v, want %v", got, tt.wiped)
 			}

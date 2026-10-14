@@ -28,36 +28,36 @@ import (
 // dropped: a subnet router or exit node on the host still forwards from the
 // LAN.
 const (
-	isolateForwardChain = "TSLINK-ISOLATE-FWD"
-	isolateInputChain   = "TSLINK-ISOLATE-IN"
+	IsolateForwardChain = "TSLINK-ISOLATE-FWD"
+	IsolateInputChain   = "TSLINK-ISOLATE-IN"
 )
 
-// Veth isolation keeps containers from reaching each other through tslink's
-// veths. The host forwards between the veths' /30s in vethRange, so without
-// it a container reaches another tslink container's veth address, past
-// Docker's network isolation and past the tailnet's ACLs, with an ordinary
-// socket through its Docker gateway or with raw frames through its veth.
-// Nothing opens a connection to a veth address but a colocated node's
-// tailscaled, to tailscaled's WireGuard port through its own veth, so
-// colocated nodes keep their direct path instead of falling back to DERP;
-// WireGuard drops what is not from a peer. Everything else forwarded there is
-// dropped unless it answers a connection the container opened, whatever
-// interface it arrives on: a stack file names a bridge as it likes, and a LAN
-// host may route vethRange through the host. It does not depend on
-// TSLINK_ISOLATE_HOST_TAILNET.
-const vethIsolateChain = "TSLINK-VETH-FWD"
+// VethIsolateChain holds the veth isolation, which keeps containers from
+// reaching each other through tslink's veths. The host forwards between the
+// veths' /30s in vethRange, so without it a container reaches another tslink
+// container's veth address, past Docker's network isolation and past the
+// tailnet's ACLs, with an ordinary socket through its Docker gateway or with
+// raw frames through its veth. Nothing opens a connection to a veth address
+// but a colocated node's tailscaled, to tailscaled's WireGuard port through
+// its own veth, so colocated nodes keep their direct path instead of falling
+// back to DERP; WireGuard drops what is not from a peer. Everything else
+// forwarded there is dropped unless it answers a connection the container
+// opened, whatever interface it arrives on: a stack file names a bridge as it
+// likes, and a LAN host may route vethRange through the host. It does not
+// depend on TSLINK_ISOLATE_HOST_TAILNET.
+const VethIsolateChain = "TSLINK-VETH-FWD"
 
-// The external ports of containers' tailscaled (portMapChain) take only
-// packets on flows the containers opened, which the host forwards. A packet
-// that arrives first, from a peer probing a port the container advertises,
-// has no NAT to undo and goes to the host itself: conntrack keeps an entry
-// for it, whose reply is the tuple the container's own packets to that peer
-// need, and as each container has a single port, they are dropped for as
-// long as the peer keeps probing. Dropping such packets before conntrack
-// confirms them leaves no entry behind; the container's first packet to the
-// peer then opens the path for the peer's next. It does not depend on
-// TSLINK_ISOLATE_HOST_TAILNET.
-const wireGuardInputChain = "TSLINK-WG-IN"
+// WireGuardInputChain makes the external ports of containers' tailscaled
+// (portMapChain) take only packets on flows the containers opened, which the
+// host forwards. A packet that arrives first, from a peer probing a port the
+// container advertises, has no NAT to undo and goes to the host itself:
+// conntrack keeps an entry for it, whose reply is the tuple the container's
+// own packets to that peer need, and as each container has a single port, they
+// are dropped for as long as the peer keeps probing. Dropping such packets
+// before conntrack confirms them leaves no entry behind; the container's first
+// packet to the peer then opens the path for the peer's next. It does not
+// depend on TSLINK_ISOLATE_HOST_TAILNET.
+const WireGuardInputChain = "TSLINK-WG-IN"
 
 // wireGuardInputRule drops new UDP to the ports in r.
 func wireGuardInputRule(r PortRange) []string {
@@ -85,7 +85,7 @@ const returnTarget = "RETURN"
 // tslinkChains are the chains tslink jumps to first from a built-in chain;
 // any order among them counts as first.
 var tslinkChains = []string{
-	vethIsolateChain, wireGuardInputChain, isolateForwardChain, isolateInputChain,
+	VethIsolateChain, WireGuardInputChain, IsolateForwardChain, IsolateInputChain,
 }
 
 // containerInterfaces are the host interfaces container traffic arrives on:
@@ -139,8 +139,8 @@ type isolationFamily struct {
 }
 
 var isolationFamilies = []isolationFamily{
-	{"ipv4", iptables.ProtocolIPv4, "100.64.0.0/10", "100.100.100.100"},
-	{"ipv6", iptables.ProtocolIPv6, "fd7a:115c:a1e0::/48", "fd7a:115c:a1e0::53"},
+	{"ipv4", iptables.ProtocolIPv4, tailnetV4.String(), "100.100.100.100"},
+	{"ipv6", iptables.ProtocolIPv6, tailnetV6.String(), "fd7a:115c:a1e0::53"},
 }
 
 // rules returns the rules of chain. Forwarded traffic may reach the host
@@ -151,7 +151,7 @@ func (f isolationFamily) rules(chain string, ifcs []string) [][]string {
 	var rules [][]string
 	for _, ifc := range ifcs {
 		switch chain {
-		case isolateForwardChain:
+		case IsolateForwardChain:
 			for _, proto := range []string{"udp", "tcp"} {
 				rules = append(rules, []string{
 					"-i", ifc, "-o", tailscaleInterfaces, "-d", f.quad100,
@@ -159,7 +159,7 @@ func (f isolationFamily) rules(chain string, ifcs []string) [][]string {
 				})
 			}
 			rules = append(rules, []string{"-i", ifc, "-o", tailscaleInterfaces, "-j", dropTarget})
-		case isolateInputChain:
+		case IsolateInputChain:
 			rules = append(rules, []string{"-i", ifc, "-d", f.tailnet, "-j", dropTarget})
 		}
 	}
@@ -206,8 +206,8 @@ func (s *hostState) setupIsolation(fam isolationFamily, ifcs []string) error {
 		return err
 	}
 	for _, c := range []struct{ chain, from string }{
-		{isolateForwardChain, forwardChain},
-		{isolateInputChain, inputChain},
+		{IsolateForwardChain, forwardChain},
+		{IsolateInputChain, inputChain},
 	} {
 		mangle, err = s.ensureFirstChain(f, mangle, c.from, c.chain, fam.rules(c.chain, ifcs))
 		if err != nil {
@@ -260,22 +260,31 @@ func (s *hostState) ensureFirstChain(
 }
 
 // jumpPosition reports whether the built-in chain from, whose rules are
-// listed, jumps to chain first, and whether it jumps to it at all.
+// listed, jumps to chain first, and whether it jumps to it at all. The
+// leading rules may be jumps to any of tslink's chains, so two of them do not
+// keep pushing each other down.
 func jumpPosition(listed []string, from, chain string) (bool, bool) {
-	jump := "-A " + from + " -j " + chain
-	// The leading rules may be jumps to any of tslink's chains, so two of
-	// them do not keep pushing each other down
-	leading := true
-	for _, rule := range listed {
-		if leading {
-			target, ok := strings.CutPrefix(rule, "-A "+from+" -j ")
-			leading = ok && slices.Contains(tslinkChains, target)
+	return slices.Contains(LeadingJumps(listed, from), chain),
+		slices.Contains(listed, "-A "+from+" -j "+chain)
+}
+
+// LeadingJumps returns the chains of the leading run of jumps to tslink's
+// chains among the rules of the built-in chain from, as iptables -S lists
+// them; its policy line is skipped.
+func LeadingJumps(rules []string, from string) []string {
+	var jumps []string
+	for _, rule := range rules {
+		rule = strings.TrimSpace(rule)
+		if strings.HasPrefix(rule, "-P ") {
+			continue
 		}
-		if rule == jump {
-			return leading, true
+		target, ok := strings.CutPrefix(rule, "-A "+from+" -j ")
+		if !ok || !slices.Contains(tslinkChains, target) {
+			break
 		}
+		jumps = append(jumps, target)
 	}
-	return false, false
+	return jumps
 }
 
 func (s *hostState) setupVethIsolation(port int) error {
@@ -295,12 +304,12 @@ func (s *hostState) setupVethIsolation(port int) error {
 		{"-i", "veth+", "-d", dst, "-p", "udp", dportFlag, strconv.Itoa(port), "-j", returnTarget},
 		{"-d", dst, "-j", dropTarget},
 	}
-	mangle, err = s.ensureFirstChain(f, mangle, forwardChain, vethIsolateChain, rules)
+	mangle, err = s.ensureFirstChain(f, mangle, forwardChain, VethIsolateChain, rules)
 	if err != nil {
 		return err
 	}
 	input := [][]string{wireGuardInputRule(s.configuredPorts())}
-	if _, err := s.ensureFirstChain(f, mangle, inputChain, wireGuardInputChain, input); err != nil {
+	if _, err := s.ensureFirstChain(f, mangle, inputChain, WireGuardInputChain, input); err != nil {
 		return err
 	}
 	// So do the forwarding and MASQUERADE the veths need, which a firewall
@@ -327,8 +336,8 @@ func RemoveHostIsolation() error {
 			continue
 		}
 		for _, c := range []struct{ chain, from string }{
-			{isolateForwardChain, forwardChain},
-			{isolateInputChain, inputChain},
+			{IsolateForwardChain, forwardChain},
+			{IsolateInputChain, inputChain},
 		} {
 			// iptables cannot look for a jump to a chain that does not exist,
 			// and there is none

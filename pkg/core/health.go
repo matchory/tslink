@@ -13,6 +13,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/moby/moby/client/pkg/stringid"
+
 	"github.com/matchory/tslink/pkg/logger"
 	"github.com/matchory/tslink/pkg/netutil"
 	"github.com/matchory/tslink/pkg/tailscale"
@@ -40,7 +42,7 @@ type health struct {
 
 // ReadyPath returns the file that records that an endpoint has been ready.
 func ReadyPath(dataDir, endpointID string) string {
-	return filepath.Join(dataDir, "status", endpointID[:12]+".ready")
+	return filepath.Join(dataDir, "status", stringid.TruncateID(endpointID)+".ready")
 }
 
 // startHealth serves the readiness endpoint on the loopback port the
@@ -54,7 +56,13 @@ func (e *Endpoint) startHealth(info *ContainerInfo) {
 	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(info.HealthPort))
 	err := e.listenHealth(addr)
 	if err != nil {
-		logger.Warnf("Endpoint %s: cannot serve %s on %s: %v", e.ID[:12], HealthLabel, addr, err)
+		logger.Warnf(
+			"Endpoint %s: cannot serve %s on %s: %v",
+			stringid.TruncateID(e.ID),
+			HealthLabel,
+			addr,
+			err,
+		)
 		e.setWarning(
 			healthWarning,
 			fmt.Sprintf("cannot serve %s on %s: %v", HealthLabel, addr, err),
@@ -91,10 +99,18 @@ func (e *Endpoint) listenHealth(addr string) error {
 	e.health = h
 	go func() {
 		if err := h.srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			logger.Warnf("Endpoint %s: readiness endpoint stopped: %v", e.ID[:12], err)
+			logger.Warnf(
+				"Endpoint %s: readiness endpoint stopped: %v",
+				stringid.TruncateID(e.ID),
+				err,
+			)
 		}
 	}()
-	logger.Infof("Endpoint %s: serving readiness on %s in the container", e.ID[:12], addr)
+	logger.Infof(
+		"Endpoint %s: serving readiness on %s in the container",
+		stringid.TruncateID(e.ID),
+		addr,
+	)
 	return nil
 }
 
@@ -108,7 +124,11 @@ func (e *Endpoint) stopHealth() {
 		return
 	}
 	if err := h.srv.Close(); err != nil {
-		logger.Warnf("Endpoint %s: failed to stop the readiness endpoint: %v", e.ID[:12], err)
+		logger.Warnf(
+			"Endpoint %s: failed to stop the readiness endpoint: %v",
+			stringid.TruncateID(e.ID),
+			err,
+		)
 	}
 }
 
@@ -146,7 +166,11 @@ func (e *Endpoint) serveReady(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(code)
 	if r.Method == http.MethodGet {
 		if _, err := w.Write(append(body, '\n')); err != nil {
-			logger.Debugf("Endpoint %s: readiness answer not sent: %v", e.ID[:12], err)
+			logger.Debugf(
+				"Endpoint %s: readiness answer not sent: %v",
+				stringid.TruncateID(e.ID),
+				err,
+			)
 		}
 	}
 }
@@ -175,18 +199,6 @@ func (e *Endpoint) readiness(ctx context.Context) tailscale.Readiness {
 		e.latch()
 	}
 	return h.state
-}
-
-// clearReadinessCache makes the next request compute readiness again.
-func (e *Endpoint) clearReadinessCache() {
-	e.mu.RLock()
-	h := e.health
-	e.mu.RUnlock()
-	if h != nil {
-		h.mu.Lock()
-		h.state = ""
-		h.mu.Unlock()
-	}
 }
 
 // drainedOrLeaving reports whether the endpoint's backend is drained or its
@@ -237,6 +249,6 @@ func (e *Endpoint) latch() {
 		err = os.WriteFile(path, nil, 0o600)
 	}
 	if err != nil {
-		logger.Warnf("Endpoint %s: failed to record readiness: %v", e.ID[:12], err)
+		logger.Warnf("Endpoint %s: failed to record readiness: %v", stringid.TruncateID(e.ID), err)
 	}
 }

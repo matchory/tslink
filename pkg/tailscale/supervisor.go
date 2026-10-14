@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/moby/moby/client/pkg/stringid"
+
 	"github.com/matchory/tslink/pkg/logger"
 )
 
@@ -25,30 +27,12 @@ const (
 	StatusCrashLoop SupervisorStatus = "crash_loop"
 )
 
-// Backoff configuration; variables, so tests can shorten them.
-var (
-	initialBackoff = 100 * time.Millisecond
-	maxBackoff     = 30 * time.Second
-
+const (
 	// Crash loop detection: crashLoopThreshold crashes in crashLoopWindow.
 	crashLoopWindow = 30 * time.Second
 
-	// Pause after a crash loop before trying again; the container keeps
-	// running, so giving up would leave it without its identity for good.
-	crashLoopCooldown = 5 * time.Minute
-
-	// Health check interval.
-	healthCheckInterval = 5 * time.Second
-
-	// hostEndpointsCheckInterval is how often the supervisor compares the
-	// endpoints on the host tailscaled advertises with the current ones.
-	hostEndpointsCheckInterval = 60 * time.Second
-
 	// Minimum uptime before backoff is reset (prevents rapid restart loops from resetting backoff).
 	minUptimeForBackoffReset = 30 * time.Second
-
-	// Startup jitter to prevent thundering herd on host reboot (0-500ms).
-	maxStartupJitter = 500 * time.Millisecond
 )
 
 const crashLoopThreshold = 5
@@ -104,7 +88,7 @@ type DaemonSupervisor struct {
 
 	// State (protected by mu)
 	mu            sync.RWMutex
-	daemon        *Daemon
+	daemon        *daemon
 	status        SupervisorStatus
 	restartCount  int
 	crashTimes    []time.Time
@@ -118,7 +102,7 @@ type DaemonSupervisor struct {
 	startupDoneOnce sync.Once
 
 	// start starts a daemon; tests replace it.
-	start func(*Daemon) error
+	start func(*daemon) error
 }
 
 // NewDaemonSupervisor creates a new supervisor for managing a tailscaled daemon.
@@ -132,7 +116,7 @@ func NewDaemonSupervisor(cfg DaemonConfig) *DaemonSupervisor {
 		status:      StatusStopped,
 		crashTimes:  make([]time.Time, 0),
 		startupDone: make(chan error, 1),
-		start:       (*Daemon).Start,
+		start:       (*daemon).Start,
 	}
 }
 
@@ -183,7 +167,7 @@ func (s *DaemonSupervisor) StartContext(ctx context.Context) error {
 
 // Stop gracefully stops the supervisor and daemon.
 func (s *DaemonSupervisor) Stop() error {
-	logger.Infof("Stopping supervisor for endpoint %s", s.cfg.EndpointID[:8])
+	logger.Infof("Stopping supervisor for endpoint %s", stringid.TruncateID(s.cfg.EndpointID))
 
 	// Signal supervision loop to stop
 	s.cancel()
@@ -195,23 +179,23 @@ func (s *DaemonSupervisor) Stop() error {
 		close(done)
 	}()
 
+	var err error
 	select {
 	case <-done:
 		logger.Debugf("Supervisor stopped cleanly")
 	case <-time.After(10 * time.Second):
-		logger.Warnf("Timeout waiting for supervisor to stop")
+		err = errors.New("timeout waiting for the supervisor to stop: tailscaled may still run")
 	}
 
 	s.mu.Lock()
 	s.status = StatusStopped
 	s.mu.Unlock()
-
-	return nil
+	return err
 }
 
 // Logout logs the running daemon's node out.
 func (s *DaemonSupervisor) Logout() error {
-	d := s.GetDaemon()
+	d := s.getDaemon()
 	if d == nil || !d.IsRunning() {
 		return errors.New("tailscaled is not running")
 	}
@@ -223,7 +207,7 @@ func (s *DaemonSupervisor) Logout() error {
 // a daemon the supervisor starts later does not advertise it.
 func (s *DaemonSupervisor) Drain(service string) error {
 	s.cfg.gate.markDrained()
-	d := s.GetDaemon()
+	d := s.getDaemon()
 	if d == nil {
 		return errors.New("tailscaled is not running")
 	}
@@ -237,13 +221,6 @@ func (s *DaemonSupervisor) Status() (SupervisorStatus, int) {
 	return s.status, s.restartCount
 }
 
-// GetDaemon returns the current daemon (may be nil if not running).
-func (s *DaemonSupervisor) GetDaemon() *Daemon {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.daemon
-}
-
 // Drained reports whether the node's Service backend has been drained.
 func (s *DaemonSupervisor) Drained() bool {
 	return s.cfg.gate.drained.Load()
@@ -252,25 +229,32 @@ func (s *DaemonSupervisor) Drained() bool {
 // Readiness reports how far the node is from serving what its container asks
 // for. A daemon not started, or restarting, is starting.
 func (s *DaemonSupervisor) Readiness(ctx context.Context) Readiness {
-	daemon := s.GetDaemon()
-	if daemon == nil || !daemon.IsRunning() {
+	d := s.getDaemon()
+	if d == nil || !d.IsRunning() {
 		return ReadyStarting
 	}
-	return daemon.readiness(ctx)
+	return d.readiness(ctx)
 }
 
 // WaitForIP waits for the daemon to get a Tailscale IP, or ctx to be done.
 // Delegates to the underlying daemon.
 func (s *DaemonSupervisor) WaitForIP(ctx context.Context) (*Status, error) {
 	s.mu.RLock()
-	daemon := s.daemon
+	d := s.daemon
 	s.mu.RUnlock()
 
-	if daemon == nil {
+	if d == nil {
 		return nil, errors.New("no daemon running")
 	}
 
-	return daemon.WaitForIP(ctx)
+	return d.WaitForIP(ctx)
+}
+
+// getDaemon returns the current daemon (may be nil if not running).
+func (s *DaemonSupervisor) getDaemon() *daemon {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.daemon
 }
 
 // signalStartup safely sends the startup result exactly once.
@@ -283,10 +267,10 @@ func (s *DaemonSupervisor) signalStartup(err error) {
 // applyStartupJitter adds random delay to prevent thundering herd on mass restart.
 func (s *DaemonSupervisor) applyStartupJitter() {
 	//nolint:gosec // jitter needs no crypto randomness
-	jitter := time.Duration(rand.Int64N(int64(maxStartupJitter)))
+	jitter := time.Duration(rand.Int64N(int64(s.cfg.times().maxStartupJitter)))
 	if jitter > 0 {
 		logger.Debugf("Applying startup jitter: %v", jitter)
-		time.Sleep(jitter)
+		sleep(s.ctx, jitter)
 	}
 }
 
@@ -394,21 +378,20 @@ func (s *DaemonSupervisor) waitBeforeRestart() bool {
 	s.recordCrash()
 
 	if s.isCrashLoop() {
+		cooldown := s.cfg.times().crashLoopCooldown
 		s.mu.Lock()
 		s.status = StatusCrashLoop
 		s.mu.Unlock()
 		logger.Errorf(
 			"Crash loop detected for endpoint %s (5+ crashes in 30s), retrying in %v",
-			s.cfg.EndpointID[:8],
-			crashLoopCooldown,
+			stringid.TruncateID(s.cfg.EndpointID),
+			cooldown,
 		)
 		s.signalStartup(errors.New("crash loop detected"))
 		s.stopDaemon()
 
-		select {
-		case <-s.ctx.Done():
+		if !sleep(s.ctx, cooldown) {
 			return false
-		case <-time.After(crashLoopCooldown):
 		}
 		s.mu.Lock()
 		s.crashTimes = s.crashTimes[:0]
@@ -419,37 +402,32 @@ func (s *DaemonSupervisor) waitBeforeRestart() bool {
 	delay := s.nextBackoff()
 	logger.Infof("Restarting tailscaled in %v (attempt %d)", delay, s.restartCount+1)
 
-	select {
-	case <-s.ctx.Done():
-		return false
-	case <-time.After(delay):
-		return true
-	}
+	return sleep(s.ctx, delay)
 }
 
 // startDaemon creates and starts a new daemon instance.
 func (s *DaemonSupervisor) startDaemon() error {
-	// Stopped: NewDaemon would create the state directory again, which the
+	// Stopped: newDaemon would create the state directory again, which the
 	// endpoint may have removed
 	if err := s.ctx.Err(); err != nil {
 		return err
 	}
-	daemon, err := NewDaemon(s.cfg)
+	d, err := newDaemon(s.cfg)
 	if err != nil {
 		return fmt.Errorf("failed to create daemon: %w", err)
 	}
 
 	// Stopping the supervisor aborts the start, and its login. Once started,
 	// the daemon's own context lets Stop take tailscaled down gracefully.
-	stop := context.AfterFunc(s.ctx, daemon.cancel)
-	err = s.start(daemon)
+	stop := context.AfterFunc(s.ctx, d.cancel)
+	err = s.start(d)
 	stop()
 	if err != nil {
 		return fmt.Errorf("failed to start daemon: %w", err)
 	}
 
 	s.mu.Lock()
-	s.daemon = daemon
+	s.daemon = d
 	s.mu.Unlock()
 
 	return nil
@@ -458,12 +436,12 @@ func (s *DaemonSupervisor) startDaemon() error {
 // stopDaemon stops the current daemon if running.
 func (s *DaemonSupervisor) stopDaemon() {
 	s.mu.Lock()
-	daemon := s.daemon
+	d := s.daemon
 	s.daemon = nil
 	s.mu.Unlock()
 
-	if daemon != nil {
-		if err := daemon.Stop(); err != nil {
+	if d != nil {
+		if err := d.Stop(); err != nil {
 			logger.Warnf("Error stopping daemon: %v", err)
 		}
 	}
@@ -478,7 +456,17 @@ var errHostEndpointsChanged = errors.New("host endpoints changed")
 // Returns nil if context was cancelled (clean shutdown).
 // Returns error if daemon exited unexpectedly.
 func (s *DaemonSupervisor) waitForExit() error {
-	ticker := time.NewTicker(healthCheckInterval)
+	d := s.getDaemon()
+	if d == nil {
+		return errors.New("daemon is nil")
+	}
+	exited := d.exitedChan()
+	if exited == nil {
+		return errors.New("daemon process not started")
+	}
+	tm := s.cfg.times()
+
+	ticker := time.NewTicker(tm.healthCheckInterval)
 	defer ticker.Stop()
 	var login loginWatch
 	lastCheck := time.Now()
@@ -489,41 +477,41 @@ func (s *DaemonSupervisor) waitForExit() error {
 			s.stopDaemon()
 			return nil
 
+		case <-exited:
+			// Its goroutines would otherwise run on beside the next daemon's
+			s.stopDaemon()
+			return errors.New("daemon process exited")
+
 		case <-ticker.C:
-			s.mu.RLock()
-			daemon := s.daemon
-			s.mu.RUnlock()
-
-			if daemon == nil {
-				return errors.New("daemon is nil")
-			}
-
-			if !daemon.IsRunning() {
-				return errors.New("daemon process exited")
-			}
-
-			if time.Since(lastCheck) >= hostEndpointsCheckInterval {
+			if time.Since(lastCheck) >= tm.hostEndpointsCheckInterval {
 				lastCheck = time.Now()
-				if s.hostEndpointsChanged(daemon) {
+				if s.hostEndpointsChanged(d) {
 					s.stopDaemon()
 					return errHostEndpointsChanged
 				}
 			}
 
-			s.checkLogin(daemon, &login)
+			s.checkLogin(d, &login)
 		}
 	}
 }
 
 // checkLogin logs the daemon's node in again once login observes it is
 // logged out, as when its device was deleted or expired.
-func (s *DaemonSupervisor) checkLogin(daemon *Daemon, login *loginWatch) {
-	if !login.observe(daemon.LoggedOut()) {
+func (s *DaemonSupervisor) checkLogin(d *daemon, login *loginWatch) {
+	if !login.observe(d.LoggedOut()) {
 		return
 	}
-	logger.Warnf("Endpoint %s: node is logged out, logging in again", s.cfg.EndpointID[:8])
-	if err := daemon.Reauthenticate(); err != nil {
-		logger.Errorf("Endpoint %s: logging in again failed: %v", s.cfg.EndpointID[:8], err)
+	logger.Warnf(
+		"Endpoint %s: node is logged out, logging in again",
+		stringid.TruncateID(s.cfg.EndpointID),
+	)
+	if err := d.Reauthenticate(); err != nil {
+		logger.Errorf(
+			"Endpoint %s: logging in again failed: %v",
+			stringid.TruncateID(s.cfg.EndpointID),
+			err,
+		)
 		login.failed()
 	}
 }
@@ -533,22 +521,26 @@ func (s *DaemonSupervisor) checkLogin(daemon *Daemon, login *loginWatch) {
 // drained Service backend: the node is on its way out, and DrainAndWait may
 // be waiting on this very daemon for control to fetch the drain. Restarting
 // it would strand that wait with no daemon to wait on.
-func (s *DaemonSupervisor) hostEndpointsChanged(daemon *Daemon) bool {
+func (s *DaemonSupervisor) hostEndpointsChanged(d *daemon) bool {
 	if s.cfg.HostEndpoints == nil || s.cfg.gate.drained.Load() {
 		return false
 	}
 	eps, err := s.cfg.HostEndpoints()
 	if err != nil {
-		logger.Debugf("Endpoint %s: host endpoints unknown: %v", s.cfg.EndpointID[:8], err)
+		logger.Debugf(
+			"Endpoint %s: host endpoints unknown: %v",
+			stringid.TruncateID(s.cfg.EndpointID),
+			err,
+		)
 		return false
 	}
-	if slices.Equal(eps, daemon.HostEndpoints()) {
+	if slices.Equal(eps, d.HostEndpoints()) {
 		return false
 	}
 	logger.Infof(
 		"Endpoint %s: host endpoints changed from %v to %v, restarting tailscaled",
-		s.cfg.EndpointID[:8],
-		daemon.HostEndpoints(),
+		stringid.TruncateID(s.cfg.EndpointID),
+		d.HostEndpoints(),
 		eps,
 	)
 	return true
@@ -585,19 +577,20 @@ func (s *DaemonSupervisor) recordCrash() {
 
 // nextBackoff returns the next backoff duration using exponential backoff.
 func (s *DaemonSupervisor) nextBackoff() time.Duration {
+	tm := s.cfg.times()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if s.backoffAttempt == 0 {
 		s.backoffAttempt = 1
-		return initialBackoff
+		return tm.initialBackoff
 	}
 
 	// Exponential backoff: initialBackoff * 2^attempt. The attempt stops
 	// growing at the cap: a larger shift would overflow
-	delay := initialBackoff << s.backoffAttempt
-	if delay >= maxBackoff {
-		return maxBackoff
+	delay := tm.initialBackoff << s.backoffAttempt
+	if delay >= tm.maxBackoff {
+		return tm.maxBackoff
 	}
 	s.backoffAttempt++
 	return delay

@@ -158,9 +158,7 @@ func TestLeaveRemovesStateOfFailedStart(t *testing.T) {
 	if err := tailscale.MarkEphemeral(dir); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.Leave(); err != nil {
-		t.Fatal(err)
-	}
+	e.Leave()
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
 		t.Errorf("%s should be removed (err=%v)", dir, err)
 	}
@@ -182,15 +180,11 @@ func TestStateDirClaimedOnce(t *testing.T) {
 	if err := b.ClaimStateDir(info); err == nil {
 		t.Fatal("second endpoint claimed a directory in use")
 	}
-	if err := a.Leave(); err != nil {
-		t.Fatal(err)
-	}
+	a.Leave()
 	if err := b.ClaimStateDir(info); err != nil {
 		t.Errorf("claim after the first endpoint left: %v", err)
 	}
-	if err := b.Leave(); err != nil {
-		t.Fatal(err)
-	}
+	b.Leave()
 }
 
 func TestCollectGarbageKeepsClaimedState(t *testing.T) {

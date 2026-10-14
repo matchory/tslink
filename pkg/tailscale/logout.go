@@ -120,52 +120,57 @@ func logoutState(raw []byte) ([]byte, error) {
 	})
 }
 
+// errLogoutDaemonExited ends a logout whose tailscaled exited first.
+var errLogoutDaemonExited = errors.New("tailscaled exited before logging out")
+
 // runLogout runs tailscaled on the state in workDir until it has logged out,
 // or ctx ends. It is a variable so tests can replace it.
 var runLogout = func(ctx context.Context, tailscaledBin, workDir, socket string) error {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
 
 	// --port=0: the plugin shares the host's network, where 41641 may be taken
-	daemon := exec.CommandContext(ctx, tailscaledBin,
+	tailscaled := exec.CommandContext(ctx, tailscaledBin,
 		"--state="+filepath.Join(workDir, "tailscaled.state"),
 		"--statedir="+workDir,
 		"--socket="+socket,
 		"--tun=userspace-networking",
 		"--port=0",
 	)
-	daemon.Env = withoutAuthKey(os.Environ())
-	if err := daemon.Start(); err != nil {
+	tailscaled.Env = withoutAuthKey(os.Environ())
+	if err := tailscaled.Start(); err != nil {
 		return fmt.Errorf("failed to start tailscaled: %w", err)
 	}
 	exited := make(chan struct{})
 	go func() {
 		defer close(exited)
 		// Killed below once the logout is done: its exit status says nothing
-		if err := daemon.Wait(); err != nil && ctx.Err() == nil {
+		if err := tailscaled.Wait(); err != nil && ctx.Err() == nil {
 			logger.Debugf("tailscaled for logout exited: %v", err)
 		}
+		cancel(errLogoutDaemonExited)
 	}()
 	defer func() {
-		cancel()
+		cancel(nil)
 		<-exited
 	}()
 
 	lc := &local.Client{Socket: socket, UseSocketOnly: true}
 	// The LocalAPI answers once the backend has started
-	for {
-		if _, err := lc.StatusWithoutPeers(ctx); err == nil {
-			break
+	started := func() bool {
+		_, err := lc.StatusWithoutPeers(ctx)
+		return err == nil
+	}
+	if !poll(ctx, 200*time.Millisecond, started) {
+		if cause := context.Cause(ctx); errors.Is(cause, errLogoutDaemonExited) {
+			return cause
 		}
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("tailscaled did not start: %w", ctx.Err())
-		case <-exited:
-			return errors.New("tailscaled exited before logging out")
-		case <-time.After(200 * time.Millisecond):
-		}
+		return fmt.Errorf("tailscaled did not start: %w", ctx.Err())
 	}
 	if err := lc.Logout(ctx); err != nil {
+		if cause := context.Cause(ctx); errors.Is(cause, errLogoutDaemonExited) {
+			return cause
+		}
 		return fmt.Errorf("tailscale logout failed: %w", err)
 	}
 	return nil

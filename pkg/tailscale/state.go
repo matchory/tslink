@@ -14,12 +14,6 @@ import (
 
 const authKeyHashFile = "authkey.sha256"
 
-// GetHostnameStateDir returns the state directory path for a hostname.
-// The directory structure is: <dataDir>/by-hostname/<hostname>/.
-func GetHostnameStateDir(dataDir, hostname string) string {
-	return filepath.Join(dataDir, "by-hostname", hostname)
-}
-
 // StateExists checks if valid Tailscale state exists in the given directory.
 // Returns true if tailscaled.state file exists and is non-empty.
 func StateExists(stateDir string) bool {
@@ -32,7 +26,8 @@ func StateExists(stateDir string) bool {
 }
 
 // WipeState removes all state files from the directory to allow fresh registration.
-// Removes tailscaled.state, tailscaled.sock, debug.log, and authkey hash.
+// Removes tailscaled.state, tailscaled.sock, debug.log, and authkey hash, and
+// returns the removals that failed.
 func WipeState(stateDir string) error {
 	logger.Infof("Wiping state directory: %s", stateDir)
 
@@ -43,13 +38,13 @@ func WipeState(stateDir string) error {
 		filepath.Join(stateDir, authKeyHashFile),
 	}
 
+	var errs []error
 	for _, f := range files {
 		if err := os.Remove(f); err != nil && !os.IsNotExist(err) {
-			logger.Warnf("Failed to remove %s: %v", f, err)
+			errs = append(errs, err)
 		}
 	}
-
-	return nil
+	return errors.Join(errs...)
 }
 
 // hashAuthKey returns the SHA256 hash of an auth key.

@@ -32,8 +32,8 @@ func listIsolation(t *testing.T, nsPath string, proto iptables.Protocol) isolati
 			return err
 		}
 		for chain, dst := range map[string]*[]string{
-			isolateForwardChain: &s.fwdChain,
-			isolateInputChain:   &s.inChain,
+			IsolateForwardChain: &s.fwdChain,
+			IsolateInputChain:   &s.inChain,
 		} {
 			exists, err := ipt.ChainExists("mangle", chain)
 			if err != nil {
@@ -114,8 +114,8 @@ func TestHostIsolationRules(t *testing.T) {
 					t.Fatalf("SetupHostIsolation: %v", err)
 				}
 			}
-			jumpForward := "-A FORWARD -j " + isolateForwardChain
-			jumpInput := "-A INPUT -j " + isolateInputChain
+			jumpForward := "-A FORWARD -j " + IsolateForwardChain
+			jumpInput := "-A INPUT -j " + IsolateInputChain
 			other := "-A FORWARD -i dummy0 -j ACCEPT"
 
 			// A rule already in FORWARD, so the jump's position shows
@@ -129,8 +129,8 @@ func TestHostIsolationRules(t *testing.T) {
 			s := listIsolation(t, nsPath, f.proto)
 			assertRules(t, "FORWARD", s.forward, []string{"-P FORWARD ACCEPT", jumpForward, other})
 			assertRules(t, "INPUT", s.input, []string{"-P INPUT ACCEPT", jumpInput})
-			assertIsolationChain(t, isolateForwardChain, nsPath, f, isolateForwardChain, s.fwdChain)
-			assertIsolationChain(t, isolateInputChain, nsPath, f, isolateInputChain, s.inChain)
+			assertIsolationChain(t, IsolateForwardChain, nsPath, f, IsolateForwardChain, s.fwdChain)
+			assertIsolationChain(t, IsolateInputChain, nsPath, f, IsolateInputChain, s.inChain)
 
 			// Another program inserts a rule ahead of the jump, and a rule of
 			// the chain goes missing: setup restores both
@@ -148,15 +148,15 @@ func TestHostIsolationRules(t *testing.T) {
 				}
 				return i.Delete(
 					"mangle",
-					isolateForwardChain,
-					f.rules(isolateForwardChain, containerInterfaces)[0]...)
+					IsolateForwardChain,
+					f.rules(IsolateForwardChain, containerInterfaces)[0]...)
 			})
 			setup()
 			s = listIsolation(t, nsPath, f.proto)
 			assertRules(t, "FORWARD after tampering", s.forward,
 				[]string{"-P FORWARD ACCEPT", jumpForward, other, other})
-			assertIsolationChain(t, isolateForwardChain+" after tampering", nsPath, f,
-				isolateForwardChain, s.fwdChain)
+			assertIsolationChain(t, IsolateForwardChain+" after tampering", nsPath, f,
+				IsolateForwardChain, s.fwdChain)
 
 			// Removal takes the jumps and chains, and tolerates their absence
 			for range 2 {
@@ -178,7 +178,7 @@ func TestHostIsolationRules(t *testing.T) {
 // Guards: G1
 func TestIsolationRulesCoverEveryContainerInterface(t *testing.T) {
 	for _, f := range isolationFamilies {
-		for _, chain := range []string{isolateForwardChain, isolateInputChain} {
+		for _, chain := range []string{IsolateForwardChain, IsolateInputChain} {
 			var drops []string
 			for _, rule := range f.rules(chain, containerInterfaces) {
 				if rule[len(rule)-1] == "DROP" {
@@ -241,18 +241,18 @@ func TestVethIsolationRules(t *testing.T) {
 	setupVeth()
 	setupVeth()
 	want := []string{
-		"-A " + vethIsolateChain +
+		"-A " + VethIsolateChain +
 			" -d 10.200.0.0/16 -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN",
-		"-A " + vethIsolateChain + " -d 10.200.0.0/16 -i veth+ -p udp -m udp --dport 41641 -j RETURN",
-		"-A " + vethIsolateChain + " -d 10.200.0.0/16 -j DROP",
+		"-A " + VethIsolateChain + " -d 10.200.0.0/16 -i veth+ -p udp -m udp --dport 41641 -j RETURN",
+		"-A " + VethIsolateChain + " -d 10.200.0.0/16 -j DROP",
 	}
-	assertRules(t, vethIsolateChain, list(vethIsolateChain),
-		append([]string{"-N " + vethIsolateChain}, want...))
+	assertRules(t, VethIsolateChain, list(VethIsolateChain),
+		append([]string{"-N " + VethIsolateChain}, want...))
 
 	// With the host's tailnet isolation too, both jumps lead FORWARD, and
 	// setting either up again moves neither: the watchdog repeats both
-	jumpVeth := "-A FORWARD -j " + vethIsolateChain
-	jumpHost := "-A FORWARD -j " + isolateForwardChain
+	jumpVeth := "-A FORWARD -j " + VethIsolateChain
+	jumpHost := "-A FORWARD -j " + IsolateForwardChain
 	setupHost()
 	first := list("FORWARD")
 	if len(first) < 3 || !slices.Contains(first[1:3], jumpVeth) ||

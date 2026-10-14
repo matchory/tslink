@@ -27,7 +27,7 @@ const needsLogin = "NeedsLogin"
 // bringUp logs the node in, or brings a node that is still logged in up
 // with its settings. With existing state it first tries without the auth key,
 // then wipes the state and retries on auth failures.
-func (d *Daemon) bringUp() error {
+func (d *daemon) bringUp() error {
 	// A node that is still logged in comes up without the auth key. An OAuth
 	// client secret is exchanged for a key through Tailscale's API, so
 	// using it would make every restart depend on the API and on the secret
@@ -60,7 +60,7 @@ func (d *Daemon) bringUp() error {
 	if isStateError(err) {
 		logger.Warnf("Auth failed with existing state, wiping and retrying: %v", err)
 		if err := WipeState(d.config.StateDir); err != nil {
-			logger.Warnf("Failed to wipe state: %v", err)
+			logger.Warnf("Failed to wipe the state: %v", err)
 		}
 
 		// Second attempt with fresh state
@@ -78,7 +78,7 @@ const defaultControlURL = "https://controlplane.tailscale.com"
 // registeredAsConfigured reports whether the node's prefs name the configured
 // control server and tags, so that only its settings may differ. Other tags
 // or another server need a new login.
-func (d *Daemon) registeredAsConfigured() bool {
+func (d *daemon) registeredAsConfigured() bool {
 	ctx, cancel := context.WithTimeout(d.ctx, 10*time.Second)
 	defer cancel()
 	prefs, err := d.lc.GetPrefs(ctx)
@@ -94,7 +94,7 @@ func (d *Daemon) registeredAsConfigured() bool {
 // settings returns the node's settings as tailscaled's config file states
 // them, the way the Kubernetes operator configures its proxies. Netfilter is
 // off: the plugin handles routing via veth pairs.
-func (d *Daemon) settings() *ipn.ConfigVAlpha {
+func (d *daemon) settings() *ipn.ConfigVAlpha {
 	return &ipn.ConfigVAlpha{
 		Version:             "alpha0",
 		ServerURL:           new(cmp.Or(d.config.LoginServer, defaultControlURL)),
@@ -110,7 +110,7 @@ func (d *Daemon) settings() *ipn.ConfigVAlpha {
 // apply them from its config file, but leaving the node's Services alone: the
 // config file always sets them, and tslink's serve configuration advertises
 // them instead.
-func (d *Daemon) settingsPrefs() (*ipn.MaskedPrefs, error) {
+func (d *daemon) settingsPrefs() (*ipn.MaskedPrefs, error) {
 	mp, err := d.settings().ToPrefs()
 	if err != nil {
 		return nil, fmt.Errorf("invalid settings: %w", err)
@@ -126,7 +126,7 @@ func (d *Daemon) settingsPrefs() (*ipn.MaskedPrefs, error) {
 // dials control as it starts, and a client restarted within 2 minutes of a
 // dial dials port 443 only, retry after retry, whatever the login server's
 // port.
-func (d *Daemon) applySettings() error {
+func (d *daemon) applySettings() error {
 	ctx, cancel := context.WithTimeout(d.ctx, 60*time.Second)
 	defer cancel()
 	mp, err := d.settingsPrefs()
@@ -157,23 +157,22 @@ func isStateError(err error) bool {
 
 // waitBackendState returns tailscaled's backend state once it has loaded its
 // state, or "" if it cannot tell within a few seconds.
-func (d *Daemon) waitBackendState() string {
+func (d *daemon) waitBackendState() string {
+	// Each query may take up to 5 s, as tailscaled may be slow to answer
+	// when many start at once; asking stops 5 s in
 	deadline := time.Now().Add(5 * time.Second)
-	for {
+	state := ""
+	poll(d.ctx, 200*time.Millisecond, func() bool {
 		ctx, cancel := context.WithTimeout(d.ctx, 5*time.Second)
 		st, err := d.lc.StatusWithoutPeers(ctx)
 		cancel()
 		if err == nil && st.BackendState != "NoState" {
-			return st.BackendState
+			state = st.BackendState
 		}
-		if time.Now().After(deadline) || !sleep(d.ctx, 200*time.Millisecond) {
-			return ""
-		}
-	}
+		return state != "" || time.Now().After(deadline)
+	})
+	return state
 }
-
-// loginTimeout bounds a login, from the settings to a running node.
-var loginTimeout = 60 * time.Second
 
 // logIn logs the node in as "tailscale up" does: it applies the settings and
 // tags, starts tailscaled's login and waits until the node runs. Without
@@ -183,9 +182,9 @@ var loginTimeout = 60 * time.Second
 // The auth key reaches tailscaled over its socket, never through arguments,
 // the environment or a file. An OAuth client secret is first exchanged for a
 // single-use key with the node's tags.
-func (d *Daemon) logIn(withKey, forceReauth bool) error {
+func (d *daemon) logIn(withKey, forceReauth bool) error {
 	logger.Infof("Bringing up Tailscale for endpoint %s", d.config.EndpointID)
-	ctx, cancel := context.WithTimeout(d.ctx, loginTimeout)
+	ctx, cancel := context.WithTimeout(d.ctx, d.config.times().loginTimeout)
 	defer cancel()
 
 	// Watch first, or the notifications the login causes may be missed
@@ -280,7 +279,7 @@ func waitRunning(
 }
 
 // Logout logs the node out, which deletes an ephemeral node from the tailnet.
-func (d *Daemon) Logout() error {
+func (d *daemon) Logout() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -294,7 +293,7 @@ func (d *Daemon) Logout() error {
 // login, or control recently said it does not know the node. Being offline
 // is not enough: the control plane may just be unreachable, and the node key
 // still valid.
-func (d *Daemon) LoggedOut() bool {
+func (d *daemon) LoggedOut() bool {
 	if d.nodeNotFoundRecently() {
 		return true
 	}
@@ -304,26 +303,16 @@ func (d *Daemon) LoggedOut() bool {
 
 // nodeNotFoundRecently reports whether control said in the last 30 seconds
 // that it does not know the node.
-func (d *Daemon) nodeNotFoundRecently() bool {
+func (d *daemon) nodeNotFoundRecently() bool {
 	return time.Since(time.Unix(d.nodeNotFound.Load(), 0)) < 30*time.Second
 }
 
 // Reauthenticate logs a node in again with the auth key, as a new device, and
 // restores what it serves.
-func (d *Daemon) Reauthenticate() error {
+func (d *daemon) Reauthenticate() error {
 	if err := d.logIn(true, true); err != nil {
 		return err
 	}
 	d.nodeNotFound.Store(0)
-	if d.config.Direct && len(d.config.Endpoints) > 0 {
-		if err := d.configureDirectServe(); err != nil {
-			return fmt.Errorf("failed to configure direct serve: %w", err)
-		}
-	}
-	if d.config.Service != "" {
-		if err := d.configureServiceWhenCertified(); err != nil {
-			return fmt.Errorf("failed to configure Tailscale service: %w", err)
-		}
-	}
-	return nil
+	return d.configureServing()
 }

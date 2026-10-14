@@ -33,14 +33,12 @@ const (
 
 var certLogDomain = regexp.MustCompile(`cert\("([^"]+)"\): `)
 
-// How often the node's log repeats a warning per domain, how close to expiry
-// a certificate is warned about, and how often that is checked. Variables for
-// tests.
-var (
+// How often the node's log repeats a warning per domain, and how close to
+// expiry a certificate is warned about.
+const (
 	renewalWarnEvery    = time.Hour
 	certExpiryWarnEvery = 24 * time.Hour
 	certExpiryMargin    = 14 * 24 * time.Hour
-	certCheckInterval   = time.Hour
 )
 
 // warnLimiter lets a warning through once per period and key.
@@ -70,7 +68,7 @@ var nodeWarnings = &warnLimiter{}
 
 // warn reports a warning to the endpoint's status, and logs it unless logged
 // within every. An empty message clears the warning.
-func (d *Daemon) warn(key, message string, every time.Duration) {
+func (d *daemon) warn(key, message string, every time.Duration) {
 	if message != "" && nodeWarnings.allow(key, every, time.Now()) {
 		logger.Warnf("%s", message)
 	}
@@ -81,7 +79,7 @@ func (d *Daemon) warn(key, message string, every time.Duration) {
 
 // handleCertLine notes a refused or a successful certificate renewal in a
 // line of tailscaled's output.
-func (d *Daemon) handleCertLine(line string) {
+func (d *daemon) handleCertLine(line string) {
 	m := certLogDomain.FindStringSubmatch(line)
 	if m == nil {
 		return
@@ -102,13 +100,11 @@ func (d *Daemon) handleCertLine(line string) {
 
 // watchCertExpiry checks the certificate for domain in dir at once and then
 // every certCheckInterval, until the daemon stops.
-func (d *Daemon) watchCertExpiry(dir, domain string) {
+func (d *daemon) watchCertExpiry(dir, domain string) {
 	for {
 		d.checkCertExpiry(dir, domain, time.Now())
-		select {
-		case <-d.ctx.Done():
+		if !sleep(d.ctx, d.config.times().certCheckInterval) {
 			return
-		case <-time.After(certCheckInterval):
 		}
 	}
 }
@@ -116,7 +112,7 @@ func (d *Daemon) watchCertExpiry(dir, domain string) {
 // checkCertExpiry warns if the certificate for domain in dir expires within
 // certExpiryMargin of now, and clears the warning otherwise. Without a
 // certificate, there is nothing to check.
-func (d *Daemon) checkCertExpiry(dir, domain string, now time.Time) {
+func (d *daemon) checkCertExpiry(dir, domain string, now time.Time) {
 	notAfter, err := CertNotAfter(filepath.Join(dir, domain+".crt"))
 	if err != nil {
 		return

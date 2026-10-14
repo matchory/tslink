@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
@@ -27,7 +28,7 @@ func joinNamespaces(t *testing.T) (string, string, *netlink.Handle) {
 		if _, _, err := CreateVethPair("tslj", 0); err != nil {
 			return err
 		}
-		return SetupHostRouting("vethtslj", "10.200.0.5")
+		return SetupHostRouting("vethtslj", netip.MustParseAddr("10.200.0.5"))
 	}); err != nil {
 		t.Fatalf("set up host side: %v", err)
 	}
@@ -67,9 +68,9 @@ func TestSetupContainerSide(t *testing.T) {
 	side := ContainerSide{
 		NSPath:      ctrNS,
 		Interface:   "vethtsljc",
-		Address:     "10.200.0.6",
-		Gateway:     "10.200.0.5",
-		IPAMAddress: "10.42.6.51",
+		Address:     netip.MustParseAddr("10.200.0.6"),
+		Gateway:     netip.MustParseAddr("10.200.0.5"),
+		IPAMAddress: netip.MustParseAddr("10.42.6.51"),
 	}
 	for i := range 2 { // Recovery runs it again
 		if err := SetupContainerSide(side); err != nil {
@@ -163,8 +164,8 @@ func TestSetupContainerSideReturnsAddressError(t *testing.T) {
 	err := SetupContainerSide(ContainerSide{
 		NSPath:    nsPath,
 		Interface: "dummy1",
-		Address:   "10.200.0.6",
-		Gateway:   "10.200.0.5",
+		Address:   netip.MustParseAddr("10.200.0.6"),
+		Gateway:   netip.MustParseAddr("10.200.0.5"),
 	})
 	if err == nil || !strings.Contains(err.Error(), "10.200.0.6/30") {
 		t.Errorf("err = %v, want the failed address", err)

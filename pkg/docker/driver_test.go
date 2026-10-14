@@ -174,11 +174,11 @@ func TestCreateEndpointKeepsIPAMAddress(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		iface *network.EndpointInterface
-		want  string
+		want  netip.Addr
 	}{
-		{"assigned", &network.EndpointInterface{Address: "10.42.6.51/24"}, "10.42.6.51"},
-		{"none", nil, ""},
-		{"empty", &network.EndpointInterface{}, ""},
+		{"assigned", &network.EndpointInterface{Address: "10.42.6.51/24"}, netip.MustParseAddr("10.42.6.51")},
+		{"none", nil, netip.Addr{}},
+		{"empty", &network.EndpointInterface{}, netip.Addr{}},
 	} {
 		epID := fakeID(tc.name)
 		if _, err := td.CreateEndpoint(
@@ -188,7 +188,7 @@ func TestCreateEndpointKeepsIPAMAddress(t *testing.T) {
 		}
 		ep, _ := td.endpoint(epID)
 		if ep.IPAMAddress != tc.want {
-			t.Errorf("%s: IPAMAddress %q, want %q", tc.name, ep.IPAMAddress, tc.want)
+			t.Errorf("%s: IPAMAddress %s, want %s", tc.name, ep.IPAMAddress, tc.want)
 		}
 	}
 }
@@ -314,11 +314,10 @@ func TestLeaveAndDeleteEndpoint(t *testing.T) {
 
 // blockingOp returns an endpoint operation that reports each call on entered
 // and returns once release is closed.
-func blockingOp(entered chan<- string, release <-chan struct{}) func(*core.Endpoint) error {
-	return func(e *core.Endpoint) error {
+func blockingOp(entered chan<- string, release <-chan struct{}) func(*core.Endpoint) {
+	return func(e *core.Endpoint) {
 		entered <- e.ID
 		<-release
-		return nil
 	}
 }
 
@@ -458,8 +457,8 @@ func TestRecoverEndpoints(t *testing.T) {
 		t.Errorf("endpoint network %p (want %p), sandbox %q", ep.Network, net, ep.SandboxKey())
 	}
 	// Recover puts it on the container's veth, as Join does
-	if ep.IPAMAddress != "10.0.9.7" {
-		t.Errorf("IPAM address %q, want Docker's 10.0.9.7", ep.IPAMAddress)
+	if ep.IPAMAddress != netip.MustParseAddr("10.0.9.7") {
+		t.Errorf("IPAM address %s, want Docker's 10.0.9.7", ep.IPAMAddress)
 	}
 	if want := filepath.Join(
 		td.config.DataDir,
@@ -723,16 +722,13 @@ func TestFailedRecoveryReleasesStateDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	net, _ := td.network(netID)
-	restarted, err := core.NewEndpoint(
+	restarted := core.NewEndpoint(
 		fakeID("ep-new"),
 		net,
 		core.EndpointOptions{},
 		td.config,
 		td.claims,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
 	if err := restarted.ClaimStateDir(parseContainerInfo("web", nil)); err != nil {
 		t.Errorf("state directory still claimed by the endpoint whose recovery failed: %v", err)
 	}
@@ -909,10 +905,9 @@ func TestShutdownStopsEndpointsConcurrently(t *testing.T) {
 	td := newTestDriver(t, newFakeDocker())
 	const n, stopTime = 5, time.Second
 	var stopped atomic.Int32
-	td.stopEndpoint = func(*core.Endpoint) error {
+	td.stopEndpoint = func(*core.Endpoint) {
 		time.Sleep(stopTime)
 		stopped.Add(1)
-		return nil
 	}
 	netID := fakeID("net")
 	td.createNetwork(t, netID, map[string]string{"tslink.authkey": "k"})
@@ -937,10 +932,7 @@ func TestShutdownStopsWithinDeadline(t *testing.T) {
 	td := newTestDriver(t, newFakeDocker())
 	release := make(chan struct{})
 	defer close(release)
-	td.stopEndpoint = func(*core.Endpoint) error {
-		<-release
-		return nil
-	}
+	td.stopEndpoint = func(*core.Endpoint) { <-release }
 	netID := fakeID("net")
 	td.createNetwork(t, netID, map[string]string{"tslink.authkey": "k"})
 	td.join(t, netID, fakeID("ep"), sandbox)
@@ -975,11 +967,10 @@ func TestEndpointOpsUseDriverHooks(t *testing.T) {
 		defer mu.Unlock()
 		drained = append(drained, e.ID)
 	}
-	td.stopEndpoint = func(e *core.Endpoint) error {
+	td.stopEndpoint = func(e *core.Endpoint) {
 		mu.Lock()
 		defer mu.Unlock()
 		stopped = append(stopped, e.ID)
-		return nil
 	}
 	td.recoverErr = errors.New("no such netns")
 	if err := td.RecoverEndpoints(t.Context()); err != nil {

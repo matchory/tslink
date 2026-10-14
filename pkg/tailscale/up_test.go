@@ -15,7 +15,7 @@ import (
 )
 
 // loginDaemon returns a daemon with cfg whose tailscaled is api.
-func loginDaemon(t *testing.T, api *fakeLocalAPI, cfg DaemonConfig) (*Daemon, *fakeCLI) {
+func loginDaemon(t *testing.T, api *fakeLocalAPI, cfg DaemonConfig) (*daemon, *fakeCLI) {
 	t.Helper()
 	cli := &fakeCLI{}
 	d := newTestDaemon(t, cli, "")
@@ -171,10 +171,10 @@ func TestLogInFails(t *testing.T) {
 
 // A login that never gets the node running times out.
 func TestLogInTimesOut(t *testing.T) {
-	setDuration(t, &loginTimeout, time.Second)
 	api := newFakeLocalAPI(t)
 	api.loggedOut()
 	d, _ := loginDaemon(t, api, DaemonConfig{Hostname: "web"})
+	setTiming(&d.config, func(tm *timing) { tm.loginTimeout = time.Second })
 	// Without a key or a node key, tailscaled keeps needing a login
 	if err := d.logIn(false, false); err == nil || !strings.Contains(err.Error(), "timeout") {
 		t.Errorf("err = %v, want a timeout", err)
@@ -301,5 +301,22 @@ func TestLogout(t *testing.T) {
 	}
 	if st := api.status().BackendState; st != needsLogin {
 		t.Errorf("backend state = %s, want %s", st, needsLogin)
+	}
+}
+
+// Logging in again as a new device restores what the node serves.
+func TestReauthenticateRestoresServe(t *testing.T) {
+	api := newFakeLocalAPI(t)
+	api.loggedOut()
+	d, cli := loginDaemon(t, api, DaemonConfig{
+		Hostname:  "web",
+		Direct:    true,
+		Endpoints: []ServeEndpoint{{Proto: "tcp", Port: "22", Target: "22"}},
+	})
+	if err := d.Reauthenticate(); err != nil {
+		t.Fatal(err)
+	}
+	if !ran(cli.snapshot(), "serve", "--bg", "--tcp=22", "tcp://127.0.0.1:22") {
+		t.Errorf("calls = %q, want the direct serve of port 22", cli.snapshot())
 	}
 }

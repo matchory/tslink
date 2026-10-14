@@ -4,6 +4,7 @@ package netutil
 
 import (
 	"net"
+	"net/netip"
 	"strconv"
 	"testing"
 
@@ -18,7 +19,7 @@ func TestAddIPAMAddress(t *testing.T) {
 
 	h, link := testHandle(t, nsPath, "dummy0")
 	for range 2 { // Join may be retried
-		if err := addIPAMAddress(h, link, "10.42.6.51"); err != nil {
+		if err := addIPAMAddress(h, link, netip.MustParseAddr("10.42.6.51")); err != nil {
 			t.Fatalf("addIPAMAddress: %v", err)
 		}
 	}
@@ -84,7 +85,7 @@ func TestAddIPAMAddress(t *testing.T) {
 func TestAddIPAMAddressRejectsBadAddress(t *testing.T) {
 	nsPath := newTestNetNS(t)
 	h, link := testHandle(t, nsPath, "dummy0")
-	if err := addIPAMAddress(h, link, "not-an-ip"); err == nil {
-		t.Error("addIPAMAddress accepted an invalid address")
+	if err := addIPAMAddress(h, link, netip.MustParseAddr("fd00::1")); err == nil {
+		t.Error("addIPAMAddress accepted an IPv6 address")
 	}
 }

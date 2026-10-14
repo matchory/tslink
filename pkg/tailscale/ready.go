@@ -34,7 +34,7 @@ const serviceHostCap = "service-host"
 // readiness asks tailscaled how far the node is from serving what its
 // container asks for: running, its serve config applied and, for a Service,
 // advertised and approved by control as a backend.
-func (d *Daemon) readiness(ctx context.Context) Readiness {
+func (d *daemon) readiness(ctx context.Context) Readiness {
 	if d.isDrained() {
 		return ReadyDrained
 	}
@@ -77,11 +77,11 @@ func (d *Daemon) readiness(ctx context.Context) Readiness {
 // pendingService tells a Service waiting for its certificate from other
 // serve config not applied yet: the certificate lease holder configures the
 // Service only to issue the certificate, and the others wait for it.
-func (d *Daemon) pendingService(suffix string) Readiness {
+func (d *daemon) pendingService(suffix string) Readiness {
 	if d.config.Service == "" || !servesHTTPS(d.config.Endpoints) || suffix == "" {
 		return ReadyServingPending
 	}
-	domain := d.config.Service[len("svc:"):] + "." + suffix
+	domain := d.serviceDomainIn(suffix)
 	if !validCert(filepath.Join(d.config.StateDir, certsDirName), domain, time.Now()) {
 		return ReadyCertificatePending
 	}
@@ -91,7 +91,7 @@ func (d *Daemon) pendingService(suffix string) Readiness {
 // serveApplied reports whether tailscaled's serve config holds every port the
 // container asks for under its Service, if it has one, and on the node itself
 // for direct serve.
-func (d *Daemon) serveApplied(ctx context.Context) (bool, bool) {
+func (d *daemon) serveApplied(ctx context.Context) (bool, bool) {
 	if len(d.config.Endpoints) == 0 {
 		return true, true
 	}
@@ -120,7 +120,7 @@ func (d *Daemon) serveApplied(ctx context.Context) (bool, bool) {
 }
 
 // advertised reports whether the node's prefs advertise its Service.
-func (d *Daemon) advertised(ctx context.Context) bool {
+func (d *daemon) advertised(ctx context.Context) bool {
 	prefs, err := d.lc.GetPrefs(ctx)
 	return err == nil && slices.Contains(prefs.AdvertiseServices, d.config.Service)
 }

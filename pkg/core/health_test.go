@@ -251,12 +251,22 @@ func TestHealthNotStartedAfterStop(t *testing.T) {
 	t.Cleanup(func() { listenInNetNS = old })
 
 	e := &Endpoint{ID: "0123456789abcdef", dataDir: t.TempDir(), sandboxKey: "/run/netns/x"}
-	if err := e.Stop(); err != nil {
-		t.Fatal(err)
-	}
+	e.Stop()
 	e.startHealth(&ContainerInfo{HealthPort: 0x7fff})
 	t.Cleanup(e.stopHealth)
 	if listened.Load() {
 		t.Error("readiness endpoint started after Stop")
+	}
+}
+
+// clearReadinessCache makes the next request compute readiness again.
+func (e *Endpoint) clearReadinessCache() {
+	e.mu.RLock()
+	h := e.health
+	e.mu.RUnlock()
+	if h != nil {
+		h.mu.Lock()
+		h.state = ""
+		h.mu.Unlock()
 	}
 }

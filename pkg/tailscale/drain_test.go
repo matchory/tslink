@@ -15,17 +15,16 @@ import (
 // A line as tailscaled logs it when control fetches its Service list.
 const servicesFetchLine = "2026/10/07 12:00:00 c2n: GET /vip-services received"
 
-// setDuration sets *p to v for the test.
-func setDuration(t *testing.T, p *time.Duration, v time.Duration) {
-	t.Helper()
-	old := *p
-	*p = v
-	t.Cleanup(func() { *p = old })
+// setTiming gives cfg its own copy of its timing, changed by set.
+func setTiming(cfg *DaemonConfig, set func(*timing)) {
+	tm := cfg.times()
+	set(&tm)
+	cfg.timing = &tm
 }
 
 // newTestSupervisor returns a supervisor whose daemon runs the fake CLI and
 // has advertised svc:web.
-func newTestSupervisor(t *testing.T, cli *fakeCLI) (*DaemonSupervisor, *Daemon) {
+func newTestSupervisor(t *testing.T, cli *fakeCLI) (*DaemonSupervisor, *daemon) {
 	t.Helper()
 	s := NewDaemonSupervisor(DaemonConfig{EndpointID: "0123456789abcdef", Service: "svc:web"})
 	t.Cleanup(s.cancel)
@@ -74,10 +73,12 @@ func TestHandleLineCountsServicesFetches(t *testing.T) {
 // Leaving drains the backend, waits for control to fetch the drained Service
 // list, and only then logs out.
 func TestDrainAndWaitWaitsForControl(t *testing.T) {
-	setDuration(t, &drainAckFloor, 50*time.Millisecond)
-	setDuration(t, &drainAckTimeout, 5*time.Second)
 	cli := &fakeCLI{}
 	s, d := newTestSupervisor(t, cli)
+	setTiming(
+		&s.cfg,
+		func(tm *timing) { tm.drainAckFloor = 50 * time.Millisecond; tm.drainAckTimeout = 5 * time.Second },
+	)
 	api := newFakeLocalAPI(t)
 	api.loggedIn(ipn.Prefs{AdvertiseServices: []string{"svc:web"}})
 	d.lc = api.client()
@@ -114,8 +115,8 @@ func TestDrainAndWaitWaitsForControl(t *testing.T) {
 	if !loggedOut() {
 		t.Error("not logged out after control fetched the drain")
 	}
-	if elapsed := time.Since(start); elapsed < drainAckFloor {
-		t.Errorf("returned after %v, want at least %v", elapsed, drainAckFloor)
+	if elapsed := time.Since(start); elapsed < s.cfg.times().drainAckFloor {
+		t.Errorf("returned after %v, want at least %v", elapsed, s.cfg.times().drainAckFloor)
 	}
 }
 
@@ -124,10 +125,12 @@ func TestDrainAndWaitWaitsForControl(t *testing.T) {
 // again nor waits for a fetch that drain would never cause, and it stays
 // drained.
 func TestDrainAndWaitAfterExternalDrain(t *testing.T) {
-	setDuration(t, &drainAckFloor, 10*time.Millisecond)
-	setDuration(t, &drainAckTimeout, 2*time.Second)
 	cli := &fakeCLI{}
 	s, d := newTestSupervisor(t, cli)
+	setTiming(
+		&s.cfg,
+		func(tm *timing) { tm.drainAckFloor = 10 * time.Millisecond; tm.drainAckTimeout = 2 * time.Second },
+	)
 	api := newFakeLocalAPI(t)
 	api.loggedIn(ipn.Prefs{})
 	d.lc = api.client()
@@ -150,9 +153,9 @@ func TestDrainAndWaitAfterExternalDrain(t *testing.T) {
 
 // The floor holds even if control fetches the drain at once.
 func TestDrainAndWaitFloor(t *testing.T) {
-	setDuration(t, &drainAckFloor, 150*time.Millisecond)
 	cli := &fakeCLI{}
 	s, d := newTestSupervisor(t, cli)
+	setTiming(&s.cfg, func(tm *timing) { tm.drainAckFloor = 150 * time.Millisecond })
 	cli.out = ""
 	d.runCLI = func(ctx context.Context, c cliCall) (cliOutput, error) {
 		out, err := cli.run(ctx, c)
@@ -161,21 +164,26 @@ func TestDrainAndWaitFloor(t *testing.T) {
 	}
 	start := time.Now()
 	s.DrainAndWait("svc:web")
-	if elapsed := time.Since(start); elapsed < drainAckFloor {
-		t.Errorf("returned after %v, want at least %v", elapsed, drainAckFloor)
+	if elapsed := time.Since(start); elapsed < s.cfg.times().drainAckFloor {
+		t.Errorf("returned after %v, want at least %v", elapsed, s.cfg.times().drainAckFloor)
 	}
 }
 
 // Without word from control, leaving goes on after drainAckTimeout.
 func TestDrainAndWaitTimesOut(t *testing.T) {
-	setDuration(t, &drainAckFloor, 10*time.Millisecond)
-	setDuration(t, &drainAckTimeout, 100*time.Millisecond)
 	cli := &fakeCLI{}
 	s, _ := newTestSupervisor(t, cli)
+	setTiming(&s.cfg, func(tm *timing) {
+		tm.drainAckFloor = 10 * time.Millisecond
+		tm.drainAckTimeout = 100 * time.Millisecond
+	})
 	start := time.Now()
 	s.DrainAndWait("svc:web")
-	if elapsed := time.Since(start); elapsed < drainAckTimeout || elapsed > time.Second {
-		t.Errorf("returned after %v, want about %v", elapsed, drainAckTimeout)
+	if elapsed := time.Since(
+		start,
+	); elapsed < s.cfg.times().drainAckTimeout ||
+		elapsed > time.Second {
+		t.Errorf("returned after %v, want about %v", elapsed, s.cfg.times().drainAckTimeout)
 	}
 	if want := [][]string{
 		{"serve", "drain", "svc:web"},
@@ -191,10 +199,12 @@ func TestDrainAndWaitTimesOut(t *testing.T) {
 // A backend drained at the stop signal is not drained again, and leaving
 // waits for that drain's acknowledgement, counted from the drain.
 func TestDrainAndWaitAfterStopSignalDrain(t *testing.T) {
-	setDuration(t, &drainAckFloor, 10*time.Millisecond)
-	setDuration(t, &drainAckTimeout, 5*time.Second)
 	cli := &fakeCLI{}
 	s, d := newTestSupervisor(t, cli)
+	setTiming(
+		&s.cfg,
+		func(tm *timing) { tm.drainAckFloor = 10 * time.Millisecond; tm.drainAckTimeout = 5 * time.Second },
+	)
 	if err := s.Drain("svc:web"); err != nil {
 		t.Fatal(err)
 	}
@@ -213,10 +223,12 @@ func TestDrainAndWaitAfterStopSignalDrain(t *testing.T) {
 // A backend never advertised, as a replica drained while it waited for its
 // certificate, gives control nothing to fetch: leaving does not wait.
 func TestDrainAndWaitNeverAdvertised(t *testing.T) {
-	setDuration(t, &drainAckFloor, 10*time.Millisecond)
-	setDuration(t, &drainAckTimeout, 5*time.Second)
 	cli := &fakeCLI{}
 	s, _ := newTestSupervisor(t, cli)
+	setTiming(
+		&s.cfg,
+		func(tm *timing) { tm.drainAckFloor = 10 * time.Millisecond; tm.drainAckTimeout = 5 * time.Second },
+	)
 	s.cfg.gate.advertised.Store(false)
 	start := time.Now()
 	s.DrainAndWait("svc:web")
@@ -286,20 +298,18 @@ func TestDrainAndWaitWithoutDaemon(t *testing.T) {
 	}
 }
 
-// failingCert returns a tailscale CLI that fails "tailscale cert" with msg on
-// its standard error, as tailscale does, and passes other calls to cli.
-func failingCert(cli *fakeCLI, msg string) func(context.Context, cliCall) (cliOutput, error) {
-	return func(ctx context.Context, c cliCall) (cliOutput, error) {
-		if slices.Contains(c.args, "cert") {
-			return cliOutput{stderr: msg + "\n"}, errors.New("exit status 1")
-		}
-		return cli.run(ctx, c)
-	}
+// failCert has tailscaled refuse d's certificate requests with msg, at once:
+// with nothing listening on its socket, a request may take seconds to fail.
+func failCert(t *testing.T, d *daemon, msg string) {
+	t.Helper()
+	api := newFakeLocalAPI(t)
+	d.lc = api.client()
+	api.cert = func() error { return errors.New(msg) }
 }
 
 // newCertDaemon returns a daemon serving svc:web over HTTPS with a shared
 // certificate directory, and that directory.
-func newCertDaemon(t *testing.T, cli *fakeCLI) (*Daemon, string) {
+func newCertDaemon(t *testing.T, cli *fakeCLI) (*daemon, string) {
 	t.Helper()
 	d := newTestDaemon(t, cli, "svc:web")
 	d.config.Endpoints = []ServeEndpoint{{Proto: "https", Port: "443", Target: "8080"}}
@@ -314,7 +324,7 @@ const certDomain = "api.example.ts.net"
 
 // runAfterCert runs configureServiceAfterCert and returns a channel closed
 // when it returns.
-func runAfterCert(d *Daemon, dir string) <-chan struct{} {
+func runAfterCert(d *daemon, dir string) <-chan struct{} {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -326,9 +336,9 @@ func runAfterCert(d *Daemon, dir string) <-chan struct{} {
 // A replica drained while another issues the certificate stays drained once
 // the certificate appears, and stops waiting.
 func TestDrainedWaitingReplicaNotAdvertised(t *testing.T) {
-	setDuration(t, &certPollInterval, 10*time.Millisecond)
 	cli := &fakeCLI{}
 	d, dir := newCertDaemon(t, cli)
+	setTiming(&d.config, func(tm *timing) { tm.certPollInterval = 10 * time.Millisecond })
 	other, err := tryLease(dir, certDomain, "other")
 	if err != nil {
 		t.Fatal(err)
@@ -373,7 +383,7 @@ func TestDrainSurvivesDaemonRestart(t *testing.T) {
 		t.Fatal("Drain without tailscaled succeeded")
 	}
 
-	d, err := NewDaemon(s.cfg) // as startDaemon after a crash
+	d, err := newDaemon(s.cfg) // as startDaemon after a crash
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -433,10 +443,10 @@ func TestDrainAfterConfigureInProgress(t *testing.T) {
 // The lease holder configures the Service unadvertised and advertises it
 // only once the certificate exists.
 func TestLeaseHolderAdvertisedOnlyWithCert(t *testing.T) {
-	setDuration(t, &certPollInterval, 10*time.Millisecond)
 	cli := &fakeCLI{}
 	d, dir := newCertDaemon(t, cli)
-	d.runCLI = failingCert(cli, "not issued yet")
+	setTiming(&d.config, func(tm *timing) { tm.certPollInterval = 10 * time.Millisecond })
+	failCert(t, d, "not issued yet")
 
 	done := runAfterCert(d, dir)
 	waitFor(
@@ -470,11 +480,13 @@ func TestLeaseHolderAdvertisedOnlyWithCert(t *testing.T) {
 // Should control grant the Service's name only to hosts advertising it, the
 // lease holder advertises after certDomainGrace rather than wait forever.
 func TestLeaseHolderAdvertisesWhenDomainRefused(t *testing.T) {
-	setDuration(t, &certPollInterval, 10*time.Millisecond)
-	setDuration(t, &certDomainGrace, 50*time.Millisecond)
 	cli := &fakeCLI{}
 	d, dir := newCertDaemon(t, cli)
-	d.runCLI = failingCert(cli, `invalid domain "api.example.ts.net"; must be one of []`)
+	setTiming(&d.config, func(tm *timing) {
+		tm.certPollInterval = 10 * time.Millisecond
+		tm.certDomainGrace = 50 * time.Millisecond
+	})
+	failCert(t, d, `invalid domain "api.example.ts.net"; must be one of []`)
 
 	done := runAfterCert(d, dir)
 	waitFor(
@@ -493,10 +505,10 @@ func TestLeaseHolderAdvertisesWhenDomainRefused(t *testing.T) {
 // A lease holder drained while it waits for the certificate stops waiting,
 // is not advertised, and releases the lease.
 func TestDrainedLeaseHolderStops(t *testing.T) {
-	setDuration(t, &certPollInterval, 10*time.Millisecond)
 	cli := &fakeCLI{}
 	d, dir := newCertDaemon(t, cli)
-	d.runCLI = failingCert(cli, "not issued yet")
+	setTiming(&d.config, func(tm *timing) { tm.certPollInterval = 10 * time.Millisecond })
+	failCert(t, d, "not issued yet")
 
 	done := runAfterCert(d, dir)
 	waitFor(

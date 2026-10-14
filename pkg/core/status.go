@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/moby/moby/client/pkg/stringid"
+
 	"github.com/matchory/tslink/pkg/logger"
 )
 
@@ -45,7 +47,7 @@ type StatusWarning struct {
 
 // StatusPath returns the status file of an endpoint.
 func StatusPath(dataDir, endpointID string) string {
-	return filepath.Join(dataDir, "status", endpointID[:12]+".json")
+	return filepath.Join(dataDir, "status", stringid.TruncateID(endpointID)+".json")
 }
 
 // writeStatus records the endpoint's Tailscale state, with its warnings;
@@ -112,7 +114,7 @@ func (e *Endpoint) saveStatus() {
 		}
 	}
 	if err != nil {
-		logger.Warnf("Failed to write status of endpoint %s: %v", e.ID[:12], err)
+		logger.Warnf("Failed to write status of endpoint %s: %v", stringid.TruncateID(e.ID), err)
 	}
 }
 
@@ -124,7 +126,11 @@ func (e *Endpoint) removeStatus() {
 	for _, path := range []string{StatusPath(e.dataDir, e.ID), ReadyPath(e.dataDir, e.ID)} {
 		err := os.Remove(path)
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			logger.Warnf("Failed to remove status of endpoint %s: %v", e.ID[:12], err)
+			logger.Warnf(
+				"Failed to remove status of endpoint %s: %v",
+				stringid.TruncateID(e.ID),
+				err,
+			)
 		}
 	}
 }

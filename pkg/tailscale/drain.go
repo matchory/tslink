@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/moby/moby/client/pkg/stringid"
+
 	"github.com/matchory/tslink/pkg/logger"
 )
 
@@ -23,14 +25,6 @@ import (
 // servicesFetchLog is what tailscaled logs when control fetches its Service
 // list (ipn/ipnlocal/serve.go, handleC2NVIPServicesGet, in Tailscale 1.102).
 const servicesFetchLog = "c2n: GET /vip-services received"
-
-// How long leaving waits after a drain: at least drainAckFloor, and up to
-// drainAckTimeout for control to fetch the drained Service list. Variables
-// for tests.
-var (
-	drainAckFloor   = time.Second
-	drainAckTimeout = 10 * time.Second
-)
 
 // errDrained stops configuring a Service backend that was drained meanwhile.
 var errDrained = errors.New("service backend is drained")
@@ -60,7 +54,7 @@ type serviceGate struct {
 // context of its CLI calls, which a drain cancels. Once the backend is
 // drained, before fn or while it runs, it returns errDrained: a call the
 // drain cancelled is no failure.
-func (g *serviceGate) change(d *Daemon, fn func(ctx context.Context) error) error {
+func (g *serviceGate) change(d *daemon, fn func(ctx context.Context) error) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	ctx, cancel := context.WithCancel(d.ctx)
@@ -101,7 +95,7 @@ func (g *serviceGate) markDrained() {
 // drainRecord is a drain that took effect.
 type drainRecord struct {
 	at      time.Time
-	daemon  *Daemon // the daemon that drained
+	daemon  *daemon // the daemon that drained
 	fetches int64   // its Service list fetches before the drain
 
 	// The Service was not advertised when tslink came to drain it, as after
@@ -111,7 +105,7 @@ type drainRecord struct {
 }
 
 // isDrained reports whether the Service backend was drained.
-func (d *Daemon) isDrained() bool {
+func (d *daemon) isDrained() bool {
 	return d.config.gate.drained.Load()
 }
 
@@ -121,7 +115,7 @@ func (d *Daemon) isDrained() bool {
 // and neither does a drain of a Service the node's prefs no longer advertise,
 // as one drained outside tslink. A serve configuration in progress is
 // cancelled rather than waited for.
-func (d *Daemon) Drain(service string) error {
+func (d *daemon) Drain(service string) error {
 	g := d.config.gate
 	g.markDrained()
 	g.mu.Lock()
@@ -146,7 +140,7 @@ func (d *Daemon) Drain(service string) error {
 
 // notAdvertised reports whether the node's prefs do not advertise service;
 // false if tailscaled cannot tell.
-func (d *Daemon) notAdvertised(service string) bool {
+func (d *daemon) notAdvertised(service string) bool {
 	ctx, cancel := context.WithTimeout(d.ctx, 10*time.Second)
 	defer cancel()
 	prefs, err := d.lc.GetPrefs(ctx)
@@ -163,7 +157,7 @@ func (d *Daemon) notAdvertised(service string) bool {
 }
 
 // runServe runs "tailscale serve <args>", as drain and advertise.
-func (d *Daemon) runServe(ctx context.Context, prefix string, args ...string) error {
+func (d *daemon) runServe(ctx context.Context, prefix string, args ...string) error {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	out, err := d.tailscale(
@@ -183,7 +177,7 @@ func (d *Daemon) runServe(ctx context.Context, prefix string, args ...string) er
 
 // waitServicesFetch waits until control has fetched the Service list more than
 // after times, or until deadline. It reports whether it did.
-func (d *Daemon) waitServicesFetch(after int64, deadline time.Time) bool {
+func (d *daemon) waitServicesFetch(after int64, deadline time.Time) bool {
 	timer := time.NewTimer(time.Until(deadline))
 	defer timer.Stop()
 	for {
@@ -205,7 +199,7 @@ func (d *Daemon) waitServicesFetch(after int64, deadline time.Time) bool {
 // drainAckFloor and at most drainAckTimeout after the drain. A backend never
 // advertised has nothing for control to fetch, and is not waited for.
 func (s *DaemonSupervisor) DrainAndWait(service string) {
-	id := s.cfg.EndpointID[:min(12, len(s.cfg.EndpointID))]
+	id := stringid.TruncateID(s.cfg.EndpointID)
 	if err := s.Drain(service); err != nil {
 		logger.Warnf("Endpoint %s: failed to drain %s before leaving: %v", id, service, err)
 	}
@@ -214,7 +208,7 @@ func (s *DaemonSupervisor) DrainAndWait(service string) {
 	g.mu.Lock()
 	drain := g.drain
 	g.mu.Unlock()
-	d := s.GetDaemon()
+	d := s.getDaemon()
 	if drain.at.IsZero() || drain.external || d == nil {
 		return
 	}
@@ -228,9 +222,10 @@ func (s *DaemonSupervisor) DrainAndWait(service string) {
 		after = 0
 	}
 
+	tm := s.cfg.times()
 	logger.Infof("Endpoint %s: %s drained, waiting for control to fetch it", id, service)
-	acked := d.waitServicesFetch(after, drain.at.Add(drainAckTimeout))
-	if wait := time.Until(drain.at.Add(drainAckFloor)); wait > 0 {
+	acked := d.waitServicesFetch(after, drain.at.Add(tm.drainAckTimeout))
+	if wait := time.Until(drain.at.Add(tm.drainAckFloor)); wait > 0 {
 		sleep(d.ctx, wait)
 	}
 	if acked {
@@ -239,5 +234,5 @@ func (s *DaemonSupervisor) DrainAndWait(service string) {
 		return
 	}
 	logger.Warnf("Endpoint %s: control did not fetch the drained %s within %v, leaving anyway",
-		id, service, drainAckTimeout)
+		id, service, tm.drainAckTimeout)
 }

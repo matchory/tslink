@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 
@@ -38,6 +39,9 @@ type fakeLocalAPI struct {
 	lastKey   string            // The key the last Start got
 	logoutErr string            // What a logout fails with
 	watchers  []chan ipn.Notify // The IPN bus watchers
+
+	// cert answers a certificate request: an error fails it
+	cert func() error
 }
 
 func newFakeLocalAPI(t *testing.T) *fakeLocalAPI {
@@ -89,6 +93,10 @@ func (f *fakeLocalAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if _, err := io.WriteString(w, body); err != nil {
 			return
 		}
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, certPath) {
+		f.serveCert(w)
 		return
 	}
 	switch r.Method + " " + r.URL.Path {
@@ -148,6 +156,29 @@ func (f *fakeLocalAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		default:
 			http.Error(w, "tailscaled is not running", http.StatusInternalServerError)
 		}
+	}
+}
+
+// certPath is the LocalAPI's path of a domain's certificate, without the
+// domain.
+const certPath = "/localapi/v0/cert/"
+
+// serveCert answers a certificate request as tailscaled does: the key, then
+// the certificate, which the client tells apart by "--\n--".
+func (f *fakeLocalAPI) serveCert(w http.ResponseWriter) {
+	f.mu.Lock()
+	cert := f.cert
+	f.mu.Unlock()
+	if cert == nil {
+		http.Error(w, "no certificate", http.StatusInternalServerError)
+		return
+	}
+	if err := cert(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if _, err := io.WriteString(w, "-----END KEY--\n-----BEGIN CERTIFICATE--\n"); err != nil {
+		return
 	}
 }
 

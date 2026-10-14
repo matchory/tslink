@@ -89,7 +89,7 @@ Tailscale Services requires version 1.86.0 or later. The plugin image bundles a 
 
 ### Tag-Based Authentication
 
-Tailscale Services requires tag-based authentication. The auth key used for the network must include appropriate tags. Tags specified in `tslink.tags` are passed to `tailscale up --advertise-tags`.
+Tailscale Services requires tag-based authentication. The auth key used for the network must include appropriate tags. Tags specified in `tslink.tags` are set as the node's advertised tags when it logs in.
 
 ## Error Handling
 

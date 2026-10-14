@@ -68,11 +68,11 @@ func (f *fakeCLI) snapshot() [][]string {
 
 const testSocket = "/run/test.sock"
 
-func newTestDaemon(t *testing.T, cli *fakeCLI, service string) *Daemon {
+func newTestDaemon(t *testing.T, cli *fakeCLI, service string) *daemon {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	return &Daemon{
+	return &daemon{
 		config: DaemonConfig{
 			EndpointID: "test", StateDir: t.TempDir(), Service: service, gate: &serviceGate{},
 		},
@@ -563,10 +563,10 @@ func returnsWithin(t *testing.T, d time.Duration, what string, fn func() error) 
 func TestServeCallsEndWithDaemon(t *testing.T) {
 	for _, tc := range []struct {
 		name, service string
-		configure     func(*Daemon) error
+		configure     func(*daemon) error
 	}{
-		{"service", "svc:web", (*Daemon).configureService},
-		{"direct", "", (*Daemon).configureDirectServe},
+		{"service", "svc:web", (*daemon).configureService},
+		{"direct", "", (*daemon).configureDirectServe},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cli := &fakeCLI{}
@@ -618,5 +618,30 @@ func TestSleep(t *testing.T) {
 	})
 	if slept {
 		t.Error("sleep with a cancelled context reported a full sleep")
+	}
+}
+
+// poll calls its function until it reports done, or until ctx is done.
+func TestPoll(t *testing.T) {
+	calls := 0
+	if !poll(t.Context(), time.Millisecond, func() bool { calls++; return calls == 3 }) {
+		t.Error("poll with a live context reported cancellation")
+	}
+	if calls != 3 {
+		t.Errorf("poll called its function %d times, want 3", calls)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	calls = 0
+	var done bool
+	returnsWithin(t, time.Second, "poll with a cancelled context", func() error {
+		done = poll(ctx, 3*time.Second, func() bool { calls++; cancel(); return false })
+		return nil
+	})
+	if done || calls != 1 {
+		t.Errorf(
+			"poll with a cancelled context = %v after %d calls, want false after 1",
+			done,
+			calls,
+		)
 	}
 }

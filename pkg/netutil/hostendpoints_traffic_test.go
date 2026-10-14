@@ -275,9 +275,7 @@ func TestHostEndpointsFollowPortMapping(t *testing.T) {
 		if len(got) != 1 || got[0] != want {
 			return fmt.Errorf("HostEndpoints = %v, want [%v]", got, want)
 		}
-		if err := CleanupNAT("vethln0"); err != nil {
-			return err
-		}
+		CleanupNAT("vethln0")
 		if _, err := HostEndpoints("vethln0"); !errors.Is(err, ErrNoPortMapping) {
 			return fmt.Errorf("without a rule: %w, want ErrNoPortMapping", err)
 		}

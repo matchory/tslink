@@ -205,7 +205,7 @@ func TestNATRules(t *testing.T) {
 
 	// CleanupNAT removes one veth's rules, and tolerates their absence.
 	for range 2 {
-		inNS("CleanupNAT", func() error { return CleanupNAT("vethtslinka") })
+		inNS("CleanupNAT", func() error { CleanupNAT("vethtslinka"); return nil })
 	}
 
 	r = listNATRules(t, nsPath)
@@ -219,7 +219,7 @@ func TestNATRules(t *testing.T) {
 
 	// The mapping of a veth that is gone already goes too
 	inNS("delete veth c", func() error { return DeleteVeth("vethtslinkc") })
-	inNS("CleanupNAT of a deleted veth", func() error { return CleanupNAT("vethtslinkc") })
+	inNS("CleanupNAT of a deleted veth", func() error { CleanupNAT("vethtslinkc"); return nil })
 	if got := listNATRules(t, nsPath).portMap; len(got) != 1 || got[ctrB] == 0 {
 		t.Errorf("port mappings after CleanupNAT of a deleted veth = %v, want b's", got)
 	}
@@ -273,14 +273,14 @@ func TestUsedVethSubnets(t *testing.T) {
 			t.Errorf("used = %v, want %v", used, want)
 		}
 		ip, err := VethIPv4("dummy2")
-		if err != nil || ip != "10.200.2.9" {
-			t.Errorf("VethIPv4 = %q, %v", ip, err)
+		if err != nil || ip != netip.MustParseAddr("10.200.2.9") {
+			t.Errorf("VethIPv4 = %s, %v", ip, err)
 		}
 		// The address is the host side's: a second link may not get it
-		if err := SetupHostRouting("dummy3", "10.200.1.5"); err != nil {
+		if err := SetupHostRouting("dummy3", netip.MustParseAddr("10.200.1.5")); err != nil {
 			t.Errorf("SetupHostRouting on a free link: %v", err)
 		}
-		if err := SetupHostRouting("dummy3", "10.200.1.5"); err == nil {
+		if err := SetupHostRouting("dummy3", netip.MustParseAddr("10.200.1.5")); err == nil {
 			t.Error("SetupHostRouting did not fail adding an address the link has")
 		}
 		return nil
@@ -323,7 +323,7 @@ func TestNATRulesRestored(t *testing.T) {
 			ipt.ClearChain("filter", chainName),
 			ipt.Append("filter", chainName, "-i", "vethgone", "-j", "ACCEPT"),
 			ipt.Delete("filter", "FORWARD", "-j", chainName),
-			ipt.Delete("nat", "POSTROUTING", "-s", natSource, "-j", "MASQUERADE"),
+			ipt.Delete("nat", "POSTROUTING", "-s", vethRange.String(), "-j", "MASQUERADE"),
 		)
 	})
 	inNS("SetupVethIsolation", func() error { return SetupVethIsolation(WireGuardTestPort) })

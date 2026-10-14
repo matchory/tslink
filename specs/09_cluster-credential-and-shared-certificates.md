@@ -131,9 +131,9 @@ Service, whose certificate is for `<service name>.<MagicDNS suffix>`:
 2. Otherwise tailscaled's start completes without the Service, and the replica configures it in the background. It
    tries to take the lease `<domain>.lease` in the certificate directory, created exclusively, naming the endpoint,
    and touched every 15 seconds while held.
-   - The holder applies its serve configuration, then asks tailscaled for the certificate (`tailscale cert`) until it
-     exists, and releases the lease. Serving the Service alone does not reliably start issuance: tailscaled fetches
-     certificates for served names right away only if the name is already among the node's certificate domains,
+   - The holder applies its serve configuration, then asks tailscaled for the certificate (the LocalAPI's `CertPair`)
+     until it exists, and releases the lease. Serving the Service alone does not reliably start issuance: tailscaled
+     fetches certificates for served names right away only if the name is already among the node's certificate domains,
      but control adds a Service's domain seconds after the Service is configured, and tailscaled's next attempt is
      an hour later.
    - Every other replica waits, checking every 5 seconds for a valid certificate, then applies its configuration.
@@ -299,7 +299,7 @@ Key files:
 - `pkg/tailscale/daemon.go` — `DaemonConfig.AuthKey` is a function, so a re-login reads the current file
 - `pkg/tailscale/certs.go` — certs link, ACME account key, lease, requesting the certificate, and configuring the
   Service once certified
-- `pkg/tailscale/daemon.go` — tailscaled's own mount namespace and `resolv.conf`
+- `pkg/tailscale/command.go` — tailscaled's own mount namespace and `resolv.conf`
 - `pkg/tailscale/warnings.go` — blocked renewals and certificates close to expiry; `pkg/core/status.go` writes them
   to the status file, `pkg/diag` lists them
 - `pkg/core/gc.go` — collects the certificate directory, including tailscaled's `<file>.tmp<digits>` files

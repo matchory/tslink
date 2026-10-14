@@ -152,8 +152,8 @@ func ParseMTU(s string) int {
 // EndpointOptions holds options for endpoint creation.
 type EndpointOptions struct {
 	Hostname string
-	// IPAMAddress is the address Docker's IPAM assigned to the endpoint, or ""
-	IPAMAddress string
+	// IPAMAddress is the address Docker's IPAM assigned to the endpoint, if any
+	IPAMAddress netip.Addr
 }
 
 // DataDir returns the plugin's data directory: TS_DATA_DIR, or /data.
@@ -165,7 +165,7 @@ func DataDir() string {
 }
 
 // LoadConfig loads configuration from environment variables.
-func LoadConfig() (*Config, error) {
+func LoadConfig() *Config {
 	cfg := &Config{
 		AuthKey:   os.Getenv("TS_AUTHKEY"),
 		DataDir:   DataDir(),
@@ -195,7 +195,7 @@ func LoadConfig() (*Config, error) {
 		)
 	}
 
-	return cfg, nil
+	return cfg
 }
 
 // GenericOptionsKey is the key Docker uses to pass driver options.

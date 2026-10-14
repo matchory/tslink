@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/moby/moby/client/pkg/stringid"
+
 	"github.com/matchory/tslink/pkg/logger"
 )
 
@@ -105,14 +107,14 @@ var serveDebugLogMaxBytes int64 = 1 << 20
 
 // configureService runs "tailscale serve" to register as a service backend,
 // and advertises it. This should be called after bringUp() succeeds.
-func (d *Daemon) configureService() error {
+func (d *daemon) configureService() error {
 	return d.configureServiceBackend(true)
 }
 
 // configureServiceBackend configures the node as a backend of its Service,
 // and advertises it if advertise is set. A drained backend is left alone: it
 // returns errDrained.
-func (d *Daemon) configureServiceBackend(advertise bool) error {
+func (d *daemon) configureServiceBackend(advertise bool) error {
 	if d.config.Service == "" {
 		return nil // No service configured, skip
 	}
@@ -156,7 +158,7 @@ func (d *Daemon) configureServiceBackend(advertise bool) error {
 
 // runAdvertise runs "tailscale serve advertise" and notes that the backend
 // was advertised. The caller holds the gate's lock.
-func (d *Daemon) runAdvertise(ctx context.Context, service string) error {
+func (d *daemon) runAdvertise(ctx context.Context, service string) error {
 	if err := d.runServe(ctx, "serve-advertise", "advertise", service); err != nil {
 		return err
 	}
@@ -166,7 +168,7 @@ func (d *Daemon) runAdvertise(ctx context.Context, service string) error {
 
 // noteSurvivingState marks the backend advertised if the node's state exists
 // before tailscaled starts: it may advertise the Service from a previous run.
-func (d *Daemon) noteSurvivingState() {
+func (d *daemon) noteSurvivingState() {
 	if StateExists(d.config.StateDir) {
 		d.config.gate.advertised.Store(true)
 	}
@@ -175,7 +177,7 @@ func (d *Daemon) noteSurvivingState() {
 // advertise runs "tailscale serve advertise", unless the backend was drained.
 // A drained service stays drained in the node's state, as after a plugin
 // restart: advertise it again once its endpoints are configured.
-func (d *Daemon) advertise(service string) error {
+func (d *daemon) advertise(service string) error {
 	return d.config.gate.change(d, func(ctx context.Context) error {
 		return d.runAdvertise(ctx, service)
 	})
@@ -184,7 +186,7 @@ func (d *Daemon) advertise(service string) error {
 // configureDirectServe runs "tailscale serve" without --service flag to configure
 // direct machine serve. This makes the container accessible via its MagicDNS hostname
 // (e.g., https://hostname.tailnet.ts.net/) with automatic TLS certificates.
-func (d *Daemon) configureDirectServe() error {
+func (d *daemon) configureDirectServe() error {
 	if len(d.config.Endpoints) == 0 {
 		return nil // No endpoints to configure
 	}
@@ -195,7 +197,7 @@ func (d *Daemon) configureDirectServe() error {
 		logger.Warnf(
 			"Endpoint %s serves HTTP on its own name %s: tailscaled issues a certificate for it, "+
 				"even for plain HTTP, and every new task's name counts against Let's Encrypt's weekly limit for the tailnet",
-			d.config.EndpointID[:12],
+			stringid.TruncateID(d.config.EndpointID),
 			d.config.Hostname,
 		)
 	}
@@ -212,7 +214,7 @@ func (d *Daemon) configureDirectServe() error {
 }
 
 // configureDirectServeEndpoint configures a single direct serve endpoint (without --service).
-func (d *Daemon) configureDirectServeEndpoint(ep ServeEndpoint) error {
+func (d *daemon) configureDirectServeEndpoint(ep ServeEndpoint) error {
 	logger.Debugf("configureDirectServeEndpoint: proto=%s port=%s target=%s path=%s",
 		ep.Proto, ep.Port, ep.Target, ep.Path)
 
@@ -244,7 +246,7 @@ func (d *Daemon) configureDirectServeEndpoint(ep ServeEndpoint) error {
 
 // configureServeEndpoint configures a single serve endpoint for a service backend.
 // Supports L3 (tun), L4 (tcp, tls-terminated-tcp), and L7 (http, https).
-func (d *Daemon) configureServeEndpoint(ctx context.Context, ep ServeEndpoint) error {
+func (d *daemon) configureServeEndpoint(ctx context.Context, ep ServeEndpoint) error {
 	logger.Debugf("configureServeEndpoint: proto=%s port=%s target=%s path=%s service=%s",
 		ep.Proto, ep.Port, ep.Target, ep.Path, d.config.Service)
 
@@ -297,7 +299,7 @@ func (d *Daemon) configureServeEndpoint(ctx context.Context, ep ServeEndpoint) e
 
 // serveDebugf appends a message to serve-debug.log in the state directory,
 // which keeps a record of the serve attempts for debugging.
-func (d *Daemon) serveDebugf(format string, args ...any) {
+func (d *daemon) serveDebugf(format string, args ...any) {
 	path := filepath.Join(d.config.StateDir, "serve-debug.log")
 	f, err := logger.OpenRotating(path, serveDebugLogMaxBytes)
 	if err != nil {

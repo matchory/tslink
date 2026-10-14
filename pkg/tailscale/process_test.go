@@ -11,7 +11,7 @@ import (
 
 // startFake starts script as tailscaled of d, with "$0" a directory for its
 // marker files and args from "$1", and stops it when the test ends.
-func startFake(t *testing.T, d *Daemon, script string, args ...string) string {
+func startFake(t *testing.T, d *daemon, script string, args ...string) string {
 	t.Helper()
 	dir := t.TempDir()
 	args = append([]string{"-c", script, dir}, args...)
@@ -45,8 +45,8 @@ func waitFile(t *testing.T, path string) {
 // Stop lets tailscaled shut down cleanly before it is killed: SIGTERM first,
 // SIGKILL only if it is still running after stopGrace.
 func TestStopTerminatesGracefully(t *testing.T) {
-	setDuration(t, &stopGrace, 5*time.Second)
 	d := newTestDaemon(t, &fakeCLI{}, "")
+	setTiming(&d.config, func(tm *timing) { tm.stopGrace = 5 * time.Second })
 	dir := startFake(t, d, `trap 'touch "$0/term"; exit 0' TERM; touch "$0/ready"
 while :; do sleep 0.05; done`)
 	waitFile(t, filepath.Join(dir, "ready"))
@@ -60,8 +60,8 @@ while :; do sleep 0.05; done`)
 
 // A tailscaled that does not exit on SIGTERM is killed after stopGrace.
 func TestStopKillsAfterGrace(t *testing.T) {
-	setDuration(t, &stopGrace, 200*time.Millisecond)
 	d := newTestDaemon(t, &fakeCLI{}, "")
+	setTiming(&d.config, func(tm *timing) { tm.stopGrace = 200 * time.Millisecond })
 	dir := startFake(t, d, `trap '' TERM; touch "$0/ready"; while :; do sleep 0.05; done`)
 	waitFile(t, filepath.Join(dir, "ready"))
 	start := time.Now()

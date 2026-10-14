@@ -208,6 +208,32 @@ func RemoveDownloadCache(dataDir string) {
 	}
 }
 
+// WarnUnusedCertificates warns once at startup of certificates and keys in
+// the data directory's certs/ that tslink no longer reads: the shared
+// directory moved away from the data directory, its default. tslink leaves
+// them, private keys included, for the operator to remove or move back.
+func WarnUnusedCertificates(dataDir, sharedDir string) {
+	if sharedDir == "" {
+		return
+	}
+	dataInfo, dataErr := os.Stat(dataDir)
+	sharedInfo, sharedErr := os.Stat(sharedDir)
+	if dataErr != nil || sharedErr != nil || os.SameFile(dataInfo, sharedInfo) {
+		return
+	}
+	certs := filepath.Join(dataDir, "certs")
+	entries, err := os.ReadDir(certs)
+	if err != nil || len(entries) == 0 {
+		return
+	}
+	logger.Warnf(
+		"%s holds %d files tslink no longer uses, certificate keys among them: the shared "+
+			"directory is elsewhere. Remove them, or copy them into its certs/ if they are newer",
+		certs,
+		len(entries),
+	)
+}
+
 // removeEphemeral logs the ephemeral node whose state is in dir out, then
 // removes the state. Without the logout the node would stay in the tailnet,
 // offline, until Tailscale deletes it, and a container with the same

@@ -325,7 +325,13 @@ func (s *DaemonSupervisor) supervisionLoop() {
 
 		err := s.startDaemon()
 		if err != nil {
-			logger.Errorf("Failed to start tailscaled: %v", err)
+			// Stopping aborts a start, as when the plugin restarts while
+			// endpoints start: expected, not an error
+			if s.ctx.Err() != nil {
+				logger.Infof("Start of tailscaled abandoned: the supervisor stopped: %v", err)
+			} else {
+				logger.Errorf("Failed to start tailscaled: %v", err)
+			}
 
 			if firstStart {
 				s.signalStartup(err)

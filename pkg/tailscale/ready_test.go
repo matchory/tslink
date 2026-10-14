@@ -1,9 +1,16 @@
 package tailscale
 
 import (
+	"bytes"
+	"os"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"tailscale.com/client/local"
+
+	"github.com/matchory/tslink/pkg/logger"
 )
 
 // readinessAPI answers the queries readiness makes as tailscaled would, with
@@ -139,4 +146,66 @@ func TestPendingServiceShortName(t *testing.T) {
 	if got := d.pendingService("example.ts.net"); got != ReadyCertificatePending {
 		t.Errorf("pendingService = %v, want %v", got, ReadyCertificatePending)
 	}
+}
+
+// A backend control has not approved yet is normal right after it starts:
+// tslink warns only if it is still not approved after approvalGrace.
+func TestApprovalWarnsOnlyIfItLasts(t *testing.T) {
+	const (
+		running = `{"BackendState":"Running",` +
+			`"CurrentTailnet":{"MagicDNSSuffix":"example.ts.net"}}`
+		approved = `{"BackendState":"Running",` +
+			`"CurrentTailnet":{"MagicDNSSuffix":"example.ts.net"},` +
+			`"Self":{"CapMap":{"service-host":[{"svc:ai":["100.65.0.1"]}]}}}`
+		advertised = `{"AdvertiseServices":["svc:ai"]}`
+		serviceTCP = `{"Services":{"svc:ai":{"TCP":{"443":{"HTTPS":true}}}}}`
+	)
+	for name, tt := range map[string]struct {
+		status string
+		warns  bool
+	}{
+		"still not approved": {running, true},
+		"approved meanwhile": {approved, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var log lockedLog
+			logger.SetOutput(&log)
+			t.Cleanup(func() { logger.SetOutput(os.Stdout) })
+			cli := &fakeCLI{out: "Serving svc:ai... approval from an admin is required"}
+			d := newTestDaemon(t, cli, "svc:ai")
+			d.config.Endpoints = []ServeEndpoint{{Proto: "https", Port: "443", Target: "8081"}}
+			d.config.CertsDir = t.TempDir()
+			setTiming(&d.config, func(tm *timing) { tm.approvalGrace = 50 * time.Millisecond })
+			d.lc = readinessAPI(t, tt.status, serviceTCP, advertised)
+
+			if err := d.configureServeEndpoint(t.Context(), d.config.Endpoints[0]); err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(log.String(), "level=WARN") {
+				t.Fatalf("warned at once: %s", log.String())
+			}
+			d.wg.Wait()
+			if got := strings.Contains(log.String(), "pending admin approval"); got != tt.warns {
+				t.Errorf("warned = %v, want %v: %s", got, tt.warns, log.String())
+			}
+		})
+	}
+}
+
+// lockedLog is a log buffer that goroutines may write concurrently.
+type lockedLog struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedLog) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedLog) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }

@@ -76,6 +76,9 @@ type daemon struct {
 	// (deleted, or an expired ephemeral node), as Unix seconds
 	nodeNotFound atomic.Int64
 
+	// A check whether control approved the backend is waiting
+	approvalCheck atomic.Bool
+
 	// How often control has fetched the node's Service list, and a channel
 	// closed at the next fetch
 	fetchMu sync.Mutex

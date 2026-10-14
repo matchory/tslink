@@ -23,7 +23,8 @@ miss() { echo "MISSING $*"; }
 	ci=$(gh run list --commit "$sha" --json name,conclusion --jq '.[] | "\(.conclusion) \(.name)"')
 	# shellcheck disable=SC2001 # indenting every line of $ci, not a single substitution
 	if [ -z "$ci" ]; then miss "no CI run for $short"; else echo "$ci" | sed 's/^/    /'; fi
-	if [ -n "$ci" ] && echo "$ci" | grep -qvE '^success '; then
+	# A job skipped by its own condition, or neutral, did not fail
+	if [ -n "$ci" ] && echo "$ci" | grep -qvE '^(success|skipped|neutral) '; then
 		miss "a CI run on $short did not succeed"
 	fi
 	echo

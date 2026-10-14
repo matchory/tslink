@@ -452,7 +452,9 @@ client_ts() {
 	sudo "$WORK/plugin/rootfs/usr/local/bin/tailscale" \
 		--socket="$DATA/by-hostname/e2e-client/tailscaled.sock" "$@"
 }
-direct() { client_ts ping --c=10 "$server_ip" 2>&1 | grep -qE 'via [0-9.]+:41641 '; }
+# grep without -q reads to the end: under pipefail, ping cut off by grep -q
+# exiting at the first match would fail the check
+direct() { client_ts ping --c=10 "$server_ip" 2>&1 | grep -E 'via [0-9.]+:41641 ' >/dev/null; }
 retry 60 direct || fail "client and server are not directly connected: $(client_ts ping --c=3 "$server_ip" 2>&1)"
 
 probe_group "veth isolation" veth_isolation_off veth_isolation_restored 60

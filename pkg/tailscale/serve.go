@@ -147,6 +147,26 @@ var errUntaggedServiceHost = errors.New(
 // attempts, is rotated; a variable for tests.
 var serveDebugLogMaxBytes int64 = 1 << 20
 
+// checkServiceHost checks what every Service of the node needs: tags, and a
+// MagicDNS suffix if any Service serves HTTPS. Its error fails the start.
+func (d *daemon) checkServiceHost() error {
+	ctx, cancel := context.WithTimeout(d.ctx, 10*time.Second)
+	defer cancel()
+	st, err := d.lc.StatusWithoutPeers(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to read the node's status: %w", err)
+	}
+	if st.Self == nil || st.Self.Tags == nil || st.Self.Tags.Len() == 0 {
+		return errUntaggedServiceHost
+	}
+	for _, b := range d.backends {
+		if servesHTTPS(b.endpoints) && magicDNSSuffix(st) == "" {
+			return errors.New("tailscale status has no MagicDNS suffix: HTTPS needs MagicDNS")
+		}
+	}
+	return nil
+}
+
 // configureService configures the node as a backend of its Service, and
 // advertises it. This should be called after bringUp() succeeds.
 func (b *serviceBackend) configureService() error {

@@ -601,3 +601,121 @@ func (d *daemon) setEndpoints(endpoints ...ServeEndpoint) {
 	}
 	d.backends = newBackends(d)
 }
+
+// newMultiDaemon is newTestDaemon with several Services and short waits.
+func newMultiDaemon(t *testing.T, services ...Service) (*daemon, *fakeLocalAPI) {
+	t.Helper()
+	d, api := newTestDaemon(t, "")
+	d.config.Services = services
+	d.backends = newBackends(d)
+	setTiming(&d.config, func(tm *timing) {
+		tm.controlSync = 0
+		tm.certPollInterval = 10 * time.Millisecond
+	})
+	return d, api
+}
+
+func tcpService(name, port string) Service {
+	return Service{Name: name, Endpoints: []ServeEndpoint{{Proto: "tcp", Port: port, Target: port}}}
+}
+
+func httpsService(name string) Service {
+	return Service{
+		Name:      name,
+		Endpoints: []ServeEndpoint{{Proto: "https", Port: "443", Target: "1"}},
+	}
+}
+
+// A Service whose configuration fails does not fail the start or hold back
+// the others; it is retried until it succeeds.
+func TestFailingBackendRetriedInPlace(t *testing.T) {
+	d, api := newMultiDaemon(t, tcpService("svc:a", "1"), tcpService("svc:b", "2"))
+	api.failService("svc:b", "boom")
+	if err := d.configureServing(); err != nil {
+		t.Fatalf("configureServing = %v, want nil", err)
+	}
+	ops := api.operations()
+	if !ran(ops, "advertise", "svc:a") || ran(ops, "advertise", "svc:b") {
+		t.Fatalf("operations = %q, want svc:a advertised only", ops)
+	}
+	api.failService("svc:b", "")
+	waitFor(
+		t,
+		"svc:b advertised",
+		func() bool { return ran(api.operations(), "advertise", "svc:b") },
+	)
+}
+
+// Checks every Service needs still fail the start, before any is configured.
+func TestSharedServiceChecksFailStart(t *testing.T) {
+	t.Run("untagged", func(t *testing.T) {
+		d, api := newMultiDaemon(t, tcpService("svc:a", "1"))
+		api.mu.Lock()
+		api.tags = nil
+		api.mu.Unlock()
+		if err := d.configureServing(); !errors.Is(err, errUntaggedServiceHost) {
+			t.Errorf("configureServing = %v, want %v", err, errUntaggedServiceHost)
+		}
+		if ops := api.operations(); len(ops) != 0 {
+			t.Errorf("operations = %q, want none", ops)
+		}
+	})
+	t.Run("HTTPS without MagicDNS", func(t *testing.T) {
+		d, api := newMultiDaemon(t, httpsService("svc:a"))
+		api.mu.Lock()
+		api.suffix = ""
+		api.mu.Unlock()
+		if err := d.configureServing(); err == nil {
+			t.Error("configureServing = nil, want an error")
+		}
+	})
+}
+
+// Reauthenticate configures the Services again, but a backend still waiting
+// for its certificate is not started a second time.
+func TestReauthenticateStartsNoSecondWait(t *testing.T) {
+	d, api := newMultiDaemon(t, httpsService("svc:a"))
+	if err := os.Mkdir(filepath.Join(d.config.StateDir, certsDirName), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	failCert(api, "not yet")
+	if err := d.configureServing(); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "cert wait", d.only(t).certWaiting.Load)
+	if err := d.configureServing(); err != nil {
+		t.Fatal(err)
+	}
+	if !d.only(t).certWaiting.Load() {
+		t.Error("wait ended")
+	}
+}
+
+// A lease holder whose domain control refuses for certDomainGrace advertises
+// its own Service only; another Service waiting for its lease stays
+// unadvertised.
+func TestDomainFallbackAdvertisesOwnServiceOnly(t *testing.T) {
+	d, api := newMultiDaemon(t, httpsService("svc:a"), httpsService("svc:b"))
+	setTiming(&d.config, func(tm *timing) { tm.certDomainGrace = 50 * time.Millisecond })
+	dir := filepath.Join(d.config.StateDir, certsDirName)
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	other, err := tryLease(dir, "b.example.ts.net", "other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.release()
+	failCert(api, `invalid domain "a.example.ts.net"; must be one of []`)
+	if err := d.configureServing(); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(
+		t,
+		"svc:a advertised",
+		func() bool { return ran(api.operations(), "advertise", "svc:a") },
+	)
+	if ran(api.operations(), "advertise", "svc:b") {
+		t.Error("svc:b advertised while another replica holds its lease")
+	}
+}

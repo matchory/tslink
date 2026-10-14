@@ -359,21 +359,20 @@ func (d *daemon) configureServing() error {
 		logger.Infof("Direct serve configured successfully")
 	}
 
-	// Services is a beta feature - add delay to let control plane fully register the node
 	logger.Infof("Checking services: %q", serviceNames(d.config.Services))
-	if len(d.backends) > 0 {
-		logger.Infof("Waiting for control plane sync before configuring service backends...")
-		if !ctxtime.Sleep(d.ctx, 2*time.Second) {
-			return fmt.Errorf("failed to configure Tailscale services: %w", d.ctx.Err())
-		}
-		for _, b := range d.backends {
-			if err := b.configureServiceWhenCertified(); err != nil {
-				return fmt.Errorf("failed to configure Tailscale service %s: %w", b.name, err)
-			}
-		}
-		logger.Infof("Service backends configured successfully")
+	if len(d.backends) == 0 {
+		return nil
 	}
-
+	// Services is a beta feature - let control plane fully register the node
+	if !ctxtime.Sleep(d.ctx, d.config.times().controlSync) {
+		return fmt.Errorf("failed to configure Tailscale services: %w", d.ctx.Err())
+	}
+	if err := d.checkServiceHost(); err != nil {
+		return fmt.Errorf("failed to configure Tailscale services: %w", err)
+	}
+	for _, b := range d.backends {
+		b.start()
+	}
 	return nil
 }
 

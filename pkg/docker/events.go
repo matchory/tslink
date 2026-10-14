@@ -322,6 +322,7 @@ func handleConnect(
 		&info.Container,
 		netInfo.Network.Labels[core.StackLabel],
 	)
+	addDaemonDNS(ctx, cli, containerInfo)
 
 	// Store in cache
 	cache.Store(endpointID, containerInfo)

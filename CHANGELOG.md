@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- tailscaled forwards DNS queries to the servers of `dns` in
+  `/etc/docker/daemon.json` when the container sets none of its own. Docker
+  does not show them in the container's configuration: tslink reads them from
+  the comments Docker writes in the container's `/etc/resolv.conf`. Before,
+  tailscaled used the host's resolvers.
 - The plugin image bundles Tailscale v1.104.1 (was v1.102.5).
 - tslink configures serving, advertises and drains Tailscale Services over
   tailscaled's LocalAPI instead of running the `tailscale` CLI, and runs the

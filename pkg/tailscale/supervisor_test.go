@@ -3,17 +3,21 @@ package tailscale
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"tailscale.com/ipn"
+
+	"github.com/matchory/tslink/pkg/logger"
 )
 
 // fakeTailscaled stands in for tailscaled: each start runs sleep in its
@@ -512,5 +516,28 @@ func TestSupervisorCrashLoopWindow(t *testing.T) {
 	}
 	if len(s.crashTimes) > 10 {
 		t.Errorf("%d crash times kept, want at most 10", len(s.crashTimes))
+	}
+}
+
+// A start that fails because the supervisor is stopping is expected, as when
+// the plugin restarts while endpoints start: it is not logged as an error.
+func TestSupervisorStoppedStartLogsNoError(t *testing.T) {
+	var log lockedLog
+	logger.SetOutput(&log)
+	t.Cleanup(func() { logger.SetOutput(os.Stdout) })
+	s, _, _ := newFakeSupervisor(t)
+	s.start = func(*daemon) error {
+		s.cancel()
+		return fmt.Errorf("failed to configure Tailscale service: %w", context.Canceled)
+	}
+	if err := s.Start(); err == nil {
+		t.Fatal("Start succeeded although the start failed")
+	}
+	// The supervision loop logs the failed start: wait for it to end
+	if err := s.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(log.String(), "level=ERROR") {
+		t.Errorf("logged an error: %s", log.String())
 	}
 }

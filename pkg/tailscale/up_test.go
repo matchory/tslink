@@ -320,3 +320,34 @@ func TestReauthenticateRestoresServe(t *testing.T) {
 		t.Errorf("calls = %q, want the direct serve of port 22", cli.snapshot())
 	}
 }
+
+// Stopping the supervisor ends a login again in progress: the daemon has
+// started, so it no longer runs under the start's cancellation.
+func TestStopEndsLoginAgain(t *testing.T) {
+	api := newFakeLocalAPI(t)
+	api.loggedOut()
+	// Without a key or a node key, the login waits for a browser
+	d, _ := loginDaemon(t, api, DaemonConfig{
+		Hostname: "web",
+		AuthKey:  func() (string, error) { return "", nil },
+	})
+	s := NewDaemonSupervisor(d.config)
+	t.Cleanup(s.cancel)
+	s.daemon = d
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		login := loginWatch{count: needsLoginChecks}
+		s.checkLogin(d, &login)
+	}()
+	waitFor(t, "the login to start", func() bool {
+		return slices.Contains(api.paths(), "POST /localapi/v0/start")
+	})
+	s.cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("the login went on after the supervisor stopped")
+	}
+}

@@ -102,7 +102,8 @@ the tailscaled of a host accepts forwarded traffic. Thus the host also enforces 
 tailscaled resolves names, and forwards queries for names outside the tailnet. It uses the first of these sources
 that gives a DNS server:
 
-1. The DNS servers of the container (`dns` of the container or the service). tslink removes the servers of Tailscale
+1. The DNS servers of the container (`dns` of the container or the service, or else `dns` in
+   `/etc/docker/daemon.json`). tslink removes the servers of Tailscale
    (`100.100.100.100`, `fd7a:115c:a1e0::53`) and of Docker (`127.0.0.11`). It keeps servers on the loopback
    interface, such as `127.0.0.1`, because they run in the network namespace that tailscaled shares.
 2. The DNS servers in `/etc/resolv.conf` of the host, without the servers on the loopback interface of the host.
@@ -113,8 +114,9 @@ gives a server and the DNS server of the container is `100.100.100.100`, tailsca
 Google, the default of Docker. In both cases, tslink writes the warning `dns-upstreams` in the plugin log and the
 status file.
 
-tailscaled selects its servers when it starts, as Docker does when the container starts. tslink does not read the
-`dns` setting in `/etc/docker/daemon.json`. It reads only the `dns` setting of the container or the service.
+tailscaled selects its servers when it starts, as Docker does when the container starts. Docker does not show the
+`dns` setting of `daemon.json` in the configuration of the container. tslink reads it from the comments that Docker
+writes in `/etc/resolv.conf` of the container. If the container changed that file, tslink does not find the setting.
 
 ## Self-healing
 

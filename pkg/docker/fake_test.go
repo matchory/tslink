@@ -1,10 +1,13 @@
 package docker
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"io"
 	"net/netip"
 	"runtime"
 	"slices"
@@ -48,9 +51,11 @@ type fakeDocker struct {
 	networkInspect int  // NetworkInspect calls
 	noSettings     bool // ContainerInspect returns no network settings
 
-	containerInspects map[string]int  // ContainerInspect calls, by container ID
-	hang              map[string]bool // IDs whose inspect blocks until its context ends
-	hangList          bool            // NetworkList blocks until its context ends
+	resolvConfs       map[string]string // Each container's /etc/resolv.conf, by ID
+	copies            int               // CopyFromContainer calls
+	containerInspects map[string]int    // ContainerInspect calls, by container ID
+	hang              map[string]bool   // IDs whose inspect blocks until its context ends
+	hangList          bool              // NetworkList blocks until its context ends
 
 	events      chan events.Message
 	errs        chan error
@@ -203,6 +208,36 @@ func (f *fakeDocker) Events(
 	return dockerclient.EventsResult{Messages: f.events, Err: f.errs}
 }
 
+// CopyFromContainer returns a tar archive of the container's /etc/resolv.conf,
+// the only file the fake holds.
+func (f *fakeDocker) CopyFromContainer(
+	_ context.Context,
+	id string,
+	options dockerclient.CopyFromContainerOptions,
+) (dockerclient.CopyFromContainerResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.copies++
+	content, ok := f.resolvConfs[id]
+	if !ok || options.SourcePath != "/etc/resolv.conf" {
+		return dockerclient.CopyFromContainerResult{}, errors.New("no such file")
+	}
+	var b bytes.Buffer
+	tw := tar.NewWriter(&b)
+	if err := tw.WriteHeader(&tar.Header{
+		Name: "resolv.conf", Mode: 0o644, Size: int64(len(content)), Typeflag: tar.TypeReg,
+	}); err != nil {
+		return dockerclient.CopyFromContainerResult{}, err
+	}
+	if _, err := tw.Write([]byte(content)); err != nil {
+		return dockerclient.CopyFromContainerResult{}, err
+	}
+	if err := tw.Close(); err != nil {
+		return dockerclient.CopyFromContainerResult{}, err
+	}
+	return dockerclient.CopyFromContainerResult{Content: io.NopCloser(&b)}, nil
+}
+
 func (f *fakeDocker) Close() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -287,6 +322,17 @@ func (f *fakeDocker) setDNS(containerID string, dns ...netip.Addr) {
 			f.containers[i].HostConfig = &container.HostConfig{DNS: dns}
 		}
 	}
+}
+
+// setResolvConf gives a container an /etc/resolv.conf, which the archive API
+// returns.
+func (f *fakeDocker) setResolvConf(containerID, content string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.resolvConfs == nil {
+		f.resolvConfs = make(map[string]string)
+	}
+	f.resolvConfs[containerID] = content
 }
 
 func (f *fakeDocker) eventStreams() int {

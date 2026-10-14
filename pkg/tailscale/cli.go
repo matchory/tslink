@@ -51,7 +51,6 @@ func (w *streamingWriter) String() string {
 // cliCall is a run of the tailscale CLI.
 type cliCall struct {
 	prefix string // Logs the output line by line under prefix
-	stdin  string // The CLI's standard input
 	args   []string
 }
 
@@ -69,7 +68,6 @@ func (o cliOutput) combined() string {
 // execCLI runs the CLI at bin and streams its output to the logger.
 func execCLI(ctx context.Context, bin string, c cliCall) (cliOutput, error) {
 	cmd := exec.CommandContext(ctx, bin, c.args...)
-	cmd.Stdin = strings.NewReader(c.stdin)
 
 	stdout := &streamingWriter{prefix: c.prefix + ":stdout"}
 	stderr := &streamingWriter{prefix: c.prefix + ":stderr"}

@@ -10,8 +10,7 @@ import (
 func TestExecCLIKeepsOutput(t *testing.T) {
 	out, err := execCLI(context.Background(), "sh", cliCall{
 		prefix: "test",
-		stdin:  "three",
-		args:   []string{"-c", "echo one; echo two; cat >&2"},
+		args:   []string{"-c", "echo one; echo two; printf three >&2"},
 	})
 	if err != nil {
 		t.Fatal(err)

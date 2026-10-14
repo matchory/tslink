@@ -34,19 +34,24 @@ func drainLines(r io.Reader, maxLen int, fn func(string)) {
 		}
 		if err != nil {
 			if len(line) > 0 {
-				fn(string(line))
+				fn(string(marked(line, truncated)))
 			}
 			return
 		}
 		if isPrefix {
 			continue
 		}
-		if truncated {
-			line = append(line, truncatedMark...)
-		}
-		fn(string(line))
+		fn(string(marked(line, truncated)))
 		line, truncated = line[:0], false
 	}
+}
+
+// marked returns line with truncatedMark if it was cut.
+func marked(line []byte, truncated bool) []byte {
+	if truncated {
+		return append(line, truncatedMark...)
+	}
+	return line
 }
 
 // Limits for tailscaled's output: a line longer than maxLogLine is cut, and

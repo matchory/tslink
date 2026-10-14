@@ -2,7 +2,6 @@ package tailscale
 
 import (
 	"bytes"
-	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -240,11 +239,8 @@ func TestServesWeb(t *testing.T) {
 // The certificate is requested through the LocalAPI, which leaves it in
 // tailscaled's certificate directory, until it is there.
 func TestRequestCertUsesLocalAPI(t *testing.T) {
-	cli := &fakeCLI{}
-	d, dir := newCertDaemon(t, cli)
+	d, dir, api := newCertDaemon(t)
 	setTiming(&d.config, func(tm *timing) { tm.certPollInterval = 10 * time.Millisecond })
-	api := newFakeLocalAPI(t)
-	d.lc = api.client()
 	// Written here: the fake LocalAPI answers off the test goroutine
 	issued := t.TempDir()
 	writeCert(t, issued, certDomain, certDomain, time.Now().Add(time.Hour))
@@ -271,15 +267,12 @@ func TestRequestCertUsesLocalAPI(t *testing.T) {
 	if got := api.paths(); len(got) != 2 || got[0] != want || got[1] != want {
 		t.Errorf("requests = %q, want %q twice", got, want)
 	}
-	if calls := cli.snapshot(); len(calls) != 0 {
-		t.Errorf("ran %q, want no tailscale command", calls)
-	}
 }
 
 func TestServiceDomain(t *testing.T) {
 	api := newFakeLocalAPI(t)
 	api.set(statusPath, `{"CurrentTailnet":{"MagicDNSSuffix":"example.ts.net"}}`)
-	d := newTestDaemon(t, &fakeCLI{}, "svc:api")
+	d := newOfflineDaemon(t, "svc:api")
 	d.lc = api.client()
 	got, err := d.serviceDomain()
 	if err != nil || got != "api.example.ts.net" {
@@ -314,7 +307,7 @@ func TestServiceDomainRejectsNonDNSNames(t *testing.T) {
 		}
 		api := newFakeLocalAPI(t)
 		api.set(statusPath, `{"CurrentTailnet":{"MagicDNSSuffix":`+string(suffix)+`}}`)
-		d := newTestDaemon(t, &fakeCLI{}, c.service)
+		d := newOfflineDaemon(t, c.service)
 		d.lc = api.client()
 		if got, err := d.serviceDomain(); err == nil {
 			t.Errorf("serviceDomain() for %q in %q = %q, want an error", c.service, c.suffix, got)
@@ -325,22 +318,18 @@ func TestServiceDomainRejectsNonDNSNames(t *testing.T) {
 	// the name alone
 	api := newFakeLocalAPI(t)
 	api.set(statusPath, `{"CurrentTailnet":{"MagicDNSSuffix":"example.ts.net"}}`)
-	d := newTestDaemon(t, &fakeCLI{}, "svc:api")
+	d := newOfflineDaemon(t, "svc:api")
 	d.lc = api.client()
 	if _, err := d.serviceDomain(); err != nil {
 		t.Errorf("control: serviceDomain() = %v", err)
 	}
 }
 
-// newDomainDaemon is newCertDaemon with a LocalAPI that gives the Service
-// the domain web.example.ts.net.
-func newDomainDaemon(t *testing.T, cli *fakeCLI) (*daemon, string) {
+// newDomainDaemon is newCertDaemon: its LocalAPI gives the Service the
+// domain web.example.ts.net.
+func newDomainDaemon(t *testing.T) (*daemon, string, *fakeLocalAPI) {
 	t.Helper()
-	d, dir := newCertDaemon(t, cli)
-	api := newFakeLocalAPI(t)
-	api.set(statusPath, `{"CurrentTailnet":{"MagicDNSSuffix":"example.ts.net"}}`)
-	d.lc = api.client()
-	return d, dir
+	return newCertDaemon(t)
 }
 
 const webDomain = "web.example.ts.net"
@@ -348,7 +337,7 @@ const webDomain = "web.example.ts.net"
 // Configuring the Service again, as Reauthenticate does, starts no second
 // certificate expiry watcher.
 func TestCertExpiryWatcherStartsOnce(t *testing.T) {
-	d, dir := newDomainDaemon(t, &fakeCLI{})
+	d, dir, _ := newDomainDaemon(t)
 	writeCert(t, dir, webDomain, webDomain, time.Now().Add(90*24*time.Hour))
 	var mu sync.Mutex
 	checks := 0
@@ -377,8 +366,7 @@ func TestCertExpiryWatcherStartsOnce(t *testing.T) {
 // Configuring the Service again while it waits for its certificate starts
 // no second waiter.
 func TestCertWaiterStartsOnce(t *testing.T) {
-	fake := &fakeCLI{}
-	d, dir := newDomainDaemon(t, fake)
+	d, dir, api := newDomainDaemon(t)
 	setTiming(&d.config, func(tm *timing) { tm.certPollInterval = 10 * time.Millisecond })
 	other, err := tryLease(dir, webDomain, "other")
 	if err != nil {
@@ -397,8 +385,8 @@ func TestCertWaiterStartsOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	serves := 0
-	for _, c := range fake.snapshot() {
-		if slices.Contains(c, "--https=443") {
+	for _, c := range api.operations() {
+		if slices.Equal(c, []string{"serve"}) {
 			serves++
 		}
 	}
@@ -410,19 +398,9 @@ func TestCertWaiterStartsOnce(t *testing.T) {
 // The configuration once the certificate exists is one of the daemon's
 // goroutines: when Stop returns, it has ended, and released its lease.
 func TestStopWaitsForConfigurationAfterCert(t *testing.T) {
-	cli := &fakeCLI{}
-	d, dir := newDomainDaemon(t, cli)
+	d, dir, api := newDomainDaemon(t)
 	started := make(chan struct{})
-	var once sync.Once
-	d.runCLI = func(ctx context.Context, c cliCall) (cliOutput, error) {
-		if slices.Contains(c.args, "--https=443") {
-			once.Do(func() { close(started) })
-			<-ctx.Done()
-			time.Sleep(100 * time.Millisecond) // The command takes a moment to exit
-			return cliOutput{}, ctx.Err()
-		}
-		return cli.run(ctx, c)
-	}
+	blockOn(api, "serve", started)
 	if err := d.configureServiceWhenCertified(); err != nil {
 		t.Fatal(err)
 	}
@@ -442,8 +420,7 @@ func TestStopWaitsForConfigurationAfterCert(t *testing.T) {
 // Once the wait for the certificate ended, configuring the Service again
 // without a valid certificate, as Reauthenticate does, waits for it again.
 func TestCertWaiterStartsAgainAfterItEnded(t *testing.T) {
-	fake := &fakeCLI{}
-	d, dir := newDomainDaemon(t, fake)
+	d, dir, api := newDomainDaemon(t)
 	setTiming(&d.config, func(tm *timing) { tm.certPollInterval = 10 * time.Millisecond })
 	other, err := tryLease(dir, webDomain, "other")
 	if err != nil {
@@ -452,8 +429,8 @@ func TestCertWaiterStartsAgainAfterItEnded(t *testing.T) {
 	defer other.release()
 	serves := func() int {
 		n := 0
-		for _, c := range fake.snapshot() {
-			if slices.Contains(c, "--https=443") {
+		for _, c := range api.operations() {
+			if slices.Equal(c, []string{"serve"}) {
 				n++
 			}
 		}

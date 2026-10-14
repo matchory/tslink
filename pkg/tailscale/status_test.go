@@ -11,7 +11,7 @@ func TestGetStatus(t *testing.T) {
 	api := newFakeLocalAPI(t)
 	api.set(statusPath,
 		`{"Self":{"TailscaleIPs":["100.64.0.1","fd7a::1"],"HostName":"web","Online":true}}`)
-	d := newTestDaemon(t, &fakeCLI{}, "")
+	d := newOfflineDaemon(t, "")
 	d.lc = api.client()
 	st, err := d.getStatus(t.Context())
 	if err != nil {
@@ -33,7 +33,7 @@ func TestGetStatus(t *testing.T) {
 func TestWaitBackendState(t *testing.T) {
 	api := newFakeLocalAPI(t)
 	api.set(statusPath, `{"BackendState":"NeedsLogin"}`)
-	d := newTestDaemon(t, &fakeCLI{}, "")
+	d := newOfflineDaemon(t, "")
 	d.lc = api.client()
 	if st := d.waitBackendState(); st != "NeedsLogin" {
 		t.Errorf("backend state = %q, want NeedsLogin", st)
@@ -46,7 +46,7 @@ func TestWaitBackendState(t *testing.T) {
 func TestBackendState(t *testing.T) {
 	api := newFakeLocalAPI(t)
 	api.set(statusPath, `{"BackendState":"Running"}`)
-	d := newTestDaemon(t, &fakeCLI{}, "")
+	d := newOfflineDaemon(t, "")
 	d.lc = api.client()
 	if st, err := d.BackendState(); err != nil || st != "Running" {
 		t.Errorf("BackendState() = %q, %v, want Running", st, err)

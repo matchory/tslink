@@ -3,9 +3,7 @@ package tailscale
 import (
 	"context"
 	"errors"
-	"fmt"
 	"slices"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -17,7 +15,7 @@ import (
 )
 
 // A drained Service backend leaves the tailnet only once control has learned
-// of the drain. "tailscale serve drain" only changes the node's preferences;
+// of the drain. Draining only removes the Service from the node's preferences;
 // tailscaled reports the change to control, which then fetches the node's
 // Service list over c2n. A node logged out before that fetch is deleted with
 // the drain unprocessed, and callers can keep the Service's VIP pointed at it
@@ -45,14 +43,14 @@ type serviceGate struct {
 	mu    sync.Mutex
 	drain drainRecord // the drain that took effect; protected by mu
 
-	// Cancels the CLI calls of the change holding mu, so a drain need not
+	// Cancels the LocalAPI calls of the change holding mu, so a drain need not
 	// wait for them; nil while no change runs
 	cancelMu sync.Mutex
 	cancel   context.CancelFunc
 }
 
 // change runs fn, a change of d's Service, under the gate's lock, with the
-// context of its CLI calls, which a drain cancels. Once the backend is
+// context of its LocalAPI calls, which a drain cancels. Once the backend is
 // drained, before fn or while it runs, it returns errDrained: a call the
 // drain cancelled is no failure.
 func (g *serviceGate) change(d *daemon, fn func(ctx context.Context) error) error {
@@ -82,7 +80,7 @@ func (g *serviceGate) setCancel(cancel context.CancelFunc) {
 	g.cancel = cancel
 }
 
-// markDrained marks the backend drained, and cancels the CLI calls of the
+// markDrained marks the backend drained, and cancels the LocalAPI calls of the
 // change in progress, if any.
 func (g *serviceGate) markDrained() {
 	g.drained.Store(true)
@@ -132,7 +130,7 @@ func (d *daemon) Drain(service string) error {
 	}
 
 	fetches, _ := d.servicesFetches()
-	if err := d.runServe(d.ctx, "serve-drain", "drain", service); err != nil {
+	if err := d.setAdvertised(d.ctx, service, false); err != nil {
 		return err
 	}
 	g.drain = drainRecord{at: time.Now(), daemon: d, fetches: fetches}
@@ -155,25 +153,6 @@ func (d *daemon) notAdvertised(service string) bool {
 		return false
 	}
 	return !slices.Contains(prefs.AdvertiseServices, service)
-}
-
-// runServe runs "tailscale serve <args>", as drain and advertise.
-func (d *daemon) runServe(ctx context.Context, prefix string, args ...string) error {
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	out, err := d.tailscale(
-		ctx,
-		prefix,
-		append([]string{"--socket=" + d.socketPath, serveCmd}, args...)...)
-	if err != nil {
-		return fmt.Errorf(
-			"tailscale serve %s failed: %w (output: %s)",
-			args[0],
-			err,
-			strings.TrimSpace(out),
-		)
-	}
-	return nil
 }
 
 // waitServicesFetch waits until control has fetched the Service list more than

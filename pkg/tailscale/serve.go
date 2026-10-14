@@ -2,13 +2,22 @@ package tailscale
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"path"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/moby/moby/client/pkg/stringid"
+	"tailscale.com/ipn"
+	"tailscale.com/ipn/ipnstate"
+	"tailscale.com/tailcfg"
+	"tailscale.com/tailcfg/peercap"
+	"tailscale.com/util/mak"
 
 	"github.com/matchory/tslink/internal/ctxtime"
 	"github.com/matchory/tslink/pkg/logger"
@@ -30,91 +39,123 @@ type ServeEndpoint struct {
 	AcceptAppCaps string // L7 only - comma-separated app capabilities forwarded to the target
 }
 
-// serveOptionArgs returns the "tailscale serve" flags for the endpoint's options.
-func serveOptionArgs(ep ServeEndpoint) []string {
-	var args []string
-	if ep.ProxyProtocol != "" {
-		args = append(args, "--proxy-protocol="+ep.ProxyProtocol)
+// applyServeEndpoint sets ep in sc as "tailscale serve" would: as a backend
+// of service, or, if service is empty, for direct serve on the node's own
+// name host. mds is the tailnet's MagicDNS suffix. Direct serve does not
+// support L3 (tun): it leaves sc as it is. The endpoint forwards only to the
+// container's loopback.
+func applyServeEndpoint(
+	sc *ipn.ServeConfig,
+	ep ServeEndpoint,
+	service tailcfg.ServiceName,
+	host, mds string,
+) error {
+	port, err := strconv.ParseUint(ep.Port, 10, 16)
+	if err != nil {
+		return fmt.Errorf("invalid external port %q: must be numeric", ep.Port)
 	}
-	if ep.AcceptAppCaps != "" {
-		args = append(args, "--accept-app-caps="+ep.AcceptAppCaps)
+	if _, err := strconv.ParseUint(ep.Target, 10, 16); err != nil {
+		return fmt.Errorf("invalid target port %q: must be numeric", ep.Target)
 	}
-	return args
-}
-
-// serveArgs returns the "tailscale serve" arguments, after --socket, that
-// configure ep as a backend of service, or for direct machine serve if service
-// is empty. Direct serve does not support L3 (tun): it returns nil args.
-func serveArgs(ep ServeEndpoint, service string) ([]string, error) {
-	// Validate port is numeric
-	if _, err := strconv.Atoi(ep.Port); err != nil {
-		return nil, fmt.Errorf("invalid external port %q: must be numeric", ep.Port)
-	}
-	if _, err := strconv.Atoi(ep.Target); err != nil {
-		return nil, fmt.Errorf("invalid target port %q: must be numeric", ep.Target)
-	}
-
-	// Direct serve runs in the background; service mode does so by itself
-	args := []string{serveCmd, serveBackground}
+	name := host
 	if service != "" {
-		args = []string{serveCmd, "--service=" + service}
+		// Else the config would serve it as a host name
+		if err := service.Validate(); err != nil {
+			return err
+		}
+		name = service.String()
 	}
+	target := "127.0.0.1:" + ep.Target
 
 	switch ep.Proto {
 	case "http", "https":
-		// L7: --https=443 [--set-path=/api] http://127.0.0.1:8080, or
-		// 127.0.0.1:8080 for a service (per Tailscale docs, just host:port)
-		args = append(args, "--"+ep.Proto+"="+ep.Port)
-		if ep.Path != "" {
-			args = append(args, "--set-path="+ep.Path)
+		mount, err := cleanMount(ep.Path)
+		if err != nil {
+			return err
 		}
-		args = append(args, serveOptionArgs(ep)...)
-		if service == "" {
-			return append(args, "http://127.0.0.1:"+ep.Target), nil
+		if sc.IsTCPForwardingOnPort(uint16(port), service) {
+			return fmt.Errorf("cannot serve web on %d: already serving TCP", port)
 		}
-		return append(args, "127.0.0.1:"+ep.Target), nil
+		h := &ipn.HTTPHandler{Proxy: "http://" + target, AcceptAppCaps: appCaps(ep.AcceptAppCaps)}
+		sc.SetWebHandler(h, name, uint16(port), mount, ep.Proto == "https", mds)
+		return nil
 
 	case "tcp", "tls-terminated-tcp":
-		// L4, optionally with TLS termination: --tcp=5432 tcp://127.0.0.1:5432
-		args = append(args, "--"+ep.Proto+"="+ep.Port)
-		args = append(args, serveOptionArgs(ep)...)
-		return append(args, "tcp://127.0.0.1:"+ep.Target), nil
+		if sc.IsServingWeb(uint16(port), service) {
+			return fmt.Errorf("cannot serve TCP on %d: already serving web", port)
+		}
+		proxyProtocol, _ := strconv.Atoi(ep.ProxyProtocol) // "" is none, labels allow 1 or 2
+		tls := ep.Proto == "tls-terminated-tcp"
+		if service != "" {
+			sc.SetTCPForwardingForService(uint16(port), target, tls, service, proxyProtocol, mds)
+		} else {
+			sc.SetTCPForwarding(uint16(port), target, tls, proxyProtocol, host)
+		}
+		return nil
 
 	case protoTun:
-		// L3: --tun, for services only
 		if service == "" {
-			return nil, nil
+			return nil
 		}
-		return append(args, "--tun"), nil
+		svc := sc.Services[service]
+		if svc == nil {
+			svc = new(ipn.ServiceConfig)
+			mak.Set(&sc.Services, service, svc)
+		}
+		svc.Tun = true
+		return nil
 
 	default:
-		return nil, fmt.Errorf("unsupported protocol: %s", ep.Proto)
+		return fmt.Errorf("unsupported protocol: %s", ep.Proto)
 	}
 }
 
-// Arguments of the "tailscale serve" commands the daemon runs.
-const (
-	serveCmd        = "serve"
-	serveBackground = "--bg"
-)
+// cleanMount returns the mount point of an L7 endpoint's path, as "tailscale
+// serve --set-path" does: "/" for none, and a path that cleaning would not
+// change.
+func cleanMount(p string) (string, error) {
+	if p == "" {
+		return "/", nil
+	}
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	if c := path.Clean(p); p != c && p != c+"/" {
+		return "", fmt.Errorf("invalid mount point %q", p)
+	}
+	return p, nil
+}
 
-// untaggedServiceHostError is what "tailscale serve --service" fails with on
-// a node without tags.
-const untaggedServiceHostError = "service hosts must be tagged nodes"
+// appCaps returns the app capabilities of a comma-separated list.
+func appCaps(list string) []peercap.Cap {
+	var caps []peercap.Cap
+	for c := range strings.SplitSeq(list, ",") {
+		if c = strings.TrimSpace(c); c != "" {
+			caps = append(caps, peercap.Cap(c))
+		}
+	}
+	return caps
+}
+
+// errUntaggedServiceHost is what configuring a Service backend fails with on
+// a node without tags, as "tailscale serve --service" does.
+var errUntaggedServiceHost = errors.New(
+	"service hosts must be tagged nodes: log in with a tagged auth key or OAuth client",
+)
 
 // serveDebugLogMaxBytes is where serve-debug.log, the record of serve
 // attempts, is rotated; a variable for tests.
 var serveDebugLogMaxBytes int64 = 1 << 20
 
-// configureService runs "tailscale serve" to register as a service backend,
-// and advertises it. This should be called after bringUp() succeeds.
+// configureService configures the node as a backend of its Service, and
+// advertises it. This should be called after bringUp() succeeds.
 func (d *daemon) configureService() error {
 	return d.configureServiceBackend(true)
 }
 
 // configureServiceBackend configures the node as a backend of its Service,
-// and advertises it if advertise is set. A drained backend is left alone: it
-// returns errDrained.
+// and advertises it if advertise is set, or else makes sure it is not
+// advertised. A drained backend is left alone: it returns errDrained.
 func (d *daemon) configureServiceBackend(advertise bool) error {
 	if d.config.Service == "" {
 		return nil // No service configured, skip
@@ -133,37 +174,126 @@ func (d *daemon) configureServiceBackend(advertise bool) error {
 		logger.Infof("Configuring Tailscale Service %s with %d endpoint(s) for %s",
 			d.config.Service, len(d.config.Endpoints), d.config.EndpointID)
 
-		// Configure each endpoint. A drain cancels the call in progress and
-		// waits for this to return: run nothing more once it began
-		for i, ep := range d.config.Endpoints {
-			err := d.configureServeEndpoint(ctx, ep)
-			if d.isDrained() {
-				return errDrained
+		service := tailcfg.ServiceName(d.config.Service)
+		err := d.editServe(ctx, "service", func(sc *ipn.ServeConfig, st *ipnstate.Status) error {
+			if st.Self == nil || st.Self.Tags == nil || st.Self.Tags.Len() == 0 {
+				return errUntaggedServiceHost
 			}
-			if err != nil {
-				return fmt.Errorf("failed to configure endpoint %d (%s:%s): %w",
-					i, ep.Proto, ep.Port, err)
-			}
-		}
-
+			return applyServeEndpoints(sc, d.config.Endpoints, service, "", magicDNSSuffix(st))
+		})
+		// A drain cancels the change in progress and waits for this to
+		// return: run nothing more once it began
 		if d.isDrained() {
 			return errDrained
 		}
+		if err != nil {
+			return err
+		}
 		if !advertise {
-			// "tailscale serve --service" advertises the Service by itself
-			return d.runServe(ctx, "serve-unadvertise", "drain", d.config.Service)
+			return d.setAdvertised(ctx, d.config.Service, false)
 		}
 		return d.runAdvertise(ctx, d.config.Service)
 	})
 }
 
-// runAdvertise runs "tailscale serve advertise" and notes that the backend
-// was advertised. The caller holds the gate's lock.
+// applyServeEndpoints applies each endpoint to sc, with applyServeEndpoint.
+func applyServeEndpoints(
+	sc *ipn.ServeConfig,
+	endpoints []ServeEndpoint,
+	service tailcfg.ServiceName,
+	host, mds string,
+) error {
+	for i, ep := range endpoints {
+		if err := applyServeEndpoint(sc, ep, service, host, mds); err != nil {
+			return fmt.Errorf("failed to configure endpoint %d (%s:%s): %w",
+				i, ep.Proto, ep.Port, err)
+		}
+	}
+	return nil
+}
+
+// editServe changes tailscaled's serve config with edit, as "tailscale serve"
+// does: it reads the config and the node's status, and writes the config
+// back, unless another client changed it meanwhile. what names the change in
+// serve-debug.log.
+func (d *daemon) editServe(
+	ctx context.Context,
+	what string,
+	edit func(*ipn.ServeConfig, *ipnstate.Status) error,
+) error {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	err := func() error {
+		st, err := d.lc.StatusWithoutPeers(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to read the node's status: %w", err)
+		}
+		sc, err := d.lc.GetServeConfig(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to read the serve config: %w", err)
+		}
+		if sc == nil {
+			sc = new(ipn.ServeConfig)
+		}
+		if err := edit(sc, st); err != nil {
+			return err
+		}
+		if err := d.lc.SetServeConfig(ctx, sc); err != nil {
+			return fmt.Errorf("failed to set the serve config: %w", err)
+		}
+		config, err := json.Marshal(sc)
+		if err != nil {
+			return fmt.Errorf("failed to encode the serve config: %w", err)
+		}
+		d.serveDebugf("SUCCESS %s: %s\n", what, config)
+		return nil
+	}()
+	if err != nil {
+		d.serveDebugf("FAILED %s: %v\n", what, err)
+	}
+	return err
+}
+
+// setAdvertised adds service to the Services the node's prefs advertise, or
+// removes it, as "tailscale serve advertise" and "tailscale serve drain" do.
+func (d *daemon) setAdvertised(ctx context.Context, service string, on bool) error {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	verb := "advertise"
+	if !on {
+		verb = "unadvertise"
+	}
+	prefs, err := d.lc.GetPrefs(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to %s %s: %w", verb, service, err)
+	}
+	if slices.Contains(prefs.AdvertiseServices, service) == on {
+		return nil
+	}
+	services := slices.DeleteFunc(
+		slices.Clone(prefs.AdvertiseServices),
+		func(s string) bool { return s == service },
+	)
+	if on {
+		services = append(services, service)
+	}
+	if _, err := d.lc.EditPrefs(ctx, &ipn.MaskedPrefs{
+		AdvertiseServicesSet: true,
+		AdvertiseServices:    services,
+	}); err != nil {
+		return fmt.Errorf("failed to %s %s: %w", verb, service, err)
+	}
+	return nil
+}
+
+// runAdvertise advertises the Service and notes that the backend was
+// advertised. The caller holds the gate's lock.
 func (d *daemon) runAdvertise(ctx context.Context, service string) error {
-	if err := d.runServe(ctx, "serve-advertise", "advertise", service); err != nil {
+	if err := d.setAdvertised(ctx, service, true); err != nil {
 		return err
 	}
 	d.config.gate.advertised.Store(true)
+	d.checkApprovalLater()
 	return nil
 }
 
@@ -175,8 +305,8 @@ func (d *daemon) noteSurvivingState() {
 	}
 }
 
-// advertise runs "tailscale serve advertise", unless the backend was drained.
-// A drained service stays drained in the node's state, as after a plugin
+// advertise advertises the Service, unless the backend was drained. A
+// drained service stays drained in the node's state, as after a plugin
 // restart: advertise it again once its endpoints are configured.
 func (d *daemon) advertise(service string) error {
 	return d.config.gate.change(d, func(ctx context.Context) error {
@@ -184,9 +314,9 @@ func (d *daemon) advertise(service string) error {
 	})
 }
 
-// configureDirectServe runs "tailscale serve" without --service flag to configure
-// direct machine serve. This makes the container accessible via its MagicDNS hostname
-// (e.g., https://hostname.tailnet.ts.net/) with automatic TLS certificates.
+// configureDirectServe configures direct machine serve, without a Service.
+// This makes the container accessible via its MagicDNS hostname (e.g.,
+// https://hostname.tailnet.ts.net/) with automatic TLS certificates.
 func (d *daemon) configureDirectServe() error {
 	if len(d.config.Endpoints) == 0 {
 		return nil // No endpoints to configure
@@ -203,102 +333,27 @@ func (d *daemon) configureDirectServe() error {
 		)
 	}
 
-	// Configure each endpoint for direct serve
-	for i, ep := range d.config.Endpoints {
-		if err := d.configureDirectServeEndpoint(ep); err != nil {
-			return fmt.Errorf("failed to configure direct endpoint %d (%s:%s): %w",
-				i, ep.Proto, ep.Port, err)
+	err := d.editServe(d.ctx, "direct", func(sc *ipn.ServeConfig, st *ipnstate.Status) error {
+		host := ""
+		if st.Self != nil {
+			host = strings.TrimSuffix(st.Self.DNSName, ".")
 		}
-	}
-
-	return nil
-}
-
-// configureDirectServeEndpoint configures a single direct serve endpoint (without --service).
-func (d *daemon) configureDirectServeEndpoint(ep ServeEndpoint) error {
-	logger.Debugf("configureDirectServeEndpoint: proto=%s port=%s target=%s path=%s",
-		ep.Proto, ep.Port, ep.Target, ep.Path)
-
-	args, err := serveArgs(ep, "")
-	if err != nil {
-		return err
-	}
-	if args == nil {
-		// L3: not applicable for direct serve without service
-		logger.Debugf("Skipping L3 (tun) endpoint for direct serve - only supported with services")
-		return nil
-	}
-	args = append([]string{"--socket=" + d.socketPath}, args...)
-
-	ctx, cancel := context.WithTimeout(d.ctx, 30*time.Second)
-	defer cancel()
-
-	// Use streaming to see output as it arrives
-	prefix := fmt.Sprintf("direct-serve:%s:%s", ep.Proto, ep.Port)
-	output, err := d.tailscale(ctx, prefix, args...)
-	if err != nil {
-		logger.Errorf("tailscale serve (direct) failed: %v", err)
-		return fmt.Errorf("tailscale serve (direct) failed: %w (output: %s)", err, output)
-	}
-
-	logger.Infof("Direct serve endpoint %s:%s configured", ep.Proto, ep.Port)
-	return nil
-}
-
-// configureServeEndpoint configures a single serve endpoint for a service backend.
-// Supports L3 (tun), L4 (tcp, tls-terminated-tcp), and L7 (http, https).
-func (d *daemon) configureServeEndpoint(ctx context.Context, ep ServeEndpoint) error {
-	logger.Debugf("configureServeEndpoint: proto=%s port=%s target=%s path=%s service=%s",
-		ep.Proto, ep.Port, ep.Target, ep.Path, d.config.Service)
-
-	args, err := serveArgs(ep, d.config.Service)
-	if err != nil {
-		return err
-	}
-	if ep.Proto == protoTun {
-		logger.Warnf("L3 (tun) endpoints require additional iptables configuration")
-	}
-	args = append([]string{"--socket=" + d.socketPath}, args...)
-
-	d.serveDebugf("Running: %s %v\n", d.config.TailscaleBin, args)
-
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-
-	// Use streaming to see output as it arrives
-	prefix := fmt.Sprintf("serve:%s:%s", ep.Proto, ep.Port)
-	output, err := d.tailscale(ctx, prefix, args...)
-	if err != nil {
-		d.serveDebugf("FAILED: %v\nOutput: %s\n", err, output)
-		logger.Errorf("tailscale serve failed: %v", err)
-
-		if strings.Contains(output, untaggedServiceHostError) {
-			return fmt.Errorf(
-				"tailscale serve failed: requires tagged auth key (output: %s)",
-				output,
-			)
+		if host == "" {
+			return errors.New("the node has no DNS name yet")
 		}
-
-		return fmt.Errorf("tailscale serve failed: %w (output: %s)", err, output)
+		return applyServeEndpoints(sc, d.config.Endpoints, "", host, magicDNSSuffix(st))
+	})
+	if err != nil {
+		return fmt.Errorf("direct serve failed: %w", err)
 	}
-
-	// Approval pending: the command succeeds, but the backend is not active
-	// yet. Right after a start, control has often not caught up
-	if strings.Contains(output, "approval from an admin is required") {
-		logger.Infof("Waiting for control to approve %s as a backend of %s",
-			stringid.TruncateID(d.config.EndpointID), d.config.Service)
-		d.checkApprovalLater()
-	}
-
-	d.serveDebugf("SUCCESS\nOutput: %s\n", output)
-	logger.Infof("tailscale serve endpoint %s:%s configured", ep.Proto, ep.Port)
+	logger.Infof("Direct serve configured for %s", d.config.EndpointID)
 	return nil
 }
 
-// checkApprovalLater warns if control has still not approved the backend
-// after approvalGrace. The CLI also says approval is required for a Service
-// that does not exist: control has given the node no addresses for it. One
-// check runs at a time.
+// checkApprovalLater notes when control has not approved the backend yet, as
+// right after a start, and warns if it still has not after approvalGrace. A
+// Service that does not exist looks the same: control gives the node no
+// addresses for it. One check runs at a time.
 func (d *daemon) checkApprovalLater() {
 	if !d.approvalCheck.CompareAndSwap(false, true) {
 		return
@@ -306,6 +361,11 @@ func (d *daemon) checkApprovalLater() {
 	grace := d.config.times().approvalGrace
 	d.wg.Go(func() {
 		defer d.approvalCheck.Store(false)
+		if d.readiness(d.ctx) != ReadyAwaitingApproval {
+			return
+		}
+		logger.Infof("Waiting for control to approve %s as a backend of %s",
+			stringid.TruncateID(d.config.EndpointID), d.config.Service)
 		if !ctxtime.Sleep(d.ctx, grace) {
 			return
 		}

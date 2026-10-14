@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - The plugin image bundles Tailscale v1.104.1 (was v1.102.5).
+- tslink configures serving, advertises and drains Tailscale Services over
+  tailscaled's LocalAPI instead of running the `tailscale` CLI, and runs the
+  CLI no more. A Service's endpoints are set in one change, which fails if
+  another client changed the serve config meanwhile. A backend that must not
+  be advertised yet, as the replica issuing the certificate, is no longer
+  advertised for a moment and drained again. Serve errors read differently:
+  a node without tags fails with `service hosts must be tagged nodes`.
 - The plugin warns at startup of certificates and keys left in the data
   directory's `certs/` once `shared.source` points elsewhere; it leaves
   them for the operator to remove.

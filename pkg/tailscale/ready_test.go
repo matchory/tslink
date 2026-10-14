@@ -123,7 +123,7 @@ func TestReadiness(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			d := newTestDaemon(t, &fakeCLI{}, tt.service)
+			d := newOfflineDaemon(t, tt.service)
 			d.config.Endpoints, d.config.Direct = tt.endpoints, tt.direct
 			d.config.CertsDir = t.TempDir()
 			d.lc = readinessAPI(t, tt.status, tt.serve, tt.prefs)
@@ -171,16 +171,13 @@ func TestApprovalWarnsOnlyIfItLasts(t *testing.T) {
 			var log lockedLog
 			logger.SetOutput(&log)
 			t.Cleanup(func() { logger.SetOutput(os.Stdout) })
-			cli := &fakeCLI{out: "Serving svc:ai... approval from an admin is required"}
-			d := newTestDaemon(t, cli, "svc:ai")
+			d := newOfflineDaemon(t, "svc:ai")
 			d.config.Endpoints = []ServeEndpoint{{Proto: "https", Port: "443", Target: "8081"}}
 			d.config.CertsDir = t.TempDir()
 			setTiming(&d.config, func(tm *timing) { tm.approvalGrace = 50 * time.Millisecond })
 			d.lc = readinessAPI(t, tt.status, serviceTCP, advertised)
 
-			if err := d.configureServeEndpoint(t.Context(), d.config.Endpoints[0]); err != nil {
-				t.Fatal(err)
-			}
+			d.checkApprovalLater() // as advertising the Service does
 			if strings.Contains(log.String(), "level=WARN") {
 				t.Fatalf("warned at once: %s", log.String())
 			}

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -22,17 +23,18 @@ func setTiming(cfg *DaemonConfig, set func(*timing)) {
 	cfg.timing = &tm
 }
 
-// newTestSupervisor returns a supervisor whose daemon runs the fake CLI and
-// has advertised svc:web.
-func newTestSupervisor(t *testing.T, cli *fakeCLI) (*DaemonSupervisor, *daemon) {
+// newTestSupervisor returns a supervisor whose daemon has advertised
+// svc:web, and the daemon's fake LocalAPI.
+func newTestSupervisor(t *testing.T) (*DaemonSupervisor, *daemon, *fakeLocalAPI) {
 	t.Helper()
 	s := NewDaemonSupervisor(DaemonConfig{EndpointID: "0123456789abcdef", Service: "svc:web"})
 	t.Cleanup(s.cancel)
-	d := newTestDaemon(t, cli, "svc:web")
+	d, api := newTestDaemon(t, "svc:web")
+	api.serviceHost(ipn.Prefs{AdvertiseServices: []string{"svc:web"}})
 	d.config.gate = s.cfg.gate
 	s.daemon = d
 	s.cfg.gate.advertised.Store(true)
-	return s, d
+	return s, d, api
 }
 
 // waitFor fails the test unless cond holds within a second.
@@ -47,13 +49,8 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 	}
 }
 
-// ran reports whether calls contain the command args.
-func ran(calls [][]string, args ...string) bool {
-	return slices.ContainsFunc(calls, func(c []string) bool { return slices.Equal(c, args) })
-}
-
 func TestHandleLineCountsServicesFetches(t *testing.T) {
-	d := newTestDaemon(t, &fakeCLI{}, "")
+	d, _ := newTestDaemon(t, "")
 	n, next := d.servicesFetches()
 	d.handleLine("2026/10/07 12:00:00 c2n: GET /debug/netmap received")
 	if got, _ := d.servicesFetches(); got != n {
@@ -73,15 +70,11 @@ func TestHandleLineCountsServicesFetches(t *testing.T) {
 // Leaving drains the backend, waits for control to fetch the drained Service
 // list, and only then logs out.
 func TestDrainAndWaitWaitsForControl(t *testing.T) {
-	cli := &fakeCLI{}
-	s, d := newTestSupervisor(t, cli)
+	s, d, api := newTestSupervisor(t)
 	setTiming(
 		&s.cfg,
 		func(tm *timing) { tm.drainAckFloor = 50 * time.Millisecond; tm.drainAckTimeout = 5 * time.Second },
 	)
-	api := newFakeLocalAPI(t)
-	api.loggedIn(ipn.Prefs{AdvertiseServices: []string{"svc:web"}})
-	d.lc = api.client()
 	loggedOut := func() bool {
 		return slices.Contains(api.paths(), "POST /localapi/v0/logout")
 	}
@@ -97,7 +90,7 @@ func TestDrainAndWaitWaitsForControl(t *testing.T) {
 			t.Error(err)
 		}
 	}()
-	waitFor(t, "the drain", func() bool { return ran(cli.snapshot(), "serve", "drain", "svc:web") })
+	waitFor(t, "the drain", func() bool { return ran(api.operations(), "unadvertise", "svc:web") })
 	time.Sleep(100 * time.Millisecond)
 	if loggedOut() {
 		t.Fatal("logged out before control fetched the drain")
@@ -108,9 +101,9 @@ func TestDrainAndWaitWaitsForControl(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("DrainAndWait did not return after control fetched the drain")
 	}
-	want := [][]string{{"serve", "drain", "svc:web"}}
-	if got := cli.snapshot(); !slices.EqualFunc(got, want, slices.Equal) {
-		t.Errorf("calls = %q, want %q", got, want)
+	want := [][]string{{"unadvertise", "svc:web"}}
+	if got := api.operations(); !slices.EqualFunc(got, want, slices.Equal) {
+		t.Errorf("operations = %q, want %q", got, want)
 	}
 	if !loggedOut() {
 		t.Error("not logged out after control fetched the drain")
@@ -125,23 +118,20 @@ func TestDrainAndWaitWaitsForControl(t *testing.T) {
 // again nor waits for a fetch that drain would never cause, and it stays
 // drained.
 func TestDrainAndWaitAfterExternalDrain(t *testing.T) {
-	cli := &fakeCLI{}
-	s, d := newTestSupervisor(t, cli)
+	s, d, api := newTestSupervisor(t)
 	setTiming(
 		&s.cfg,
 		func(tm *timing) { tm.drainAckFloor = 10 * time.Millisecond; tm.drainAckTimeout = 2 * time.Second },
 	)
-	api := newFakeLocalAPI(t)
-	api.loggedIn(ipn.Prefs{})
-	d.lc = api.client()
+	api.serviceHost(ipn.Prefs{})
 
 	start := time.Now()
 	s.DrainAndWait("svc:web")
 	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
 		t.Errorf("waited %v after a drain outside tslink", elapsed)
 	}
-	if ran(cli.snapshot(), "serve", "drain", "svc:web") {
-		t.Errorf("drained again: %q", cli.snapshot())
+	if ops := api.operations(); len(ops) != 0 {
+		t.Errorf("drained again: %q", ops)
 	}
 	if !s.Drained() {
 		t.Error("backend not marked drained")
@@ -153,15 +143,11 @@ func TestDrainAndWaitAfterExternalDrain(t *testing.T) {
 
 // The floor holds even if control fetches the drain at once.
 func TestDrainAndWaitFloor(t *testing.T) {
-	cli := &fakeCLI{}
-	s, d := newTestSupervisor(t, cli)
+	s, d, api := newTestSupervisor(t)
 	setTiming(&s.cfg, func(tm *timing) { tm.drainAckFloor = 150 * time.Millisecond })
-	cli.out = ""
-	d.runCLI = func(ctx context.Context, c cliCall) (cliOutput, error) {
-		out, err := cli.run(ctx, c)
+	api.setBefore(func(context.Context, string) {
 		d.handleLine(servicesFetchLine) // as fast as it gets
-		return out, err
-	}
+	})
 	start := time.Now()
 	s.DrainAndWait("svc:web")
 	if elapsed := time.Since(start); elapsed < s.cfg.times().drainAckFloor {
@@ -171,8 +157,7 @@ func TestDrainAndWaitFloor(t *testing.T) {
 
 // Without word from control, leaving goes on after drainAckTimeout.
 func TestDrainAndWaitTimesOut(t *testing.T) {
-	cli := &fakeCLI{}
-	s, _ := newTestSupervisor(t, cli)
+	s, _, api := newTestSupervisor(t)
 	setTiming(&s.cfg, func(tm *timing) {
 		tm.drainAckFloor = 10 * time.Millisecond
 		tm.drainAckTimeout = 100 * time.Millisecond
@@ -186,21 +171,20 @@ func TestDrainAndWaitTimesOut(t *testing.T) {
 		t.Errorf("returned after %v, want about %v", elapsed, s.cfg.times().drainAckTimeout)
 	}
 	if want := [][]string{
-		{"serve", "drain", "svc:web"},
+		{"unadvertise", "svc:web"},
 	}; !slices.EqualFunc(
-		cli.snapshot(),
+		api.operations(),
 		want,
 		slices.Equal,
 	) {
-		t.Errorf("calls = %q, want %q", cli.snapshot(), want)
+		t.Errorf("operations = %q, want %q", api.operations(), want)
 	}
 }
 
 // A backend drained at the stop signal is not drained again, and leaving
 // waits for that drain's acknowledgement, counted from the drain.
 func TestDrainAndWaitAfterStopSignalDrain(t *testing.T) {
-	cli := &fakeCLI{}
-	s, d := newTestSupervisor(t, cli)
+	s, d, api := newTestSupervisor(t)
 	setTiming(
 		&s.cfg,
 		func(tm *timing) { tm.drainAckFloor = 10 * time.Millisecond; tm.drainAckTimeout = 5 * time.Second },
@@ -215,16 +199,15 @@ func TestDrainAndWaitAfterStopSignalDrain(t *testing.T) {
 	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
 		t.Errorf("waited %v for a drain control had fetched already", elapsed)
 	}
-	if n := len(cli.snapshot()); n != 1 {
-		t.Errorf("ran %d commands, want the one drain: %q", n, cli.snapshot())
+	if n := len(api.operations()); n != 1 {
+		t.Errorf("ran %d operations, want the one drain: %q", n, api.operations())
 	}
 }
 
 // A backend never advertised, as a replica drained while it waited for its
 // certificate, gives control nothing to fetch: leaving does not wait.
 func TestDrainAndWaitNeverAdvertised(t *testing.T) {
-	cli := &fakeCLI{}
-	s, _ := newTestSupervisor(t, cli)
+	s, _, api := newTestSupervisor(t)
 	setTiming(
 		&s.cfg,
 		func(tm *timing) { tm.drainAckFloor = 10 * time.Millisecond; tm.drainAckTimeout = 5 * time.Second },
@@ -235,16 +218,15 @@ func TestDrainAndWaitNeverAdvertised(t *testing.T) {
 	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
 		t.Errorf("waited %v for a backend never advertised", elapsed)
 	}
-	if !ran(cli.snapshot(), "serve", "drain", "svc:web") {
-		t.Errorf("not drained: %q", cli.snapshot())
+	if !ran(api.operations(), "unadvertise", "svc:web") {
+		t.Errorf("not drained: %q", api.operations())
 	}
 }
 
 // Advertising the Service, and a node state that may advertise it from a
 // previous run, mark the backend advertised.
 func TestAdvertisedMarked(t *testing.T) {
-	cli := &fakeCLI{}
-	d := newTestDaemon(t, cli, "svc:web")
+	d, _ := newTestDaemon(t, "svc:web")
 	d.config.Endpoints = []ServeEndpoint{{Proto: "tcp", Port: "22", Target: "22"}}
 	if err := d.configureServiceBackend(false); err != nil {
 		t.Fatal(err)
@@ -259,7 +241,7 @@ func TestAdvertisedMarked(t *testing.T) {
 		t.Error("advertise did not mark the backend advertised")
 	}
 
-	d = newTestDaemon(t, cli, "svc:web")
+	d, _ = newTestDaemon(t, "svc:web")
 	d.config.Endpoints = []ServeEndpoint{{Proto: "tcp", Port: "22", Target: "22"}}
 	if err := d.configureService(); err != nil {
 		t.Fatal(err)
@@ -268,7 +250,7 @@ func TestAdvertisedMarked(t *testing.T) {
 		t.Error("configureService did not mark the backend advertised")
 	}
 
-	d = newTestDaemon(t, cli, "svc:web")
+	d, _ = newTestDaemon(t, "svc:web")
 	d.noteSurvivingState()
 	if d.config.gate.advertised.Load() {
 		t.Error("marked advertised without node state")
@@ -298,26 +280,24 @@ func TestDrainAndWaitWithoutDaemon(t *testing.T) {
 	}
 }
 
-// failCert has tailscaled refuse d's certificate requests with msg, at once:
-// with nothing listening on its socket, a request may take seconds to fail.
-func failCert(t *testing.T, d *daemon, msg string) {
-	t.Helper()
-	api := newFakeLocalAPI(t)
-	d.lc = api.client()
+// failCert has tailscaled refuse certificate requests with msg.
+func failCert(api *fakeLocalAPI, msg string) {
+	api.mu.Lock()
+	defer api.mu.Unlock()
 	api.cert = func() error { return errors.New(msg) }
 }
 
 // newCertDaemon returns a daemon serving svc:web over HTTPS with a shared
-// certificate directory, and that directory.
-func newCertDaemon(t *testing.T, cli *fakeCLI) (*daemon, string) {
+// certificate directory, that directory and its fake LocalAPI.
+func newCertDaemon(t *testing.T) (*daemon, string, *fakeLocalAPI) {
 	t.Helper()
-	d := newTestDaemon(t, cli, "svc:web")
+	d, api := newTestDaemon(t, "svc:web")
 	d.config.Endpoints = []ServeEndpoint{{Proto: "https", Port: "443", Target: "8080"}}
 	dir := filepath.Join(d.config.StateDir, certsDirName)
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	return d, dir
+	return d, dir, api
 }
 
 const certDomain = "api.example.ts.net"
@@ -336,8 +316,7 @@ func runAfterCert(d *daemon, dir string) <-chan struct{} {
 // A replica drained while another issues the certificate stays drained once
 // the certificate appears, and stops waiting.
 func TestDrainedWaitingReplicaNotAdvertised(t *testing.T) {
-	cli := &fakeCLI{}
-	d, dir := newCertDaemon(t, cli)
+	d, dir, api := newCertDaemon(t)
 	setTiming(&d.config, func(tm *timing) { tm.certPollInterval = 10 * time.Millisecond })
 	other, err := tryLease(dir, certDomain, "other")
 	if err != nil {
@@ -356,14 +335,9 @@ func TestDrainedWaitingReplicaNotAdvertised(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("still waiting for the certificate after the drain")
 	}
-	if want := [][]string{
-		{"serve", "drain", "svc:web"},
-	}; !slices.EqualFunc(
-		cli.snapshot(),
-		want,
-		slices.Equal,
-	) {
-		t.Errorf("calls = %q, want only the drain", cli.snapshot())
+	// Not advertised, there was nothing to drain
+	if ops := api.operations(); len(ops) != 0 {
+		t.Errorf("operations = %q, want none", ops)
 	}
 }
 
@@ -387,8 +361,9 @@ func TestDrainSurvivesDaemonRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cli := &fakeCLI{}
-	d.runCLI = cli.run
+	api := newFakeLocalAPI(t)
+	api.serviceHost(ipn.Prefs{})
+	d.lc = api.client()
 	if err := d.configureServiceWhenCertified(); err != nil {
 		t.Errorf(
 			"configureServiceWhenCertified = %v, want nil: a drain must not fail the start",
@@ -401,8 +376,8 @@ func TestDrainSurvivesDaemonRestart(t *testing.T) {
 	if err := d.advertise("svc:web"); !errors.Is(err, errDrained) {
 		t.Errorf("advertise = %v, want errDrained", err)
 	}
-	if calls := cli.snapshot(); len(calls) != 0 {
-		t.Errorf("drained backend ran %q", calls)
+	if ops := api.operations(); len(ops) != 0 {
+		t.Errorf("drained backend ran %q", ops)
 	}
 }
 
@@ -410,17 +385,20 @@ func TestDrainSurvivesDaemonRestart(t *testing.T) {
 // call not end when cancelled, the drain waits for it, and the configuration
 // stops before the next call.
 func TestDrainAfterConfigureInProgress(t *testing.T) {
-	cli := &fakeCLI{}
-	d := newTestDaemon(t, cli, "svc:web")
+	d, api := newTestDaemon(t, "svc:web")
+	api.serviceHost(ipn.Prefs{AdvertiseServices: []string{"svc:web"}})
 	d.config.Endpoints = []ServeEndpoint{{Proto: "tcp", Port: "22", Target: "22"}}
 	started, release := make(chan struct{}), make(chan struct{})
-	d.runCLI = func(ctx context.Context, c cliCall) (cliOutput, error) {
-		if slices.Contains(c.args, "--tcp=22") {
-			close(started)
-			<-release
+	var once sync.Once
+	// tailscaled finishes the change, though its client gave up
+	api.setBefore(func(_ context.Context, op string) {
+		if op == "serve" {
+			once.Do(func() {
+				close(started)
+				<-release
+			})
 		}
-		return cli.run(ctx, c)
-	}
+	})
 	configured := make(chan error)
 	go func() { configured <- d.configureService() }()
 	<-started
@@ -434,28 +412,27 @@ func TestDrainAfterConfigureInProgress(t *testing.T) {
 	if err := <-drained; err != nil {
 		t.Fatal(err)
 	}
-	calls := cli.snapshot()
-	if last := calls[len(calls)-1]; !slices.Equal(last, []string{"serve", "drain", "svc:web"}) {
-		t.Errorf("calls = %q, want the drain last", calls)
+	ops := api.operations()
+	if len(ops) == 0 || !slices.Equal(ops[len(ops)-1], []string{"unadvertise", "svc:web"}) {
+		t.Errorf("operations = %q, want the drain last", ops)
 	}
 }
 
 // The lease holder configures the Service unadvertised and advertises it
 // only once the certificate exists.
 func TestLeaseHolderAdvertisedOnlyWithCert(t *testing.T) {
-	cli := &fakeCLI{}
-	d, dir := newCertDaemon(t, cli)
+	d, dir, api := newCertDaemon(t)
 	setTiming(&d.config, func(tm *timing) { tm.certPollInterval = 10 * time.Millisecond })
-	failCert(t, d, "not issued yet")
+	failCert(api, "not issued yet")
 
 	done := runAfterCert(d, dir)
 	waitFor(
 		t,
 		"the serve configuration",
-		func() bool { return ran(cli.snapshot(), "serve", "drain", "svc:web") },
+		func() bool { return ran(api.operations(), "serve") },
 	)
 	time.Sleep(50 * time.Millisecond)
-	if ran(cli.snapshot(), "serve", "advertise", "svc:web") {
+	if ran(api.operations(), "advertise", "svc:web") {
 		t.Fatal("lease holder advertised before its certificate existed")
 	}
 	writeCert(t, dir, certDomain, certDomain, time.Now().Add(time.Hour))
@@ -464,13 +441,9 @@ func TestLeaseHolderAdvertisedOnlyWithCert(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("still waiting after the certificate was issued")
 	}
-	want := [][]string{
-		{"serve", "--service=svc:web", "--https=443", "127.0.0.1:8080"},
-		{"serve", "drain", "svc:web"}, // "serve --service" advertises by itself
-		{"serve", "advertise", "svc:web"},
-	}
-	if got := cli.snapshot(); !slices.EqualFunc(got, want, slices.Equal) {
-		t.Errorf("calls =\n  %q\nwant\n  %q", got, want)
+	want := [][]string{{"serve"}, {"advertise", "svc:web"}}
+	if got := api.operations(); !slices.EqualFunc(got, want, slices.Equal) {
+		t.Errorf("operations = %q, want %q", got, want)
 	}
 	if _, err := os.Stat(filepath.Join(dir, certDomain+".lease")); !os.IsNotExist(err) {
 		t.Errorf("lease kept: %v", err)
@@ -480,19 +453,18 @@ func TestLeaseHolderAdvertisedOnlyWithCert(t *testing.T) {
 // Should control grant the Service's name only to hosts advertising it, the
 // lease holder advertises after certDomainGrace rather than wait forever.
 func TestLeaseHolderAdvertisesWhenDomainRefused(t *testing.T) {
-	cli := &fakeCLI{}
-	d, dir := newCertDaemon(t, cli)
+	d, dir, api := newCertDaemon(t)
 	setTiming(&d.config, func(tm *timing) {
 		tm.certPollInterval = 10 * time.Millisecond
 		tm.certDomainGrace = 50 * time.Millisecond
 	})
-	failCert(t, d, `invalid domain "api.example.ts.net"; must be one of []`)
+	failCert(api, `invalid domain "api.example.ts.net"; must be one of []`)
 
 	done := runAfterCert(d, dir)
 	waitFor(
 		t,
 		"the advertisement",
-		func() bool { return ran(cli.snapshot(), "serve", "advertise", "svc:web") },
+		func() bool { return ran(api.operations(), "advertise", "svc:web") },
 	)
 	writeCert(t, dir, certDomain, certDomain, time.Now().Add(time.Hour))
 	select {
@@ -505,16 +477,15 @@ func TestLeaseHolderAdvertisesWhenDomainRefused(t *testing.T) {
 // A lease holder drained while it waits for the certificate stops waiting,
 // is not advertised, and releases the lease.
 func TestDrainedLeaseHolderStops(t *testing.T) {
-	cli := &fakeCLI{}
-	d, dir := newCertDaemon(t, cli)
+	d, dir, api := newCertDaemon(t)
 	setTiming(&d.config, func(tm *timing) { tm.certPollInterval = 10 * time.Millisecond })
-	failCert(t, d, "not issued yet")
+	failCert(api, "not issued yet")
 
 	done := runAfterCert(d, dir)
 	waitFor(
 		t,
 		"the serve configuration",
-		func() bool { return ran(cli.snapshot(), "serve", "drain", "svc:web") },
+		func() bool { return ran(api.operations(), "serve") },
 	)
 	if err := d.Drain("svc:web"); err != nil {
 		t.Fatal(err)
@@ -525,8 +496,8 @@ func TestDrainedLeaseHolderStops(t *testing.T) {
 		t.Fatal("drained lease holder still waiting for the certificate")
 	}
 	writeCert(t, dir, certDomain, certDomain, time.Now().Add(time.Hour))
-	if ran(cli.snapshot(), "serve", "advertise", "svc:web") {
-		t.Errorf("drained lease holder advertised: %q", cli.snapshot())
+	if ran(api.operations(), "advertise", "svc:web") {
+		t.Errorf("drained lease holder advertised: %q", api.operations())
 	}
 	if _, err := os.Stat(filepath.Join(dir, certDomain+".lease")); !os.IsNotExist(err) {
 		t.Errorf("lease kept: %v", err)
@@ -536,34 +507,31 @@ func TestDrainedLeaseHolderStops(t *testing.T) {
 // A drain does not wait for the serve configuration in progress: it cancels
 // it, and nothing is configured or advertised after the drain.
 func TestDrainCancelsConfigureInProgress(t *testing.T) {
-	cli := &fakeCLI{}
-	d := newTestDaemon(t, cli, "svc:web")
-	api := newFakeLocalAPI(t)
-	api.loggedIn(ipn.Prefs{AdvertiseServices: []string{"svc:web"}})
-	d.lc = api.client()
+	d, api := newTestDaemon(t, "svc:web")
+	api.serviceHost(ipn.Prefs{AdvertiseServices: []string{"svc:web"}})
 	d.config.Endpoints = []ServeEndpoint{
 		{Proto: "tcp", Port: "22", Target: "22"},
 		{Proto: "tcp", Port: "23", Target: "23"},
 	}
 	started := make(chan struct{})
-	d.runCLI = blockOn(cli, "--tcp=22", started)
+	blockOn(api, "serve", started)
 	configured := make(chan error, 1)
 	go func() { configured <- d.configureService() }()
 	<-started
 
-	if err := returnsWithin(t, time.Second, "Drain", func() error {
+	if err := returnsWithin(t, "Drain", func() error {
 		return d.Drain("svc:web")
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := returnsWithin(t, time.Second, "the configuration", func() error {
+	if err := returnsWithin(t, "the configuration", func() error {
 		return <-configured
 	}); !errors.Is(err, errDrained) {
 		t.Errorf("configureService = %v, want errDrained", err)
 	}
-	want := [][]string{{"serve", "drain", "svc:web"}}
-	if got := cli.snapshot(); !slices.EqualFunc(got, want, slices.Equal) {
-		t.Errorf("calls = %q, want only the drain", got)
+	want := [][]string{{"unadvertise", "svc:web"}}
+	if got := api.operations(); !slices.EqualFunc(got, want, slices.Equal) {
+		t.Errorf("operations = %q, want only the drain", got)
 	}
 	if err := d.advertise("svc:web"); !errors.Is(err, errDrained) {
 		t.Errorf("advertise after the drain = %v, want errDrained", err)
@@ -574,24 +542,20 @@ func TestDrainCancelsConfigureInProgress(t *testing.T) {
 // configuration drained, not failed: a failure would fail the daemon's start
 // and stop it, and with it the drain.
 func TestDrainCancelsAdvertiseInProgress(t *testing.T) {
-	cli := &fakeCLI{}
-	d := newTestDaemon(t, cli, "svc:web")
-	api := newFakeLocalAPI(t)
-	api.loggedIn(ipn.Prefs{AdvertiseServices: []string{"svc:web"}})
-	d.lc = api.client()
+	d, api := newTestDaemon(t, "svc:web")
 	d.config.Endpoints = []ServeEndpoint{{Proto: "tcp", Port: "22", Target: "22"}}
 	started := make(chan struct{})
-	d.runCLI = blockOn(cli, "advertise", started)
+	blockOn(api, "prefs", started)
 	configured := make(chan error, 1)
 	go func() { configured <- d.configureService() }()
 	<-started
 
-	if err := returnsWithin(t, time.Second, "Drain", func() error {
+	if err := returnsWithin(t, "Drain", func() error {
 		return d.Drain("svc:web")
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := returnsWithin(t, time.Second, "the configuration", func() error {
+	if err := returnsWithin(t, "the configuration", func() error {
 		return <-configured
 	}); !errors.Is(err, errDrained) {
 		t.Errorf("configureService = %v, want errDrained", err)
@@ -601,13 +565,12 @@ func TestDrainCancelsAdvertiseInProgress(t *testing.T) {
 // A drain while the supervisor has no daemon, as while it restarts
 // tailscaled, still cancels the serve configuration of the starting daemon.
 func TestSupervisorDrainCancelsConfigureWithoutDaemon(t *testing.T) {
-	cli := &fakeCLI{}
-	d := newTestDaemon(t, cli, "svc:web")
+	d, api := newTestDaemon(t, "svc:web")
 	s := NewDaemonSupervisor(d.config)
 	d.config.gate = s.cfg.gate
 	d.config.Endpoints = []ServeEndpoint{{Proto: "tcp", Port: "22", Target: "22"}}
 	started := make(chan struct{})
-	d.runCLI = blockOn(cli, "--tcp=22", started)
+	blockOn(api, "serve", started)
 	configured := make(chan error, 1)
 	go func() { configured <- d.configureService() }()
 	<-started
@@ -615,7 +578,7 @@ func TestSupervisorDrainCancelsConfigureWithoutDaemon(t *testing.T) {
 	if err := s.Drain("svc:web"); err == nil {
 		t.Error("Drain without a daemon succeeded")
 	}
-	if err := returnsWithin(t, time.Second, "the configuration", func() error {
+	if err := returnsWithin(t, "the configuration", func() error {
 		return <-configured
 	}); !errors.Is(err, errDrained) {
 		t.Errorf("configureService = %v, want errDrained", err)

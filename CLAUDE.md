@@ -118,8 +118,10 @@ Dependabot updates), and tslink runs only these binaries: it downloads nothing a
 `TS_VERSION`/`TS_PATH` settings with a warning. tailscaled's output goes to a rotated `tailscaled.log`, read by
 `drainLines`, which never stops reading: tailscaled blocks on a full pipe. tslink talks to tailscaled through its
 LocalAPI (`tailscale.com/client/local`, `daemon.lc`), whose module must be the bundled Tailscale's version:
-`TestLocalAPIClientMatchesBundledTailscale` fails until Dependabot's Dockerfile and Go module updates agree. Only
-`tailscale serve` still runs the CLI.
+`TestLocalAPIClientMatchesBundledTailscale` fails until Dependabot's Dockerfile and Go module updates agree. tslink
+runs no `tailscale` CLI: serve configs are built with `ipn.ServeConfig`'s helpers, as the CLI builds them
+(`applyServeEndpoint`), and set with the version they were read at; advertising and draining edit the prefs'
+`AdvertiseServices`. The image still ships the CLI for debugging.
 
 **Login**: `daemon.logIn` does what `tailscale up` does, over the LocalAPI. The node's settings are an
 `ipn.ConfigVAlpha`, the format of tailscaled's config file (as the Kubernetes operator configures its proxies),

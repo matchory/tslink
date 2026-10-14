@@ -31,7 +31,6 @@ type DaemonConfig struct {
 	AuthKey       func() (string, error) // Read at each login, so a replaced credential takes effect
 	CertsDir      string                 // Shared certificate directory; empty for tailscaled's own
 	NetNSPath     string
-	TailscaleBin  string          // Path to tailscale CLI binary
 	TailscaledBin string          // Path to tailscaled daemon binary
 	Tags          []string        // ACL tags for --advertise-tags
 	Service       string          // Service name for tailscale serve (e.g., "svc:hello-world")
@@ -93,10 +92,6 @@ type daemon struct {
 	certWatch sync.Once
 	// Set while the Service waits for its certificate to be configured
 	certWaiting atomic.Bool
-
-	// runCLI runs the tailscale CLI and returns its output; tests replace it.
-	// Nil runs config.TailscaleBin.
-	runCLI func(ctx context.Context, c cliCall) (cliOutput, error)
 
 	// lc talks to tailscaled's LocalAPI on its socket
 	lc *local.Client

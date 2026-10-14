@@ -45,7 +45,7 @@ func waitFile(t *testing.T, path string) {
 // Stop lets tailscaled shut down cleanly before it is killed: SIGTERM first,
 // SIGKILL only if it is still running after stopGrace.
 func TestStopTerminatesGracefully(t *testing.T) {
-	d := newTestDaemon(t, &fakeCLI{}, "")
+	d := newOfflineDaemon(t, "")
 	setTiming(&d.config, func(tm *timing) { tm.stopGrace = 5 * time.Second })
 	dir := startFake(t, d, `trap 'touch "$0/term"; exit 0' TERM; touch "$0/ready"
 while :; do sleep 0.05; done`)
@@ -60,7 +60,7 @@ while :; do sleep 0.05; done`)
 
 // A tailscaled that does not exit on SIGTERM is killed after stopGrace.
 func TestStopKillsAfterGrace(t *testing.T) {
-	d := newTestDaemon(t, &fakeCLI{}, "")
+	d := newOfflineDaemon(t, "")
 	setTiming(&d.config, func(tm *timing) { tm.stopGrace = 200 * time.Millisecond })
 	dir := startFake(t, d, `trap '' TERM; touch "$0/ready"; while :; do sleep 0.05; done`)
 	waitFile(t, filepath.Join(dir, "ready"))
@@ -79,7 +79,7 @@ func TestStopKillsAfterGrace(t *testing.T) {
 // Everything tailscaled wrote before it exited reaches its log, however far
 // behind the reader is: its last lines tell why it exited.
 func TestOutputKeptAfterExit(t *testing.T) {
-	d := newTestDaemon(t, &fakeCLI{}, "")
+	d := newOfflineDaemon(t, "")
 	// The reader stops at the first line until the process has exited, with
 	// more output than the reader buffers still in the pipe
 	d.fetchMu.Lock()

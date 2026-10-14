@@ -19,7 +19,7 @@ jobs:
           - { package: ./pkg/core, target: FuzzStateDirFor }
           - { package: ./pkg/core, target: FuzzParseNetworkOptions }
           - { package: ./pkg/docker, target: FuzzParseServeValue }
-          - { package: ./pkg/tailscale, target: FuzzServeArgs }
+          - { package: ./pkg/tailscale, target: FuzzServeConfig }
           - { package: ./pkg/tailscale, target: FuzzTailscaledResolvConf }
           - { package: ./pkg/tailscale, target: FuzzCertDomainPath }
 

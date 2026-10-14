@@ -30,7 +30,7 @@ func TestKillErrorIgnoresExitedProcess(t *testing.T) {
 // WantRunning=false in a persistent node's state. tailscaled is stopped either
 // way.
 func TestKillProcessKeepsPrefs(t *testing.T) {
-	d := newTestDaemon(t, &fakeCLI{}, "")
+	d := newOfflineDaemon(t, "")
 	api := newFakeLocalAPI(t)
 	api.loggedIn(ipn.Prefs{WantRunning: true})
 	d.lc = api.client()

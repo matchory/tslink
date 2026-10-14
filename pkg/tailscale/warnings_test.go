@@ -54,7 +54,7 @@ func newWarningDaemon(t *testing.T) (*daemon, *recordedWarnings) {
 	nodeWarnings = &warnLimiter{}
 	t.Cleanup(func() { nodeWarnings = old })
 	rec := &recordedWarnings{m: map[string]string{}}
-	d := newTestDaemon(t, &fakeCLI{}, "svc:web")
+	d := newOfflineDaemon(t, "svc:web")
 	d.config.Warn = rec.warn
 	return d, rec
 }

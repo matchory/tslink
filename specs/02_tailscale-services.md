@@ -98,8 +98,8 @@ Tailscale Services requires tag-based authentication. The auth key used for the 
 | `tslink.service` without `tslink.serve.*` | `tslink.service requires at least one tslink.serve.<port> endpoint` | Add tslink.serve.<port> label |
 | Invalid port format | `invalid external port "abc": must be numeric` | Use numeric port |
 | Invalid protocol | `unsupported protocol: xyz` | Use http, https, tcp, tls-terminated-tcp, or tun |
-| Service doesn't exist | None: `tailscale serve` succeeds and says approval is required, and tslink warns `Service backend registered but pending admin approval, or the Service is not defined in the admin console: svc:foo` | Create the service in the admin console, or approve the backend |
-| Missing tags | `tailscale serve failed: requires tagged auth key` | Use auth key with tags |
+| Service doesn't exist | None: the serve config is set and the Service advertised, and tslink warns `Service backend registered but pending admin approval, or the Service is not defined in the admin console: svc:foo` | Create the service in the admin console, or approve the backend |
+| Missing tags | `service hosts must be tagged nodes: log in with a tagged auth key or OAuth client` | Use auth key with tags |
 
 ## Security Considerations
 

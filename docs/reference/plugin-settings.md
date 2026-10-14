@@ -31,6 +31,8 @@ in `certs/`, and gets a certificate again if it is not there.
 
 To check which source the plugin uses, read `.Config.Mounts` in `docker plugin inspect tslink`. `docker plugin set`
 changes the source there, and the plugin runs with it. `.Settings.Mounts` can still show the source from the install.
+`docker plugin upgrade` resets the source to the data directory: set it again after an upgrade, before you enable the
+plugin.
 
 > [!WARNING]
 > The directory holds the private key of each Service. Restrict access to the hosts of the cluster.

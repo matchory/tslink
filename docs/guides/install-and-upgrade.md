@@ -74,8 +74,14 @@ docker run --rm --privileged -v /var/lib:/var/lib alpine mkdir -p /var/lib/docke
    ```bash
    docker plugin disable -f tslink
    docker plugin upgrade --grant-all-permissions tslink ghcr.io/matchory/tslink:<version>-amd64
+   docker plugin set tslink shared.source=<shared directory>
    docker plugin enable tslink
    ```
+
+   `docker plugin upgrade` keeps the plugin's settings but resets the source of its mounts. If you set
+   [`shared.source`](../reference/plugin-settings.md#sharedsource), set it again before you enable the plugin, as
+   above. Otherwise leave out that command. Without it, the host uses certificates of its own and gets them again from
+   Let's Encrypt.
 
    On an ARM host, use `<version>-arm64`. Containers keep their nodes. Their tailnet traffic stops for some seconds
    while each tailscaled restarts.

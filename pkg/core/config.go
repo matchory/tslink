@@ -121,11 +121,18 @@ const IsolateHostTailnetSetting = "TSLINK_ISOLATE_HOST_TAILNET"
 // claim a longer-named stack's base tag.
 const TagScopeSetting = "TSLINK_TAG_SCOPE"
 
-// TagScopeStrict parses TagScopeSetting. Only "prefix" relaxes the scope; any
-// other value, a typo included, keeps the exact match.
+// TagScopeRelaxed reports whether a TagScopeSetting value relaxes the scope:
+// only "prefix" does.
+func TagScopeRelaxed(v string) bool {
+	return strings.EqualFold(v, "prefix")
+}
+
+// TagScopeStrict parses TagScopeSetting, as TagScopeRelaxed does, and warns
+// of a relaxed scope or a value it does not know. Any value but "prefix", a
+// typo included, keeps the exact match.
 func TagScopeStrict(v string) bool {
 	switch {
-	case strings.EqualFold(v, "prefix"):
+	case TagScopeRelaxed(v):
 		logger.Warnf(
 			"%s=prefix: a stack may claim a longer-named stack's base tag",
 			TagScopeSetting,

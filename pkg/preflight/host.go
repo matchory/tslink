@@ -191,11 +191,14 @@ func checkTagScope(ctx context.Context, d DockerAPI) Result {
 	if err != nil {
 		return Result{Property: "E8", Status: Error, Detail: err.Error()}
 	}
+	if len(plugins) == 0 {
+		return noPlugin("E8")
+	}
 	var violations []string
 	for _, p := range plugins {
 		for _, kv := range p.Settings.Env {
 			k, v, _ := strings.Cut(kv, "=")
-			if k == core.TagScopeSetting && !core.TagScopeStrict(v) {
+			if k == core.TagScopeSetting && core.TagScopeRelaxed(v) {
 				violations = append(violations, p.Name+": "+kv)
 			}
 		}

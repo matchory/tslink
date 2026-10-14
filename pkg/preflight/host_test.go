@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/moby/moby/api/types/plugin"
+
+	"github.com/matchory/tslink/pkg/logger"
 )
 
 // fakeRun answers commands by their name and arguments, joined with spaces.
@@ -351,5 +353,35 @@ func TestWrite(t *testing.T) {
 		if failed, _ := Write(&bytes.Buffer{}, []Result{{Property: "E2", Status: s}}); !failed {
 			t.Errorf("Write with %s: not failed", s)
 		}
+	}
+}
+
+// Without an enabled tslink plugin, E8 says so, as E5 and E6 do.
+func TestTagScopeNoPlugin(t *testing.T) {
+	env := testEnv(t)
+	f := newFakeDocker()
+	f.plugins[0].Enabled = false
+	env.Docker = f
+	r := result(t, Check(context.Background(), env), "E8")
+	if r.Status != Unknown || !strings.Contains(r.Detail, "no tslink plugin is enabled") {
+		t.Errorf("E8 = %+v, want unknown: no tslink plugin is enabled", r)
+	}
+}
+
+// The preflight reports a relaxed tag scope in its result, without logging
+// the warning the plugin logs for it.
+func TestTagScopeLogsNothing(t *testing.T) {
+	var log bytes.Buffer
+	logger.SetOutput(&log)
+	t.Cleanup(func() { logger.SetOutput(os.Stdout) })
+	env := testEnv(t)
+	f := newFakeDocker()
+	f.plugins[0].Settings.Env = []string{"TSLINK_TAG_SCOPE=prefix"}
+	env.Docker = f
+	if r := result(t, Check(context.Background(), env), "E8"); r.Status != Violated {
+		t.Errorf("E8 = %+v, want violated", r)
+	}
+	if log.Len() > 0 {
+		t.Errorf("logged %q, want nothing", log.String())
 	}
 }

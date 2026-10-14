@@ -41,9 +41,9 @@ func healthEndpoint(t *testing.T, state *atomic.Value, calls *atomic.Int32) (*En
 		sandboxKey: "/run/netns/x",
 		service:    "svc:ai",
 	}
-	e.readinessFn = func(context.Context) tailscale.Readiness {
+	e.readinessFn = func(context.Context) tailscale.ReadinessReport {
 		calls.Add(1)
-		return state.Load().(tailscale.Readiness)
+		return tailscale.ReadinessReport{State: state.Load().(tailscale.Readiness)}
 	}
 	e.startHealth(&ContainerInfo{HealthPort: port})
 	t.Cleanup(e.stopHealth)
@@ -96,15 +96,12 @@ func TestHealthLatchesReady(t *testing.T) {
 		t.Errorf("latch not recorded: %v", err)
 	}
 
-	// Latched: a later state does not count, and is not even asked for
+	// Latched: a later state does not count; it is still asked for, so the
+	// answer can show each Service's current state
 	state.Store(tailscale.ReadyStarting)
 	e.clearReadinessCache()
-	before := calls.Load()
 	if code, got := get(t, http.MethodGet, url+"/ready"); code != 200 || got != "ready" {
 		t.Errorf("latched: %d %q, want 200 ready", code, got)
-	}
-	if calls.Load() != before {
-		t.Error("latched endpoint still asked tailscaled")
 	}
 
 	// A new Endpoint for the same ID, as after a plugin restart, is latched
@@ -162,17 +159,17 @@ func TestHealthServesReadyOnly(t *testing.T) {
 // start that failed for good, a drained backend and a leaving container.
 func TestCurrentReadiness(t *testing.T) {
 	e := &Endpoint{ID: "0123456789abcdef", dataDir: t.TempDir()}
-	if got := e.currentReadiness(t.Context()); got != tailscale.ReadyStarting {
+	if got := e.currentReadiness(t.Context()).State; got != tailscale.ReadyStarting {
 		t.Errorf("no supervisor: %q, want starting", got)
 	}
 	e.writeStatus(&ContainerInfo{}, StatusFailed, 1, nil)
-	if got := e.currentReadiness(t.Context()); got != tailscale.ReadyFailed {
+	if got := e.currentReadiness(t.Context()).State; got != tailscale.ReadyFailed {
 		t.Errorf("failed start: %q, want failed", got)
 	}
 	e.mu.Lock()
 	e.leaving = true
 	e.mu.Unlock()
-	if got := e.currentReadiness(t.Context()); got != tailscale.ReadyDrained {
+	if got := e.currentReadiness(t.Context()).State; got != tailscale.ReadyDrained {
 		t.Errorf("leaving: %q, want drained", got)
 	}
 }
@@ -211,12 +208,12 @@ func TestHealthHalfClosedClient(t *testing.T) {
 	var calls atomic.Int32
 	state.Store(tailscale.Ready)
 	e, url := healthEndpoint(t, &state, &calls)
-	e.readinessFn = func(ctx context.Context) tailscale.Readiness {
+	e.readinessFn = func(ctx context.Context) tailscale.ReadinessReport {
 		time.Sleep(100 * time.Millisecond) // as asking tailscaled takes a moment
 		if ctx.Err() != nil {
-			return tailscale.ReadyStarting
+			return tailscale.ReadinessReport{State: tailscale.ReadyStarting}
 		}
-		return tailscale.Ready
+		return tailscale.ReadinessReport{State: tailscale.Ready}
 	}
 	c, err := net.Dial("tcp", strings.TrimPrefix(url, "http://"))
 	if err != nil {
@@ -266,7 +263,62 @@ func (e *Endpoint) clearReadinessCache() {
 	e.mu.RUnlock()
 	if h != nil {
 		h.mu.Lock()
-		h.state = ""
+		h.report = tailscale.ReadinessReport{}
 		h.mu.Unlock()
+	}
+}
+
+// getBody returns the body of a GET request.
+func getBody(t *testing.T, url string) string {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.TrimSpace(string(body))
+}
+
+// The readiness answer keeps the service field of a single Service, adds the
+// state of each Service, and after the latch shows them live.
+func TestServeReadyKeepsServiceField(t *testing.T) {
+	var state atomic.Value
+	var calls atomic.Int32
+	state.Store(tailscale.Ready)
+	e, url := healthEndpoint(t, &state, &calls)
+	var report atomic.Value
+	report.Store(tailscale.ReadinessReport{
+		State:    tailscale.Ready,
+		Services: map[string]tailscale.Readiness{"svc:ai": tailscale.Ready},
+	})
+	e.mu.Lock()
+	e.readinessFn = func(context.Context) tailscale.ReadinessReport {
+		return report.Load().(tailscale.ReadinessReport)
+	}
+	e.mu.Unlock()
+	want := `{"state":"ready","service":"svc:ai","services":{"svc:ai":"ready"}}`
+	if body := getBody(t, url+"/ready"); body != want {
+		t.Errorf("body = %s, want %s", body, want)
+	}
+	report.Store(tailscale.ReadinessReport{
+		State:    tailscale.ReadyAwaitingApproval,
+		Services: map[string]tailscale.Readiness{"svc:ai": tailscale.ReadyAwaitingApproval},
+	})
+	e.clearReadinessCache()
+	want = `{"state":"ready","service":"svc:ai","services":{"svc:ai":"awaiting-approval"}}`
+	if body := getBody(t, url+"/ready"); body != want {
+		t.Errorf("after the latch, body = %s, want %s", body, want)
 	}
 }

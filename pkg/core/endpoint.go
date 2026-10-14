@@ -55,8 +55,8 @@ type Endpoint struct {
 	stopRun context.CancelFunc         // Cancels runCtx
 	startFn func(*ContainerInfo) error // Replaces StartTailscale in tests
 
-	health      *health                                   // Readiness endpoint; nil without tslink.health
-	readinessFn func(context.Context) tailscale.Readiness // Replaces the supervisor's readiness in tests
+	health      *health                                         // Readiness endpoint; nil without tslink.health
+	readinessFn func(context.Context) tailscale.ReadinessReport // Replaces the supervisor's readiness in tests
 
 	statusMu sync.Mutex               // Protects status and warnings; never held with mu
 	status   *EndpointStatusFile      // Last status written; nil before the first, after Leave

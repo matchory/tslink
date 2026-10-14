@@ -9,7 +9,9 @@ import (
 	"time"
 
 	"tailscale.com/ipn"
+	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/tailcfg"
+	"tailscale.com/util/mak"
 )
 
 // Readiness is how far a node is from serving what its container asks for.
@@ -32,37 +34,90 @@ const (
 // (tailcfg.NodeAttrServiceHost).
 const serviceHostCap = "service-host"
 
-// readiness asks tailscaled how far the node is from serving what its
-// container asks for: running, its serve config applied and, for a Service,
-// advertised and approved by control as a backend.
+// ReadinessReport is how far a node is from serving what its container asks
+// for, and how far each of its Services is.
+type ReadinessReport struct {
+	State    Readiness
+	Services map[string]Readiness // By Service name; nil without Services
+}
+
+// readinessRank orders the states a Service can be in, least ready first.
+var readinessRank = map[Readiness]int{
+	ReadyCertificatePending: 0,
+	ReadyServingPending:     1,
+	ReadyAwaitingApproval:   2,
+	Ready:                   3,
+}
+
+// lessReady returns the less ready of a and b.
+func lessReady(a, b Readiness) Readiness {
+	if readinessRank[b] < readinessRank[a] {
+		return b
+	}
+	return a
+}
+
+// readiness returns how far the node is from serving what its container
+// asks for.
 func (d *daemon) readiness(ctx context.Context) Readiness {
+	return d.readinessReport(ctx).State
+}
+
+// readinessReport asks tailscaled how far the node is from serving what its
+// container asks for: running, its serve config applied and, for each
+// Service, advertised and approved by control as a backend. The node is as
+// ready as its least ready Service. It reads the status, the serve config and
+// the prefs once each.
+func (d *daemon) readinessReport(ctx context.Context) ReadinessReport {
 	if d.isDrained() {
-		return ReadyDrained
+		return ReadinessReport{State: ReadyDrained}
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	status, err := d.lc.StatusWithoutPeers(ctx)
 	if err != nil {
-		return ReadyStarting
+		return ReadinessReport{State: ReadyStarting}
 	}
 	switch {
 	case status.BackendState == needsLogin || d.nodeNotFoundRecently():
-		return ReadyLoggedOut
+		return ReadinessReport{State: ReadyLoggedOut}
 	case status.BackendState != "Running":
-		return ReadyStarting
+		return ReadinessReport{State: ReadyStarting}
 	}
 
-	b := d.firstBackend()
-	service, direct := d.serveApplied(ctx)
-	if b != nil && (!service || !d.advertised(ctx)) {
+	direct := d.config.Direct && len(d.config.Endpoints) > 0
+	var config *ipn.ServeConfig
+	if direct || len(d.backends) > 0 {
+		config, _ = d.lc.GetServeConfig(ctx) // nil if unreadable: nothing applied
+	}
+	var prefs *ipn.Prefs
+	if len(d.backends) > 0 {
+		prefs, _ = d.lc.GetPrefs(ctx) // nil if unreadable: nothing advertised
+	}
+
+	report := ReadinessReport{State: Ready}
+	if direct && !applied(config, "", d.config.Endpoints) {
+		report.State = ReadyServingPending
+	}
+	for _, b := range d.backends {
+		state := b.readiness(status, config, prefs)
+		mak.Set(&report.Services, b.name, state)
+		report.State = lessReady(report.State, state)
+	}
+	return report
+}
+
+// readiness tells how far the backend is from serving its Service, from the
+// node's status, serve config and prefs.
+func (b *serviceBackend) readiness(
+	status *ipnstate.Status,
+	config *ipn.ServeConfig,
+	prefs *ipn.Prefs,
+) Readiness {
+	if !applied(config, tailcfg.ServiceName(b.name), b.endpoints) ||
+		prefs == nil || !slices.Contains(prefs.AdvertiseServices, b.name) {
 		return b.pendingService(magicDNSSuffix(status))
-	}
-	if !direct {
-		return ReadyServingPending
-	}
-	if b == nil {
-		return Ready
 	}
 	if status.Self == nil {
 		return ReadyAwaitingApproval
@@ -80,7 +135,7 @@ func (d *daemon) readiness(ctx context.Context) Readiness {
 // serve config not applied yet: the certificate lease holder configures the
 // Service only to issue the certificate, and the others wait for it.
 func (b *serviceBackend) pendingService(suffix string) Readiness {
-	if b.name == "" || !servesHTTPS(b.endpoints) || suffix == "" {
+	if !servesHTTPS(b.endpoints) || suffix == "" {
 		return ReadyServingPending
 	}
 	domain := b.serviceDomainIn(suffix)
@@ -90,26 +145,15 @@ func (b *serviceBackend) pendingService(suffix string) Readiness {
 	return ReadyServingPending
 }
 
-// serveApplied reports whether tailscaled's serve config holds every port the
-// container asks for under its Service, if it has one, and on the node itself
-// for direct serve.
-func (d *daemon) serveApplied(ctx context.Context) (bool, bool) {
-	b := d.firstBackend()
-	if len(d.config.Endpoints) == 0 && (b == nil || len(b.endpoints) == 0) {
-		return true, true
-	}
-	config, err := d.lc.GetServeConfig(ctx)
-	if err != nil {
-		return false, false
-	}
-	service := b == nil || applied(config, tailcfg.ServiceName(b.name), b.endpoints)
-	direct := !d.config.Direct || applied(config, "", d.config.Endpoints)
-	return service, direct
-}
-
 // applied reports whether config serves every port of endpoints, under the
 // Service service, or on the node itself if service is empty.
 func applied(config *ipn.ServeConfig, service tailcfg.ServiceName, endpoints []ServeEndpoint) bool {
+	if len(endpoints) == 0 {
+		return true
+	}
+	if config == nil {
+		return false
+	}
 	for _, ep := range endpoints {
 		port, err := strconv.ParseUint(ep.Port, 10, 16)
 		if err != nil {
@@ -128,19 +172,4 @@ func applied(config *ipn.ServeConfig, service tailcfg.ServiceName, endpoints []S
 		}
 	}
 	return true
-}
-
-// firstBackend returns the node's first Service backend, or nil without one.
-// Transitional: readiness is per Service from Task 5 on.
-func (d *daemon) firstBackend() *serviceBackend {
-	if len(d.backends) == 0 {
-		return nil
-	}
-	return d.backends[0]
-}
-
-// advertised reports whether the node's prefs advertise its Service.
-func (d *daemon) advertised(ctx context.Context) bool {
-	prefs, err := d.lc.GetPrefs(ctx)
-	return err == nil && slices.Contains(prefs.AdvertiseServices, d.firstBackend().name)
 }

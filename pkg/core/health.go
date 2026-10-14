@@ -35,9 +35,9 @@ var listenInNetNS = netutil.ListenInNetNS
 type health struct {
 	srv *http.Server
 
-	mu    sync.Mutex // serializes computing readiness, and protects the cache
-	state tailscale.Readiness
-	at    time.Time
+	mu     sync.Mutex // serializes computing readiness, and protects the cache
+	report tailscale.ReadinessReport
+	at     time.Time
 }
 
 // ReadyPath returns the file that records that an endpoint has been ready.
@@ -134,7 +134,8 @@ func (e *Endpoint) stopHealth() {
 
 // serveReady answers 200 once the node is ready, and from then on until the
 // backend is drained or the container leaves, so a plugin restart does not
-// make Swarm replace the task; 503 otherwise. The body names the state.
+// make Swarm replace the task; 503 otherwise. The body names the latched
+// state, and each Service's current state.
 func (e *Endpoint) serveReady(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		w.Header().Set("Allow", "GET, HEAD")
@@ -145,18 +146,19 @@ func (e *Endpoint) serveReady(w http.ResponseWriter, r *http.Request) {
 	// sending, as busybox nc does after its request, and the answer is shared
 	// with other requests through the cache. tailscaled's queries time out
 	// on their own.
-	state := e.readiness(context.WithoutCancel(r.Context()))
+	report := e.readiness(context.WithoutCancel(r.Context()))
 	code := http.StatusServiceUnavailable
-	if state == tailscale.Ready {
+	if report.State == tailscale.Ready {
 		code = http.StatusOK
 	}
 	e.mu.RLock()
 	service := e.service
 	e.mu.RUnlock()
 	body, err := json.Marshal(struct {
-		State   tailscale.Readiness `json:"state"`
-		Service string              `json:"service,omitempty"`
-	}{state, service})
+		State    tailscale.Readiness            `json:"state"`
+		Service  string                         `json:"service,omitempty"`
+		Services map[string]tailscale.Readiness `json:"services,omitempty"`
+	}{report.State, service, report.Services})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -175,15 +177,26 @@ func (e *Endpoint) serveReady(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// readiness returns the endpoint's latched or current readiness. Draining
-// and leaving count first: they end the latch.
-func (e *Endpoint) readiness(ctx context.Context) tailscale.Readiness {
+// readiness returns the endpoint's readiness: its latched or current state,
+// and the current state of each Service. Draining and leaving count first:
+// they end the latch.
+func (e *Endpoint) readiness(ctx context.Context) tailscale.ReadinessReport {
 	if e.drainedOrLeaving() {
-		return tailscale.ReadyDrained
+		return tailscale.ReadinessReport{State: tailscale.ReadyDrained}
+	}
+	report := e.cachedReadiness(ctx)
+	if report.State == tailscale.Ready {
+		e.latch()
 	}
 	if e.latched() {
-		return tailscale.Ready
+		report.State = tailscale.Ready
 	}
+	return report
+}
+
+// cachedReadiness returns the current readiness, at most readinessCacheTTL
+// old.
+func (e *Endpoint) cachedReadiness(ctx context.Context) tailscale.ReadinessReport {
 	e.mu.RLock()
 	h := e.health
 	e.mu.RUnlock()
@@ -192,13 +205,10 @@ func (e *Endpoint) readiness(ctx context.Context) tailscale.Readiness {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.state == "" || time.Since(h.at) >= readinessCacheTTL {
-		h.state, h.at = e.currentReadiness(ctx), time.Now()
+	if h.report.State == "" || time.Since(h.at) >= readinessCacheTTL {
+		h.report, h.at = e.currentReadiness(ctx), time.Now()
 	}
-	if h.state == tailscale.Ready {
-		e.latch()
-	}
-	return h.state
+	return h.report
 }
 
 // drainedOrLeaving reports whether the endpoint's backend is drained or its
@@ -212,15 +222,15 @@ func (e *Endpoint) drainedOrLeaving() bool {
 
 // currentReadiness computes the endpoint's readiness now: from its own state
 // first, then from tailscaled.
-func (e *Endpoint) currentReadiness(ctx context.Context) tailscale.Readiness {
+func (e *Endpoint) currentReadiness(ctx context.Context) tailscale.ReadinessReport {
 	if e.drainedOrLeaving() {
-		return tailscale.ReadyDrained
+		return tailscale.ReadinessReport{State: tailscale.ReadyDrained}
 	}
 	e.statusMu.Lock()
 	failed := e.status != nil && e.status.State == StatusFailed
 	e.statusMu.Unlock()
 	if failed {
-		return tailscale.ReadyFailed
+		return tailscale.ReadinessReport{State: tailscale.ReadyFailed}
 	}
 	e.mu.RLock()
 	supervisor, fn := e.supervisor, e.readinessFn
@@ -229,7 +239,7 @@ func (e *Endpoint) currentReadiness(ctx context.Context) tailscale.Readiness {
 		return fn(ctx)
 	}
 	if supervisor == nil {
-		return tailscale.ReadyStarting
+		return tailscale.ReadinessReport{State: tailscale.ReadyStarting}
 	}
 	return supervisor.Readiness(ctx)
 }

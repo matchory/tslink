@@ -454,9 +454,12 @@ func (b *serviceBackend) checkApprovalLater() {
 		return
 	}
 	grace := b.d.config.times().approvalGrace
+	awaiting := func() bool {
+		return b.d.readinessReport(b.d.ctx).Services[b.name] == ReadyAwaitingApproval
+	}
 	b.d.wg.Go(func() {
 		defer b.approvalCheck.Store(false)
-		if b.d.readiness(b.d.ctx) != ReadyAwaitingApproval {
+		if !awaiting() {
 			return
 		}
 		logger.Infof("Waiting for control to approve %s as a backend of %s",
@@ -464,7 +467,7 @@ func (b *serviceBackend) checkApprovalLater() {
 		if !ctxtime.Sleep(b.d.ctx, grace) {
 			return
 		}
-		if b.d.readiness(b.d.ctx) == ReadyAwaitingApproval {
+		if awaiting() {
 			logger.Warnf(
 				"Service backend registered but pending admin approval after %v, "+
 					"or the Service is not defined in the admin console: %s",

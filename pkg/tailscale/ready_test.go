@@ -2,6 +2,7 @@ package tailscale
 
 import (
 	"bytes"
+	"maps"
 	"os"
 	"strings"
 	"sync"
@@ -206,4 +207,79 @@ func (b *lockedLog) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.buf.String()
+}
+
+// The node is as ready as its least ready Service, and the report gives
+// each Service's state, from one read of each kind.
+func TestReadinessPerService(t *testing.T) {
+	const status = `{"BackendState":"Running",` +
+		`"CurrentTailnet":{"MagicDNSSuffix":"example.ts.net"},` +
+		`"Self":{"CapMap":{"service-host":[{"svc:a":["100.65.0.1"]}]}}}`
+	const serve = `{"Services":{"svc:a":{"TCP":{"1":{}}},"svc:b":{"TCP":{"2":{}}}}}`
+	tests := []struct {
+		name  string
+		prefs string
+		want  ReadinessReport
+	}{
+		{
+			name:  "b not approved",
+			prefs: `{"AdvertiseServices":["svc:a","svc:b"]}`,
+			want: ReadinessReport{State: ReadyAwaitingApproval, Services: map[string]Readiness{
+				"svc:a": Ready, "svc:b": ReadyAwaitingApproval,
+			}},
+		},
+		{
+			name:  "b not advertised",
+			prefs: `{"AdvertiseServices":["svc:a"]}`,
+			want: ReadinessReport{State: ReadyServingPending, Services: map[string]Readiness{
+				"svc:a": Ready, "svc:b": ReadyServingPending,
+			}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := newOfflineDaemon(t, "")
+			d.config.Services = []Service{tcpService("svc:a", "1"), tcpService("svc:b", "2")}
+			d.backends = newBackends(d)
+			f := newFakeLocalAPI(t)
+			f.set(statusPath, status)
+			f.set(servePath, serve)
+			f.set(prefsPath, tt.prefs)
+			d.lc = f.client()
+			got := d.readinessReport(t.Context())
+			if got.State != tt.want.State || !maps.Equal(got.Services, tt.want.Services) {
+				t.Errorf("readinessReport = %+v, want %+v", got, tt.want)
+			}
+			if n := countPrefix(f.paths(), "GET "); n != 3 {
+				t.Errorf("%d reads (%q), want 3: status, serve config, prefs", n, f.paths())
+			}
+		})
+	}
+}
+
+// A Service waiting for its certificate makes the node certificate-pending,
+// whatever the others are.
+func TestReadinessCertificatePendingWins(t *testing.T) {
+	d := newOfflineDaemon(t, "")
+	d.config.Services = []Service{tcpService("svc:a", "1"), httpsService("svc:b")}
+	d.backends = newBackends(d)
+	d.lc = readinessAPI(t,
+		`{"BackendState":"Running","CurrentTailnet":{"MagicDNSSuffix":"example.ts.net"},`+
+			`"Self":{"CapMap":{"service-host":[{"svc:a":["100.65.0.1"]}]}}}`,
+		`{"Services":{"svc:a":{"TCP":{"1":{}}}}}`,
+		`{"AdvertiseServices":["svc:a"]}`)
+	got := d.readinessReport(t.Context())
+	if got.State != ReadyCertificatePending || got.Services["svc:a"] != Ready {
+		t.Errorf("readinessReport = %+v, want certificate-pending with svc:a ready", got)
+	}
+}
+
+func countPrefix(list []string, prefix string) int {
+	n := 0
+	for _, s := range list {
+		if strings.HasPrefix(s, prefix) {
+			n++
+		}
+	}
+	return n
 }

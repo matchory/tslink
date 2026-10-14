@@ -229,12 +229,12 @@ func (s *DaemonSupervisor) Drained() bool {
 
 // Readiness reports how far the node is from serving what its container asks
 // for. A daemon not started, or restarting, is starting.
-func (s *DaemonSupervisor) Readiness(ctx context.Context) Readiness {
+func (s *DaemonSupervisor) Readiness(ctx context.Context) ReadinessReport {
 	d := s.getDaemon()
 	if d == nil || !d.IsRunning() {
-		return ReadyStarting
+		return ReadinessReport{State: ReadyStarting}
 	}
-	return d.readiness(ctx)
+	return d.readinessReport(ctx)
 }
 
 // WaitForIP waits for the daemon to get a Tailscale IP, or ctx to be done.

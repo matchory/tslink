@@ -37,6 +37,10 @@ type timing struct {
 	// certCheckInterval is how often the certificate's expiry is checked.
 	certCheckInterval time.Duration
 
+	// approvalGrace is how long control may take to approve a backend
+	// before tslink warns that it has not.
+	approvalGrace time.Duration
+
 	// Leaving waits at least drainAckFloor and at most drainAckTimeout for
 	// control to fetch the drained Service list.
 	drainAckFloor   time.Duration
@@ -55,6 +59,7 @@ var defaultTiming = timing{
 	certPollInterval:           5 * time.Second,
 	certDomainGrace:            30 * time.Second,
 	certCheckInterval:          time.Hour,
+	approvalGrace:              2 * time.Minute,
 	drainAckFloor:              time.Second,
 	drainAckTimeout:            10 * time.Second,
 }

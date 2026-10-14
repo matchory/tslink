@@ -1,6 +1,7 @@
 package core
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -19,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/matchory/tslink/pkg/logger"
 	"github.com/matchory/tslink/pkg/tailscale"
 )
 
@@ -540,4 +542,44 @@ func TestCollectCertificatesRemovedElsewhere(t *testing.T) {
 
 	removeFile(crt) // gone already
 	collectCertificates(filepath.Join(dir, "missing"), now)
+}
+
+// Certificates left in the data directory after shared.source moved away
+// from it are reported once at startup; the data directory as the shared
+// one, the default, or an empty certs/, is not.
+func TestWarnUnusedCertificates(t *testing.T) {
+	for name, tt := range map[string]struct {
+		shared bool // a shared directory of its own
+		files  []string
+		warns  bool
+	}{
+		"left behind":            {true, []string{"api.example.ts.net.crt", "api.example.ts.net.key"}, true},
+		"shared is the data dir": {false, []string{"api.example.ts.net.crt"}, false},
+		"nothing left":           {true, nil, false},
+		"only the account key":   {true, []string{"acme-account.key.pem"}, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var log bytes.Buffer
+			logger.SetOutput(&log)
+			t.Cleanup(func() { logger.SetOutput(os.Stdout) })
+			data := t.TempDir()
+			shared := data
+			if tt.shared {
+				shared = t.TempDir()
+			}
+			certs := filepath.Join(data, "certs")
+			if err := os.MkdirAll(certs, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			for _, f := range tt.files {
+				if err := os.WriteFile(filepath.Join(certs, f), nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			WarnUnusedCertificates(data, shared)
+			if got := strings.Contains(log.String(), "level=WARN"); got != tt.warns {
+				t.Errorf("warned = %v, want %v: %s", got, tt.warns, log.String())
+			}
+		})
+	}
 }

@@ -10,6 +10,7 @@ import (
 
 	"github.com/moby/moby/client/pkg/stringid"
 
+	"github.com/matchory/tslink/internal/ctxtime"
 	"github.com/matchory/tslink/pkg/logger"
 )
 
@@ -281,20 +282,42 @@ func (d *daemon) configureServeEndpoint(ctx context.Context, ep ServeEndpoint) e
 		return fmt.Errorf("tailscale serve failed: %w (output: %s)", err, output)
 	}
 
-	// Check for approval pending (command succeeds but backend not active
-	// yet). The CLI says so too for a Service that does not exist: control
-	// has given the node no addresses for it
+	// Approval pending: the command succeeds, but the backend is not active
+	// yet. Right after a start, control has often not caught up
 	if strings.Contains(output, "approval from an admin is required") {
-		logger.Warnf(
-			"Service backend registered but pending admin approval, "+
-				"or the Service is not defined in the admin console: %s",
-			d.config.Service,
-		)
+		logger.Infof("Waiting for control to approve %s as a backend of %s",
+			stringid.TruncateID(d.config.EndpointID), d.config.Service)
+		d.checkApprovalLater()
 	}
 
 	d.serveDebugf("SUCCESS\nOutput: %s\n", output)
 	logger.Infof("tailscale serve endpoint %s:%s configured", ep.Proto, ep.Port)
 	return nil
+}
+
+// checkApprovalLater warns if control has still not approved the backend
+// after approvalGrace. The CLI also says approval is required for a Service
+// that does not exist: control has given the node no addresses for it. One
+// check runs at a time.
+func (d *daemon) checkApprovalLater() {
+	if !d.approvalCheck.CompareAndSwap(false, true) {
+		return
+	}
+	grace := d.config.times().approvalGrace
+	d.wg.Go(func() {
+		defer d.approvalCheck.Store(false)
+		if !ctxtime.Sleep(d.ctx, grace) {
+			return
+		}
+		if d.readiness(d.ctx) == ReadyAwaitingApproval {
+			logger.Warnf(
+				"Service backend registered but pending admin approval after %v, "+
+					"or the Service is not defined in the admin console: %s",
+				grace,
+				d.config.Service,
+			)
+		}
+	})
 }
 
 // serveDebugf appends a message to serve-debug.log in the state directory,

@@ -84,6 +84,7 @@ func redactKey(key string) string {
 func NewDriver() (*Driver, error) {
 	cfg := core.LoadConfig()
 	core.RemoveDownloadCache(cfg.DataDir)
+	core.WarnUnusedCertificates(cfg.DataDir, cfg.SharedDir)
 
 	// Create Docker client for container inspection and recovery
 	docker, err := dockerclient.New(dockerclient.FromEnv)

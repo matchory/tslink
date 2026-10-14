@@ -3,6 +3,7 @@ package logger
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"sync"
 )
@@ -15,6 +16,7 @@ type RotatingFile struct {
 	maxBytes int64
 	file     *os.File
 	size     int64
+	failing  bool // A rotation failed, and was reported
 }
 
 // OpenRotating opens or creates the log file at path.
@@ -32,15 +34,13 @@ func (r *RotatingFile) Write(p []byte) (int, error) {
 	defer r.mu.Unlock()
 
 	if r.size > 0 && r.size+int64(len(p)) > r.maxBytes {
-		if err := r.file.Close(); err != nil {
-			return 0, fmt.Errorf("failed to close %s: %w", r.path, err)
+		err := r.rotate()
+		if err != nil && !r.failing {
+			// The log cannot log its own failure. Lines go on to the
+			// current file, and the next write tries again
+			fmt.Fprintf(os.Stderr, "failed to rotate %s: %v\n", r.path, err)
 		}
-		if err := os.Rename(r.path, r.path+".1"); err != nil {
-			return 0, fmt.Errorf("failed to rotate %s: %w", r.path, err)
-		}
-		if err := r.open(); err != nil {
-			return 0, err
-		}
+		r.failing = err != nil
 	}
 	n, err := r.file.Write(p)
 	r.size += int64(n)
@@ -52,6 +52,24 @@ func (r *RotatingFile) Close() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.file.Close()
+}
+
+// rotate renames the file to <path>.1 and opens a new one. The old file is
+// closed only once the new one is open, so there is always one to write to.
+// If the file is gone, as when a rotation renamed it but could not open the
+// new one, it only opens the new one.
+func (r *RotatingFile) rotate() error {
+	if err := os.Rename(r.path, r.path+".1"); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	old := r.file
+	if err := r.open(); err != nil {
+		return err
+	}
+	if err := old.Close(); err != nil {
+		return fmt.Errorf("failed to close the rotated %s: %w", r.path, err)
+	}
+	return nil
 }
 
 func (r *RotatingFile) open() error {

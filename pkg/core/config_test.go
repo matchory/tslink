@@ -2,6 +2,7 @@ package core
 
 import (
 	"bytes"
+	"log/slog"
 	"net/netip"
 	"os"
 	"slices"
@@ -146,6 +147,31 @@ func TestTagScopeStrict(t *testing.T) {
 	} {
 		if got := TagScopeStrict(v); got != want {
 			t.Errorf("TagScopeStrict(%q) = %v, want %v", v, got, want)
+		}
+	}
+}
+
+// The log level defaults to info; an invalid value keeps it.
+func TestLoadConfigLogLevel(t *testing.T) {
+	t.Cleanup(func() { logger.SetLevel(slog.LevelInfo) })
+	for value, want := range map[string]slog.Level{
+		"":        slog.LevelInfo,
+		"debug":   slog.LevelDebug,
+		"DEBUG":   slog.LevelDebug,
+		"info":    slog.LevelInfo,
+		"warn":    slog.LevelWarn,
+		"error":   slog.LevelError,
+		"verbose": slog.LevelInfo,
+		"warning": slog.LevelInfo, // not one of the four
+		"error+8": slog.LevelInfo, // slog's offsets are not accepted
+	} {
+		t.Setenv(LogLevelSetting, value)
+		if got := LoadConfig().LogLevel; got != want {
+			t.Errorf("%s=%q: LogLevel = %v, want %v", LogLevelSetting, value, got, want)
+		}
+		if !logger.Get().Enabled(t.Context(), want) || want > slog.LevelDebug &&
+			logger.Get().Enabled(t.Context(), want-1) {
+			t.Errorf("%s=%q: the logger does not log from %v on", LogLevelSetting, value, want)
 		}
 	}
 }

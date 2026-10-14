@@ -7,61 +7,48 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"sync"
 	"sync/atomic"
 )
 
 // maxLogBytes caps the plugin log; one rotated copy is kept.
 const maxLogBytes = 50 << 20
 
-var (
-	current atomic.Pointer[slog.Logger]
-	once    sync.Once
-)
+// current is the logger in use: stdout until Init adds the log file.
+var current atomic.Pointer[slog.Logger]
 
-// Init initializes the global logger with file and stdout output.
-// Call this once at startup. If not called, Get() will initialize with defaults.
-func Init(logPath string) error {
-	var initErr error
-	once.Do(func() {
-		initErr = initLogger(logPath)
-	})
-	return initErr
+// level is the lowest level logged; info until SetLevel.
+var level slog.LevelVar
+
+func init() {
+	SetOutput(os.Stdout)
 }
 
-func initLogger(logPath string) error {
+// Init logs to the file at logPath as well as to stdout. If the file cannot
+// be opened, logging stays on stdout and Init returns the error.
+func Init(logPath string) error {
 	file, err := OpenRotating(logPath, maxLogBytes)
 	if err != nil {
-		// Fall back to stdout only
-		current.Store(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-			Level: slog.LevelDebug,
-		})))
 		return err
 	}
-
-	// Create multi-writer for both file and stdout
-	multiWriter := io.MultiWriter(file, os.Stdout)
-
-	current.Store(slog.New(slog.NewTextHandler(multiWriter, &slog.HandlerOptions{
-		Level: slog.LevelDebug,
-	})))
-
+	// Stdout first: MultiWriter stops at a writer that fails, as the file
+	// does on a full disk, and the Docker daemon's log keeps the lines
+	SetOutput(io.MultiWriter(os.Stdout, file))
 	return nil
 }
 
-// Get returns the global logger, initializing with defaults if needed.
+// Get returns the logger in use.
 func Get() *slog.Logger {
-	once.Do(func() {
-		// Default initialization to /data/plugin.log
-		_ = initLogger("/data/plugin.log")
-	})
 	return current.Load()
 }
 
-// SetOutput sends the log to w instead, for tests.
+// SetOutput sends the log to w instead.
 func SetOutput(w io.Writer) {
-	once.Do(func() {})
-	current.Store(slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	current.Store(slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: &level})))
+}
+
+// SetLevel sets the lowest level logged.
+func SetLevel(l slog.Level) {
+	level.Set(l)
 }
 
 // Debugf logs at debug level with printf-style formatting.

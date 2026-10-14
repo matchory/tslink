@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -57,14 +58,20 @@ func runPlugin() {
 	}
 
 	// Set up signal handling for graceful shutdown
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+	// A second signal is ignored, as the shutdown is under way
+	stopped, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 
+	// Set before stop when the server failed: that is no signal, and the
+	// process exits rather than shut down
+	var serveFailed atomic.Bool
 	go func() {
-		sig := <-sigCh
-		logger.Infof("Received signal %v, initiating graceful shutdown", sig)
+		<-stopped.Done()
+		if serveFailed.Load() {
+			return
+		}
+		logger.Infof("Shutting down gracefully: %v", context.Cause(stopped))
 
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(stopped), 30*time.Second)
 		defer cancel()
 
 		if err := driver.Shutdown(ctx); err != nil {
@@ -78,7 +85,10 @@ func runPlugin() {
 	handler := network.NewHandler(driver)
 
 	logger.Infof("Listening on %s", socketAddress)
-	if err := handler.ServeUnix(socketAddress, 0); err != nil {
+	err = handler.ServeUnix(socketAddress, 0)
+	serveFailed.Store(true)
+	stop()
+	if err != nil {
 		logger.Errorf("Failed to serve: %v", err)
 		os.Exit(1)
 	}

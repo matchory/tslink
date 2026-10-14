@@ -11,6 +11,7 @@ is disabled. See [Change a setting](../guides/install-and-upgrade.md#change-a-se
 | [`TSLINK_TAG_SCOPE`](#tslink_tag_scope) | `exact` or `prefix` | `exact` |
 | [`TSLINK_WIREGUARD_PORTS`](#tslink_wireguard_ports) | A port range `first-last` | `61000-65535` |
 | [`TSLINK_HOST_ENDPOINTS`](#tslink_host_endpoints) | `auto`, `off`, or up to 3 IPv4 addresses | `auto` |
+| [`TSLINK_LOG_LEVEL`](#tslink_log_level) | `debug`, `info`, `warn` or `error` | `info` |
 | [`TS_DEBUG_ACME_DIRECTORY_URL`](#ts_debug_acme_directory_url-and-ssl_cert_file) | A URL | Let's Encrypt |
 | [`SSL_CERT_FILE`](#ts_debug_acme_directory_url-and-ssl_cert_file) | A file in the plugin | The system's root certificates |
 
@@ -89,6 +90,12 @@ addresses explicitly.
 
 tailscaled reads these addresses when it starts; tslink restarts a container's tailscaled when its address or port
 changes, so a change is picked up within a minute.
+
+## TSLINK_LOG_LEVEL
+
+Sets the lowest level the plugin logs to `plugin.log` and the Docker daemon's log: `debug`, `info`, `warn` or
+`error`. For other values, tslink uses `info` and logs a warning. Set `debug` to follow what the plugin does with each
+event and endpoint, for example while investigating a problem; it logs much more.
 
 ## TS_DEBUG_ACME_DIRECTORY_URL and SSL_CERT_FILE
 

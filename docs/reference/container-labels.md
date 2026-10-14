@@ -52,8 +52,7 @@ The value has this syntax:
 | `tslink.serve.5432=tcp` | TCP on port 5432, to port 5432 |
 | `tslink.serve.0=tun` | All traffic to the Service, see [Layer 3 forwarding](#layer-3-forwarding) |
 
-tslink ignores a rule with an incorrect option, and logs a warning. It also ignores a rule with an unknown protocol,
-and logs this only at the debug level.
+tslink ignores a rule with an incorrect option or an unknown protocol, and logs a warning.
 
 > [!NOTE]
 > Tailscale gets a Let's Encrypt certificate for each name that it serves HTTP on, also for plain HTTP. See
@@ -66,7 +65,7 @@ whatever the port (`tailscale serve --tun`). The application must receive this t
 firewall rules in the container: tslink adds none.
 
 - `tun` needs [`tslink.service`](#tslinkservice). Without one, tslink ignores the rule and logs this only at the debug
-  level.
+  level (see [`TSLINK_LOG_LEVEL`](plugin-settings.md#tslink_log_level)).
 - `<port>` must be a number, but tslink ignores it, the target and the path.
 - Serve options are not allowed: tslink ignores a `tun` rule with an option and logs a warning.
 

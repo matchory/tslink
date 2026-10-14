@@ -507,7 +507,10 @@ func (s *DaemonSupervisor) checkLogin(d *daemon, login *loginWatch) {
 		"Endpoint %s: node is logged out, logging in again",
 		stringid.TruncateID(s.cfg.EndpointID),
 	)
-	if err := d.Reauthenticate(); err != nil {
+	// Stopping the supervisor aborts the login, as it does the start's
+	stop := context.AfterFunc(s.ctx, d.cancel)
+	defer stop()
+	if err := d.Reauthenticate(); err != nil && s.ctx.Err() == nil {
 		logger.Errorf(
 			"Endpoint %s: logging in again failed: %v",
 			stringid.TruncateID(s.cfg.EndpointID),

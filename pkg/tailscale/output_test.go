@@ -36,3 +36,16 @@ func TestDrainLinesReadsToEOF(t *testing.T) {
 	w.Close()
 	<-done
 }
+
+// A long last line without a newline is marked as cut too.
+func TestDrainLinesMarksCutLastLine(t *testing.T) {
+	var got []string
+	drainLines(
+		strings.NewReader(strings.Repeat("x", 32)),
+		16,
+		func(l string) { got = append(got, l) },
+	)
+	if len(got) != 1 || got[0] != strings.Repeat("x", 16)+truncatedMark {
+		t.Errorf("got %q, want 16 bytes and the mark", got)
+	}
+}

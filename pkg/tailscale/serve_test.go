@@ -36,12 +36,11 @@ func TestServeOptionArgs(t *testing.T) {
 	}
 }
 
-// fakeCLI records the tailscale CLI calls of a daemon and their standard
-// input, and answers them with out on standard output, stderr and err.
+// fakeCLI records the tailscale CLI calls of a daemon, and answers them with
+// out on standard output, stderr and err.
 type fakeCLI struct {
 	mu     sync.Mutex
 	calls  [][]string
-	stdins []string
 	out    string
 	stderr string
 	err    error
@@ -51,7 +50,6 @@ func (f *fakeCLI) run(_ context.Context, c cliCall) (cliOutput, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, c.args)
-	f.stdins = append(f.stdins, c.stdin)
 	return cliOutput{stdout: f.out, stderr: f.stderr}, f.err
 }
 

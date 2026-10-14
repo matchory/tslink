@@ -320,3 +320,56 @@ func TestReauthenticateRestoresServe(t *testing.T) {
 		t.Errorf("calls = %q, want the direct serve of port 22", cli.snapshot())
 	}
 }
+
+// Stopping the supervisor ends a login again in progress: the daemon has
+// started, so it no longer runs under the start's cancellation.
+func TestStopEndsLoginAgain(t *testing.T) {
+	api := newFakeLocalAPI(t)
+	api.loggedOut()
+	// Without a key or a node key, the login waits for a browser
+	d, _ := loginDaemon(t, api, DaemonConfig{
+		Hostname: "web",
+		AuthKey:  func() (string, error) { return "", nil },
+	})
+	s := NewDaemonSupervisor(d.config)
+	t.Cleanup(s.cancel)
+	s.daemon = d
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		login := loginWatch{count: needsLoginChecks}
+		s.checkLogin(d, &login)
+	}()
+	waitFor(t, "the login to start", func() bool {
+		return slices.Contains(api.paths(), "POST /localapi/v0/start")
+	})
+	s.cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("the login went on after the supervisor stopped")
+	}
+}
+
+// A login that fails on stale state is retried as a new device, with
+// tailscaled's state left to tailscaled: it runs, and would write it back.
+func TestBringUpRetriesStaleStateAsNewDevice(t *testing.T) {
+	api := newFakeLocalAPI(t)
+	api.loggedOut()
+	api.startErr = "register request: invalid key"
+	d, _ := loginDaemon(t, api, DaemonConfig{Hostname: "web"})
+	state := filepath.Join(d.config.StateDir, "tailscaled.state")
+	if err := os.WriteFile(state, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.bringUp(); err != nil {
+		t.Fatal(err)
+	}
+	if len(api.authKeys) != 2 {
+		t.Errorf("logins started with %q, want a retry", api.authKeys)
+	}
+	if _, err := os.Stat(state); err != nil {
+		t.Errorf("state removed under the running tailscaled: %v", err)
+	}
+}

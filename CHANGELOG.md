@@ -18,6 +18,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A `tslink.service` name with upper-case letters fails the container's
+  start for good. Tailscale keeps the case it is given, so the name could
+  differ from the one control approves the node for.
+- A login that fails on stale state is retried as a new device. Before,
+  tslink deleted the state files under the running tailscaled, which kept
+  its keys and wrote them back, and retried with the same node key.
+- Stopping an endpoint stops a login again in progress: before, a node that
+  had lost its login could keep its supervisor's stop waiting 10 seconds
+  and go on logging in after.
 - The watchdog checks endpoints a minute after the plugin starts, and every
   minute after; the first check came two minutes in.
 - A new auth key whose old state could not be wiped fails the container's

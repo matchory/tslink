@@ -91,9 +91,9 @@ replaces a `Tailscale-App-Capabilities` header that the caller sends.
 ## tslink.service
 
 Makes the container a backend of a Tailscale Service, for example `svc:my-api`. The name after `svc:` must be a DNS
-label: letters, digits and hyphens, at most 63 characters, without a hyphen at either end. Otherwise the container does
-not start Tailscale. The container must also have at least one `tslink.serve.<port>` label. The Service must exist in
-the tailnet, and the credential of the network must have tags.
+label in lower case: letters, digits and hyphens, at most 63 characters, without a hyphen at either end. Otherwise the
+container does not start Tailscale. The container must also have at least one `tslink.serve.<port>` label. The Service
+must exist in the tailnet, and the credential of the network must have tags.
 
 ## tslink.direct
 

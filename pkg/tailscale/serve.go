@@ -228,6 +228,10 @@ func applyServeEndpoints(
 	return nil
 }
 
+// errServeUnchanged, returned by an editServe edit, leaves the serve config
+// as it is: there is nothing to write.
+var errServeUnchanged = errors.New("serve config unchanged")
+
 // editServe changes tailscaled's serve config with edit, as "tailscale serve"
 // does: it reads the config and the node's status, and writes the config
 // back, unless another client changed it meanwhile. what names the change in
@@ -251,7 +255,11 @@ func (d *daemon) editServe(
 		if sc == nil {
 			sc = new(ipn.ServeConfig)
 		}
-		if err := edit(sc, st); err != nil {
+		err = edit(sc, st)
+		if errors.Is(err, errServeUnchanged) {
+			return nil
+		}
+		if err != nil {
 			return err
 		}
 		if err := d.lc.SetServeConfig(ctx, sc); err != nil {
@@ -300,6 +308,77 @@ func (d *daemon) setAdvertised(ctx context.Context, service string, on bool) err
 		return fmt.Errorf("failed to %s %s: %w", verb, service, err)
 	}
 	return nil
+}
+
+// editAdvertised stops advertising every Service of the node's prefs keep
+// rejects, in one prefs edit, and returns those it removed.
+func (d *daemon) editAdvertised(ctx context.Context, keep func(string) bool) ([]string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	prefs, err := d.lc.GetPrefs(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read the advertised Services: %w", err)
+	}
+	var kept, removed []string
+	for _, s := range prefs.AdvertiseServices {
+		if keep(s) {
+			kept = append(kept, s)
+		} else {
+			removed = append(removed, s)
+		}
+	}
+	if len(removed) == 0 {
+		return nil, nil
+	}
+	if _, err := d.lc.EditPrefs(ctx, &ipn.MaskedPrefs{
+		AdvertiseServicesSet: true,
+		AdvertiseServices:    kept,
+	}); err != nil {
+		return nil, fmt.Errorf("failed to unadvertise %q: %w", removed, err)
+	}
+	return removed, nil
+}
+
+// pruneServices removes from the serve config and the prefs every Service the
+// container does not name, as one its labels no longer have: the node would
+// keep advertising it, and never drain it. A failure is logged: the drain at
+// stop removes every advertised Service anyway.
+func (d *daemon) pruneServices() {
+	names := serviceNames(d.config.Services)
+	keep := func(s string) bool { return slices.Contains(names, s) }
+	id := stringid.TruncateID(d.config.EndpointID)
+	err := d.config.gate.change(d, func(ctx context.Context) error {
+		err := d.editServe(ctx, "prune", func(sc *ipn.ServeConfig, _ *ipnstate.Status) error {
+			var stale []tailcfg.ServiceName
+			for name := range sc.Services {
+				if !keep(string(name)) {
+					stale = append(stale, name)
+				}
+			}
+			if len(stale) == 0 {
+				return errServeUnchanged
+			}
+			for _, name := range stale {
+				logger.Infof(
+					"Removing %s, which its container does not name, from the serve config of %s",
+					name, id)
+				delete(sc.Services, name)
+			}
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+		removed, err := d.editAdvertised(ctx, keep)
+		if len(removed) > 0 {
+			logger.Infof("Stopped advertising %q, which its container does not name, for %s",
+				removed, id)
+		}
+		return err
+	})
+	if err != nil && !errors.Is(err, errDrained) {
+		logger.Warnf("Failed to remove stale Services of %s: %v", id, err)
+	}
 }
 
 // runAdvertise advertises the Service and notes that the backend was

@@ -719,3 +719,53 @@ func TestDomainFallbackAdvertisesOwnServiceOnly(t *testing.T) {
 		t.Error("svc:b advertised while another replica holds its lease")
 	}
 }
+
+// Services in the node's state the container does not name are removed from
+// the serve config and the prefs; the rest is kept.
+func TestPruneStaleServices(t *testing.T) {
+	d, api := newMultiDaemon(t, tcpService("svc:a", "1"))
+	api.mu.Lock()
+	api.serve = &ipn.ServeConfig{
+		TCP: map[uint16]*ipn.TCPPortHandler{80: {TCPForward: "127.0.0.1:80"}},
+		Services: map[tailcfg.ServiceName]*ipn.ServiceConfig{
+			"svc:a":   {TCP: map[uint16]*ipn.TCPPortHandler{1: {TCPForward: "127.0.0.1:1"}}},
+			"svc:old": {TCP: map[uint16]*ipn.TCPPortHandler{2: {TCPForward: "127.0.0.1:2"}}},
+		},
+	}
+	api.prefs.AdvertiseServices = []string{"svc:a", "svc:old"}
+	api.mu.Unlock()
+
+	d.pruneServices()
+
+	sc := api.serveConfig()
+	if sc.Services["svc:old"] != nil || sc.Services["svc:a"] == nil || sc.TCP[80] == nil {
+		t.Errorf("serve config = %s, want svc:old gone, the rest kept", serveJSON(t, sc))
+	}
+	ops := api.operations()
+	if !ran(ops, "unadvertise", "svc:old") || ran(ops, "unadvertise", "svc:a") {
+		t.Errorf("operations = %q, want svc:old unadvertised only", ops)
+	}
+}
+
+// With nothing stale, pruning writes nothing.
+func TestPruneNothingStale(t *testing.T) {
+	d, api := newMultiDaemon(t, tcpService("svc:a", "1"))
+	d.pruneServices()
+	if ops := api.operations(); len(ops) != 0 {
+		t.Errorf("operations = %q, want none", ops)
+	}
+}
+
+// A drained node is not pruned: the gate refuses every change, and the
+// drain removed every advertised Service already.
+func TestPruneSkippedWhenDrained(t *testing.T) {
+	d, api := newMultiDaemon(t, tcpService("svc:a", "1"))
+	api.mu.Lock()
+	api.prefs.AdvertiseServices = []string{"svc:old"}
+	api.mu.Unlock()
+	d.config.gate.markDrained()
+	d.pruneServices()
+	if ops := api.operations(); len(ops) != 0 {
+		t.Errorf("operations = %q, want none", ops)
+	}
+}

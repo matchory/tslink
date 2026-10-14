@@ -22,7 +22,11 @@ func loginDaemon(t *testing.T, api *fakeLocalAPI, cfg DaemonConfig) *daemon {
 	if cfg.AuthKey == nil {
 		cfg.AuthKey = func() (string, error) { return "tskey-auth-secret", nil }
 	}
+	if cfg.gate == nil {
+		cfg.gate = d.config.gate // as newDaemon gives every daemon one
+	}
 	d.config = cfg
+	d.backends = newBackends(d)
 	d.lc = api.client()
 	return d
 }

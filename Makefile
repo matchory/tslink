@@ -4,7 +4,7 @@ PLUGIN_NAME ?= tslink
 PLUGIN_TAG ?= latest
 GOARCH ?= $(shell go env GOARCH)
 
-.PHONY: all build clean docker-rootfs create enable disable test reinstall
+.PHONY: all build clean create enable disable test reinstall
 
 # The default target only builds; reinstall replaces the local plugin.
 all: build
@@ -13,19 +13,23 @@ build:
 	@echo "Building plugin binary for $(GOARCH)..."
 	CGO_ENABLED=0 GOOS=linux GOARCH=$(GOARCH) go build -o docker/rootfs/tslink ./cmd/tslink
 
-docker-rootfs:
+# The rootfs is assembled in a container, never on the host: on a filesystem
+# that ignores case, as macOS's default volume, libxt_MARK.so and libxt_mark.so
+# overwrite each other, and the plugin's iptables cannot read its own rules.
+DOCKER_CLI ?= docker:29.3.1-cli@sha256:18f5ab0fab739ea822819b342357947dfba235cdef438cce345ebc0c143c5b34
+
+create:
 	@echo "Building Docker image for rootfs..."
 	docker build -t $(PLUGIN_NAME):rootfs -f docker/Dockerfile .
-	@echo "Extracting rootfs from container..."
-	mkdir -p docker/rootfs
-	docker create --name tslink-tmp $(PLUGIN_NAME):rootfs
-	docker export tslink-tmp | tar -x -C docker/rootfs
-	docker rm tslink-tmp
-
-create: docker-rootfs
 	@echo "Creating plugin..."
 	docker plugin rm -f $(PLUGIN_NAME):$(PLUGIN_TAG) 2>/dev/null || true
-	docker plugin create $(PLUGIN_NAME):$(PLUGIN_TAG) docker/
+	docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+		-v "$(CURDIR)/docker/config.json:/plugin/config.json:ro" $(DOCKER_CLI) sh -euc '\
+		mkdir /plugin/rootfs; \
+		c=$$(docker create $(PLUGIN_NAME):rootfs); \
+		docker export "$$c" | tar -x -C /plugin/rootfs; \
+		docker rm "$$c" >/dev/null; \
+		docker plugin create $(PLUGIN_NAME):$(PLUGIN_TAG) /plugin'
 
 enable:
 	@echo "Enabling plugin..."

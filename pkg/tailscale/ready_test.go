@@ -123,7 +123,7 @@ func TestReadiness(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			d := newOfflineDaemon(t, tt.service)
+			d := newOfflineDaemon(t, tt.service, tt.endpoints...)
 			d.config.Endpoints, d.config.Direct = tt.endpoints, tt.direct
 			d.config.CertsDir = t.TempDir()
 			d.lc = readinessAPI(t, tt.status, tt.serve, tt.prefs)
@@ -138,12 +138,13 @@ func TestReadiness(t *testing.T) {
 // A Service name too short to hold the svc: prefix does not panic: it waits
 // for a certificate it has none of.
 func TestPendingServiceShortName(t *testing.T) {
-	d := &daemon{config: DaemonConfig{
-		Service:   "svc",
-		StateDir:  t.TempDir(),
-		Endpoints: []ServeEndpoint{{Proto: "https", Port: "443", Target: "8080"}},
-	}}
-	if got := d.pendingService("example.ts.net"); got != ReadyCertificatePending {
+	d := &daemon{config: DaemonConfig{StateDir: t.TempDir()}}
+	b := &serviceBackend{
+		d:         d,
+		name:      "svc",
+		endpoints: []ServeEndpoint{{Proto: "https", Port: "443", Target: "8080"}},
+	}
+	if got := b.pendingService("example.ts.net"); got != ReadyCertificatePending {
 		t.Errorf("pendingService = %v, want %v", got, ReadyCertificatePending)
 	}
 }
@@ -172,12 +173,12 @@ func TestApprovalWarnsOnlyIfItLasts(t *testing.T) {
 			logger.SetOutput(&log)
 			t.Cleanup(func() { logger.SetOutput(os.Stdout) })
 			d := newOfflineDaemon(t, "svc:ai")
-			d.config.Endpoints = []ServeEndpoint{{Proto: "https", Port: "443", Target: "8081"}}
+			d.setEndpoints([]ServeEndpoint{{Proto: "https", Port: "443", Target: "8081"}}...)
 			d.config.CertsDir = t.TempDir()
 			setTiming(&d.config, func(tm *timing) { tm.approvalGrace = 50 * time.Millisecond })
 			d.lc = readinessAPI(t, tt.status, serviceTCP, advertised)
 
-			d.checkApprovalLater() // as advertising the Service does
+			d.only(t).checkApprovalLater() // as advertising the Service does
 			if strings.Contains(log.String(), "level=WARN") {
 				t.Fatalf("warned at once: %s", log.String())
 			}

@@ -19,34 +19,50 @@ import (
 
 const testSocket = "/run/test.sock"
 
-// newTestDaemon returns a daemon for service whose tailscaled is a fake
-// LocalAPI, a running, tagged node of the tailnet example.ts.net, and that
-// fake.
-func newTestDaemon(t *testing.T, service string) (*daemon, *fakeLocalAPI) {
+// newTestDaemon returns a daemon for service, serving endpoints on it, whose
+// tailscaled is a fake LocalAPI, a running, tagged node of the tailnet
+// example.ts.net, and that fake. An empty service makes a daemon without one.
+func newTestDaemon(
+	t *testing.T,
+	service string,
+	endpoints ...ServeEndpoint,
+) (*daemon, *fakeLocalAPI) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	api := newFakeLocalAPI(t)
 	api.serviceHost(ipn.Prefs{})
-	return &daemon{
-		config: DaemonConfig{
-			EndpointID: "test", StateDir: t.TempDir(), Service: service, gate: &serviceGate{},
-		},
+	d := &daemon{
+		config:     DaemonConfig{EndpointID: "test", StateDir: t.TempDir(), gate: &serviceGate{}},
 		socketPath: api.socket,
 		lc:         api.client(),
 		ctx:        ctx,
 		cancel:     cancel,
-	}, api
+	}
+	if service != "" {
+		d.config.Services = []Service{{Name: service, Endpoints: endpoints}}
+	}
+	d.backends = newBackends(d)
+	return d, api
 }
 
 // newOfflineDaemon is newTestDaemon without a tailscaled: nothing listens on
 // its socket.
-func newOfflineDaemon(t *testing.T, service string) *daemon {
+func newOfflineDaemon(t *testing.T, service string, endpoints ...ServeEndpoint) *daemon {
 	t.Helper()
-	d, _ := newTestDaemon(t, service)
+	d, _ := newTestDaemon(t, service, endpoints...)
 	d.socketPath = testSocket
 	d.lc = &local.Client{Socket: testSocket, UseSocketOnly: true}
 	return d
+}
+
+// only returns d's single Service backend.
+func (d *daemon) only(t *testing.T) *serviceBackend {
+	t.Helper()
+	if len(d.backends) != 1 {
+		t.Fatalf("daemon has %d backends, want 1", len(d.backends))
+	}
+	return d.backends[0]
 }
 
 // ran reports whether ops contain the operation op.
@@ -226,11 +242,11 @@ func TestApplyServeEndpointConflicts(t *testing.T) {
 
 func TestConfigureServiceAdvertises(t *testing.T) {
 	d, api := newTestDaemon(t, "svc:web")
-	d.config.Endpoints = []ServeEndpoint{
+	d.setEndpoints([]ServeEndpoint{
 		{Proto: "https", Port: "443", Target: "8080"},
 		{Proto: "tcp", Port: "5432", Target: "5432"},
-	}
-	if err := d.configureService(); err != nil {
+	}...)
+	if err := d.only(t).configureService(); err != nil {
 		t.Fatal(err)
 	}
 	want := [][]string{{"serve"}, {"advertise", "svc:web"}}
@@ -247,12 +263,12 @@ func TestConfigureServiceAdvertises(t *testing.T) {
 // and sends it back with the version it read.
 func TestConfigureServiceKeepsServeConfig(t *testing.T) {
 	d, api := newTestDaemon(t, "svc:web")
-	d.config.Endpoints = []ServeEndpoint{{Proto: "tcp", Port: "22", Target: "22"}}
+	d.setEndpoints([]ServeEndpoint{{Proto: "tcp", Port: "22", Target: "22"}}...)
 	d.config.Direct = true
 	if err := d.configureDirectServe(); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.configureService(); err != nil {
+	if err := d.only(t).configureService(); err != nil {
 		t.Fatal(err)
 	}
 	sc := api.serveConfig()
@@ -266,7 +282,7 @@ func TestConfigureServiceKeepsServeConfig(t *testing.T) {
 		api.etag++
 		api.mu.Unlock()
 	})
-	if err := d.configureService(); err == nil {
+	if err := d.only(t).configureService(); err == nil {
 		t.Error("overwrote a serve config changed since it was read")
 	}
 }
@@ -276,15 +292,15 @@ func TestConfigureServiceKeepsServeConfig(t *testing.T) {
 func TestConfigureServiceUnadvertised(t *testing.T) {
 	d, api := newTestDaemon(t, "svc:web")
 	api.serviceHost(ipn.Prefs{AdvertiseServices: []string{"svc:other", "svc:web"}})
-	d.config.Endpoints = []ServeEndpoint{{Proto: "tcp", Port: "22", Target: "22"}}
-	if err := d.configureServiceBackend(false); err != nil {
+	d.setEndpoints([]ServeEndpoint{{Proto: "tcp", Port: "22", Target: "22"}}...)
+	if err := d.only(t).configureServiceBackend(false); err != nil {
 		t.Fatal(err)
 	}
 	want := [][]string{{"serve"}, {"unadvertise", "svc:web"}}
 	if got := api.operations(); !slices.EqualFunc(got, want, slices.Equal) {
 		t.Errorf("operations = %q, want %q", got, want)
 	}
-	if err := d.configureServiceBackend(false); err != nil {
+	if err := d.only(t).configureServiceBackend(false); err != nil {
 		t.Fatal(err)
 	}
 	if got := api.operations(); ran(got[2:], "unadvertise", "svc:web") {
@@ -294,12 +310,12 @@ func TestConfigureServiceUnadvertised(t *testing.T) {
 
 func TestConfigureServiceSkips(t *testing.T) {
 	d, api := newTestDaemon(t, "")
-	d.config.Endpoints = []ServeEndpoint{{Proto: "https", Port: "443", Target: "8080"}}
-	if err := d.configureService(); err != nil {
-		t.Fatal(err)
+	d.setEndpoints([]ServeEndpoint{{Proto: "https", Port: "443", Target: "8080"}}...)
+	if len(d.backends) != 0 {
+		t.Fatalf("daemon without a Service has %d backends", len(d.backends))
 	}
 	d, api2 := newTestDaemon(t, "svc:web")
-	if err := d.configureService(); err != nil {
+	if err := d.only(t).configureService(); err != nil {
 		t.Fatal(err)
 	}
 	if ops := append(api.operations(), api2.operations()...); len(ops) != 0 {
@@ -310,11 +326,11 @@ func TestConfigureServiceSkips(t *testing.T) {
 func TestConfigureServiceErrors(t *testing.T) {
 	// A node without tags cannot host a Service
 	d, api := newTestDaemon(t, "svc:web")
-	d.config.Endpoints = []ServeEndpoint{{Proto: "https", Port: "443", Target: "8080"}}
+	d.setEndpoints([]ServeEndpoint{{Proto: "https", Port: "443", Target: "8080"}}...)
 	api.mu.Lock()
 	api.tags = nil
 	api.mu.Unlock()
-	if err := d.configureService(); !errors.Is(err, errUntaggedServiceHost) {
+	if err := d.only(t).configureService(); !errors.Is(err, errUntaggedServiceHost) {
 		t.Errorf("untagged node: error = %v, want errUntaggedServiceHost", err)
 	}
 	if ops := api.operations(); len(ops) != 0 {
@@ -323,9 +339,9 @@ func TestConfigureServiceErrors(t *testing.T) {
 
 	// tailscaled refuses the config
 	d, api = newTestDaemon(t, "svc:web")
-	d.config.Endpoints = []ServeEndpoint{{Proto: "https", Port: "443", Target: "8080"}}
+	d.setEndpoints([]ServeEndpoint{{Proto: "https", Port: "443", Target: "8080"}}...)
 	api.failOp("serve", "boom")
-	err := d.configureService()
+	err := d.only(t).configureService()
 	if err == nil || !strings.Contains(err.Error(), "failed to set the serve config") ||
 		!strings.Contains(err.Error(), "boom") {
 		t.Errorf("refused config: error = %v", err)
@@ -336,8 +352,8 @@ func TestConfigureServiceErrors(t *testing.T) {
 
 	// An invalid endpoint sets nothing
 	d, api = newTestDaemon(t, "svc:web")
-	d.config.Endpoints = []ServeEndpoint{{Proto: "udp", Port: "53", Target: "53"}}
-	err = d.configureService()
+	d.setEndpoints([]ServeEndpoint{{Proto: "udp", Port: "53", Target: "53"}}...)
+	err = d.only(t).configureService()
 	if err == nil ||
 		err.Error() != "failed to configure endpoint 0 (udp:53): unsupported protocol: udp" {
 		t.Errorf("invalid endpoint: error = %v", err)
@@ -349,9 +365,9 @@ func TestConfigureServiceErrors(t *testing.T) {
 
 func TestConfigureServiceAdvertiseError(t *testing.T) {
 	d, api := newTestDaemon(t, "svc:web")
-	d.config.Endpoints = []ServeEndpoint{{Proto: "tcp", Port: "22", Target: "22"}}
+	d.setEndpoints([]ServeEndpoint{{Proto: "tcp", Port: "22", Target: "22"}}...)
 	api.failOp("prefs", "not allowed")
-	err := d.configureService()
+	err := d.only(t).configureService()
 	if err == nil || !strings.Contains(err.Error(), "failed to advertise svc:web") ||
 		!strings.Contains(err.Error(), "not allowed") {
 		t.Errorf("error = %v", err)
@@ -401,7 +417,7 @@ func TestDrain(t *testing.T) {
 // Direct serve configures the node's own name, and needs it.
 func TestConfigureDirectServe(t *testing.T) {
 	d, api := newTestDaemon(t, "")
-	d.config.Endpoints = []ServeEndpoint{{Proto: "https", Port: "443", Target: "8080"}}
+	d.setEndpoints([]ServeEndpoint{{Proto: "https", Port: "443", Target: "8080"}}...)
 	if err := d.configureDirectServe(); err != nil {
 		t.Fatal(err)
 	}
@@ -410,7 +426,7 @@ func TestConfigureDirectServe(t *testing.T) {
 	}
 
 	d, api = newTestDaemon(t, "")
-	d.config.Endpoints = []ServeEndpoint{{Proto: "https", Port: "443", Target: "8080"}}
+	d.setEndpoints([]ServeEndpoint{{Proto: "https", Port: "443", Target: "8080"}}...)
 	api.mu.Lock()
 	api.dnsName = ""
 	api.mu.Unlock()
@@ -421,12 +437,12 @@ func TestConfigureDirectServe(t *testing.T) {
 
 func TestServeDebugLogKeepsEarlierAttempts(t *testing.T) {
 	d, api := newTestDaemon(t, "svc:web")
-	d.config.Endpoints = []ServeEndpoint{{Proto: "tcp", Port: "22", Target: "22"}}
-	if err := d.configureService(); err != nil {
+	d.setEndpoints([]ServeEndpoint{{Proto: "tcp", Port: "22", Target: "22"}}...)
+	if err := d.only(t).configureService(); err != nil {
 		t.Fatal(err)
 	}
 	api.failOp("serve", "boom")
-	if err := d.configureService(); err == nil {
+	if err := d.only(t).configureService(); err == nil {
 		t.Fatal("second attempt succeeded, want an error")
 	}
 	log, err := os.ReadFile(filepath.Join(d.config.StateDir, "serve-debug.log"))
@@ -446,9 +462,9 @@ func TestServeDebugLogIsBounded(t *testing.T) {
 	t.Cleanup(func() { serveDebugLogMaxBytes = old })
 
 	d, _ := newTestDaemon(t, "svc:web")
-	d.config.Endpoints = []ServeEndpoint{{Proto: "tcp", Port: "22", Target: "22"}}
+	d.setEndpoints([]ServeEndpoint{{Proto: "tcp", Port: "22", Target: "22"}}...)
 	for range 10 {
-		if err := d.configureService(); err != nil {
+		if err := d.only(t).configureService(); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -507,12 +523,12 @@ func TestServeCallsEndWithDaemon(t *testing.T) {
 		name, service string
 		configure     func(*daemon) error
 	}{
-		{"service", "svc:web", (*daemon).configureService},
+		{"service", "svc:web", func(d *daemon) error { return d.backends[0].configureService() }},
 		{"direct", "", (*daemon).configureDirectServe},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			d, api := newTestDaemon(t, tc.service)
-			d.config.Endpoints = []ServeEndpoint{{Proto: "tcp", Port: "22", Target: "22"}}
+			d.setEndpoints([]ServeEndpoint{{Proto: "tcp", Port: "22", Target: "22"}}...)
 			started := make(chan struct{})
 			blockOn(api, "serve", started)
 			go func() {
@@ -542,4 +558,46 @@ func TestDrainCallEndsWithDaemon(t *testing.T) {
 	if err == nil {
 		t.Error("cancelled drain succeeded")
 	}
+}
+
+// Each Service of the config gets its own backend, in the config's order,
+// and a daemon started later builds its own.
+func TestBackendsPerDaemon(t *testing.T) {
+	cfg := DaemonConfig{
+		EndpointID: "test",
+		StateDir:   t.TempDir(),
+		Services: []Service{
+			{Name: "svc:a", Endpoints: []ServeEndpoint{{Proto: "tcp", Port: "1", Target: "1"}}},
+			{Name: "svc:b", Endpoints: []ServeEndpoint{{Proto: "tcp", Port: "2", Target: "2"}}},
+		},
+	}
+	d1, err := newDaemon(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(d1.cancel)
+	d2, err := newDaemon(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(d2.cancel)
+	if len(d1.backends) != 2 || d1.backends[0].name != "svc:a" || d1.backends[1].name != "svc:b" {
+		t.Fatalf("backends = %v, want svc:a, svc:b", d1.backends)
+	}
+	if d1.backends[0] == d2.backends[0] || d1.backends[0].d != d1 {
+		t.Error("daemons share backends")
+	}
+	if d1.config.gate == nil {
+		t.Error("no gate")
+	}
+}
+
+// setEndpoints gives d endpoints as a container with tslink.serve.<port>
+// labels has them: for direct serve, and for its Service, if it has one.
+func (d *daemon) setEndpoints(endpoints ...ServeEndpoint) {
+	d.config.Endpoints = endpoints
+	for i := range d.config.Services {
+		d.config.Services[i].Endpoints = endpoints
+	}
+	d.backends = newBackends(d)
 }

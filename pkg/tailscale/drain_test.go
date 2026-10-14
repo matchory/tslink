@@ -27,7 +27,9 @@ func setTiming(cfg *DaemonConfig, set func(*timing)) {
 // svc:web, and the daemon's fake LocalAPI.
 func newTestSupervisor(t *testing.T) (*DaemonSupervisor, *daemon, *fakeLocalAPI) {
 	t.Helper()
-	s := NewDaemonSupervisor(DaemonConfig{EndpointID: "0123456789abcdef", Service: "svc:web"})
+	s := NewDaemonSupervisor(
+		DaemonConfig{EndpointID: "0123456789abcdef", Services: []Service{{Name: "svc:web"}}},
+	)
 	t.Cleanup(s.cancel)
 	d, api := newTestDaemon(t, "svc:web")
 	api.serviceHost(ipn.Prefs{AdvertiseServices: []string{"svc:web"}})
@@ -136,7 +138,7 @@ func TestDrainAndWaitAfterExternalDrain(t *testing.T) {
 	if !s.Drained() {
 		t.Error("backend not marked drained")
 	}
-	if err := d.advertise("svc:web"); !errors.Is(err, errDrained) {
+	if err := d.only(t).advertise("svc:web"); !errors.Is(err, errDrained) {
 		t.Errorf("advertise = %v, want errDrained", err)
 	}
 }
@@ -227,14 +229,14 @@ func TestDrainAndWaitNeverAdvertised(t *testing.T) {
 // previous run, mark the backend advertised.
 func TestAdvertisedMarked(t *testing.T) {
 	d, _ := newTestDaemon(t, "svc:web")
-	d.config.Endpoints = []ServeEndpoint{{Proto: "tcp", Port: "22", Target: "22"}}
-	if err := d.configureServiceBackend(false); err != nil {
+	d.setEndpoints([]ServeEndpoint{{Proto: "tcp", Port: "22", Target: "22"}}...)
+	if err := d.only(t).configureServiceBackend(false); err != nil {
 		t.Fatal(err)
 	}
 	if d.config.gate.advertised.Load() {
 		t.Error("configured unadvertised, but marked advertised")
 	}
-	if err := d.advertise("svc:web"); err != nil {
+	if err := d.only(t).advertise("svc:web"); err != nil {
 		t.Fatal(err)
 	}
 	if !d.config.gate.advertised.Load() {
@@ -242,8 +244,8 @@ func TestAdvertisedMarked(t *testing.T) {
 	}
 
 	d, _ = newTestDaemon(t, "svc:web")
-	d.config.Endpoints = []ServeEndpoint{{Proto: "tcp", Port: "22", Target: "22"}}
-	if err := d.configureService(); err != nil {
+	d.setEndpoints([]ServeEndpoint{{Proto: "tcp", Port: "22", Target: "22"}}...)
+	if err := d.only(t).configureService(); err != nil {
 		t.Fatal(err)
 	}
 	if !d.config.gate.advertised.Load() {
@@ -268,7 +270,9 @@ func TestAdvertisedMarked(t *testing.T) {
 
 // With tailscaled down there is nothing to wait for, but the backend stays drained.
 func TestDrainAndWaitWithoutDaemon(t *testing.T) {
-	s := NewDaemonSupervisor(DaemonConfig{EndpointID: "0123456789abcdef", Service: "svc:web"})
+	s := NewDaemonSupervisor(
+		DaemonConfig{EndpointID: "0123456789abcdef", Services: []Service{{Name: "svc:web"}}},
+	)
 	t.Cleanup(s.cancel)
 	start := time.Now()
 	s.DrainAndWait("svc:web")
@@ -292,7 +296,7 @@ func failCert(api *fakeLocalAPI, msg string) {
 func newCertDaemon(t *testing.T) (*daemon, string, *fakeLocalAPI) {
 	t.Helper()
 	d, api := newTestDaemon(t, "svc:web")
-	d.config.Endpoints = []ServeEndpoint{{Proto: "https", Port: "443", Target: "8080"}}
+	d.setEndpoints([]ServeEndpoint{{Proto: "https", Port: "443", Target: "8080"}}...)
 	dir := filepath.Join(d.config.StateDir, certsDirName)
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		t.Fatal(err)
@@ -308,7 +312,7 @@ func runAfterCert(d *daemon, dir string) <-chan struct{} {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		d.configureServiceAfterCert(dir, certDomain)
+		d.backends[0].configureServiceAfterCert(dir, certDomain)
 	}()
 	return done
 }
@@ -349,8 +353,10 @@ func TestDrainSurvivesDaemonRestart(t *testing.T) {
 		EndpointID: "0123456789abcdef",
 		StateDir:   dir,
 		SocketPath: filepath.Join(dir, "sock"),
-		Service:    "svc:web",
-		Endpoints:  []ServeEndpoint{{Proto: "https", Port: "443", Target: "8080"}},
+		Services: []Service{{
+			Name:      "svc:web",
+			Endpoints: []ServeEndpoint{{Proto: "https", Port: "443", Target: "8080"}},
+		}},
 	})
 	t.Cleanup(s.cancel)
 	if err := s.Drain("svc:web"); err == nil {
@@ -364,16 +370,16 @@ func TestDrainSurvivesDaemonRestart(t *testing.T) {
 	api := newFakeLocalAPI(t)
 	api.serviceHost(ipn.Prefs{})
 	d.lc = api.client()
-	if err := d.configureServiceWhenCertified(); err != nil {
+	if err := d.only(t).configureServiceWhenCertified(); err != nil {
 		t.Errorf(
 			"configureServiceWhenCertified = %v, want nil: a drain must not fail the start",
 			err,
 		)
 	}
-	if err := d.configureService(); !errors.Is(err, errDrained) {
+	if err := d.only(t).configureService(); !errors.Is(err, errDrained) {
 		t.Errorf("configureService = %v, want errDrained", err)
 	}
-	if err := d.advertise("svc:web"); !errors.Is(err, errDrained) {
+	if err := d.only(t).advertise("svc:web"); !errors.Is(err, errDrained) {
 		t.Errorf("advertise = %v, want errDrained", err)
 	}
 	if ops := api.operations(); len(ops) != 0 {
@@ -387,7 +393,7 @@ func TestDrainSurvivesDaemonRestart(t *testing.T) {
 func TestDrainAfterConfigureInProgress(t *testing.T) {
 	d, api := newTestDaemon(t, "svc:web")
 	api.serviceHost(ipn.Prefs{AdvertiseServices: []string{"svc:web"}})
-	d.config.Endpoints = []ServeEndpoint{{Proto: "tcp", Port: "22", Target: "22"}}
+	d.setEndpoints([]ServeEndpoint{{Proto: "tcp", Port: "22", Target: "22"}}...)
 	started, release := make(chan struct{}), make(chan struct{})
 	var once sync.Once
 	// tailscaled finishes the change, though its client gave up
@@ -400,7 +406,7 @@ func TestDrainAfterConfigureInProgress(t *testing.T) {
 		}
 	})
 	configured := make(chan error)
-	go func() { configured <- d.configureService() }()
+	go func() { configured <- d.only(t).configureService() }()
 	<-started
 	drained := make(chan error)
 	go func() { drained <- d.Drain("svc:web") }()
@@ -509,14 +515,14 @@ func TestDrainedLeaseHolderStops(t *testing.T) {
 func TestDrainCancelsConfigureInProgress(t *testing.T) {
 	d, api := newTestDaemon(t, "svc:web")
 	api.serviceHost(ipn.Prefs{AdvertiseServices: []string{"svc:web"}})
-	d.config.Endpoints = []ServeEndpoint{
+	d.setEndpoints([]ServeEndpoint{
 		{Proto: "tcp", Port: "22", Target: "22"},
 		{Proto: "tcp", Port: "23", Target: "23"},
-	}
+	}...)
 	started := make(chan struct{})
 	blockOn(api, "serve", started)
 	configured := make(chan error, 1)
-	go func() { configured <- d.configureService() }()
+	go func() { configured <- d.only(t).configureService() }()
 	<-started
 
 	if err := returnsWithin(t, "Drain", func() error {
@@ -533,7 +539,7 @@ func TestDrainCancelsConfigureInProgress(t *testing.T) {
 	if got := api.operations(); !slices.EqualFunc(got, want, slices.Equal) {
 		t.Errorf("operations = %q, want only the drain", got)
 	}
-	if err := d.advertise("svc:web"); !errors.Is(err, errDrained) {
+	if err := d.only(t).advertise("svc:web"); !errors.Is(err, errDrained) {
 		t.Errorf("advertise after the drain = %v, want errDrained", err)
 	}
 }
@@ -543,11 +549,11 @@ func TestDrainCancelsConfigureInProgress(t *testing.T) {
 // and stop it, and with it the drain.
 func TestDrainCancelsAdvertiseInProgress(t *testing.T) {
 	d, api := newTestDaemon(t, "svc:web")
-	d.config.Endpoints = []ServeEndpoint{{Proto: "tcp", Port: "22", Target: "22"}}
+	d.setEndpoints([]ServeEndpoint{{Proto: "tcp", Port: "22", Target: "22"}}...)
 	started := make(chan struct{})
 	blockOn(api, "prefs", started)
 	configured := make(chan error, 1)
-	go func() { configured <- d.configureService() }()
+	go func() { configured <- d.only(t).configureService() }()
 	<-started
 
 	if err := returnsWithin(t, "Drain", func() error {
@@ -568,11 +574,11 @@ func TestSupervisorDrainCancelsConfigureWithoutDaemon(t *testing.T) {
 	d, api := newTestDaemon(t, "svc:web")
 	s := NewDaemonSupervisor(d.config)
 	d.config.gate = s.cfg.gate
-	d.config.Endpoints = []ServeEndpoint{{Proto: "tcp", Port: "22", Target: "22"}}
+	d.setEndpoints([]ServeEndpoint{{Proto: "tcp", Port: "22", Target: "22"}}...)
 	started := make(chan struct{})
 	blockOn(api, "serve", started)
 	configured := make(chan error, 1)
-	go func() { configured <- d.configureService() }()
+	go func() { configured <- d.only(t).configureService() }()
 	<-started
 
 	if err := s.Drain("svc:web"); err == nil {

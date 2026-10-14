@@ -149,50 +149,46 @@ var serveDebugLogMaxBytes int64 = 1 << 20
 
 // configureService configures the node as a backend of its Service, and
 // advertises it. This should be called after bringUp() succeeds.
-func (d *daemon) configureService() error {
-	return d.configureServiceBackend(true)
+func (b *serviceBackend) configureService() error {
+	return b.configureServiceBackend(true)
 }
 
 // configureServiceBackend configures the node as a backend of its Service,
 // and advertises it if advertise is set, or else makes sure it is not
 // advertised. A drained backend is left alone: it returns errDrained.
-func (d *daemon) configureServiceBackend(advertise bool) error {
-	if d.config.Service == "" {
-		return nil // No service configured, skip
-	}
-
-	if len(d.config.Endpoints) == 0 {
-		logger.Warnf("Service %s configured but no endpoints defined", d.config.Service)
+func (b *serviceBackend) configureServiceBackend(advertise bool) error {
+	if len(b.endpoints) == 0 {
+		logger.Warnf("Service %s configured but no endpoints defined", b.name)
 		return nil
 	}
 
-	if d.isDrained() {
-		logger.Infof("Not configuring %s for %s: drained", d.config.Service, d.config.EndpointID)
+	if b.d.isDrained() {
+		logger.Infof("Not configuring %s for %s: drained", b.name, b.d.config.EndpointID)
 		return errDrained
 	}
-	return d.config.gate.change(d, func(ctx context.Context) error {
+	return b.d.config.gate.change(b.d, func(ctx context.Context) error {
 		logger.Infof("Configuring Tailscale Service %s with %d endpoint(s) for %s",
-			d.config.Service, len(d.config.Endpoints), d.config.EndpointID)
+			b.name, len(b.endpoints), b.d.config.EndpointID)
 
-		service := tailcfg.ServiceName(d.config.Service)
-		err := d.editServe(ctx, "service", func(sc *ipn.ServeConfig, st *ipnstate.Status) error {
+		service := tailcfg.ServiceName(b.name)
+		err := b.d.editServe(ctx, "service", func(sc *ipn.ServeConfig, st *ipnstate.Status) error {
 			if st.Self == nil || st.Self.Tags == nil || st.Self.Tags.Len() == 0 {
 				return errUntaggedServiceHost
 			}
-			return applyServeEndpoints(sc, d.config.Endpoints, service, "", magicDNSSuffix(st))
+			return applyServeEndpoints(sc, b.endpoints, service, "", magicDNSSuffix(st))
 		})
 		// A drain cancels the change in progress and waits for this to
 		// return: run nothing more once it began
-		if d.isDrained() {
+		if b.d.isDrained() {
 			return errDrained
 		}
 		if err != nil {
 			return err
 		}
 		if !advertise {
-			return d.setAdvertised(ctx, d.config.Service, false)
+			return b.d.setAdvertised(ctx, b.name, false)
 		}
-		return d.runAdvertise(ctx, d.config.Service)
+		return b.runAdvertise(ctx, b.name)
 	})
 }
 
@@ -288,12 +284,12 @@ func (d *daemon) setAdvertised(ctx context.Context, service string, on bool) err
 
 // runAdvertise advertises the Service and notes that the backend was
 // advertised. The caller holds the gate's lock.
-func (d *daemon) runAdvertise(ctx context.Context, service string) error {
-	if err := d.setAdvertised(ctx, service, true); err != nil {
+func (b *serviceBackend) runAdvertise(ctx context.Context, service string) error {
+	if err := b.d.setAdvertised(ctx, service, true); err != nil {
 		return err
 	}
-	d.config.gate.advertised.Store(true)
-	d.checkApprovalLater()
+	b.d.config.gate.advertised.Store(true)
+	b.checkApprovalLater()
 	return nil
 }
 
@@ -308,9 +304,9 @@ func (d *daemon) noteSurvivingState() {
 // advertise advertises the Service, unless the backend was drained. A
 // drained service stays drained in the node's state, as after a plugin
 // restart: advertise it again once its endpoints are configured.
-func (d *daemon) advertise(service string) error {
-	return d.config.gate.change(d, func(ctx context.Context) error {
-		return d.runAdvertise(ctx, service)
+func (b *serviceBackend) advertise(service string) error {
+	return b.d.config.gate.change(b.d, func(ctx context.Context) error {
+		return b.runAdvertise(ctx, service)
 	})
 }
 
@@ -354,27 +350,27 @@ func (d *daemon) configureDirectServe() error {
 // right after a start, and warns if it still has not after approvalGrace. A
 // Service that does not exist looks the same: control gives the node no
 // addresses for it. One check runs at a time.
-func (d *daemon) checkApprovalLater() {
-	if !d.approvalCheck.CompareAndSwap(false, true) {
+func (b *serviceBackend) checkApprovalLater() {
+	if !b.approvalCheck.CompareAndSwap(false, true) {
 		return
 	}
-	grace := d.config.times().approvalGrace
-	d.wg.Go(func() {
-		defer d.approvalCheck.Store(false)
-		if d.readiness(d.ctx) != ReadyAwaitingApproval {
+	grace := b.d.config.times().approvalGrace
+	b.d.wg.Go(func() {
+		defer b.approvalCheck.Store(false)
+		if b.d.readiness(b.d.ctx) != ReadyAwaitingApproval {
 			return
 		}
 		logger.Infof("Waiting for control to approve %s as a backend of %s",
-			stringid.TruncateID(d.config.EndpointID), d.config.Service)
-		if !ctxtime.Sleep(d.ctx, grace) {
+			stringid.TruncateID(b.d.config.EndpointID), b.name)
+		if !ctxtime.Sleep(b.d.ctx, grace) {
 			return
 		}
-		if d.readiness(d.ctx) == ReadyAwaitingApproval {
+		if b.d.readiness(b.d.ctx) == ReadyAwaitingApproval {
 			logger.Warnf(
 				"Service backend registered but pending admin approval after %v, "+
 					"or the Service is not defined in the admin console: %s",
 				grace,
-				d.config.Service,
+				b.name,
 			)
 		}
 	})

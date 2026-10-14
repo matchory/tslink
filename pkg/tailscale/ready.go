@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	"tailscale.com/ipn"
 	"tailscale.com/tailcfg"
 )
 
@@ -52,14 +53,15 @@ func (d *daemon) readiness(ctx context.Context) Readiness {
 		return ReadyStarting
 	}
 
+	b := d.firstBackend()
 	service, direct := d.serveApplied(ctx)
-	if !service || (d.config.Service != "" && !d.advertised(ctx)) {
-		return d.pendingService(magicDNSSuffix(status))
+	if b != nil && (!service || !d.advertised(ctx)) {
+		return b.pendingService(magicDNSSuffix(status))
 	}
 	if !direct {
 		return ReadyServingPending
 	}
-	if d.config.Service == "" {
+	if b == nil {
 		return Ready
 	}
 	if status.Self == nil {
@@ -67,7 +69,7 @@ func (d *daemon) readiness(ctx context.Context) Readiness {
 	}
 	for _, raw := range status.Self.CapMap[serviceHostCap] {
 		var services map[string]json.RawMessage
-		if json.Unmarshal([]byte(raw), &services) == nil && services[d.config.Service] != nil {
+		if json.Unmarshal([]byte(raw), &services) == nil && services[b.name] != nil {
 			return Ready
 		}
 	}
@@ -77,12 +79,12 @@ func (d *daemon) readiness(ctx context.Context) Readiness {
 // pendingService tells a Service waiting for its certificate from other
 // serve config not applied yet: the certificate lease holder configures the
 // Service only to issue the certificate, and the others wait for it.
-func (d *daemon) pendingService(suffix string) Readiness {
-	if d.config.Service == "" || !servesHTTPS(d.config.Endpoints) || suffix == "" {
+func (b *serviceBackend) pendingService(suffix string) Readiness {
+	if b.name == "" || !servesHTTPS(b.endpoints) || suffix == "" {
 		return ReadyServingPending
 	}
-	domain := d.serviceDomainIn(suffix)
-	if !validCert(filepath.Join(d.config.StateDir, certsDirName), domain, time.Now()) {
+	domain := b.serviceDomainIn(suffix)
+	if !validCert(filepath.Join(b.d.config.StateDir, certsDirName), domain, time.Now()) {
 		return ReadyCertificatePending
 	}
 	return ReadyServingPending
@@ -92,35 +94,53 @@ func (d *daemon) pendingService(suffix string) Readiness {
 // container asks for under its Service, if it has one, and on the node itself
 // for direct serve.
 func (d *daemon) serveApplied(ctx context.Context) (bool, bool) {
-	if len(d.config.Endpoints) == 0 {
+	b := d.firstBackend()
+	if len(d.config.Endpoints) == 0 && (b == nil || len(b.endpoints) == 0) {
 		return true, true
 	}
 	config, err := d.lc.GetServeConfig(ctx)
 	if err != nil {
 		return false, false
 	}
-	service, direct := true, true
-	for _, ep := range d.config.Endpoints {
+	service := b == nil || applied(config, tailcfg.ServiceName(b.name), b.endpoints)
+	direct := !d.config.Direct || applied(config, "", d.config.Endpoints)
+	return service, direct
+}
+
+// applied reports whether config serves every port of endpoints, under the
+// Service service, or on the node itself if service is empty.
+func applied(config *ipn.ServeConfig, service tailcfg.ServiceName, endpoints []ServeEndpoint) bool {
+	for _, ep := range endpoints {
 		port, err := strconv.ParseUint(ep.Port, 10, 16)
 		if err != nil {
-			return false, false
+			return false
 		}
-		if d.config.Service != "" {
-			svc := config.Services[tailcfg.ServiceName(d.config.Service)]
-			if svc == nil || (ep.Proto == protoTun && !svc.Tun) ||
-				(ep.Proto != protoTun && svc.TCP[uint16(port)] == nil) {
-				service = false
+		if service == "" {
+			if ep.Proto != protoTun && config.TCP[uint16(port)] == nil {
+				return false
 			}
+			continue
 		}
-		if d.config.Direct && ep.Proto != protoTun && config.TCP[uint16(port)] == nil {
-			direct = false
+		svc := config.Services[service]
+		if svc == nil || (ep.Proto == protoTun && !svc.Tun) ||
+			(ep.Proto != protoTun && svc.TCP[uint16(port)] == nil) {
+			return false
 		}
 	}
-	return service, direct
+	return true
+}
+
+// firstBackend returns the node's first Service backend, or nil without one.
+// Transitional: readiness is per Service from Task 5 on.
+func (d *daemon) firstBackend() *serviceBackend {
+	if len(d.backends) == 0 {
+		return nil
+	}
+	return d.backends[0]
 }
 
 // advertised reports whether the node's prefs advertise its Service.
 func (d *daemon) advertised(ctx context.Context) bool {
 	prefs, err := d.lc.GetPrefs(ctx)
-	return err == nil && slices.Contains(prefs.AdvertiseServices, d.config.Service)
+	return err == nil && slices.Contains(prefs.AdvertiseServices, d.firstBackend().name)
 }

@@ -260,7 +260,7 @@ func TestRequestCertUsesLocalAPI(t *testing.T) {
 		}
 		return nil
 	}
-	if err := d.requestCert(dir, certDomain); err != nil {
+	if err := d.only(t).requestCert(dir, certDomain); err != nil {
 		t.Fatal(err)
 	}
 	want := "GET " + certPath + certDomain + "?type=pair&min_validity=0s"
@@ -274,7 +274,7 @@ func TestServiceDomain(t *testing.T) {
 	api.set(statusPath, `{"CurrentTailnet":{"MagicDNSSuffix":"example.ts.net"}}`)
 	d := newOfflineDaemon(t, "svc:api")
 	d.lc = api.client()
-	got, err := d.serviceDomain()
+	got, err := d.only(t).serviceDomain()
 	if err != nil || got != "api.example.ts.net" {
 		t.Errorf("serviceDomain() = %q, %v, want api.example.ts.net", got, err)
 	}
@@ -283,7 +283,9 @@ func TestServiceDomain(t *testing.T) {
 	}
 
 	api.set(statusPath, `{"CurrentTailnet":{"MagicDNSSuffix":""}}`)
-	if _, err := d.serviceDomain(); err == nil || !strings.Contains(err.Error(), "MagicDNS") {
+	if _, err := d.only(t).
+		serviceDomain(); err == nil ||
+		!strings.Contains(err.Error(), "MagicDNS") {
 		t.Errorf("without MagicDNS: err = %v, want an error naming MagicDNS", err)
 	}
 }
@@ -309,7 +311,7 @@ func TestServiceDomainRejectsNonDNSNames(t *testing.T) {
 		api.set(statusPath, `{"CurrentTailnet":{"MagicDNSSuffix":`+string(suffix)+`}}`)
 		d := newOfflineDaemon(t, c.service)
 		d.lc = api.client()
-		if got, err := d.serviceDomain(); err == nil {
+		if got, err := d.only(t).serviceDomain(); err == nil {
 			t.Errorf("serviceDomain() for %q in %q = %q, want an error", c.service, c.suffix, got)
 		}
 	}
@@ -320,7 +322,7 @@ func TestServiceDomainRejectsNonDNSNames(t *testing.T) {
 	api.set(statusPath, `{"CurrentTailnet":{"MagicDNSSuffix":"example.ts.net"}}`)
 	d := newOfflineDaemon(t, "svc:api")
 	d.lc = api.client()
-	if _, err := d.serviceDomain(); err != nil {
+	if _, err := d.only(t).serviceDomain(); err != nil {
 		t.Errorf("control: serviceDomain() = %v", err)
 	}
 }
@@ -349,7 +351,7 @@ func TestCertExpiryWatcherStartsOnce(t *testing.T) {
 		}
 	}
 	for range 2 {
-		if err := d.configureServiceWhenCertified(); err != nil {
+		if err := d.only(t).configureServiceWhenCertified(); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -374,7 +376,7 @@ func TestCertWaiterStartsOnce(t *testing.T) {
 	}
 	defer other.release()
 	for range 2 {
-		if err := d.configureServiceWhenCertified(); err != nil {
+		if err := d.only(t).configureServiceWhenCertified(); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -401,7 +403,7 @@ func TestStopWaitsForConfigurationAfterCert(t *testing.T) {
 	d, dir, api := newDomainDaemon(t)
 	started := make(chan struct{})
 	blockOn(api, "serve", started)
-	if err := d.configureServiceWhenCertified(); err != nil {
+	if err := d.only(t).configureServiceWhenCertified(); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -449,12 +451,12 @@ func TestCertWaiterStartsAgainAfterItEnded(t *testing.T) {
 
 	for i := 1; i <= 2; i++ {
 		writeCert(t, dir, webDomain, webDomain, time.Now().Add(-time.Hour))
-		if err := d.configureServiceWhenCertified(); err != nil {
+		if err := d.only(t).configureServiceWhenCertified(); err != nil {
 			t.Fatal(err)
 		}
 		writeCert(t, dir, webDomain, webDomain, time.Now().Add(90*24*time.Hour))
 		waitServes(i)
-		for d.certWaiting.Load() {
+		for d.only(t).certWaiting.Load() {
 			time.Sleep(time.Millisecond)
 		}
 	}

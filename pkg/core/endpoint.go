@@ -300,6 +300,15 @@ func checkService(info *ContainerInfo) error {
 	return nil
 }
 
+// daemonServices returns the container's Service as the daemon takes it.
+// Transitional until ContainerInfo holds several Services.
+func daemonServices(info *ContainerInfo) []tailscale.Service {
+	if info.Service == "" {
+		return nil
+	}
+	return []tailscale.Service{{Name: info.Service, Endpoints: info.Endpoints}}
+}
+
 // StartTailscale starts the Tailscale daemon with the provided container info.
 // This is called by the event handler when container info becomes available.
 // It uses the correct hostname and state directory for identity reuse.
@@ -373,7 +382,7 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 		NetNSPath:     sandboxKey,
 		TailscaledBin: tailscaledBin,
 		Tags:          tags,
-		Service:       info.Service,
+		Services:      daemonServices(info),
 		Endpoints:     info.Endpoints,
 		Direct:        info.Direct,
 		LoginServer:   e.Network.LoginServer, // set once, at creation

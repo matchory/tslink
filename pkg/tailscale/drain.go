@@ -3,7 +3,7 @@ package tailscale
 import (
 	"context"
 	"errors"
-	"slices"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -108,13 +108,15 @@ func (d *daemon) isDrained() bool {
 	return d.config.gate.drained.Load()
 }
 
-// Drain stops new connections to the node's backend for a Tailscale Service;
-// existing connections continue. The backend stays drained: tslink does not
-// advertise it again. Draining again does nothing once a drain took effect,
-// and neither does a drain of a Service the node's prefs no longer advertise,
-// as one drained outside tslink. A serve configuration in progress is
-// cancelled rather than waited for.
-func (d *daemon) Drain(service string) error {
+// Drain stops new connections to the node's backends for all its Tailscale
+// Services; existing connections continue. It stops advertising every
+// Service of the node in one prefs edit, so control learns of all of them in
+// one fetch and no node goes with a Service pointed at it. The backends stay
+// drained: tslink does not advertise them again. Draining again does nothing
+// once a drain took effect, and neither does a drain of a node that
+// advertises nothing, as one drained outside tslink. A serve configuration in
+// progress is cancelled rather than waited for.
+func (d *daemon) Drain() error {
 	g := d.config.gate
 	g.markDrained()
 	g.mu.Lock()
@@ -122,37 +124,21 @@ func (d *daemon) Drain(service string) error {
 	if !g.drain.at.IsZero() {
 		return nil
 	}
-	if d.notAdvertised(service) {
-		logger.Infof("%s is not advertised for %s, drained outside tslink: not draining it again",
-			service, d.config.EndpointID)
+	id := stringid.TruncateID(d.config.EndpointID)
+	fetches, _ := d.servicesFetches()
+	removed, err := d.editAdvertised(d.ctx, func(string) bool { return false })
+	if err != nil {
+		return err
+	}
+	if len(removed) == 0 {
+		logger.Infof("No Service is advertised for %s, drained outside tslink: not draining again",
+			id)
 		g.drain = drainRecord{at: time.Now(), daemon: d, external: true}
 		return nil
 	}
-
-	fetches, _ := d.servicesFetches()
-	if err := d.setAdvertised(d.ctx, service, false); err != nil {
-		return err
-	}
+	logger.Infof("Drained %q for %s", removed, id)
 	g.drain = drainRecord{at: time.Now(), daemon: d, fetches: fetches}
 	return nil
-}
-
-// notAdvertised reports whether the node's prefs do not advertise service;
-// false if tailscaled cannot tell.
-func (d *daemon) notAdvertised(service string) bool {
-	ctx, cancel := context.WithTimeout(d.ctx, 10*time.Second)
-	defer cancel()
-	prefs, err := d.lc.GetPrefs(ctx)
-	if err != nil {
-		logger.Debugf(
-			"Reading prefs before draining %s for %s: %v",
-			service,
-			d.config.EndpointID,
-			err,
-		)
-		return false
-	}
-	return !slices.Contains(prefs.AdvertiseServices, service)
 }
 
 // waitServicesFetch waits until control has fetched the Service list more than
@@ -173,14 +159,15 @@ func (d *daemon) waitServicesFetch(after int64, deadline time.Time) bool {
 	}
 }
 
-// DrainAndWait drains the node's backend for service, unless that was done,
+// DrainAndWait drains the node's Service backends, unless that was done,
 // as when the container got its stop signal, and waits for control to learn
 // of it: until control fetched the drained Service list, at least
 // drainAckFloor and at most drainAckTimeout after the drain. A backend never
 // advertised has nothing for control to fetch, and is not waited for.
-func (s *DaemonSupervisor) DrainAndWait(service string) {
+func (s *DaemonSupervisor) DrainAndWait() {
 	id := stringid.TruncateID(s.cfg.EndpointID)
-	if err := s.Drain(service); err != nil {
+	service := fmt.Sprintf("%q", serviceNames(s.cfg.Services))
+	if err := s.Drain(); err != nil {
 		logger.Warnf("Endpoint %s: failed to drain %s before leaving: %v", id, service, err)
 	}
 

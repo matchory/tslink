@@ -380,7 +380,7 @@ func TestConfigureServiceAdvertiseError(t *testing.T) {
 func TestDrain(t *testing.T) {
 	d, api := newTestDaemon(t, "")
 	api.serviceHost(ipn.Prefs{AdvertiseServices: []string{"svc:web"}})
-	if err := d.Drain("svc:web"); err != nil {
+	if err := d.Drain(); err != nil {
 		t.Fatal(err)
 	}
 	want := [][]string{{"unadvertise", "svc:web"}}
@@ -388,7 +388,7 @@ func TestDrain(t *testing.T) {
 		t.Errorf("operations = %q, want %q", got, want)
 	}
 	// Once drained, draining again, as Leave does after the stop signal's drain, does nothing
-	if err := d.Drain("svc:web"); err != nil || len(api.operations()) != 1 {
+	if err := d.Drain(); err != nil || len(api.operations()) != 1 {
 		t.Errorf("second Drain = %v, operations %q; want none", err, api.operations())
 	}
 
@@ -396,8 +396,8 @@ func TestDrain(t *testing.T) {
 	d, api = newTestDaemon(t, "")
 	api.serviceHost(ipn.Prefs{AdvertiseServices: []string{"svc:web"}})
 	api.failOp("prefs", "no such service")
-	err := d.Drain("svc:web")
-	if err == nil || !strings.Contains(err.Error(), "failed to unadvertise svc:web") ||
+	err := d.Drain()
+	if err == nil || !strings.Contains(err.Error(), `failed to unadvertise ["svc:web"]`) ||
 		!strings.Contains(err.Error(), "no such service") {
 		t.Errorf("error = %v", err)
 	}
@@ -405,7 +405,7 @@ func TestDrain(t *testing.T) {
 		t.Error("failed drain left the backend advertisable")
 	}
 	api.failOp("prefs", "")
-	if err := d.Drain("svc:web"); err != nil || !ran(api.operations(), "unadvertise", "svc:web") {
+	if err := d.Drain(); err != nil || !ran(api.operations(), "unadvertise", "svc:web") {
 		t.Errorf(
 			"drain after a failure = %v, operations %q; want it run again",
 			err,
@@ -554,7 +554,7 @@ func TestDrainCallEndsWithDaemon(t *testing.T) {
 		<-started
 		d.cancel()
 	}()
-	err := returnsWithin(t, "Drain", func() error { return d.Drain("svc:web") })
+	err := returnsWithin(t, "Drain", func() error { return d.Drain() })
 	if err == nil {
 		t.Error("cancelled drain succeeded")
 	}

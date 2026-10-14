@@ -203,16 +203,16 @@ func (s *DaemonSupervisor) Logout() error {
 	return d.Logout()
 }
 
-// Drain stops new connections to the node's backend for a Tailscale Service.
-// The backend stays drained, even if tailscaled is down and the drain fails:
-// a daemon the supervisor starts later does not advertise it.
-func (s *DaemonSupervisor) Drain(service string) error {
+// Drain stops new connections to the node's Service backends. They stay
+// drained, even if tailscaled is down and the drain fails: a daemon the
+// supervisor starts later does not advertise them.
+func (s *DaemonSupervisor) Drain() error {
 	s.cfg.gate.markDrained()
 	d := s.getDaemon()
 	if d == nil {
 		return errors.New("tailscaled is not running")
 	}
-	return d.Drain(service)
+	return d.Drain()
 }
 
 // Status returns the current supervisor status and restart count.

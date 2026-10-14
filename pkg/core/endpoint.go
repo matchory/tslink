@@ -660,7 +660,7 @@ func (e *Endpoint) DrainService() {
 		return
 	}
 	logger.Infof("Endpoint %s stopping, draining %s", stringid.TruncateID(e.ID), service)
-	if err := supervisor.Drain(service); err != nil {
+	if err := supervisor.Drain(); err != nil {
 		logger.Warnf(
 			"Failed to drain %s for endpoint %s: %v",
 			service,
@@ -990,7 +990,7 @@ func (e *Endpoint) stopTailscale() {
 	// before control learned of its drain can keep callers of the Service
 	// pointed at it
 	if service != "" {
-		supervisor.DrainAndWait(service)
+		supervisor.DrainAndWait()
 	}
 	// An ephemeral node would linger offline until Tailscale removes it;
 	// logging out deletes it now

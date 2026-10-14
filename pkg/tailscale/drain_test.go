@@ -87,7 +87,7 @@ func TestDrainAndWaitWaitsForControl(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		s.DrainAndWait("svc:web")
+		s.DrainAndWait()
 		if err := d.Logout(); err != nil {
 			t.Error(err)
 		}
@@ -128,7 +128,7 @@ func TestDrainAndWaitAfterExternalDrain(t *testing.T) {
 	api.serviceHost(ipn.Prefs{})
 
 	start := time.Now()
-	s.DrainAndWait("svc:web")
+	s.DrainAndWait()
 	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
 		t.Errorf("waited %v after a drain outside tslink", elapsed)
 	}
@@ -151,7 +151,7 @@ func TestDrainAndWaitFloor(t *testing.T) {
 		d.handleLine(servicesFetchLine) // as fast as it gets
 	})
 	start := time.Now()
-	s.DrainAndWait("svc:web")
+	s.DrainAndWait()
 	if elapsed := time.Since(start); elapsed < s.cfg.times().drainAckFloor {
 		t.Errorf("returned after %v, want at least %v", elapsed, s.cfg.times().drainAckFloor)
 	}
@@ -165,7 +165,7 @@ func TestDrainAndWaitTimesOut(t *testing.T) {
 		tm.drainAckTimeout = 100 * time.Millisecond
 	})
 	start := time.Now()
-	s.DrainAndWait("svc:web")
+	s.DrainAndWait()
 	if elapsed := time.Since(
 		start,
 	); elapsed < s.cfg.times().drainAckTimeout ||
@@ -191,13 +191,13 @@ func TestDrainAndWaitAfterStopSignalDrain(t *testing.T) {
 		&s.cfg,
 		func(tm *timing) { tm.drainAckFloor = 10 * time.Millisecond; tm.drainAckTimeout = 5 * time.Second },
 	)
-	if err := s.Drain("svc:web"); err != nil {
+	if err := s.Drain(); err != nil {
 		t.Fatal(err)
 	}
 	d.handleLine(servicesFetchLine)
 
 	start := time.Now()
-	s.DrainAndWait("svc:web")
+	s.DrainAndWait()
 	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
 		t.Errorf("waited %v for a drain control had fetched already", elapsed)
 	}
@@ -216,7 +216,7 @@ func TestDrainAndWaitNeverAdvertised(t *testing.T) {
 	)
 	s.cfg.gate.advertised.Store(false)
 	start := time.Now()
-	s.DrainAndWait("svc:web")
+	s.DrainAndWait()
 	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
 		t.Errorf("waited %v for a backend never advertised", elapsed)
 	}
@@ -275,7 +275,7 @@ func TestDrainAndWaitWithoutDaemon(t *testing.T) {
 	)
 	t.Cleanup(s.cancel)
 	start := time.Now()
-	s.DrainAndWait("svc:web")
+	s.DrainAndWait()
 	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
 		t.Errorf("waited %v without a daemon", elapsed)
 	}
@@ -330,7 +330,7 @@ func TestDrainedWaitingReplicaNotAdvertised(t *testing.T) {
 
 	done := runAfterCert(d, dir)
 	time.Sleep(30 * time.Millisecond)
-	if err := d.Drain("svc:web"); err != nil {
+	if err := d.Drain(); err != nil {
 		t.Fatal(err)
 	}
 	writeCert(t, dir, certDomain, certDomain, time.Now().Add(time.Hour))
@@ -359,7 +359,7 @@ func TestDrainSurvivesDaemonRestart(t *testing.T) {
 		}},
 	})
 	t.Cleanup(s.cancel)
-	if err := s.Drain("svc:web"); err == nil {
+	if err := s.Drain(); err == nil {
 		t.Fatal("Drain without tailscaled succeeded")
 	}
 
@@ -409,7 +409,7 @@ func TestDrainAfterConfigureInProgress(t *testing.T) {
 	go func() { configured <- d.only(t).configureService() }()
 	<-started
 	drained := make(chan error)
-	go func() { drained <- d.Drain("svc:web") }()
+	go func() { drained <- d.Drain() }()
 	time.Sleep(20 * time.Millisecond)
 	close(release)
 	if err := <-configured; !errors.Is(err, errDrained) {
@@ -493,7 +493,7 @@ func TestDrainedLeaseHolderStops(t *testing.T) {
 		"the serve configuration",
 		func() bool { return ran(api.operations(), "serve") },
 	)
-	if err := d.Drain("svc:web"); err != nil {
+	if err := d.Drain(); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -526,7 +526,7 @@ func TestDrainCancelsConfigureInProgress(t *testing.T) {
 	<-started
 
 	if err := returnsWithin(t, "Drain", func() error {
-		return d.Drain("svc:web")
+		return d.Drain()
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -557,7 +557,7 @@ func TestDrainCancelsAdvertiseInProgress(t *testing.T) {
 	<-started
 
 	if err := returnsWithin(t, "Drain", func() error {
-		return d.Drain("svc:web")
+		return d.Drain()
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -581,7 +581,7 @@ func TestSupervisorDrainCancelsConfigureWithoutDaemon(t *testing.T) {
 	go func() { configured <- d.only(t).configureService() }()
 	<-started
 
-	if err := s.Drain("svc:web"); err == nil {
+	if err := s.Drain(); err == nil {
 		t.Error("Drain without a daemon succeeded")
 	}
 	if err := returnsWithin(t, "the configuration", func() error {
@@ -589,4 +589,85 @@ func TestSupervisorDrainCancelsConfigureWithoutDaemon(t *testing.T) {
 	}); !errors.Is(err, errDrained) {
 		t.Errorf("configureService = %v, want errDrained", err)
 	}
+}
+
+// A drain stops advertising every Service of the node in one prefs edit,
+// also one its container does not name.
+func TestDrainClearsEveryAdvertisedService(t *testing.T) {
+	d, api := newMultiDaemon(t, tcpService("svc:a", "1"), tcpService("svc:b", "2"))
+	api.serviceHost(ipn.Prefs{AdvertiseServices: []string{"svc:a", "svc:b", "svc:other"}})
+	if err := d.Drain(); err != nil {
+		t.Fatal(err)
+	}
+	ops := api.operations()
+	for _, s := range []string{"svc:a", "svc:b", "svc:other"} {
+		if !ran(ops, "unadvertise", s) {
+			t.Errorf("operations = %q, want %s unadvertised", ops, s)
+		}
+	}
+	edits := 0
+	for _, r := range api.paths() {
+		if r == "PATCH "+prefsPath {
+			edits++
+		}
+	}
+	if edits != 1 {
+		t.Errorf("%d prefs edits, want 1", edits)
+	}
+	if g := d.config.gate; g.drain.at.IsZero() || g.drain.external {
+		t.Errorf("drain record = %+v, want a drain to wait for", g.drain)
+	}
+}
+
+// Draining a node whose Services were all drained outside tslink records an
+// external drain, which is not waited for.
+func TestDrainNothingAdvertised(t *testing.T) {
+	d, api := newMultiDaemon(t, tcpService("svc:a", "1"))
+	if err := d.Drain(); err != nil {
+		t.Fatal(err)
+	}
+	if ops := api.operations(); len(ops) != 0 {
+		t.Errorf("operations = %q, want none", ops)
+	}
+	if !d.config.gate.drain.external {
+		t.Error("drain not recorded as external")
+	}
+}
+
+// A drain while one backend holds the certificate lease and another waits
+// for it ends both waits; neither is advertised, and the lease is released.
+func TestDrainWhileLeaseHeldAndWaiting(t *testing.T) {
+	d, api := newMultiDaemon(t, httpsService("svc:a"), httpsService("svc:b"))
+	dir := filepath.Join(d.config.StateDir, certsDirName)
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	failCert(api, "not yet")
+	other, err := tryLease(dir, "b.example.ts.net", "other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.release()
+	if err := d.configureServing(); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "both waiting", func() bool {
+		return d.backends[0].certWaiting.Load() && d.backends[1].certWaiting.Load()
+	})
+	if err := d.Drain(); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "waits ended", func() bool {
+		return !d.backends[0].certWaiting.Load() && !d.backends[1].certWaiting.Load()
+	})
+	for _, s := range []string{"svc:a", "svc:b"} {
+		if ran(api.operations(), "advertise", s) {
+			t.Errorf("%s advertised after the drain", s)
+		}
+	}
+	lease, err := tryLease(dir, "a.example.ts.net", "x")
+	if err != nil {
+		t.Fatalf("lease of svc:a still held: %v", err)
+	}
+	lease.release()
 }

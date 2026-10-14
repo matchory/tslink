@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `tslink diag --preflight` also reports an isolation chain that drops
+  nothing, as after a flush that kept its jump, for E5; names a missing
+  plugin for E8, as for E5 and E6; and no longer logs the plugin's warning
+  about a relaxed `TSLINK_TAG_SCOPE`.
 - The plugin logs from the info level on, set by the new plugin setting
   `TSLINK_LOG_LEVEL` (`debug`, `info`, `warn` or `error`). Before, it always
   logged at the debug level.

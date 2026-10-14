@@ -118,9 +118,44 @@ func missingJumps(
 	return missing
 }
 
+// chainsWithoutDrop returns the isolation's chains that drop nothing, as
+// after a flush that left their jumps; with off, only those that do not
+// depend on the setting. missingJumps reports a chain that cannot be listed.
+func chainsWithoutDrop(
+	ctx context.Context,
+	run func(context.Context, string, ...string) ([]byte, error),
+	off bool,
+) []string {
+	var empty []string
+	checked := make(map[string]bool)
+	for _, j := range isolationJumps {
+		key := j.cmd + " " + j.to
+		if (off && !j.always) || checked[key] {
+			continue
+		}
+		checked[key] = true
+		out, err := run(ctx, j.cmd, "-t", "mangle", "-S", j.to)
+		if err != nil {
+			continue
+		}
+		drops := false
+		for rule := range strings.SplitSeq(string(out), "\n") {
+			if strings.HasPrefix(rule, "-A "+j.to+" ") &&
+				strings.HasSuffix(strings.TrimSpace(rule), " -j DROP") {
+				drops = true
+				break
+			}
+		}
+		if !drops {
+			empty = append(empty, fmt.Sprintf("%s: %s drops nothing", j.cmd, j.to))
+		}
+	}
+	return empty
+}
+
 // checkIsolation checks what it can of E5: no tslink plugin turns the host's
 // tailnet isolation off, and tslink's isolation chains lead the mangle
-// table's FORWARD and INPUT chains for IPv4 and IPv6.
+// table's FORWARD and INPUT chains for IPv4 and IPv6 and drop traffic.
 func checkIsolation(
 	ctx context.Context,
 	d DockerAPI,
@@ -142,8 +177,9 @@ func checkIsolation(
 		}
 	}
 	violations = append(violations, missingJumps(ctx, run, off)...)
+	violations = append(violations, chainsWithoutDrop(ctx, run, off)...)
 	return outcome("E5", violations, "tslink's isolation chains lead the mangle table's "+
-		"FORWARD and INPUT chains for IPv4 and IPv6 on this host, and "+
+		"FORWARD and INPUT chains for IPv4 and IPv6 on this host and drop traffic, and "+
 		core.IsolateHostTailnetSetting+" is on")
 }
 

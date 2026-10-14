@@ -41,6 +41,17 @@ func isolatedTables() map[string]string {
 		"ip6tables -t mangle -S FORWARD": "-P FORWARD ACCEPT\n" +
 			"-A FORWARD -j TSLINK-ISOLATE-FWD\n",
 		"ip6tables -t mangle -S INPUT": "-P INPUT ACCEPT\n-A INPUT -j TSLINK-ISOLATE-IN\n",
+		"iptables -t mangle -S TSLINK-VETH-FWD": "-N TSLINK-VETH-FWD\n" +
+			"-A TSLINK-VETH-FWD -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN\n" +
+			"-A TSLINK-VETH-FWD -d 10.200.0.0/16 -j DROP\n",
+		"iptables -t mangle -S TSLINK-ISOLATE-FWD": "-N TSLINK-ISOLATE-FWD\n" +
+			"-A TSLINK-ISOLATE-FWD -i docker0 -o tailscale+ -j DROP\n",
+		"iptables -t mangle -S TSLINK-ISOLATE-IN": "-N TSLINK-ISOLATE-IN\n" +
+			"-A TSLINK-ISOLATE-IN -i docker0 -d 100.64.0.1/32 -j DROP\n",
+		"ip6tables -t mangle -S TSLINK-ISOLATE-FWD": "-N TSLINK-ISOLATE-FWD\n" +
+			"-A TSLINK-ISOLATE-FWD -i docker0 -o tailscale+ -j DROP\n",
+		"ip6tables -t mangle -S TSLINK-ISOLATE-IN": "-N TSLINK-ISOLATE-IN\n" +
+			"-A TSLINK-ISOLATE-IN -i docker0 -d fd7a:115c:a1e0::1/128 -j DROP\n",
 	}
 }
 
@@ -383,5 +394,18 @@ func TestTagScopeLogsNothing(t *testing.T) {
 	}
 	if log.Len() > 0 {
 		t.Errorf("logged %q, want nothing", log.String())
+	}
+}
+
+// A chain still jumped to but flushed drops nothing: E5 does not hold.
+func TestIsolationChainWithoutDrop(t *testing.T) {
+	env := testEnv(t)
+	answers := isolatedTables()
+	answers["ip6tables -t mangle -S TSLINK-ISOLATE-IN"] = "-N TSLINK-ISOLATE-IN\n"
+	env.Run = fakeRun(answers)
+	r := result(t, Check(context.Background(), env), "E5")
+	if r.Status != Violated || !strings.Contains(r.Detail, "ip6tables: TSLINK-ISOLATE-IN") ||
+		strings.Contains(r.Detail, "iptables: TSLINK-ISOLATE-IN") {
+		t.Errorf("E5 = %+v, want violated by the IPv6 TSLINK-ISOLATE-IN only", r)
 	}
 }

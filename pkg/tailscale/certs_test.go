@@ -245,13 +245,23 @@ func TestRequestCertUsesLocalAPI(t *testing.T) {
 	setTiming(&d.config, func(tm *timing) { tm.certPollInterval = 10 * time.Millisecond })
 	api := newFakeLocalAPI(t)
 	d.lc = api.client()
+	// Written here: the fake LocalAPI answers off the test goroutine
+	issued := t.TempDir()
+	writeCert(t, issued, certDomain, certDomain, time.Now().Add(time.Hour))
 	requests := 0
 	api.cert = func() error {
 		requests++
 		if requests == 1 {
 			return errors.New("not issued yet")
 		}
-		writeCert(t, dir, certDomain, certDomain, time.Now().Add(time.Hour))
+		for _, ext := range []string{".key", ".crt"} {
+			if err := os.Rename(
+				filepath.Join(issued, certDomain+ext),
+				filepath.Join(dir, certDomain+ext),
+			); err != nil {
+				return err
+			}
+		}
 		return nil
 	}
 	if err := d.requestCert(dir, certDomain); err != nil {

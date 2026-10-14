@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// Lines as tailscaled 1.102.5 logs them: feature/acme/cert.go logs through
+// Lines as tailscaled 1.104.1 logs them: feature/acme/cert.go logs through
 // logger.WithPrefix(b.Logger(), fmt.Sprintf("cert(%q): ", domain)), and an
 // ACME problem as tempfork/acme's Error.Error, "<status> <type>: <detail>".
 // The detail is Boulder's (wfe2/wfe.go) for an order that names a certificate

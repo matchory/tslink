@@ -26,6 +26,12 @@ The source of the plugin's `shared` mount. tslink keeps HTTPS certificates and t
 this directory. Set it to a volume that all hosts share. tslink then gets the certificate of a Service once for the
 cluster, and not once for each host.
 
+To move to another directory, copy `certs/` with its contents into the new one, not the files in it: tslink looks only
+in `certs/`, and gets a certificate again if it is not there.
+
+To check which source the plugin uses, read `.Config.Mounts` in `docker plugin inspect tslink`. `docker plugin set`
+changes the source there, and the plugin runs with it. `.Settings.Mounts` can still show the source from the install.
+
 > [!WARNING]
 > The directory holds the private key of each Service. Restrict access to the hosts of the cluster.
 

@@ -14,6 +14,7 @@ import (
 	"tailscale.com/types/key"
 	"tailscale.com/types/opt"
 
+	"github.com/matchory/tslink/internal/ctxtime"
 	"github.com/matchory/tslink/pkg/logger"
 )
 
@@ -162,7 +163,7 @@ func (d *daemon) waitBackendState() string {
 	// when many start at once; asking stops 5 s in
 	deadline := time.Now().Add(5 * time.Second)
 	state := ""
-	poll(d.ctx, 200*time.Millisecond, func() bool {
+	ctxtime.Poll(d.ctx, 200*time.Millisecond, func() bool {
 		ctx, cancel := context.WithTimeout(d.ctx, 5*time.Second)
 		st, err := d.lc.StatusWithoutPeers(ctx)
 		cancel()

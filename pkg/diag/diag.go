@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"tailscale.com/client/local"
@@ -89,11 +90,13 @@ func Run(dataDir string, w io.Writer) error {
 	// Each state directory links to its daemon's socket under <dataDir>/sock
 	// (see the tailscale package's newDaemon). Sockets no state directory
 	// links to are reported on their own.
+	queries := make(map[*EndpointStatus]string) // each daemon to ask, by socket
 	linked := make(map[string]bool)
 	for _, stateDir := range stateDirs(dataDir) {
 		status, socketPath := checkStateDir(dataDir, stateDir)
 		if socketPath != "" {
 			linked[socketPath] = true
+			queries[status] = socketPath
 		}
 		result.Endpoints = append(result.Endpoints, status)
 	}
@@ -108,9 +111,16 @@ func Run(dataDir string, w io.Writer) error {
 		}
 		id := strings.TrimSuffix(filepath.Base(socketPath), ".sock")
 		status := &EndpointStatus{ID: id, ShortID: "socket " + id, SocketExists: true}
-		queryDaemon(status, socketPath)
+		queries[status] = socketPath
 		result.Endpoints = append(result.Endpoints, status)
 	}
+	// At once: a daemon that does not answer holds the report up for
+	// statusTimeout, not each of them in turn
+	var wg sync.WaitGroup
+	for status, socketPath := range queries {
+		wg.Go(func() { queryDaemon(status, socketPath) })
+	}
+	wg.Wait()
 
 	readStatusFiles(dataDir, result)
 	result.Summary.Errors += len(result.NotRunning)
@@ -172,8 +182,8 @@ func stateDirs(dataDir string) []string {
 	return dirs
 }
 
-// checkStateDir reports one state directory and, if its socket link points
-// at a live socket, the daemon behind it. It returns that socket's path.
+// checkStateDir reports one state directory, and returns the path of the live
+// socket its link points at, if any, whose daemon Run asks.
 func checkStateDir(dataDir, stateDir string) (*EndpointStatus, string) {
 	rel, err := filepath.Rel(dataDir, stateDir)
 	if err != nil {
@@ -205,7 +215,6 @@ func checkStateDir(dataDir, stateDir string) (*EndpointStatus, string) {
 	}
 	status.ID = strings.TrimSuffix(filepath.Base(socketPath), ".sock")
 	status.SocketExists = true
-	queryDaemon(status, socketPath)
 	return status, socketPath
 }
 

@@ -19,6 +19,7 @@ import (
 
 	"tailscale.com/tailcfg"
 
+	"github.com/matchory/tslink/internal/ctxtime"
 	"github.com/matchory/tslink/pkg/logger"
 )
 
@@ -254,7 +255,7 @@ func (d *daemon) requestCert(dir, domain string) error {
 				advertised = true
 			}
 		}
-		if !sleep(d.ctx, tm.certPollInterval) {
+		if !ctxtime.Sleep(d.ctx, tm.certPollInterval) {
 			return d.ctx.Err()
 		}
 	}
@@ -308,7 +309,7 @@ func ignoreDrained(err error) error {
 }
 
 func (d *daemon) configureServiceAfterCert(dir, domain string) {
-	poll(d.ctx, d.config.times().certPollInterval, func() bool {
+	ctxtime.Poll(d.ctx, d.config.times().certPollInterval, func() bool {
 		err := d.configureServiceWithCert(dir, domain)
 		if errors.Is(err, errDrained) {
 			logger.Infof("%s drained for %s: no longer waiting for the certificate for %s",

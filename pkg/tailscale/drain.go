@@ -12,6 +12,7 @@ import (
 
 	"github.com/moby/moby/client/pkg/stringid"
 
+	"github.com/matchory/tslink/internal/ctxtime"
 	"github.com/matchory/tslink/pkg/logger"
 )
 
@@ -226,7 +227,7 @@ func (s *DaemonSupervisor) DrainAndWait(service string) {
 	logger.Infof("Endpoint %s: %s drained, waiting for control to fetch it", id, service)
 	acked := d.waitServicesFetch(after, drain.at.Add(tm.drainAckTimeout))
 	if wait := time.Until(drain.at.Add(tm.drainAckFloor)); wait > 0 {
-		sleep(d.ctx, wait)
+		ctxtime.Sleep(d.ctx, wait)
 	}
 	if acked {
 		logger.Infof("Endpoint %s: control fetched the drained %s, %v after the drain",

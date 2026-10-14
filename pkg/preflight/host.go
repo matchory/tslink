@@ -28,12 +28,13 @@ type Env struct {
 // Check checks the environment properties it can see from this host: E1, E2,
 // E4, E5, E6, E7, E8 and E9, in this order.
 func Check(ctx context.Context, env Env) []Result {
-	results := checkContainers(ctx, env.Docker)
+	d := &pluginsOnce{DockerAPI: env.Docker}
+	results := checkContainers(ctx, d)
 	return append(results,
-		checkIsolation(ctx, env.Docker, env.Run),
-		checkPluginDigest(ctx, env.Docker),
+		checkIsolation(ctx, d, env.Run),
+		checkPluginDigest(ctx, d),
 		checkSharedDir(env.SharedDir),
-		checkTagScope(ctx, env.Docker),
+		checkTagScope(ctx, d),
 		checkTailnetLock(ctx, env.Run, env.DataDir),
 	)
 }

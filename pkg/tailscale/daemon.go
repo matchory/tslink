@@ -18,6 +18,7 @@ import (
 	"github.com/moby/moby/client/pkg/stringid"
 	"tailscale.com/client/local"
 
+	"github.com/matchory/tslink/internal/ctxtime"
 	"github.com/matchory/tslink/pkg/logger"
 )
 
@@ -296,10 +297,7 @@ func (d *daemon) startProcess(cmd *exec.Cmd) error {
 func (d *daemon) watchProcess(out *io.PipeWriter) {
 	// Write debug info to a file (cancellable via context)
 	d.wg.Go(func() {
-		select {
-		case <-d.ctx.Done():
-			return
-		case <-time.After(2 * time.Second):
+		if ctxtime.Sleep(d.ctx, 2*time.Second) {
 			d.writeDebug(fmt.Sprintf("PID: %d\nSocket: %s\nEndpoint: %s\n",
 				d.cmd.Process.Pid, d.socketPath, d.config.EndpointID))
 		}
@@ -372,7 +370,7 @@ func (d *daemon) configureServing() error {
 	logger.Infof("Checking service: Service=%q", d.config.Service)
 	if d.config.Service != "" {
 		logger.Infof("Waiting for control plane sync before configuring service backend...")
-		if !sleep(d.ctx, 2*time.Second) {
+		if !ctxtime.Sleep(d.ctx, 2*time.Second) {
 			return fmt.Errorf("failed to configure Tailscale service: %w", d.ctx.Err())
 		}
 		logger.Infof("Configuring service backend...")
@@ -396,7 +394,7 @@ func (d *daemon) waitForSocket() error {
 		_, err := os.Stat(d.socketPath)
 		return err == nil
 	}
-	if !poll(ctx, 100*time.Millisecond, exists) {
+	if !ctxtime.Poll(ctx, 100*time.Millisecond, exists) {
 		if err := d.ctx.Err(); err != nil {
 			return err
 		}
@@ -404,7 +402,7 @@ func (d *daemon) waitForSocket() error {
 	}
 	logger.Infof("tailscaled socket is ready")
 	// Give it a bit more time to fully initialize
-	if !sleep(d.ctx, 500*time.Millisecond) {
+	if !ctxtime.Sleep(d.ctx, 500*time.Millisecond) {
 		return d.ctx.Err()
 	}
 	return nil
@@ -470,28 +468,4 @@ func killError(err error) error {
 		return nil
 	}
 	return err
-}
-
-// poll calls fn at once and then every interval until it reports done, or
-// until ctx is done. It reports whether fn did.
-func poll(ctx context.Context, interval time.Duration, fn func() bool) bool {
-	for !fn() {
-		if !sleep(ctx, interval) {
-			return false
-		}
-	}
-	return true
-}
-
-// sleep waits for d, or until ctx is done. It reports whether it slept the
-// whole time.
-func sleep(ctx context.Context, d time.Duration) bool {
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-t.C:
-		return true
-	}
 }

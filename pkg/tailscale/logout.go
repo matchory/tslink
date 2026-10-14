@@ -13,6 +13,7 @@ import (
 
 	"tailscale.com/client/local"
 
+	"github.com/matchory/tslink/internal/ctxtime"
 	"github.com/matchory/tslink/pkg/logger"
 )
 
@@ -161,7 +162,7 @@ var runLogout = func(ctx context.Context, tailscaledBin, workDir, socket string)
 		_, err := lc.StatusWithoutPeers(ctx)
 		return err == nil
 	}
-	if !poll(ctx, 200*time.Millisecond, started) {
+	if !ctxtime.Poll(ctx, 200*time.Millisecond, started) {
 		if cause := context.Cause(ctx); errors.Is(cause, errLogoutDaemonExited) {
 			return cause
 		}

@@ -71,6 +71,15 @@ func TestCheckOrder(t *testing.T) {
 	}
 }
 
+// The checks that need the tslink plugins share one listing.
+func TestCheckListsPluginsOnce(t *testing.T) {
+	env := testEnv(t)
+	Check(context.Background(), env)
+	if n := env.Docker.(*fakeDocker).pluginLists; n != 1 {
+		t.Errorf("listed the plugins %d times, want once", n)
+	}
+}
+
 func TestHostIsolation(t *testing.T) {
 	env := testEnv(t)
 	r := result(t, Check(context.Background(), env), "E5")

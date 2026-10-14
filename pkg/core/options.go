@@ -106,3 +106,9 @@ func CheckEndpointOptions(opts map[string]any) error {
 	}
 	return errors.Join(errs...)
 }
+
+// ContainerName returns a container's name as Docker's API gives it, without
+// the leading "/".
+func ContainerName(name string) string {
+	return strings.TrimPrefix(name, "/")
+}

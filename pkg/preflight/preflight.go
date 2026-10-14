@@ -76,6 +76,25 @@ func outcome(property string, violations []string, okDetail string) Result {
 	return Result{Property: property, Status: OK, Detail: okDetail}
 }
 
+// pluginsOnce lists the plugins once, for all of the checks that need them.
+type pluginsOnce struct {
+	DockerAPI
+	listed bool
+	list   dockerclient.PluginListResult
+	err    error
+}
+
+func (p *pluginsOnce) PluginList(
+	ctx context.Context,
+	options dockerclient.PluginListOptions,
+) (dockerclient.PluginListResult, error) {
+	if !p.listed {
+		p.list, p.err = p.DockerAPI.PluginList(ctx, options)
+		p.listed = true
+	}
+	return p.list, p.err
+}
+
 // tslinkPlugins returns the enabled tslink plugins: those whose entrypoint is
 // /tslink, as the driver recognizes itself.
 func tslinkPlugins(ctx context.Context, d DockerAPI) ([]plugin.Plugin, error) {

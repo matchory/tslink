@@ -18,6 +18,7 @@ import (
 	"github.com/moby/moby/client/pkg/stringid"
 	"tailscale.com/tailcfg"
 
+	"github.com/matchory/tslink/internal/ctxtime"
 	"github.com/matchory/tslink/pkg/logger"
 	"github.com/matchory/tslink/pkg/netutil"
 	"github.com/matchory/tslink/pkg/tailscale"
@@ -477,10 +478,8 @@ func (e *Endpoint) RunTailscale(ctx context.Context, info *ContainerInfo) {
 		e.writeStatus(info, StatusRetrying, attempt, err)
 		logger.Errorf("Endpoint %s: starting Tailscale failed (attempt %d), retrying in %v: %v",
 			stringid.TruncateID(e.ID), attempt, delay, err)
-		select {
-		case <-ctx.Done():
+		if !ctxtime.Sleep(ctx, delay) {
 			return
-		case <-time.After(delay):
 		}
 		delay = min(delay*2, startRetryMax)
 	}

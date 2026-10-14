@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A `tslink.service` name with upper-case letters fails the container's
+  start for good. Tailscale keeps the case it is given, so the name could
+  differ from the one control approves the node for.
 - A login that fails on stale state is retried as a new device. Before,
   tslink deleted the state files under the running tailscaled, which kept
   its keys and wrote them back, and retried with the same node key.

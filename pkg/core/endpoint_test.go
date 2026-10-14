@@ -79,6 +79,8 @@ func TestStartTailscaleRejectsInvalidService(t *testing.T) {
 		{Service: "svc:-web", Endpoints: serve},
 		{Service: "svc:a.b", Endpoints: serve},
 		{Service: "svc:web_1", Endpoints: serve},
+		{Service: "svc:Web", Endpoints: serve},
+		{Service: "SVC:web", Endpoints: serve},
 	} {
 		dataDir := t.TempDir()
 		e := &Endpoint{

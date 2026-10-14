@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -275,14 +276,19 @@ func socketPathFor(dataDir, endpointID string) string {
 	return filepath.Join(dataDir, "sock", stringid.TruncateID(endpointID)+".sock")
 }
 
-// checkService checks the container's Service, if it has one: a valid name
-// and something to serve on it.
+// checkService checks the container's Service, if it has one: a valid,
+// lower-case name and something to serve on it.
 func checkService(info *ContainerInfo) error {
 	if info.Service == "" {
 		return nil
 	}
 	if err := tailcfg.ServiceName(info.Service).Validate(); err != nil {
 		return fmt.Errorf("invalid %s: %w", ServiceLabel, err)
+	}
+	// Tailscale keeps the case of a name it is given, so an upper-case name
+	// may not match the one control approves the node for
+	if info.Service != strings.ToLower(info.Service) {
+		return fmt.Errorf("invalid %s: %q is not lower case", ServiceLabel, info.Service)
 	}
 	if len(info.Endpoints) == 0 {
 		return fmt.Errorf(

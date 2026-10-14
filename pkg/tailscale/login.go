@@ -27,7 +27,7 @@ const needsLogin = "NeedsLogin"
 
 // bringUp logs the node in, or brings a node that is still logged in up
 // with its settings. With existing state it first tries without the auth key,
-// then wipes the state and retries on auth failures.
+// then logs in again as a new device on auth failures.
 func (d *daemon) bringUp() error {
 	// A node that is still logged in comes up without the auth key. An OAuth
 	// client secret is exchanged for a key through Tailscale's API, so
@@ -57,16 +57,12 @@ func (d *daemon) bringUp() error {
 		return nil
 	}
 
-	// Check if it's an auth/state error that warrants a retry
+	// Stale state: log in again as a new device, with a new node key.
+	// tailscaled runs and holds its state, so removing its files would not
+	// get rid of it.
 	if isStateError(err) {
-		logger.Warnf("Auth failed with existing state, wiping and retrying: %v", err)
-		if err := WipeState(d.config.StateDir); err != nil {
-			logger.Warnf("Failed to wipe the state: %v", err)
-		}
-
-		// Second attempt with fresh state
-		logger.Infof("Retrying the login with fresh state...")
-		return d.logIn(true, false)
+		logger.Warnf("Auth failed with existing state, logging in as a new device: %v", err)
+		return d.logIn(true, true)
 	}
 
 	return err

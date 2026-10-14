@@ -351,3 +351,25 @@ func TestStopEndsLoginAgain(t *testing.T) {
 		t.Fatal("the login went on after the supervisor stopped")
 	}
 }
+
+// A login that fails on stale state is retried as a new device, with
+// tailscaled's state left to tailscaled: it runs, and would write it back.
+func TestBringUpRetriesStaleStateAsNewDevice(t *testing.T) {
+	api := newFakeLocalAPI(t)
+	api.loggedOut()
+	api.startErr = "register request: invalid key"
+	d, _ := loginDaemon(t, api, DaemonConfig{Hostname: "web"})
+	state := filepath.Join(d.config.StateDir, "tailscaled.state")
+	if err := os.WriteFile(state, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.bringUp(); err != nil {
+		t.Fatal(err)
+	}
+	if len(api.authKeys) != 2 {
+		t.Errorf("logins started with %q, want a retry", api.authKeys)
+	}
+	if _, err := os.Stat(state); err != nil {
+		t.Errorf("state removed under the running tailscaled: %v", err)
+	}
+}

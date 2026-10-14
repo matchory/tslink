@@ -81,6 +81,17 @@ jobs:
 
           push "${PLUGIN}:${REF_NAME}-${ARCH}"
 
+          # Only the highest release is latest: of two tags pushed close
+          # together, the older one's run would otherwise finish last
+          highest=$(git ls-remote --tags --refs origin |
+            sed -n 's|.*refs/tags/||p' |
+            grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' |
+            sort -V | tail -n 1)
+          if [ "${REF_NAME}" != "${highest}" ]; then
+            echo "${REF_NAME} is not the highest release (${highest}): latest-${ARCH} stays"
+            exit 0
+          fi
+
           # Docker refuses to create a second plugin from identical
           # content, so latest carries a version marker to differ.
           echo "${REF_NAME}" > docker/rootfs/.plugin-version

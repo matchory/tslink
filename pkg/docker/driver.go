@@ -904,6 +904,7 @@ func (d *Driver) inspectContainer(
 		),
 		sandboxKey: settings.SandboxKey,
 	}
+	addDaemonDNS(ctx, d.docker, a.info)
 	a.ipamAddress = netSettings.IPAddress
 	return a, nil
 }

@@ -31,6 +31,11 @@ type dockerAPI interface {
 		ctx context.Context,
 		options dockerclient.NetworkListOptions,
 	) (dockerclient.NetworkListResult, error)
+	CopyFromContainer(
+		ctx context.Context,
+		containerID string,
+		options dockerclient.CopyFromContainerOptions,
+	) (dockerclient.CopyFromContainerResult, error)
 	Events(ctx context.Context, options dockerclient.EventsListOptions) dockerclient.EventsResult
 	Close() error
 }

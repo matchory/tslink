@@ -51,6 +51,12 @@ Host testbed
 EOF
 deadline=$((SECONDS + 900))
 until "$B/s" test -f /var/lib/cloud-init-done 2>/dev/null; do
+	if "$B/s" cloud-init status 2>/dev/null | grep -E '^status: error' >/dev/null; then
+		echo "cloud-init failed; the server exists and is billed." >&2
+		echo "Inspect it: test/security/testbed/s cloud-init status --long" >&2
+		echo "Remove it: test/security/testbed/teardown.sh" >&2
+		exit 1
+	fi
 	if [ "$SECONDS" -ge "$deadline" ]; then
 		echo "cloud-init has not finished after 15 minutes; the server exists and is billed." >&2
 		echo "Inspect it: test/security/testbed/s cloud-init status --long" >&2

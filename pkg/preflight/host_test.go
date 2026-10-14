@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/moby/moby/api/types/plugin"
+
+	"github.com/matchory/tslink/pkg/logger"
 )
 
 // fakeRun answers commands by their name and arguments, joined with spaces.
@@ -39,6 +41,17 @@ func isolatedTables() map[string]string {
 		"ip6tables -t mangle -S FORWARD": "-P FORWARD ACCEPT\n" +
 			"-A FORWARD -j TSLINK-ISOLATE-FWD\n",
 		"ip6tables -t mangle -S INPUT": "-P INPUT ACCEPT\n-A INPUT -j TSLINK-ISOLATE-IN\n",
+		"iptables -t mangle -S TSLINK-VETH-FWD": "-N TSLINK-VETH-FWD\n" +
+			"-A TSLINK-VETH-FWD -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN\n" +
+			"-A TSLINK-VETH-FWD -d 10.200.0.0/16 -j DROP\n",
+		"iptables -t mangle -S TSLINK-ISOLATE-FWD": "-N TSLINK-ISOLATE-FWD\n" +
+			"-A TSLINK-ISOLATE-FWD -i docker0 -o tailscale+ -j DROP\n",
+		"iptables -t mangle -S TSLINK-ISOLATE-IN": "-N TSLINK-ISOLATE-IN\n" +
+			"-A TSLINK-ISOLATE-IN -i docker0 -d 100.64.0.1/32 -j DROP\n",
+		"ip6tables -t mangle -S TSLINK-ISOLATE-FWD": "-N TSLINK-ISOLATE-FWD\n" +
+			"-A TSLINK-ISOLATE-FWD -i docker0 -o tailscale+ -j DROP\n",
+		"ip6tables -t mangle -S TSLINK-ISOLATE-IN": "-N TSLINK-ISOLATE-IN\n" +
+			"-A TSLINK-ISOLATE-IN -i docker0 -d fd7a:115c:a1e0::1/128 -j DROP\n",
 	}
 }
 
@@ -351,5 +364,48 @@ func TestWrite(t *testing.T) {
 		if failed, _ := Write(&bytes.Buffer{}, []Result{{Property: "E2", Status: s}}); !failed {
 			t.Errorf("Write with %s: not failed", s)
 		}
+	}
+}
+
+// Without an enabled tslink plugin, E8 says so, as E5 and E6 do.
+func TestTagScopeNoPlugin(t *testing.T) {
+	env := testEnv(t)
+	f := newFakeDocker()
+	f.plugins[0].Enabled = false
+	env.Docker = f
+	r := result(t, Check(context.Background(), env), "E8")
+	if r.Status != Unknown || !strings.Contains(r.Detail, "no tslink plugin is enabled") {
+		t.Errorf("E8 = %+v, want unknown: no tslink plugin is enabled", r)
+	}
+}
+
+// The preflight reports a relaxed tag scope in its result, without logging
+// the warning the plugin logs for it.
+func TestTagScopeLogsNothing(t *testing.T) {
+	var log bytes.Buffer
+	logger.SetOutput(&log)
+	t.Cleanup(func() { logger.SetOutput(os.Stdout) })
+	env := testEnv(t)
+	f := newFakeDocker()
+	f.plugins[0].Settings.Env = []string{"TSLINK_TAG_SCOPE=prefix"}
+	env.Docker = f
+	if r := result(t, Check(context.Background(), env), "E8"); r.Status != Violated {
+		t.Errorf("E8 = %+v, want violated", r)
+	}
+	if log.Len() > 0 {
+		t.Errorf("logged %q, want nothing", log.String())
+	}
+}
+
+// A chain still jumped to but flushed drops nothing: E5 does not hold.
+func TestIsolationChainWithoutDrop(t *testing.T) {
+	env := testEnv(t)
+	answers := isolatedTables()
+	answers["ip6tables -t mangle -S TSLINK-ISOLATE-IN"] = "-N TSLINK-ISOLATE-IN\n"
+	env.Run = fakeRun(answers)
+	r := result(t, Check(context.Background(), env), "E5")
+	if r.Status != Violated || !strings.Contains(r.Detail, "ip6tables: TSLINK-ISOLATE-IN") ||
+		strings.Contains(r.Detail, "iptables: TSLINK-ISOLATE-IN") {
+		t.Errorf("E5 = %+v, want violated by the IPv6 TSLINK-ISOLATE-IN only", r)
 	}
 }

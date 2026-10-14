@@ -4,6 +4,11 @@
 package_update: true
 packages: [ca-certificates, curl, jq, iptables, python3]
 runcmd:
-  - curl -fsSL https://get.docker.com | sh
+  # cloud-init runs these lines as one script without -e: without set -e the
+  # marker would claim a host without Docker ready. The script is downloaded
+  # first: curl | sh would run an empty script when the download fails.
+  - set -e
+  - curl -fsSL https://get.docker.com -o /root/get-docker.sh
+  - sh /root/get-docker.sh
   - systemctl enable --now docker
   - touch /var/lib/cloud-init-done

@@ -357,7 +357,7 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 		info.Direct,
 	)
 
-	tailscaleBin, tailscaledBin, err := tailscale.BundledBinaries()
+	_, tailscaledBin, err := tailscale.BundledBinaries()
 	if err != nil {
 		return err
 	}
@@ -371,7 +371,6 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 		AuthKey:       authKey,
 		CertsDir:      certsDir,
 		NetNSPath:     sandboxKey,
-		TailscaleBin:  tailscaleBin,
 		TailscaledBin: tailscaledBin,
 		Tags:          tags,
 		Service:       info.Service,

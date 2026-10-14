@@ -15,17 +15,16 @@ import (
 )
 
 // loginDaemon returns a daemon with cfg whose tailscaled is api.
-func loginDaemon(t *testing.T, api *fakeLocalAPI, cfg DaemonConfig) (*daemon, *fakeCLI) {
+func loginDaemon(t *testing.T, api *fakeLocalAPI, cfg DaemonConfig) *daemon {
 	t.Helper()
-	cli := &fakeCLI{}
-	d := newTestDaemon(t, cli, "")
+	d := newOfflineDaemon(t, "")
 	cfg.EndpointID, cfg.StateDir = d.config.EndpointID, d.config.StateDir
 	if cfg.AuthKey == nil {
 		cfg.AuthKey = func() (string, error) { return "tskey-auth-secret", nil }
 	}
 	d.config = cfg
 	d.lc = api.client()
-	return d, cli
+	return d
 }
 
 // A login applies the settings "tailscale up" would, with the tags, and
@@ -40,7 +39,7 @@ func TestLogIn(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			api := newFakeLocalAPI(t)
 			api.loggedOut()
-			d, _ := loginDaemon(t, api, DaemonConfig{
+			d := loginDaemon(t, api, DaemonConfig{
 				Hostname: "web", LoginServer: tt.loginServer, Tags: []string{"tag:a"},
 			})
 			if err := d.logIn(true, false); err != nil {
@@ -62,18 +61,15 @@ func TestLogIn(t *testing.T) {
 	}
 }
 
-// The auth key reaches tailscaled only over its socket, in the login request:
-// no CLI runs, so it is in no process's arguments or environment.
+// The auth key reaches tailscaled only over its socket, in the login request,
+// so it is in no process's arguments or environment.
 // Guards: G5
 func TestLogInAuthKeyOnlyOverSocket(t *testing.T) {
 	api := newFakeLocalAPI(t)
 	api.loggedOut()
-	d, cli := loginDaemon(t, api, DaemonConfig{Hostname: "web"})
+	d := loginDaemon(t, api, DaemonConfig{Hostname: "web"})
 	if err := d.logIn(true, false); err != nil {
 		t.Fatal(err)
-	}
-	if len(cli.calls) != 0 {
-		t.Errorf("ran %q, want no CLI", cli.calls)
 	}
 	if got := api.keys(); !slices.Equal(got, []string{"tskey-auth-secret"}) {
 		t.Errorf("Start got keys %q, want the auth key", got)
@@ -91,7 +87,7 @@ func TestLogInMintsKeyForOAuthSecret(t *testing.T) {
 	keyAPI := newFakeKeyAPI(t)
 	api := newFakeLocalAPI(t)
 	api.loggedOut()
-	d, _ := loginDaemon(t, api, DaemonConfig{
+	d := loginDaemon(t, api, DaemonConfig{
 		Hostname: "web",
 		Tags:     []string{"tag:a"},
 		AuthKey: func() (string, error) {
@@ -113,7 +109,7 @@ func TestLogInOAuthSecretOnlyOverSocket(t *testing.T) {
 	keyAPI := newFakeKeyAPI(t)
 	api := newFakeLocalAPI(t)
 	api.loggedOut()
-	d, cli := loginDaemon(t, api, DaemonConfig{
+	d := loginDaemon(t, api, DaemonConfig{
 		Hostname: "web",
 		Tags:     []string{"tag:a"},
 		AuthKey: func() (string, error) {
@@ -122,9 +118,6 @@ func TestLogInOAuthSecretOnlyOverSocket(t *testing.T) {
 	})
 	if err := d.logIn(true, false); err != nil {
 		t.Fatal(err)
-	}
-	if len(cli.calls) != 0 {
-		t.Errorf("ran %q, want no CLI", cli.calls)
 	}
 	for _, r := range api.paths() {
 		if strings.Contains(r, "SECRET") {
@@ -143,7 +136,7 @@ func TestLogInOAuthSecretFailureQuotesNoSecret(t *testing.T) {
 	t.Cleanup(srv.Close)
 	api := newFakeLocalAPI(t)
 	api.loggedOut()
-	d, _ := loginDaemon(t, api, DaemonConfig{
+	d := loginDaemon(t, api, DaemonConfig{
 		Hostname: "web",
 		Tags:     []string{"tag:a"},
 		AuthKey: func() (string, error) {
@@ -162,7 +155,7 @@ func TestLogInFails(t *testing.T) {
 	api := newFakeLocalAPI(t)
 	api.loggedOut()
 	api.startErr = "register request: invalid key"
-	d, _ := loginDaemon(t, api, DaemonConfig{Hostname: "web"})
+	d := loginDaemon(t, api, DaemonConfig{Hostname: "web"})
 	err := d.logIn(true, false)
 	if err == nil || !strings.Contains(err.Error(), "invalid key") || !isStateError(err) {
 		t.Errorf("err = %v, want a state error with tailscaled's message", err)
@@ -173,7 +166,7 @@ func TestLogInFails(t *testing.T) {
 func TestLogInTimesOut(t *testing.T) {
 	api := newFakeLocalAPI(t)
 	api.loggedOut()
-	d, _ := loginDaemon(t, api, DaemonConfig{Hostname: "web"})
+	d := loginDaemon(t, api, DaemonConfig{Hostname: "web"})
 	setTiming(&d.config, func(tm *timing) { tm.loginTimeout = time.Second })
 	// Without a key or a node key, tailscaled keeps needing a login
 	if err := d.logIn(false, false); err == nil || !strings.Contains(err.Error(), "timeout") {
@@ -187,7 +180,7 @@ func TestLogInForceReauth(t *testing.T) {
 	api := newFakeLocalAPI(t)
 	api.loggedIn(ipn.Prefs{ControlURL: defaultControlURL})
 	old := api.status().Self.PublicKey
-	d, _ := loginDaemon(t, api, DaemonConfig{Hostname: "web"})
+	d := loginDaemon(t, api, DaemonConfig{Hostname: "web"})
 	if err := d.logIn(true, true); err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +198,7 @@ func bringUpLoggedIn(t *testing.T, cfg DaemonConfig, prefs ipn.Prefs) (ipn.Prefs
 	t.Helper()
 	api := newFakeLocalAPI(t)
 	api.loggedIn(prefs)
-	d, _ := loginDaemon(t, api, cfg)
+	d := loginDaemon(t, api, cfg)
 	if err := os.WriteFile(
 		filepath.Join(d.config.StateDir, "tailscaled.state"),
 		[]byte("{}"),
@@ -295,7 +288,7 @@ func TestBringUpLoggedInChangedLogsIn(t *testing.T) {
 func TestLogout(t *testing.T) {
 	api := newFakeLocalAPI(t)
 	api.loggedIn(ipn.Prefs{})
-	d, _ := loginDaemon(t, api, DaemonConfig{})
+	d := loginDaemon(t, api, DaemonConfig{})
 	if err := d.Logout(); err != nil {
 		t.Fatal(err)
 	}
@@ -308,7 +301,8 @@ func TestLogout(t *testing.T) {
 func TestReauthenticateRestoresServe(t *testing.T) {
 	api := newFakeLocalAPI(t)
 	api.loggedOut()
-	d, cli := loginDaemon(t, api, DaemonConfig{
+	api.dnsName = "web.example.ts.net."
+	d := loginDaemon(t, api, DaemonConfig{
 		Hostname:  "web",
 		Direct:    true,
 		Endpoints: []ServeEndpoint{{Proto: "tcp", Port: "22", Target: "22"}},
@@ -316,8 +310,9 @@ func TestReauthenticateRestoresServe(t *testing.T) {
 	if err := d.Reauthenticate(); err != nil {
 		t.Fatal(err)
 	}
-	if !ran(cli.snapshot(), "serve", "--bg", "--tcp=22", "tcp://127.0.0.1:22") {
-		t.Errorf("calls = %q, want the direct serve of port 22", cli.snapshot())
+	if sc := api.serveConfig(); sc == nil || sc.TCP[22] == nil ||
+		sc.TCP[22].TCPForward != "127.0.0.1:22" {
+		t.Errorf("serve config = %+v, want the direct serve of port 22", sc)
 	}
 }
 
@@ -327,7 +322,7 @@ func TestStopEndsLoginAgain(t *testing.T) {
 	api := newFakeLocalAPI(t)
 	api.loggedOut()
 	// Without a key or a node key, the login waits for a browser
-	d, _ := loginDaemon(t, api, DaemonConfig{
+	d := loginDaemon(t, api, DaemonConfig{
 		Hostname: "web",
 		AuthKey:  func() (string, error) { return "", nil },
 	})
@@ -358,7 +353,7 @@ func TestBringUpRetriesStaleStateAsNewDevice(t *testing.T) {
 	api := newFakeLocalAPI(t)
 	api.loggedOut()
 	api.startErr = "register request: invalid key"
-	d, _ := loginDaemon(t, api, DaemonConfig{Hostname: "web"})
+	d := loginDaemon(t, api, DaemonConfig{Hostname: "web"})
 	state := filepath.Join(d.config.StateDir, "tailscaled.state")
 	if err := os.WriteFile(state, []byte("{}"), 0o600); err != nil {
 		t.Fatal(err)

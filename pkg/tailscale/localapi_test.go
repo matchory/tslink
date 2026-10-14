@@ -1,6 +1,7 @@
 package tailscale
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -18,6 +20,8 @@ import (
 	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/tailcfg"
 	"tailscale.com/types/key"
+	"tailscale.com/types/views"
+	"tailscale.com/util/mak"
 )
 
 // fakeLocalAPI serves tailscaled's LocalAPI on a Unix socket and answers each
@@ -42,6 +46,20 @@ type fakeLocalAPI struct {
 
 	// cert answers a certificate request: an error fails it
 	cert func() error
+
+	// The node as its status shows it
+	tags    []string
+	dnsName string
+	suffix  string
+
+	serve *ipn.ServeConfig // The serve config last set
+	etag  int              // Its version, bumped by every set
+	ops   [][]string       // The serve config sets and (un)advertisements
+
+	// before runs ahead of an operation ("serve" or "prefs") with its
+	// request's context, unless nil; the request fails if the context ended
+	before func(ctx context.Context, op string)
+	fail   map[string]string // What an operation fails with
 }
 
 func newFakeLocalAPI(t *testing.T) *fakeLocalAPI {
@@ -99,7 +117,14 @@ func (f *fakeLocalAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.serveCert(w)
 		return
 	}
+	if !f.admit(w, r) {
+		return
+	}
 	switch r.Method + " " + r.URL.Path {
+	case "GET " + servePath:
+		f.getServe(w)
+	case "POST " + servePath:
+		f.setServe(w, r)
 	case "GET /localapi/v0/watch-ipn-bus":
 		f.watch(w, r)
 	case "PATCH " + prefsPath:
@@ -109,7 +134,9 @@ func (f *fakeLocalAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		f.mu.Lock()
+		before := f.prefs.AdvertiseServices
 		f.prefs.ApplyEdits(&mp)
+		f.noteAdvertised(before, f.prefs.AdvertiseServices)
 		prefs := f.prefs
 		f.mu.Unlock()
 		f.reply(w, &prefs)
@@ -250,11 +277,131 @@ func (f *fakeLocalAPI) notify(n ipn.Notify) {
 func (f *fakeLocalAPI) status() *ipnstate.Status {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return &ipnstate.Status{
+	st := &ipnstate.Status{
 		BackendState: f.state.String(),
 		HaveNodeKey:  !f.nodeKey.IsZero(),
-		Self:         &ipnstate.PeerStatus{PublicKey: f.nodeKey},
+		Self:         &ipnstate.PeerStatus{PublicKey: f.nodeKey, DNSName: f.dnsName},
 	}
+	if f.tags != nil {
+		tags := views.SliceOf(f.tags)
+		st.Self.Tags = &tags
+	}
+	if f.suffix != "" {
+		st.CurrentTailnet = &ipnstate.TailnetStatus{MagicDNSSuffix: f.suffix}
+	}
+	return st
+}
+
+// serviceHost makes the fake a running, tagged node of the tailnet
+// example.ts.net, with prefs, as a Service backend is.
+func (f *fakeLocalAPI) serviceHost(prefs ipn.Prefs) {
+	f.loggedIn(prefs)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.tags, f.dnsName, f.suffix = []string{"tag:web"}, "node.example.ts.net.", "example.ts.net"
+}
+
+// admit runs the before hook and the failure set for the request's
+// operation, if it is one, and reports whether to go on with it.
+func (f *fakeLocalAPI) admit(w http.ResponseWriter, r *http.Request) bool {
+	var op string
+	switch r.Method + " " + r.URL.Path {
+	case "POST " + servePath:
+		op = "serve"
+	case "PATCH " + prefsPath:
+		op = "prefs"
+	default:
+		return true
+	}
+	f.mu.Lock()
+	before, msg := f.before, f.fail[op]
+	f.mu.Unlock()
+	if before != nil {
+		before(r.Context(), op)
+		if r.Context().Err() != nil {
+			http.Error(w, "cancelled", http.StatusServiceUnavailable)
+			return false
+		}
+	}
+	if msg != "" {
+		http.Error(w, msg, http.StatusInternalServerError)
+		return false
+	}
+	return true
+}
+
+// getServe answers with the serve config and its ETag.
+func (f *fakeLocalAPI) getServe(w http.ResponseWriter) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	w.Header().Set("Etag", strconv.Itoa(f.etag))
+	sc := f.serve
+	if sc == nil {
+		sc = new(ipn.ServeConfig)
+	}
+	f.reply(w, sc)
+}
+
+// setServe sets the serve config, unless it changed since the client read it.
+func (f *fakeLocalAPI) setServe(w http.ResponseWriter, r *http.Request) {
+	var sc ipn.ServeConfig
+	if err := json.NewDecoder(r.Body).Decode(&sc); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if m := r.Header.Get("If-Match"); m != "" && m != strconv.Itoa(f.etag) {
+		http.Error(w, "serve config changed", http.StatusPreconditionFailed)
+		return
+	}
+	f.serve = &sc
+	f.etag++
+	f.ops = append(f.ops, []string{"serve"})
+	w.WriteHeader(http.StatusOK)
+}
+
+// noteAdvertised records the Services a prefs edit advertised or stopped
+// advertising. The caller holds f.mu.
+func (f *fakeLocalAPI) noteAdvertised(before, after []string) {
+	for _, s := range after {
+		if !slices.Contains(before, s) {
+			f.ops = append(f.ops, []string{"advertise", s})
+		}
+	}
+	for _, s := range before {
+		if !slices.Contains(after, s) {
+			f.ops = append(f.ops, []string{"unadvertise", s})
+		}
+	}
+}
+
+// operations returns the serve config sets and (un)advertisements so far.
+func (f *fakeLocalAPI) operations() [][]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.ops)
+}
+
+// serveConfig returns the serve config last set, or nil.
+func (f *fakeLocalAPI) serveConfig() *ipn.ServeConfig {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.serve
+}
+
+// failOp makes op ("serve" or "prefs") fail with msg; an empty msg ends that.
+func (f *fakeLocalAPI) failOp(op, msg string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	mak.Set(&f.fail, op, msg)
+}
+
+// setBefore sets the hook that runs ahead of each operation.
+func (f *fakeLocalAPI) setBefore(fn func(ctx context.Context, op string)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.before = fn
 }
 
 // watch streams the IPN bus until the client goes.

@@ -107,7 +107,7 @@ Fuzz targets check code that handles input from containers, stack files and the 
 
 - State directory paths
 - Network options
-- Serve labels, and the `tailscale serve` arguments that they become
+- Serve labels, and the serve config that they become
 - The `resolv.conf` of tailscaled
 - Certificate paths
 

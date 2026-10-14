@@ -2,6 +2,7 @@ package tailscale
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -12,287 +13,158 @@ import (
 	"time"
 
 	"tailscale.com/client/local"
+	"tailscale.com/ipn"
+	"tailscale.com/tailcfg"
 )
-
-func TestServeOptionArgs(t *testing.T) {
-	if got := serveOptionArgs(
-		ServeEndpoint{Proto: "tcp", ProxyProtocol: "2"},
-	); !slices.Equal(
-		got,
-		[]string{"--proxy-protocol=2"},
-	) {
-		t.Errorf("with proxy protocol: %q", got)
-	}
-	if got := serveOptionArgs(
-		ServeEndpoint{Proto: "http", AcceptAppCaps: "example.com/cap/a,example.com/cap/b"},
-	); !slices.Equal(
-		got,
-		[]string{"--accept-app-caps=example.com/cap/a,example.com/cap/b"},
-	) {
-		t.Errorf("with app capabilities: %q", got)
-	}
-	if got := serveOptionArgs(ServeEndpoint{Proto: "tcp"}); len(got) != 0 {
-		t.Errorf("without options: %q", got)
-	}
-}
-
-// fakeCLI records the tailscale CLI calls of a daemon, and answers them with
-// out on standard output, stderr and err.
-type fakeCLI struct {
-	mu     sync.Mutex
-	calls  [][]string
-	out    string
-	stderr string
-	err    error
-}
-
-func (f *fakeCLI) run(_ context.Context, c cliCall) (cliOutput, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.calls = append(f.calls, c.args)
-	return cliOutput{stdout: f.out, stderr: f.stderr}, f.err
-}
-
-// snapshot returns the calls so far, without the socket argument.
-func (f *fakeCLI) snapshot() [][]string {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	calls := make([][]string, len(f.calls))
-	for i, c := range f.calls {
-		calls[i] = slices.Clone(c[1:])
-	}
-	return calls
-}
 
 const testSocket = "/run/test.sock"
 
-func newTestDaemon(t *testing.T, cli *fakeCLI, service string) *daemon {
+// newTestDaemon returns a daemon for service whose tailscaled is a fake
+// LocalAPI, a running, tagged node of the tailnet example.ts.net, and that
+// fake.
+func newTestDaemon(t *testing.T, service string) (*daemon, *fakeLocalAPI) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
+	api := newFakeLocalAPI(t)
+	api.serviceHost(ipn.Prefs{})
 	return &daemon{
 		config: DaemonConfig{
 			EndpointID: "test", StateDir: t.TempDir(), Service: service, gate: &serviceGate{},
 		},
-		socketPath: testSocket,
-		runCLI:     cli.run,
-		// Nothing listens there: tests that query tailscaled set their own
-		lc:     &local.Client{Socket: testSocket, UseSocketOnly: true},
-		ctx:    ctx,
-		cancel: cancel,
-	}
+		socketPath: api.socket,
+		lc:         api.client(),
+		ctx:        ctx,
+		cancel:     cancel,
+	}, api
 }
 
-// serveCall returns the arguments after --socket of the "tailscale serve"
-// command configuring ep for service, or for direct machine serve if service
-// is empty; nil if no command ran.
-func serveCall(t *testing.T, ep ServeEndpoint, service string) ([]string, error) {
+// newOfflineDaemon is newTestDaemon without a tailscaled: nothing listens on
+// its socket.
+func newOfflineDaemon(t *testing.T, service string) *daemon {
 	t.Helper()
-	cli := &fakeCLI{}
-	d := newTestDaemon(t, cli, service)
-	var err error
-	if service == "" {
-		err = d.configureDirectServeEndpoint(ep)
-	} else {
-		err = d.configureServeEndpoint(t.Context(), ep)
-	}
-	switch len(cli.calls) {
-	case 0:
-		return nil, err
-	case 1:
-		args := cli.calls[0]
-		if len(args) == 0 || args[0] != "--socket="+testSocket {
-			t.Fatalf("command does not start with the socket: %q", args)
-		}
-		return args[1:], err
-	default:
-		t.Fatalf("ran %d commands, want at most one: %q", len(cli.calls), cli.calls)
-		return nil, nil
-	}
+	d, _ := newTestDaemon(t, service)
+	d.socketPath = testSocket
+	d.lc = &local.Client{Socket: testSocket, UseSocketOnly: true}
+	return d
 }
 
-func TestServeArgs(t *testing.T) {
+// ran reports whether ops contain the operation op.
+func ran(ops [][]string, op ...string) bool {
+	return slices.ContainsFunc(ops, func(c []string) bool { return slices.Equal(c, op) })
+}
+
+// serveJSON returns sc as JSON.
+func serveJSON(t *testing.T, sc *ipn.ServeConfig) string {
+	t.Helper()
+	b, err := json.Marshal(sc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+func TestApplyServeEndpoint(t *testing.T) {
 	const svc = "svc:web"
+	const host = "node.example.ts.net"
 	tests := []struct {
 		name    string
-		service string
+		service tailcfg.ServiceName
 		ep      ServeEndpoint
-		want    []string
+		want    string
 		wantErr string
 	}{
 		// Direct machine serve
 		{
 			name: "direct http",
 			ep:   ServeEndpoint{Proto: "http", Port: "80", Target: "8080"},
-			want: []string{"serve", "--bg", "--http=80", "http://127.0.0.1:8080"},
+			want: `{"TCP":{"80":{"HTTP":true}},"Web":{"node.example.ts.net:80":` +
+				`{"Handlers":{"/":{"Proxy":"http://127.0.0.1:8080"}}}}}`,
 		},
 		{
-			name: "direct https",
-			ep:   ServeEndpoint{Proto: "https", Port: "443", Target: "8080"},
-			want: []string{"serve", "--bg", "--https=443", "http://127.0.0.1:8080"},
-		},
-		{
-			name: "direct https with path",
-			ep:   ServeEndpoint{Proto: "https", Port: "443", Target: "8080", Path: "/api"},
-			want: []string{
-				"serve",
-				"--bg",
-				"--https=443",
-				"--set-path=/api",
-				"http://127.0.0.1:8080",
-			},
-		},
-		{
-			name: "direct https with path and options",
+			name: "direct https with path and app capabilities",
 			ep: ServeEndpoint{
 				Proto: "https", Port: "443", Target: "8080", Path: "/api",
-				ProxyProtocol: "1", AcceptAppCaps: "example.com/cap/a,example.com/cap/b",
+				AcceptAppCaps: "example.com/cap/a,example.com/cap/b",
 			},
-			want: []string{
-				"serve", "--bg", "--https=443", "--set-path=/api", "--proxy-protocol=1",
-				"--accept-app-caps=example.com/cap/a,example.com/cap/b", "http://127.0.0.1:8080",
-			},
-		},
-		{
-			name: "direct tcp",
-			ep:   ServeEndpoint{Proto: "tcp", Port: "5432", Target: "5432"},
-			want: []string{"serve", "--bg", "--tcp=5432", "tcp://127.0.0.1:5432"},
-		},
-		{
-			name: "direct tcp ignores path",
-			ep:   ServeEndpoint{Proto: "tcp", Port: "5432", Target: "5432", Path: "/api"},
-			want: []string{"serve", "--bg", "--tcp=5432", "tcp://127.0.0.1:5432"},
+			want: `{"TCP":{"443":{"HTTPS":true}},"Web":{"node.example.ts.net:443":` +
+				`{"Handlers":{"/api":{"Proxy":"http://127.0.0.1:8080",` +
+				`"AcceptAppCaps":["example.com/cap/a","example.com/cap/b"]}}}}}`,
 		},
 		{
 			name: "direct tcp with proxy protocol",
 			ep:   ServeEndpoint{Proto: "tcp", Port: "5432", Target: "5432", ProxyProtocol: "2"},
-			want: []string{
-				"serve",
-				"--bg",
-				"--tcp=5432",
-				"--proxy-protocol=2",
-				"tcp://127.0.0.1:5432",
-			},
+			want: `{"TCP":{"5432":{"TCPForward":"127.0.0.1:5432","ProxyProtocol":2}}}`,
 		},
 		{
 			name: "direct tls-terminated-tcp",
 			ep:   ServeEndpoint{Proto: "tls-terminated-tcp", Port: "443", Target: "8080"},
-			want: []string{"serve", "--bg", "--tls-terminated-tcp=443", "tcp://127.0.0.1:8080"},
-		},
-		{
-			name: "direct tls-terminated-tcp with proxy protocol",
-			ep: ServeEndpoint{
-				Proto:         "tls-terminated-tcp",
-				Port:          "443",
-				Target:        "8080",
-				ProxyProtocol: "1",
-			},
-			want: []string{
-				"serve",
-				"--bg",
-				"--tls-terminated-tcp=443",
-				"--proxy-protocol=1",
-				"tcp://127.0.0.1:8080",
-			},
+			want: `{"TCP":{"443":{"TCPForward":"127.0.0.1:8080",` +
+				`"TerminateTLS":"node.example.ts.net"}}}`,
 		},
 		{
 			name: "direct tun is skipped",
 			ep:   ServeEndpoint{Proto: "tun", Port: "0", Target: "0"},
-			want: nil,
+			want: `{}`,
 		},
 
 		// Tailscale Service backend
 		{
-			name:    "service http",
-			service: svc,
-			ep:      ServeEndpoint{Proto: "http", Port: "80", Target: "8080"},
-			want:    []string{"serve", "--service=svc:web", "--http=80", "127.0.0.1:8080"},
-		},
-		{
 			name:    "service https",
 			service: svc,
 			ep:      ServeEndpoint{Proto: "https", Port: "443", Target: "8080"},
-			want:    []string{"serve", "--service=svc:web", "--https=443", "127.0.0.1:8080"},
-		},
-		{
-			name:    "service https with path and options",
-			service: svc,
-			ep: ServeEndpoint{
-				Proto: "https", Port: "443", Target: "8080", Path: "/api",
-				ProxyProtocol: "2", AcceptAppCaps: "example.com/cap/a",
-			},
-			want: []string{
-				"serve",
-				"--service=svc:web",
-				"--https=443",
-				"--set-path=/api",
-				"--proxy-protocol=2",
-				"--accept-app-caps=example.com/cap/a",
-				"127.0.0.1:8080",
-			},
-		},
-		{
-			name:    "service tcp",
-			service: svc,
-			ep:      ServeEndpoint{Proto: "tcp", Port: "5432", Target: "5432"},
-			want:    []string{"serve", "--service=svc:web", "--tcp=5432", "tcp://127.0.0.1:5432"},
+			want: `{"Services":{"svc:web":{"TCP":{"443":{"HTTPS":true}},` +
+				`"Web":{"web.example.ts.net:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:8080"}}}}}}}`,
 		},
 		{
 			name:    "service tcp with proxy protocol",
 			service: svc,
 			ep:      ServeEndpoint{Proto: "tcp", Port: "5432", Target: "5432", ProxyProtocol: "1"},
-			want: []string{
-				"serve",
-				"--service=svc:web",
-				"--tcp=5432",
-				"--proxy-protocol=1",
-				"tcp://127.0.0.1:5432",
-			},
+			want: `{"Services":{"svc:web":{"TCP":{"5432":` +
+				`{"TCPForward":"127.0.0.1:5432","ProxyProtocol":1}}}}}`,
 		},
 		{
 			name:    "service tls-terminated-tcp",
 			service: svc,
-			ep: ServeEndpoint{
-				Proto:         "tls-terminated-tcp",
-				Port:          "443",
-				Target:        "8080",
-				ProxyProtocol: "2",
-			},
-			want: []string{
-				"serve", "--service=svc:web", "--tls-terminated-tcp=443", "--proxy-protocol=2",
-				"tcp://127.0.0.1:8080",
-			},
+			ep:      ServeEndpoint{Proto: "tls-terminated-tcp", Port: "443", Target: "8080"},
+			want: `{"Services":{"svc:web":{"TCP":{"443":` +
+				`{"TCPForward":"127.0.0.1:8080","TerminateTLS":"web.example.ts.net"}}}}}`,
 		},
 		{
-			name:    "service tun ignores port, path and options",
+			name:    "service tun ignores path and options",
 			service: svc,
 			ep: ServeEndpoint{
 				Proto: "tun", Port: "1", Target: "2", Path: "/api",
 				ProxyProtocol: "2", AcceptAppCaps: "example.com/cap/a",
 			},
-			want: []string{"serve", "--service=svc:web", "--tun"},
+			want: `{"Services":{"svc:web":{"Tun":true}}}`,
 		},
 
 		// Invalid input
 		{
-			name:    "direct non-numeric port",
+			name:    "non-numeric port",
 			ep:      ServeEndpoint{Proto: "http", Port: "http", Target: "8080"},
 			wantErr: `invalid external port "http": must be numeric`,
 		},
 		{
-			name:    "direct missing target",
+			name:    "port out of range",
+			ep:      ServeEndpoint{Proto: "http", Port: "65536", Target: "8080"},
+			wantErr: `invalid external port "65536": must be numeric`,
+		},
+		{
+			name:    "missing target",
 			ep:      ServeEndpoint{Proto: "tcp", Port: "5432"},
 			wantErr: `invalid target port "": must be numeric`,
 		},
 		{
-			name:    "direct tun with invalid port",
-			ep:      ServeEndpoint{Proto: "tun", Port: "x", Target: "0"},
-			wantErr: `invalid external port "x": must be numeric`,
+			name:    "signed target",
+			ep:      ServeEndpoint{Proto: "tcp", Port: "5432", Target: "+5432"},
+			wantErr: `invalid target port "+5432": must be numeric`,
 		},
 		{
-			name:    "direct unsupported protocol",
-			ep:      ServeEndpoint{Proto: "udp", Port: "53", Target: "53"},
-			wantErr: "unsupported protocol: udp",
+			name:    "tun with invalid port",
+			ep:      ServeEndpoint{Proto: "tun", Port: "x", Target: "0"},
+			wantErr: `invalid external port "x": must be numeric`,
 		},
 		{
 			name:    "service non-numeric target",
@@ -301,13 +173,12 @@ func TestServeArgs(t *testing.T) {
 			wantErr: `invalid target port "web:8080": must be numeric`,
 		},
 		{
-			name:    "service tun with missing ports",
-			service: svc,
-			ep:      ServeEndpoint{Proto: "tun"},
-			wantErr: `invalid external port "": must be numeric`,
+			name:    "unclean path",
+			ep:      ServeEndpoint{Proto: "https", Port: "443", Target: "8080", Path: "/a/../b"},
+			wantErr: `invalid mount point "/a/../b"`,
 		},
 		{
-			name:    "service unsupported protocol",
+			name:    "unsupported protocol",
 			service: svc,
 			ep:      ServeEndpoint{Proto: "HTTP", Port: "80", Target: "8080"},
 			wantErr: "unsupported protocol: HTTP",
@@ -315,34 +186,46 @@ func TestServeArgs(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// The builder, and the command the daemon runs with it
-			args, argsErr := serveArgs(tt.ep, tt.service)
-			got, err := serveCall(t, tt.ep, tt.service)
-			if !slices.Equal(args, got) || (argsErr == nil) != (err == nil) {
-				t.Fatalf("serveArgs = %q, %v; daemon ran %q, %v", args, argsErr, got, err)
-			}
+			sc := new(ipn.ServeConfig)
+			err := applyServeEndpoint(sc, tt.ep, tt.service, host, "example.ts.net")
 			if tt.wantErr != "" {
 				if err == nil || err.Error() != tt.wantErr {
 					t.Fatalf("error = %v, want %q", err, tt.wantErr)
-				}
-				if got != nil {
-					t.Fatalf("ran %q despite the error", got)
 				}
 				return
 			}
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if !slices.Equal(got, tt.want) {
-				t.Errorf("args =\n  %q\nwant\n  %q", got, tt.want)
+			if got := serveJSON(t, sc); got != tt.want {
+				t.Errorf("config =\n  %s\nwant\n  %s", got, tt.want)
 			}
 		})
 	}
 }
 
+// A port serves either web or TCP, as with "tailscale serve".
+func TestApplyServeEndpointConflicts(t *testing.T) {
+	sc := new(ipn.ServeConfig)
+	web := ServeEndpoint{Proto: "https", Port: "443", Target: "8080"}
+	tcp := ServeEndpoint{Proto: "tcp", Port: "443", Target: "8443"}
+	if err := applyServeEndpoint(sc, web, "svc:web", "", "example.ts.net"); err != nil {
+		t.Fatal(err)
+	}
+	if err := applyServeEndpoint(sc, tcp, "svc:web", "", "example.ts.net"); err == nil {
+		t.Error("TCP on a port serving web succeeded")
+	}
+	sc = new(ipn.ServeConfig)
+	if err := applyServeEndpoint(sc, tcp, "", "node.example.ts.net", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := applyServeEndpoint(sc, web, "", "node.example.ts.net", ""); err == nil {
+		t.Error("web on a port serving TCP succeeded")
+	}
+}
+
 func TestConfigureServiceAdvertises(t *testing.T) {
-	cli := &fakeCLI{}
-	d := newTestDaemon(t, cli, "svc:web")
+	d, api := newTestDaemon(t, "svc:web")
 	d.config.Endpoints = []ServeEndpoint{
 		{Proto: "https", Port: "443", Target: "8080"},
 		{Proto: "tcp", Port: "5432", Target: "5432"},
@@ -350,145 +233,210 @@ func TestConfigureServiceAdvertises(t *testing.T) {
 	if err := d.configureService(); err != nil {
 		t.Fatal(err)
 	}
-	want := [][]string{
-		{"--socket=" + testSocket, "serve", "--service=svc:web", "--https=443", "127.0.0.1:8080"},
-		{
-			"--socket=" + testSocket,
-			"serve",
-			"--service=svc:web",
-			"--tcp=5432",
-			"tcp://127.0.0.1:5432",
-		},
-		{"--socket=" + testSocket, "serve", "advertise", "svc:web"},
+	want := [][]string{{"serve"}, {"advertise", "svc:web"}}
+	if got := api.operations(); !slices.EqualFunc(got, want, slices.Equal) {
+		t.Errorf("operations = %q, want %q", got, want)
 	}
-	if !slices.EqualFunc(cli.calls, want, slices.Equal) {
-		t.Errorf("calls =\n  %q\nwant\n  %q", cli.calls, want)
+	svc := api.serveConfig().Services["svc:web"]
+	if svc == nil || svc.TCP[443] == nil || svc.TCP[5432] == nil {
+		t.Errorf("serve config = %s, want both endpoints", serveJSON(t, api.serveConfig()))
+	}
+}
+
+// Configuring the Service keeps what the serve config holds, as direct serve,
+// and sends it back with the version it read.
+func TestConfigureServiceKeepsServeConfig(t *testing.T) {
+	d, api := newTestDaemon(t, "svc:web")
+	d.config.Endpoints = []ServeEndpoint{{Proto: "tcp", Port: "22", Target: "22"}}
+	d.config.Direct = true
+	if err := d.configureDirectServe(); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.configureService(); err != nil {
+		t.Fatal(err)
+	}
+	sc := api.serveConfig()
+	if sc.TCP[22] == nil || sc.Services["svc:web"] == nil {
+		t.Errorf("serve config = %s, want direct serve and the Service", serveJSON(t, sc))
+	}
+
+	// A serve config changed meanwhile is not overwritten
+	api.setBefore(func(context.Context, string) {
+		api.mu.Lock()
+		api.etag++
+		api.mu.Unlock()
+	})
+	if err := d.configureService(); err == nil {
+		t.Error("overwrote a serve config changed since it was read")
+	}
+}
+
+// A node configured without advertising, as the certificate lease holder,
+// is not advertised, even if its prefs advertised the Service from before.
+func TestConfigureServiceUnadvertised(t *testing.T) {
+	d, api := newTestDaemon(t, "svc:web")
+	api.serviceHost(ipn.Prefs{AdvertiseServices: []string{"svc:other", "svc:web"}})
+	d.config.Endpoints = []ServeEndpoint{{Proto: "tcp", Port: "22", Target: "22"}}
+	if err := d.configureServiceBackend(false); err != nil {
+		t.Fatal(err)
+	}
+	want := [][]string{{"serve"}, {"unadvertise", "svc:web"}}
+	if got := api.operations(); !slices.EqualFunc(got, want, slices.Equal) {
+		t.Errorf("operations = %q, want %q", got, want)
+	}
+	if err := d.configureServiceBackend(false); err != nil {
+		t.Fatal(err)
+	}
+	if got := api.operations(); ran(got[2:], "unadvertise", "svc:web") {
+		t.Errorf("unadvertised again: %q", got)
 	}
 }
 
 func TestConfigureServiceSkips(t *testing.T) {
-	cli := &fakeCLI{}
-	d := newTestDaemon(t, cli, "")
+	d, api := newTestDaemon(t, "")
 	d.config.Endpoints = []ServeEndpoint{{Proto: "https", Port: "443", Target: "8080"}}
 	if err := d.configureService(); err != nil {
 		t.Fatal(err)
 	}
-	d = newTestDaemon(t, cli, "svc:web")
+	d, api2 := newTestDaemon(t, "svc:web")
 	if err := d.configureService(); err != nil {
 		t.Fatal(err)
 	}
-	if len(cli.calls) != 0 {
-		t.Errorf("ran %q without a service or endpoints", cli.calls)
+	if ops := append(api.operations(), api2.operations()...); len(ops) != 0 {
+		t.Errorf("ran %q without a service or endpoints", ops)
 	}
 }
 
 func TestConfigureServiceErrors(t *testing.T) {
-	tests := []struct {
-		name string
-		out  string
-		want string
-	}{
-		{
-			// The CLI does not check that the Service exists: it configures
-			// it, and reports that it awaits approval
-			"no special case for missing services",
-			"error: service not found",
-			"tailscale serve failed: exit status 1 (output: error: service not found)",
-		},
-		{"untagged node", "service hosts must be tagged nodes", "requires tagged auth key"},
-		{
-			"other mentioning a tag",
-			"invalid tag:web",
-			"tailscale serve failed: exit status 1 (output: invalid tag:web)",
-		},
-		{"other", "boom", "tailscale serve failed: exit status 1 (output: boom)"},
+	// A node without tags cannot host a Service
+	d, api := newTestDaemon(t, "svc:web")
+	d.config.Endpoints = []ServeEndpoint{{Proto: "https", Port: "443", Target: "8080"}}
+	api.mu.Lock()
+	api.tags = nil
+	api.mu.Unlock()
+	if err := d.configureService(); !errors.Is(err, errUntaggedServiceHost) {
+		t.Errorf("untagged node: error = %v, want errUntaggedServiceHost", err)
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			cli := &fakeCLI{out: tt.out, err: errors.New("exit status 1")}
-			d := newTestDaemon(t, cli, "svc:web")
-			d.config.Endpoints = []ServeEndpoint{{Proto: "https", Port: "443", Target: "8080"}}
-			err := d.configureService()
-			if err == nil || !strings.Contains(err.Error(), tt.want) {
-				t.Fatalf("error = %v, want it to contain %q", err, tt.want)
-			}
-			if len(cli.calls) != 1 {
-				t.Errorf("ran %d commands, want only the failing one", len(cli.calls))
-			}
-		})
+	if ops := api.operations(); len(ops) != 0 {
+		t.Errorf("untagged node ran %q", ops)
+	}
+
+	// tailscaled refuses the config
+	d, api = newTestDaemon(t, "svc:web")
+	d.config.Endpoints = []ServeEndpoint{{Proto: "https", Port: "443", Target: "8080"}}
+	api.failOp("serve", "boom")
+	err := d.configureService()
+	if err == nil || !strings.Contains(err.Error(), "failed to set the serve config") ||
+		!strings.Contains(err.Error(), "boom") {
+		t.Errorf("refused config: error = %v", err)
+	}
+	if ops := api.operations(); len(ops) != 0 {
+		t.Errorf("advertised after a refused config: %q", ops)
+	}
+
+	// An invalid endpoint sets nothing
+	d, api = newTestDaemon(t, "svc:web")
+	d.config.Endpoints = []ServeEndpoint{{Proto: "udp", Port: "53", Target: "53"}}
+	err = d.configureService()
+	if err == nil ||
+		err.Error() != "failed to configure endpoint 0 (udp:53): unsupported protocol: udp" {
+		t.Errorf("invalid endpoint: error = %v", err)
+	}
+	if ops := api.operations(); len(ops) != 0 {
+		t.Errorf("invalid endpoint ran %q", ops)
 	}
 }
 
 func TestConfigureServiceAdvertiseError(t *testing.T) {
-	cli := &fakeCLI{}
-	d := newTestDaemon(t, cli, "svc:web")
+	d, api := newTestDaemon(t, "svc:web")
 	d.config.Endpoints = []ServeEndpoint{{Proto: "tcp", Port: "22", Target: "22"}}
-	d.runCLI = func(ctx context.Context, c cliCall) (cliOutput, error) {
-		if slices.Contains(c.args, "advertise") {
-			return cliOutput{stdout: " not allowed\n"}, errors.New("exit status 1")
-		}
-		return cli.run(ctx, c)
-	}
+	api.failOp("prefs", "not allowed")
 	err := d.configureService()
-	if err == nil ||
-		err.Error() != "tailscale serve advertise failed: exit status 1 (output: not allowed)" {
+	if err == nil || !strings.Contains(err.Error(), "failed to advertise svc:web") ||
+		!strings.Contains(err.Error(), "not allowed") {
 		t.Errorf("error = %v", err)
+	}
+	if d.config.gate.advertised.Load() {
+		t.Error("failed advertisement marked the backend advertised")
 	}
 }
 
 func TestDrain(t *testing.T) {
-	cli := &fakeCLI{}
-	d := newTestDaemon(t, cli, "")
+	d, api := newTestDaemon(t, "")
+	api.serviceHost(ipn.Prefs{AdvertiseServices: []string{"svc:web"}})
 	if err := d.Drain("svc:web"); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"--socket=" + testSocket, "serve", "drain", "svc:web"}
-	if len(cli.calls) != 1 || !slices.Equal(cli.calls[0], want) {
-		t.Errorf("calls = %q, want %q", cli.calls, want)
+	want := [][]string{{"unadvertise", "svc:web"}}
+	if got := api.operations(); !slices.EqualFunc(got, want, slices.Equal) {
+		t.Errorf("operations = %q, want %q", got, want)
 	}
 	// Once drained, draining again, as Leave does after the stop signal's drain, does nothing
-	if err := d.Drain("svc:web"); err != nil || len(cli.calls) != 1 {
-		t.Errorf("second Drain = %v, calls %q; want no command", err, cli.calls)
+	if err := d.Drain("svc:web"); err != nil || len(api.operations()) != 1 {
+		t.Errorf("second Drain = %v, operations %q; want none", err, api.operations())
 	}
 
 	// A failed drain still keeps the backend from being advertised, and is retried
-	cli = &fakeCLI{out: "no such service\n", err: errors.New("exit status 1")}
-	d = newTestDaemon(t, cli, "")
+	d, api = newTestDaemon(t, "")
+	api.serviceHost(ipn.Prefs{AdvertiseServices: []string{"svc:web"}})
+	api.failOp("prefs", "no such service")
 	err := d.Drain("svc:web")
-	if err == nil ||
-		err.Error() != "tailscale serve drain failed: exit status 1 (output: no such service)" {
+	if err == nil || !strings.Contains(err.Error(), "failed to unadvertise svc:web") ||
+		!strings.Contains(err.Error(), "no such service") {
 		t.Errorf("error = %v", err)
 	}
 	if !d.isDrained() {
 		t.Error("failed drain left the backend advertisable")
 	}
-	if err := d.Drain("svc:web"); err == nil || len(cli.calls) != 2 {
-		t.Errorf("drain after a failure = %v, calls %q; want it run again", err, cli.calls)
+	api.failOp("prefs", "")
+	if err := d.Drain("svc:web"); err != nil || !ran(api.operations(), "unadvertise", "svc:web") {
+		t.Errorf(
+			"drain after a failure = %v, operations %q; want it run again",
+			err,
+			api.operations(),
+		)
+	}
+}
+
+// Direct serve configures the node's own name, and needs it.
+func TestConfigureDirectServe(t *testing.T) {
+	d, api := newTestDaemon(t, "")
+	d.config.Endpoints = []ServeEndpoint{{Proto: "https", Port: "443", Target: "8080"}}
+	if err := d.configureDirectServe(); err != nil {
+		t.Fatal(err)
+	}
+	if web := api.serveConfig().Web["node.example.ts.net:443"]; web == nil {
+		t.Errorf("serve config = %s, want the node's name", serveJSON(t, api.serveConfig()))
+	}
+
+	d, api = newTestDaemon(t, "")
+	d.config.Endpoints = []ServeEndpoint{{Proto: "https", Port: "443", Target: "8080"}}
+	api.mu.Lock()
+	api.dnsName = ""
+	api.mu.Unlock()
+	if err := d.configureDirectServe(); err == nil {
+		t.Error("direct serve without a DNS name succeeded")
 	}
 }
 
 func TestServeDebugLogKeepsEarlierAttempts(t *testing.T) {
-	cli := &fakeCLI{}
-	d := newTestDaemon(t, cli, "svc:web")
-	ep := ServeEndpoint{Proto: "tcp", Port: "22", Target: "22"}
-	if err := d.configureServeEndpoint(t.Context(), ep); err != nil {
+	d, api := newTestDaemon(t, "svc:web")
+	d.config.Endpoints = []ServeEndpoint{{Proto: "tcp", Port: "22", Target: "22"}}
+	if err := d.configureService(); err != nil {
 		t.Fatal(err)
 	}
-	cli.out, cli.err = "boom", errors.New("exit status 1")
-	if err := d.configureServeEndpoint(t.Context(), ep); err == nil {
+	api.failOp("serve", "boom")
+	if err := d.configureService(); err == nil {
 		t.Fatal("second attempt succeeded, want an error")
 	}
 	log, err := os.ReadFile(filepath.Join(d.config.StateDir, "serve-debug.log"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"SUCCESS", "FAILED: exit status 1", "Output: boom"} {
+	for _, want := range []string{"SUCCESS service: {", `"TCPForward":"127.0.0.1:22"`, "FAILED service: ", "boom"} {
 		if !strings.Contains(string(log), want) {
 			t.Errorf("log missing %q:\n%s", want, log)
 		}
-	}
-	if n := strings.Count(string(log), "Running: "); n != 2 {
-		t.Errorf("log has %d attempts, want 2:\n%s", n, log)
 	}
 }
 
@@ -497,13 +445,10 @@ func TestServeDebugLogIsBounded(t *testing.T) {
 	serveDebugLogMaxBytes = 300
 	t.Cleanup(func() { serveDebugLogMaxBytes = old })
 
-	cli := &fakeCLI{out: strings.Repeat("x", 100)}
-	d := newTestDaemon(t, cli, "svc:web")
+	d, _ := newTestDaemon(t, "svc:web")
+	d.config.Endpoints = []ServeEndpoint{{Proto: "tcp", Port: "22", Target: "22"}}
 	for range 10 {
-		if err := d.configureServeEndpoint(
-			t.Context(),
-			ServeEndpoint{Proto: "tcp", Port: "22", Target: "22"},
-		); err != nil {
+		if err := d.configureService(); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -519,45 +464,44 @@ func TestServeDebugLogIsBounded(t *testing.T) {
 	}
 }
 
-// blockOn returns a tailscale CLI that passes calls to cli, after blocking a
-// call with arg until its context is done, as an exec'd command would be
-// killed, or 5 seconds passed. It closes started when such a call begins.
-func blockOn(
-	cli *fakeCLI,
-	arg string,
-	started chan<- struct{},
-) func(context.Context, cliCall) (cliOutput, error) {
+// blockOn blocks the first operation op of api until its request's context
+// is done, as tailscaled would leave a slow request to its client, or 5
+// seconds passed. It closes started when that operation begins.
+func blockOn(api *fakeLocalAPI, op string, started chan<- struct{}) {
 	var once sync.Once
-	return func(ctx context.Context, c cliCall) (cliOutput, error) {
-		if slices.Contains(c.args, arg) {
-			once.Do(func() { close(started) })
-			select {
-			case <-ctx.Done():
-				return cliOutput{}, ctx.Err()
-			case <-time.After(5 * time.Second):
-			}
+	api.setBefore(func(ctx context.Context, o string) {
+		if o != op {
+			return
 		}
-		return cli.run(ctx, c)
-	}
+		block := false
+		once.Do(func() { block = true; close(started) })
+		if !block {
+			return
+		}
+		select {
+		case <-ctx.Done():
+		case <-time.After(5 * time.Second):
+		}
+	})
 }
 
-// returnsWithin fails the test unless fn returns within d, and returns its
-// error.
-func returnsWithin(t *testing.T, d time.Duration, what string, fn func() error) error {
+// returnsWithin fails the test unless fn returns within a second, and
+// returns its error.
+func returnsWithin(t *testing.T, what string, fn func() error) error {
 	t.Helper()
 	done := make(chan error, 1)
 	go func() { done <- fn() }()
 	select {
 	case err := <-done:
 		return err
-	case <-time.After(d):
-		t.Fatalf("%s did not return within %v", what, d)
+	case <-time.After(time.Second):
+		t.Fatalf("%s did not return within a second", what)
 		return nil
 	}
 }
 
-// The serve configuration's CLI calls end when the daemon stops, rather than
-// keep a stopping endpoint waiting for their timeout.
+// The serve configuration's LocalAPI calls end when the daemon stops, rather
+// than keep a stopping endpoint waiting for their timeout.
 func TestServeCallsEndWithDaemon(t *testing.T) {
 	for _, tc := range []struct {
 		name, service string
@@ -567,16 +511,15 @@ func TestServeCallsEndWithDaemon(t *testing.T) {
 		{"direct", "", (*daemon).configureDirectServe},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cli := &fakeCLI{}
-			d := newTestDaemon(t, cli, tc.service)
+			d, api := newTestDaemon(t, tc.service)
 			d.config.Endpoints = []ServeEndpoint{{Proto: "tcp", Port: "22", Target: "22"}}
 			started := make(chan struct{})
-			d.runCLI = blockOn(cli, "--tcp=22", started)
+			blockOn(api, "serve", started)
 			go func() {
 				<-started
 				d.cancel()
 			}()
-			err := returnsWithin(t, time.Second, "the serve configuration",
+			err := returnsWithin(t, "the serve configuration",
 				func() error { return tc.configure(d) })
 			if err == nil {
 				t.Error("cancelled serve configuration succeeded")
@@ -585,18 +528,17 @@ func TestServeCallsEndWithDaemon(t *testing.T) {
 	}
 }
 
-// Drain's CLI call ends when the daemon stops.
+// Drain's LocalAPI call ends when the daemon stops.
 func TestDrainCallEndsWithDaemon(t *testing.T) {
-	cli := &fakeCLI{}
-	d := newTestDaemon(t, cli, "svc:web")
+	d, api := newTestDaemon(t, "svc:web")
+	api.serviceHost(ipn.Prefs{AdvertiseServices: []string{"svc:web"}})
 	started := make(chan struct{})
-	d.runCLI = blockOn(cli, "drain", started)
+	blockOn(api, "prefs", started)
 	go func() {
 		<-started
 		d.cancel()
 	}()
-	// Reading the prefs first fails after about a second: nothing listens
-	err := returnsWithin(t, 3*time.Second, "Drain", func() error { return d.Drain("svc:web") })
+	err := returnsWithin(t, "Drain", func() error { return d.Drain("svc:web") })
 	if err == nil {
 		t.Error("cancelled drain succeeded")
 	}

@@ -21,9 +21,8 @@ import (
 )
 
 // fakeTailscaled stands in for tailscaled: each start runs sleep in its
-// place, with the daemon's CLI calls going to cli, or fails while fail is set.
+// place, or fails while fail is set.
 type fakeTailscaled struct {
-	cli *fakeCLI
 	api *fakeLocalAPI // Every daemon's LocalAPI
 
 	mu      sync.Mutex
@@ -40,7 +39,6 @@ func (f *fakeTailscaled) start(d *daemon) error {
 	if f.fail != nil {
 		return f.fail
 	}
-	d.runCLI = f.cli.run
 	d.lc = f.api.client()
 	if err := d.startProcess(exec.CommandContext(d.ctx, "sleep", "60")); err != nil {
 		return err
@@ -98,7 +96,7 @@ func newFakeSupervisor(t *testing.T) (*DaemonSupervisor, *fakeTailscaled, string
 		tm.healthCheckInterval = 5 * time.Millisecond
 		tm.maxStartupJitter = time.Nanosecond
 	})
-	f := &fakeTailscaled{cli: &fakeCLI{}, api: newFakeLocalAPI(t)}
+	f := &fakeTailscaled{api: newFakeLocalAPI(t)}
 	s.start = f.start
 	t.Cleanup(func() {
 		if err := s.Stop(); err != nil {

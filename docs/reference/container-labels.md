@@ -115,7 +115,7 @@ labels:
   them.
 - On stop, all the container's Services are drained together.
 - `tslink.service` with `tslink.serve.<port>` is the form for one Service. A container with both forms, or with
-  `tslink.direct=true`, is refused: its status file names the label.
+  `tslink.direct=true`, is refused: its status file gives the reason and the label.
 - Every node of a cluster must run tslink v0.4.0 or later before a stack uses these labels: older versions ignore
   them and report the container ready while it serves nothing. Do not downgrade a node while such containers run on
   it: an older version does not drain their Services.

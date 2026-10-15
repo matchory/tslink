@@ -633,9 +633,22 @@ func httpsService(name string) Service {
 }
 
 // A Service whose configuration fails does not fail the start or hold back
-// the others; it is retried until it succeeds.
+// the others; it is retried until it succeeds, with a status warning until
+// then.
 func TestFailingBackendRetriedInPlace(t *testing.T) {
 	d, api := newMultiDaemon(t, tcpService("svc:a", "1"), tcpService("svc:b", "2"))
+	var mu sync.Mutex
+	warnings := map[string]string{}
+	d.config.Warn = func(key, message string) {
+		mu.Lock()
+		defer mu.Unlock()
+		warnings[key] = message
+	}
+	warning := func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		return warnings["service/svc:b"]
+	}
 	api.failService("svc:b", "boom")
 	if err := d.configureServing(); err != nil {
 		t.Fatalf("configureServing = %v, want nil", err)
@@ -644,12 +657,16 @@ func TestFailingBackendRetriedInPlace(t *testing.T) {
 	if !ran(ops, "advertise", "svc:a") || ran(ops, "advertise", "svc:b") {
 		t.Fatalf("operations = %q, want svc:a advertised only", ops)
 	}
+	if w := warning(); !strings.Contains(w, "boom") {
+		t.Errorf("warning = %q, want the failure", w)
+	}
 	api.failService("svc:b", "")
 	waitFor(
 		t,
 		"svc:b advertised",
 		func() bool { return ran(api.operations(), "advertise", "svc:b") },
 	)
+	waitFor(t, "the warning cleared", func() bool { return warning() == "" })
 }
 
 // Checks every Service needs still fail the start, before any is configured.
@@ -671,8 +688,8 @@ func TestSharedServiceChecksFailStart(t *testing.T) {
 		api.mu.Lock()
 		api.suffix = ""
 		api.mu.Unlock()
-		if err := d.configureServing(); err == nil {
-			t.Error("configureServing = nil, want an error")
+		if err := d.configureServing(); !errors.Is(err, errNoMagicDNS) {
+			t.Errorf("configureServing = %v, want %v", err, errNoMagicDNS)
 		}
 	})
 }

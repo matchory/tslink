@@ -8,10 +8,13 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/moby/moby/client/pkg/stringid"
 	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/tailcfg"
 	"tailscale.com/util/mak"
+
+	"github.com/matchory/tslink/pkg/logger"
 )
 
 // Readiness is how far a node is from serving what its container asks for.
@@ -87,13 +90,20 @@ func (d *daemon) readinessReport(ctx context.Context) ReadinessReport {
 	}
 
 	direct := d.config.Direct && len(d.config.Endpoints) > 0
+	id := stringid.TruncateID(d.config.EndpointID)
 	var config *ipn.ServeConfig
 	if direct || len(d.backends) > 0 {
-		config, _ = d.lc.GetServeConfig(ctx) // nil if unreadable: nothing applied
+		// nil if unreadable: nothing applied
+		if config, err = d.lc.GetServeConfig(ctx); err != nil {
+			logger.Debugf("Reading the serve config of %s for readiness: %v", id, err)
+		}
 	}
 	var prefs *ipn.Prefs
 	if len(d.backends) > 0 {
-		prefs, _ = d.lc.GetPrefs(ctx) // nil if unreadable: nothing advertised
+		// nil if unreadable: nothing advertised
+		if prefs, err = d.lc.GetPrefs(ctx); err != nil {
+			logger.Debugf("Reading the prefs of %s for readiness: %v", id, err)
+		}
 	}
 
 	report := ReadinessReport{State: Ready}

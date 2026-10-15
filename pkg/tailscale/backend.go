@@ -2,8 +2,10 @@ package tailscale
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/moby/moby/client/pkg/stringid"
 
@@ -49,9 +51,9 @@ func newBackends(d *daemon) []*serviceBackend {
 // failure is retried in the background: the node keeps serving its other
 // Services, and a start that failed would stop it without draining them.
 func (b *serviceBackend) start() {
-	if err := b.configureServiceWhenCertified(); err != nil {
-		logger.Warnf("Failed to configure %s for %s, retrying: %v",
-			b.name, stringid.TruncateID(b.d.config.EndpointID), err)
+	err := b.configureServiceWhenCertified()
+	b.noteFailure(err)
+	if err != nil {
 		b.retryLater()
 	}
 }
@@ -70,14 +72,32 @@ func (b *serviceBackend) retryLater() {
 				return true // the daemon is stopping
 			}
 			err := b.configureServiceWhenCertified()
-			if err == nil || errors.Is(err, errDrained) {
+			if errors.Is(err, errDrained) {
 				return true
 			}
-			logger.Debugf("Configuring %s for %s failed again: %v",
-				b.name, stringid.TruncateID(b.d.config.EndpointID), err)
-			return false
+			b.noteFailure(err)
+			return err == nil
 		})
 	})
+}
+
+// serviceRetryWarnEvery is how often the log repeats that a Service's
+// configuration keeps failing.
+const serviceRetryWarnEvery = time.Hour
+
+// noteFailure reports a failed configuration of the backend in the
+// endpoint's status, and in the log at most every serviceRetryWarnEvery; nil
+// clears it.
+func (b *serviceBackend) noteFailure(err error) {
+	key := "service/" + b.name
+	if err == nil {
+		b.d.warn(key, "", 0)
+		return
+	}
+	id := stringid.TruncateID(b.d.config.EndpointID)
+	logger.Debugf("Configuring %s for %s failed: %v", b.name, id, err)
+	b.d.warn(key, fmt.Sprintf("Failed to configure %s for %s, retrying: %v", b.name, id, err),
+		serviceRetryWarnEvery)
 }
 
 // ServiceNames returns the names of services.

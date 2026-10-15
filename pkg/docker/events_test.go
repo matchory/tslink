@@ -420,6 +420,15 @@ func TestParseContainerInfoServices(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name: "namespaced with legacy labels cleared",
+			labels: map[string]string{
+				"tslink.service":             "",
+				"tslink.serve.443":           "",
+				"tslink.service.a.serve.443": "https:80",
+			},
+			wantNames: []string{"svc:a"},
+		},
+		{
 			name: "namespaced with direct=true",
 			labels: map[string]string{
 				"tslink.service.a.serve.443": "https:80",

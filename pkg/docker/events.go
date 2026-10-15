@@ -473,11 +473,12 @@ func setServices(info *core.ContainerInfo, labels map[string]string) {
 	}
 }
 
-// hasLegacyServiceLabels reports whether labels have tslink.service or a
-// tslink.serve.<port> label, whatever their values.
+// hasLegacyServiceLabels reports whether labels set tslink.service or a
+// tslink.serve.<port> label. An empty value counts as unset, as when parsing
+// them: a Compose override clears an inherited label that way.
 func hasLegacyServiceLabels(labels map[string]string) bool {
-	for key := range labels {
-		if key == core.ServiceLabel || strings.HasPrefix(key, core.ServeLabelPrefix) {
+	for key, v := range labels {
+		if v != "" && (key == core.ServiceLabel || strings.HasPrefix(key, core.ServeLabelPrefix)) {
 			return true
 		}
 	}

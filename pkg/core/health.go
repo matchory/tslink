@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/moby/moby/client/pkg/stringid"
@@ -35,9 +36,28 @@ var listenInNetNS = netutil.ListenInNetNS
 type health struct {
 	srv *http.Server
 
-	mu     sync.Mutex // serializes computing readiness, and protects the cache
-	report tailscale.ReadinessReport
-	at     time.Time
+	mu sync.Mutex // serializes computing readiness
+
+	cacheMu sync.Mutex // protects report and at
+	report  tailscale.ReadinessReport
+	at      time.Time
+
+	// A latched endpoint's cache is being refreshed in the background
+	refreshing atomic.Bool
+}
+
+// cached returns the cached readiness, and whether it is at most
+// readinessCacheTTL old.
+func (h *health) cached() (tailscale.ReadinessReport, bool) {
+	h.cacheMu.Lock()
+	defer h.cacheMu.Unlock()
+	return h.report, h.report.State != "" && time.Since(h.at) < readinessCacheTTL
+}
+
+func (h *health) store(report tailscale.ReadinessReport) {
+	h.cacheMu.Lock()
+	defer h.cacheMu.Unlock()
+	h.report, h.at = report, time.Now()
 }
 
 // ReadyPath returns the file that records that an endpoint has been ready.
@@ -187,12 +207,36 @@ func (e *Endpoint) readiness(ctx context.Context) tailscale.ReadinessReport {
 	if e.drainedOrLeaving() {
 		return tailscale.ReadinessReport{State: tailscale.ReadyDrained}
 	}
+	if e.latched() {
+		report := e.latchedReadiness(ctx)
+		report.State = tailscale.Ready
+		return report
+	}
 	report := e.cachedReadiness(ctx)
 	if report.State == tailscale.Ready {
 		e.latch()
 	}
-	if e.latched() {
-		report.State = tailscale.Ready
+	return report
+}
+
+// latchedReadiness returns the cached readiness without waiting for
+// tailscaled, which a latched endpoint's answer does not depend on: a
+// tailscaled slow to answer must not fail the container's healthcheck. A
+// stale cache is refreshed in the background, so the Services' states lag by
+// at most one request.
+func (e *Endpoint) latchedReadiness(ctx context.Context) tailscale.ReadinessReport {
+	e.mu.RLock()
+	h := e.health
+	e.mu.RUnlock()
+	if h == nil {
+		return tailscale.ReadinessReport{}
+	}
+	report, fresh := h.cached()
+	if !fresh && h.refreshing.CompareAndSwap(false, true) {
+		go func() {
+			defer h.refreshing.Store(false)
+			e.cachedReadiness(ctx)
+		}()
 	}
 	return report
 }
@@ -208,10 +252,12 @@ func (e *Endpoint) cachedReadiness(ctx context.Context) tailscale.ReadinessRepor
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.report.State == "" || time.Since(h.at) >= readinessCacheTTL {
-		h.report, h.at = e.currentReadiness(ctx), time.Now()
+	if report, fresh := h.cached(); fresh {
+		return report
 	}
-	return h.report
+	report := e.currentReadiness(ctx)
+	h.store(report)
+	return report
 }
 
 // drainedOrLeaving reports whether the endpoint's backend is drained or its

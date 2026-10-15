@@ -18,10 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- A Service whose serve configuration fails is retried in place; before,
-  tailscaled restarted, without draining what it advertised.
+- A Service whose serve configuration fails is retried in place, with a
+  warning in the endpoint's status until it succeeds; before, tailscaled
+  restarted, without draining what it advertised.
 - At start, tslink removes Services in the node's state that the container's
   labels no longer name, and a drain clears every Service the node advertises.
+  A node that had such Services removed, or could not have them removed, is
+  drained when it stops, even if its container names no Service.
 
 ## [0.3.2] - 2026-10-14
 

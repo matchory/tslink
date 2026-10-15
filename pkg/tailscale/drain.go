@@ -42,6 +42,13 @@ type serviceGate struct {
 	// advertisement, so a drain cannot slip between a check and a change
 	mu    sync.Mutex
 	drain drainRecord // the drain that took effect; protected by mu
+	// The last removal of Services the container does not name, which control
+	// may not have fetched yet; protected by mu
+	prune drainRecord
+
+	// Set while Services the container does not name may still be
+	// advertised: removing them failed
+	unpruned atomic.Bool
 
 	// Cancels the LocalAPI calls of the change holding mu, so a drain need not
 	// wait for them; nil while no change runs
@@ -163,7 +170,9 @@ func (d *daemon) waitServicesFetch(after int64, deadline time.Time) bool {
 // as when the container got its stop signal, and waits for control to learn
 // of it: until control fetched the drained Service list, at least
 // drainAckFloor and at most drainAckTimeout after the drain. A backend never
-// advertised has nothing for control to fetch, and is not waited for.
+// advertised has nothing for control to fetch, and is not waited for. A drain
+// that found nothing advertised waits instead for the removal of Services
+// the container does not name, if there was one.
 func (s *DaemonSupervisor) DrainAndWait() {
 	id := stringid.TruncateID(s.cfg.EndpointID)
 	service := fmt.Sprintf("%q", ServiceNames(s.cfg.Services))
@@ -173,8 +182,13 @@ func (s *DaemonSupervisor) DrainAndWait() {
 
 	g := s.cfg.gate
 	g.mu.Lock()
-	drain := g.drain
+	drain, prune := g.drain, g.prune
 	g.mu.Unlock()
+	if drain.external && !prune.at.IsZero() {
+		// The drain removed nothing, but Services removed at start may not
+		// have been fetched yet
+		drain = prune
+	}
 	d := s.getDaemon()
 	if drain.at.IsZero() || drain.external || d == nil {
 		return

@@ -397,7 +397,7 @@ func (b *serviceBackend) serviceDomain() (string, error) {
 	}
 	suffix := magicDNSSuffix(st)
 	if suffix == "" {
-		return "", errors.New("tailscale status has no MagicDNS suffix: HTTPS needs MagicDNS")
+		return "", errNoMagicDNS
 	}
 	domain := b.serviceDomainIn(suffix)
 	// The domain names files the plugin writes and deletes as root: the

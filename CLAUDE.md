@@ -113,7 +113,8 @@ endpoint's Tailscale run derives from the driver's context, so a start in progre
 abandoned as on `Stop`. A daemon's CLI calls and waits use its context, cancelled by `daemon.Stop`, and its goroutines
 run under its wait group. Each state directory serves one endpoint at a time (`ClaimStateDir`). A drain clears every
 Service the node advertises in one prefs edit (`daemon.Drain`), so one fetch by control covers all; at start, Services
-in the node's state its labels do not name are removed (`pruneServices`).
+in the node's state its labels do not name are removed (`pruneServices`); a node that had any removed, or could not
+have them removed, is drained at stop like a Service host (`NeedsDrain`), and waits for control to fetch the removal.
 
 **Binaries**: the plugin image ships a pinned Tailscale (from the `tailscale/tailscale` stage of the Dockerfile, which
 Dependabot updates), and tslink runs only these binaries: it downloads nothing at runtime and ignores the old
@@ -135,14 +136,16 @@ API). The login waits on the IPN bus for Running, and when logging in as a new d
 **Services**: a container's Services (`tslink.service.<name>.serve.<port>`, or `tslink.service` with
 `tslink.serve.<port>`) each get a `serviceBackend` (`pkg/tailscale/backend.go`): its serve config, advertisement,
 certificate lease and wait, and approval check. The backends share the supervisor's `serviceGate`. A backend whose
-configuration fails is retried in place (`retryLater`); only tags and MagicDNS, which all need, fail the start.
+configuration fails is retried in place (`retryLater`), with a status warning until it succeeds; only tags and MagicDNS,
+which all need, fail the start.
 
 **Readiness endpoint**: with the label `tslink.health=<port>`, `Endpoint.startHealth` serves `GET /ready` on that port
 of the container's loopback, from a listener the plugin opens in the container's netns (`netutil.ListenInNetNS`).
 Readiness comes from tailscaled (`DaemonSupervisor.Readiness`: backend state, the serve config, the advertised
 Services in its prefs, and the `service-host` node capability for control's approval), cached for 2 s. Once ready, the
 endpoint latches: `status/<endpoint-id[:12]>.ready` records it, so it answers 200 until the backend is drained or the
-container leaves, also after a plugin restart. Readiness is per Service (`ReadinessReport`); the container's state is
+container leaves, also after a plugin restart. A latched endpoint answers without waiting for tailscaled, from the cache,
+which the request refreshes in the background. Readiness is per Service (`ReadinessReport`); the container's state is
 the least ready, read from one status, serve config and prefs query each, and `/ready` lists each Service's current
 state under `services`.
 

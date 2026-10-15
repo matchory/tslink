@@ -671,3 +671,83 @@ func TestDrainWhileLeaseHeldAndWaiting(t *testing.T) {
 	}
 	lease.release()
 }
+
+// newPruningSupervisor returns a supervisor whose container names no
+// Service, its daemon advertising svc:old from an earlier start, and the
+// daemon's fake LocalAPI.
+func newPruningSupervisor(t *testing.T) (*DaemonSupervisor, *daemon, *fakeLocalAPI) {
+	t.Helper()
+	s := NewDaemonSupervisor(DaemonConfig{EndpointID: "0123456789abcdef"})
+	t.Cleanup(s.cancel)
+	d, api := newTestDaemon(t, "")
+	api.serviceHost(ipn.Prefs{AdvertiseServices: []string{"svc:old"}})
+	d.config.gate = s.cfg.gate
+	s.daemon = d
+	setTiming(
+		&s.cfg,
+		func(tm *timing) { tm.drainAckFloor = 10 * time.Millisecond; tm.drainAckTimeout = 5 * time.Second },
+	)
+	return s, d, api
+}
+
+// A node whose container names no Service needs no drain, unless Services
+// it no longer names were removed at start: leaving then waits for control
+// to fetch that removal, so callers are not left pointed at a node gone.
+func TestDrainAndWaitAfterPrune(t *testing.T) {
+	s, d, api := newPruningSupervisor(t)
+	if s.NeedsDrain() {
+		t.Fatal("a node naming no Service needs a drain before pruning")
+	}
+	d.pruneServices()
+	if !ran(api.operations(), "unadvertise", "svc:old") {
+		t.Fatalf("operations = %q, want svc:old unadvertised", api.operations())
+	}
+	if !s.NeedsDrain() {
+		t.Fatal("no drain needed after removing an advertised Service")
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.DrainAndWait()
+	}()
+	select {
+	case <-done:
+		t.Fatal("left before control fetched the removal")
+	case <-time.After(100 * time.Millisecond):
+	}
+	d.handleLine(servicesFetchLine)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("DrainAndWait did not return after control fetched the removal")
+	}
+}
+
+// A removal control fetched already is not waited for again.
+func TestDrainAndWaitAfterFetchedPrune(t *testing.T) {
+	s, d, _ := newPruningSupervisor(t)
+	d.pruneServices()
+	d.handleLine(servicesFetchLine)
+	start := time.Now()
+	s.DrainAndWait()
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Errorf("waited %v for a removal control fetched already", elapsed)
+	}
+}
+
+// A removal that failed leaves Services the container does not name
+// advertised: the node is drained before it goes.
+func TestNeedsDrainAfterFailedPrune(t *testing.T) {
+	s, d, api := newPruningSupervisor(t)
+	api.failOp("prefs", "boom")
+	d.pruneServices()
+	if !s.NeedsDrain() {
+		t.Fatal("no drain needed after a failed removal")
+	}
+	api.failOp("prefs", "")
+	s.DrainAndWait()
+	if !ran(api.operations(), "unadvertise", "svc:old") {
+		t.Errorf("operations = %q, want svc:old unadvertised by the drain", api.operations())
+	}
+}

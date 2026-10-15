@@ -143,6 +143,16 @@ var errUntaggedServiceHost = errors.New(
 	"service hosts must be tagged nodes: log in with a tagged auth key or OAuth client",
 )
 
+// errNoMagicDNS is what configuring a Service that serves HTTPS fails with
+// in a tailnet without MagicDNS.
+var errNoMagicDNS = errors.New("tailscale status has no MagicDNS suffix: HTTPS needs MagicDNS")
+
+// tagged reports whether st is the status of a tagged node, as a Service
+// host must be.
+func tagged(st *ipnstate.Status) bool {
+	return st.Self != nil && st.Self.Tags != nil && st.Self.Tags.Len() > 0
+}
+
 // serveDebugLogMaxBytes is where serve-debug.log, the record of serve
 // attempts, is rotated; a variable for tests.
 var serveDebugLogMaxBytes int64 = 1 << 20
@@ -156,12 +166,12 @@ func (d *daemon) checkServiceHost() error {
 	if err != nil {
 		return fmt.Errorf("failed to read the node's status: %w", err)
 	}
-	if st.Self == nil || st.Self.Tags == nil || st.Self.Tags.Len() == 0 {
+	if !tagged(st) {
 		return errUntaggedServiceHost
 	}
 	for _, b := range d.backends {
 		if servesHTTPS(b.endpoints) && magicDNSSuffix(st) == "" {
-			return errors.New("tailscale status has no MagicDNS suffix: HTTPS needs MagicDNS")
+			return errNoMagicDNS
 		}
 	}
 	return nil
@@ -192,7 +202,7 @@ func (b *serviceBackend) configureServiceBackend(advertise bool) error {
 
 		service := tailcfg.ServiceName(b.name)
 		err := b.d.editServe(ctx, "service", func(sc *ipn.ServeConfig, st *ipnstate.Status) error {
-			if st.Self == nil || st.Self.Tags == nil || st.Self.Tags.Len() == 0 {
+			if !tagged(st) {
 				return errUntaggedServiceHost
 			}
 			return applyServeEndpoints(sc, b.endpoints, service, "", magicDNSSuffix(st))
@@ -206,7 +216,8 @@ func (b *serviceBackend) configureServiceBackend(advertise bool) error {
 			return err
 		}
 		if !advertise {
-			return b.d.setAdvertised(ctx, b.name, false)
+			_, err := b.d.editAdvertised(ctx, func(s string) bool { return s != b.name })
+			return err
 		}
 		return b.runAdvertise(ctx, b.name)
 	})
@@ -278,34 +289,23 @@ func (d *daemon) editServe(
 	return err
 }
 
-// setAdvertised adds service to the Services the node's prefs advertise, or
-// removes it, as "tailscale serve advertise" and "tailscale serve drain" do.
-func (d *daemon) setAdvertised(ctx context.Context, service string, on bool) error {
+// addAdvertised adds service to the Services the node's prefs advertise, as
+// "tailscale serve advertise" does.
+func (d *daemon) addAdvertised(ctx context.Context, service string) error {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	verb := "advertise"
-	if !on {
-		verb = "unadvertise"
-	}
 	prefs, err := d.lc.GetPrefs(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to %s %s: %w", verb, service, err)
+		return fmt.Errorf("failed to advertise %s: %w", service, err)
 	}
-	if slices.Contains(prefs.AdvertiseServices, service) == on {
+	if slices.Contains(prefs.AdvertiseServices, service) {
 		return nil
-	}
-	services := slices.DeleteFunc(
-		slices.Clone(prefs.AdvertiseServices),
-		func(s string) bool { return s == service },
-	)
-	if on {
-		services = append(services, service)
 	}
 	if _, err := d.lc.EditPrefs(ctx, &ipn.MaskedPrefs{
 		AdvertiseServicesSet: true,
-		AdvertiseServices:    services,
+		AdvertiseServices:    append(slices.Clone(prefs.AdvertiseServices), service),
 	}); err != nil {
-		return fmt.Errorf("failed to %s %s: %w", verb, service, err)
+		return fmt.Errorf("failed to advertise %s: %w", service, err)
 	}
 	return nil
 }
@@ -341,13 +341,15 @@ func (d *daemon) editAdvertised(ctx context.Context, keep func(string) bool) ([]
 
 // pruneServices removes from the serve config and the prefs every Service the
 // container does not name, as one its labels no longer have: the node would
-// keep advertising it, and never drain it. A failure is logged: the drain at
-// stop removes every advertised Service anyway.
+// keep advertising it, and never drain it. A failure is logged, and noted in
+// the gate, as is a removal from the prefs: the node is then drained before
+// it goes, and waits for control to fetch the change.
 func (d *daemon) pruneServices() {
 	names := ServiceNames(d.config.Services)
 	keep := func(s string) bool { return slices.Contains(names, s) }
 	id := stringid.TruncateID(d.config.EndpointID)
-	err := d.config.gate.change(d, func(ctx context.Context) error {
+	g := d.config.gate
+	err := g.change(d, func(ctx context.Context) error {
 		err := d.editServe(ctx, "prune", func(sc *ipn.ServeConfig, _ *ipnstate.Status) error {
 			var stale []tailcfg.ServiceName
 			for name := range sc.Services {
@@ -369,14 +371,19 @@ func (d *daemon) pruneServices() {
 		if err != nil {
 			return err
 		}
+		fetches, _ := d.servicesFetches()
 		removed, err := d.editAdvertised(ctx, keep)
 		if len(removed) > 0 {
 			logger.Infof("Stopped advertising %q, which its container does not name, for %s",
 				removed, id)
+			// The caller holds the gate's lock
+			g.prune = drainRecord{at: time.Now(), daemon: d, fetches: fetches}
+			g.advertised.Store(true)
 		}
 		return err
 	})
-	if err != nil && !errors.Is(err, errDrained) {
+	g.unpruned.Store(err != nil && !errors.Is(err, errDrained))
+	if g.unpruned.Load() {
 		logger.Warnf("Failed to remove stale Services of %s: %v", id, err)
 	}
 }
@@ -384,7 +391,7 @@ func (d *daemon) pruneServices() {
 // runAdvertise advertises the Service and notes that the backend was
 // advertised. The caller holds the gate's lock.
 func (b *serviceBackend) runAdvertise(ctx context.Context, service string) error {
-	if err := b.d.setAdvertised(ctx, service, true); err != nil {
+	if err := b.d.addAdvertised(ctx, service); err != nil {
 		return err
 	}
 	b.d.config.gate.advertised.Store(true)

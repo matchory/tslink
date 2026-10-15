@@ -96,8 +96,8 @@ func TestHealthLatchesReady(t *testing.T) {
 		t.Errorf("latch not recorded: %v", err)
 	}
 
-	// Latched: a later state does not count; it is still asked for, so the
-	// answer can show each Service's current state
+	// Latched: a later state does not count; it is still asked for, in the
+	// background, so the answer can show each Service's current state
 	state.Store(tailscale.ReadyStarting)
 	e.clearReadinessCache()
 	if code, got := get(t, http.MethodGet, url+"/ready"); code != 200 || got != "ready" {
@@ -262,9 +262,9 @@ func (e *Endpoint) clearReadinessCache() {
 	h := e.health
 	e.mu.RUnlock()
 	if h != nil {
-		h.mu.Lock()
+		h.cacheMu.Lock()
 		h.report = tailscale.ReadinessReport{}
-		h.mu.Unlock()
+		h.cacheMu.Unlock()
 	}
 }
 
@@ -317,8 +317,46 @@ func TestServeReadyKeepsServiceField(t *testing.T) {
 		Services: map[string]tailscale.Readiness{"svc:ai": tailscale.ReadyAwaitingApproval},
 	})
 	e.clearReadinessCache()
+	// Latched, the answer comes from the cache, which a request refreshes in
+	// the background
 	want = `{"state":"ready","service":"svc:ai","services":{"svc:ai":"awaiting-approval"}}`
-	if body := getBody(t, url+"/ready"); body != want {
-		t.Errorf("after the latch, body = %s, want %s", body, want)
+	var body string
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
+		if body = getBody(t, url+"/ready"); body == want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Errorf("after the latch, body = %s, want %s", body, want)
+}
+
+// A latched endpoint answers at once, without waiting for tailscaled: a
+// tailscaled slow to answer must not fail the container's healthcheck.
+func TestHealthLatchedDoesNotWait(t *testing.T) {
+	var state atomic.Value
+	var calls atomic.Int32
+	state.Store(tailscale.Ready)
+	e, url := healthEndpoint(t, &state, &calls)
+	if code, _ := get(t, http.MethodGet, url+"/ready"); code != 200 {
+		t.Fatalf("ready: %d, want 200", code)
+	}
+
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	e.mu.Lock()
+	e.readinessFn = func(context.Context) tailscale.ReadinessReport {
+		<-release // as a tailscaled that does not answer
+		return tailscale.ReadinessReport{State: tailscale.ReadyStarting}
+	}
+	e.mu.Unlock()
+	e.clearReadinessCache()
+	start := time.Now()
+	for range 3 {
+		if code, got := get(t, http.MethodGet, url+"/ready"); code != 200 || got != "ready" {
+			t.Errorf("latched: %d %q, want 200 ready", code, got)
+		}
+	}
+	if took := time.Since(start); took > time.Second {
+		t.Errorf("latched answers took %v, want no wait for tailscaled", took)
 	}
 }

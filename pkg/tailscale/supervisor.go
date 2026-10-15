@@ -222,6 +222,19 @@ func (s *DaemonSupervisor) Status() (SupervisorStatus, int) {
 	return s.status, s.restartCount
 }
 
+// NeedsDrain reports whether the node may advertise a Service, or did so
+// recently: its container names one, or Services it does not name were
+// removed at start or could not be. Such a node is drained before it goes.
+func (s *DaemonSupervisor) NeedsDrain() bool {
+	g := s.cfg.gate
+	if len(s.cfg.Services) > 0 || g.unpruned.Load() {
+		return true
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return !g.prune.at.IsZero()
+}
+
 // Drained reports whether the node's Service backend has been drained.
 func (s *DaemonSupervisor) Drained() bool {
 	return s.cfg.gate.drained.Load()

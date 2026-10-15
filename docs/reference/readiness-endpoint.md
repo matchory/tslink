@@ -23,7 +23,7 @@ The status code is `200` if the state is `ready`, and `503` for all other states
 | Field | Value |
 | --- | --- |
 | `state` | One of the [states](#states): the least ready of the container's Services. It [latches](#latching) at `ready`. |
-| `services` | The current state of each Service, also after `state` latched: a Service that lost its approval shows here while `state` stays `ready`. The field is absent without a Service. |
+| `services` | The current state of each Service, also after `state` latched: a Service that lost its approval shows here while `state` stays `ready`. Once latched, the answer does not wait for tailscaled: it shows the states from the previous check, a few seconds old at most when the container asks regularly. The field is absent without a Service. |
 | `service` | The name of the Service when the container has exactly one. The field is absent otherwise. |
 
 A container with several Services is ready only when all are. One Service whose certificate is stuck or that waits

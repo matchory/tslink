@@ -654,7 +654,7 @@ func (e *Endpoint) DrainService() {
 	supervisor, services := e.supervisor, e.services
 	e.mu.RUnlock()
 
-	if supervisor == nil || len(services) == 0 {
+	if supervisor == nil || !supervisor.NeedsDrain() {
 		return
 	}
 	logger.Infof("Endpoint %s stopping, draining %q", stringid.TruncateID(e.ID), services)
@@ -965,7 +965,6 @@ func (e *Endpoint) removeUnstartedState(stateDir string) {
 func (e *Endpoint) stopTailscale() {
 	e.mu.Lock()
 	stateDir := e.stateDir
-	services := e.services
 	ephemeral := e.Network != nil && e.Network.Ephemeral()
 	supervisor, inFlight := e.takeSupervisorLocked()
 	e.mu.Unlock()
@@ -987,7 +986,7 @@ func (e *Endpoint) stopTailscale() {
 	// A task that exits on its own gets no stop signal, and a node that goes
 	// before control learned of its drain can keep callers of the Service
 	// pointed at it
-	if len(services) > 0 {
+	if supervisor.NeedsDrain() {
 		supervisor.DrainAndWait()
 	}
 	// An ephemeral node would linger offline until Tailscale removes it;

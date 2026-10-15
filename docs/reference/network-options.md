@@ -63,7 +63,7 @@ number from 576 to 65535.
 
 | Option | Status |
 | --- | --- |
-| `tslink.loginserver` | `docker network create` fails. A container cannot join a network that an earlier version created with it, and its status file names the reason. Recreate the network without it, and set the control server with the plugin setting [`TSLINK_LOGIN_SERVER`](plugin-settings.md#tslink_login_server). |
+| `tslink.loginserver` | `docker network create` fails. On a network that an earlier version created with it, `docker run` or the task fails with an error that names `TSLINK_LOGIN_SERVER`, and a container that was running when the plugin restarted gets the status `failed`, which names it. Recreate the network without it, and set the control server with the plugin setting [`TSLINK_LOGIN_SERVER`](plugin-settings.md#tslink_login_server). |
 
 ## Stack networks
 

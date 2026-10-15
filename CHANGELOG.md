@@ -61,8 +61,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - A network that names a control server of its own is refused: creating one
-  with the `tslink.loginserver` option fails, whatever its credential, and no
-  container joins one that an earlier version created. A network could
+  with the `tslink.loginserver` option fails, whatever its credential. On one
+  that an earlier version created, a container fails to start with an error
+  naming `TSLINK_LOGIN_SERVER`, and one already running when the plugin
+  restarts gets the status `failed`, naming it. A network could
   otherwise have nodes present their credential, one minted from the cluster
   credential included, to a server it chose
   ([GHSA-28r2-gm83-4qwq](https://github.com/matchory/tslink/security/advisories/GHSA-28r2-gm83-4qwq);

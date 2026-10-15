@@ -302,6 +302,16 @@ func TestParseServices(t *testing.T) {
 				{Proto: "tcp", Port: "443", Target: "443"},
 			}}},
 		},
+		{
+			name: "invalid endpoint skipped",
+			labels: map[string]string{
+				"tslink.service.a.serve.443": "https:8080",
+				"tslink.service.a.serve.21":  "ftp",
+			},
+			want: []tailscale.Service{{Name: "svc:a", Endpoints: []tailscale.ServeEndpoint{
+				{Proto: "https", Port: "443", Target: "8080"},
+			}}},
+		},
 		{name: "none", labels: map[string]string{"tslink.serve.443": "https:80"}},
 		{
 			name:    "no port",

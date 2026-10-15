@@ -68,6 +68,13 @@ fi
 			$ipt -t mangle -F "${c#*:}" 2>/dev/null; $ipt -t mangle -X "${c#*:}" 2>/dev/null
 		done
 	done
+	iptables -t mangle -D INPUT -j TSLINK-WG-IN 2>/dev/null
+	iptables -t mangle -F TSLINK-WG-IN 2>/dev/null; iptables -t mangle -X TSLINK-WG-IN 2>/dev/null
+	iptables -t nat -D POSTROUTING -j TSLINK-WG-SNAT 2>/dev/null
+	iptables -t nat -F TSLINK-WG-SNAT 2>/dev/null; iptables -t nat -X TSLINK-WG-SNAT 2>/dev/null
+	iptables -t filter -D FORWARD -j TSLINK-FORWARD 2>/dev/null
+	iptables -t filter -F TSLINK-FORWARD 2>/dev/null; iptables -t filter -X TSLINK-FORWARD 2>/dev/null
+	iptables -t nat -D POSTROUTING -s 10.200.0.0/16 -j MASQUERADE 2>/dev/null
 	rm -rf /var/lib/docker-plugins/tailscale /root/probes; true'
 
 results=()

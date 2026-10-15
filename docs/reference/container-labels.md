@@ -12,7 +12,7 @@ with the container's name and ignores the label.
 | [`tslink.serve.<port>`](#tslinkserveport) | A serve rule | None |
 | [`tslink.service`](#tslinkservice) | `svc:<name>` | None |
 | [`tslink.service.<name>.serve.<port>`](#tslinkservicenameserveport) | A serve rule for the Service `svc:<name>` | None |
-| [`tslink.direct`](#tslinkdirect) | `true` or `false` | `true` without `tslink.service`, `false` with it |
+| [`tslink.direct`](#tslinkdirect) | `true` or `false` | `true` without a Service, `false` with one |
 | [`tslink.health`](#tslinkhealth) | A port, 1 to 65535 | None |
 
 ## tslink.hostname
@@ -94,7 +94,31 @@ replaces a `Tailscale-App-Capabilities` header that the caller sends.
 Makes the container a backend of a Tailscale Service, for example `svc:my-api`. The name after `svc:` must be a DNS
 label in lower case: letters, digits and hyphens, at most 63 characters, without a hyphen at either end. Otherwise the
 container does not start Tailscale. The container must also have at least one `tslink.serve.<port>` label. The Service
-must exist in the tailnet, and the credential of the network must have tags.
+must exist in the tailnet, and the credential of the network must have tags. For several Services in one container,
+see [`tslink.service.<name>.serve.<port>`](#tslinkservicenameserveport).
+
+## tslink.service.\<name\>.serve.\<port\>
+
+Makes the container a backend of the Tailscale Service `svc:<name>` and serves `<port>` on it. The value is that of
+[`tslink.serve.<port>`](#tslinkserveport). Use one label per port and Service:
+
+```yaml
+labels:
+  tslink.service.ai-gateway.serve.443: https:8080
+  tslink.service.ai-admin.serve.443: https:8081
+  tslink.service.ai-metrics.serve.9090: tcp
+```
+
+- `<name>` is the Service name without `svc:`, in lower case.
+- Each Service is advertised as soon as its own configuration is applied and, for HTTPS, its certificate exists; one
+  Service waiting does not hold back the others. The container's [readiness](readiness-endpoint.md) waits for all of
+  them.
+- On stop, all the container's Services are drained together.
+- `tslink.service` with `tslink.serve.<port>` is the form for one Service. A container with both forms, or with
+  `tslink.direct=true`, is refused: its status file names the label.
+- Every node of a cluster must run tslink v0.4.0 or later before a stack uses these labels: older versions ignore
+  them and report the container ready while it serves nothing. Do not downgrade a node while such containers run on
+  it: an older version does not drain their Services.
 
 ## tslink.direct
 
@@ -104,7 +128,7 @@ Also serves the `tslink.serve.<port>` rules on the hostname of the container.
 | --- | --- |
 | `false`, `0` or `no` | Serves only on the Service |
 | Other values | Serves on the Service and on the hostname |
-| Not set | `true` without `tslink.service`, `false` with it |
+| Not set | `true` without a Service, `false` with one |
 
 ## tslink.health
 

@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- A container can be the backend of several Tailscale Services, with the
+  labels `tslink.service.<name>.serve.<port>`; each Service is advertised once
+  its own configuration and certificate are in place, and all are drained
+  together on stop. `/ready` lists each Service's state under `services`.
+  Upgrade every node before deploying these labels: older versions ignore
+  them. `tslink.service` with `tslink.serve.<port>` works as before.
+
+### Changed
+
+- A Service whose serve configuration fails is retried in place; before,
+  tailscaled restarted, without draining what it advertised.
+- At start, tslink removes Services in the node's state that the container's
+  labels no longer name, and a drain clears every Service the node advertises.
+
 ## [0.3.2] - 2026-10-14
 
 ### Changed

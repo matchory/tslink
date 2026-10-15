@@ -89,7 +89,10 @@ func redactKey(key string) string {
 
 // NewDriver creates a new Docker network driver.
 func NewDriver() (*Driver, error) {
-	cfg := core.LoadConfig()
+	cfg, err := core.LoadConfig()
+	if err != nil {
+		return nil, err
+	}
 	core.RemoveDownloadCache(cfg.DataDir)
 	core.WarnUnusedCertificates(cfg.DataDir, cfg.SharedDir)
 
@@ -162,6 +165,9 @@ func (d *Driver) CreateNetwork(req *network.CreateNetworkRequest) error {
 
 	net, err := core.NewNetwork(req.NetworkID, opts, d.config)
 	if err != nil {
+		return err
+	}
+	if err := net.Refused(); err != nil {
 		return err
 	}
 	if net.UsesClusterCredential() {
@@ -298,6 +304,11 @@ func (d *Driver) Join(req *network.JoinRequest) (*network.JoinResponse, error) {
 
 	if !ok {
 		return nil, fmt.Errorf("endpoint %s not found", req.EndpointID)
+	}
+	// A network Docker kept from before tslink refused it, rebuilt by
+	// networkFor: no key goes to its control server, or to the plugin's
+	if err := endpoint.Network.Refused(); err != nil {
+		return nil, err
 	}
 
 	// Set up basic networking (veth, IPs, routing, NAT)

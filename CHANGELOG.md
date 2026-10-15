@@ -35,6 +35,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   directory (the plugin's `shared.source`). A deployment that passed before
   may now report "violated".
 
+### Removed
+
+- The `tslink.loginserver` network option. The control server is now the
+  plugin setting `TSLINK_LOGIN_SERVER`, for every network on the host; an
+  invalid URL keeps the plugin from starting. Recreate networks that set the
+  option without it.
+
 ### Fixed
 
 - A login that control answered after more than 60 s, as during a rollout
@@ -50,6 +57,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The plugin binary, run with arguments it does not know, exits with usage
   instead of starting a plugin instance, which on the host could install
   isolation chains the host's settings turn off.
+
+### Security
+
+- A network that names a control server of its own is refused: creating one
+  with the `tslink.loginserver` option fails, whatever its credential, and no
+  container joins one that an earlier version created. A network could
+  otherwise have nodes present their credential, one minted from the cluster
+  credential included, to a server it chose
+  ([GHSA-28r2-gm83-4qwq](https://github.com/matchory/tslink/security/advisories/GHSA-28r2-gm83-4qwq);
+  affects v0.2.0 to v0.3.4).
 
 ## [0.3.4] - 2026-10-17
 

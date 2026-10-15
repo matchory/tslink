@@ -38,7 +38,16 @@ type Config struct {
 
 	// LogLevel is the lowest level the plugin logs (see LogLevelSetting)
 	LogLevel slog.Level
+
+	// LoginServer is the control server every node of the plugin logs in to;
+	// empty for Tailscale's (see LoginServerSetting)
+	LoginServer string
 }
+
+// LoginServerSetting is the plugin setting of the control server, an http or
+// https URL; empty for Tailscale's. It is the plugin's alone: a network cannot
+// name one.
+const LoginServerSetting = "TSLINK_LOGIN_SERVER"
 
 // WireGuardPortsSetting is the plugin setting that sets the range of
 // WireGuardPorts.
@@ -167,8 +176,11 @@ type NetworkOptions struct {
 	Tags    []string
 	MTU     int // 0 if unset or invalid
 
-	LoginServer string // control server URL; empty for Tailscale's
-	Ephemeral   string // tslink.ephemeral as given; NewNetwork validates it
+	Ephemeral string // tslink.ephemeral as given; NewNetwork validates it
+
+	// loginServerOption records tslink.loginserver, which is no longer
+	// supported: the network is refused
+	loginServerOption bool
 }
 
 // ParseMTU returns the MTU an option value sets, or 0 if it is not a valid one.
@@ -195,8 +207,14 @@ func DataDir() string {
 	return "/data"
 }
 
-// LoadConfig loads configuration from environment variables.
-func LoadConfig() *Config {
+// LoadConfig loads configuration from environment variables. An invalid
+// LoginServerSetting is an error: falling back to Tailscale's control server
+// would send it keys meant for another.
+func LoadConfig() (*Config, error) {
+	loginServer := os.Getenv(LoginServerSetting)
+	if err := ValidateLoginServer(loginServer); err != nil {
+		return nil, err
+	}
 	cfg := &Config{
 		AuthKey:   os.Getenv("TS_AUTHKEY"),
 		DataDir:   DataDir(),
@@ -207,6 +225,7 @@ func LoadConfig() *Config {
 		WireGuardPorts:     wireGuardPorts(os.Getenv(WireGuardPortsSetting)),
 		HostEndpoints:      hostEndpoints(os.Getenv(HostEndpointsSetting)),
 		LogLevel:           logLevel(os.Getenv(LogLevelSetting)),
+		LoginServer:        loginServer,
 	}
 	logger.SetLevel(cfg.LogLevel)
 	netutil.ConfigurePortMapping(tailscale.WireGuardPort, cfg.WireGuardPorts)
@@ -228,7 +247,7 @@ func LoadConfig() *Config {
 		)
 	}
 
-	return cfg
+	return cfg, nil
 }
 
 // GenericOptionsKey is the key Docker uses to pass driver options.

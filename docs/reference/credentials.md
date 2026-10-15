@@ -32,6 +32,9 @@ tslink takes the credential of a network from the first source that is set:
 
 If no source is set, `docker network create` fails.
 
+Whatever the source, the node registers with the control server of the plugin setting
+[`TSLINK_LOGIN_SERVER`](plugin-settings.md#tslink_login_server).
+
 ## Ephemeral nodes
 
 When the container of an ephemeral node stops, tslink logs the node out and deletes its state directory. The node is

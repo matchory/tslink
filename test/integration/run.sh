@@ -158,6 +158,8 @@ sudo mkdir -p "$DATA"
 sudo docker plugin create "$PLUGIN" "$WORK/plugin"
 # Docker creates /var/run/docker/netns with the first container
 docker run --rm "$ALPINE" true
+# Every node of the plugin logs in to headscale, started below
+docker plugin set "$PLUGIN" TSLINK_LOGIN_SERVER="$URL"
 docker plugin enable "$PLUGIN"
 
 log "Starting headscale at $URL"
@@ -191,7 +193,7 @@ key "$host" | host_ts up --login-server="$URL" --auth-key=file:/dev/stdin --host
 network() {
 	# A plain "tslink" does not resolve: the driver is registered under the
 	# plugin's full name
-	docker network create --driver "$PLUGIN:latest" --opt tslink.loginserver="$URL" --opt tslink.authkey="$2" "${@:3}" "$1" >/dev/null
+	docker network create --driver "$PLUGIN:latest" --opt tslink.authkey="$2" "${@:3}" "$1" >/dev/null
 }
 network e2e-alice "$(key "$alice")"
 network e2e-bob "$(key "$bob")"
@@ -225,8 +227,9 @@ ready_answer e2e-server | head -n 1 | grep -q ' 200 ' || fail "ready without 200
 if [ -n "$(ready_answer e2e-client)" ]; then
 	fail "a container without tslink.health has a readiness endpoint"
 fi
-# A node that cannot reach its control server is not ready, and says why
-docker network create --driver "$PLUGIN:latest" --opt tslink.loginserver=http://127.0.0.1:9 \
+# A node that cannot log in is not ready, and says why: the control server
+# is the plugin's, which refuses the key
+docker network create --driver "$PLUGIN:latest" \
 	--opt tslink.authkey=tskey-auth-unused e2e-nocontrol >/dev/null
 echo tskey-auth-unused >>"$WORK/keys"
 docker run -d --name e2e-unready --network e2e-nocontrol --label tslink.health=9002 "$ALPINE" sleep 3600

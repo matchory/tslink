@@ -36,7 +36,7 @@ func TestCreateNetworkOptions(t *testing.T) {
 			name: "generic options",
 			opts: map[string]any{core.GenericOptionsKey: map[string]any{
 				"tslink.authkey": "tskey-auth-net", "tslink.tags": "tag:a,tag:b",
-				core.MTUOption: "1400", core.LoginServerOption: "https://hs.example.com",
+				core.MTUOption: "1400",
 			}},
 			want: core.Network{
 				AuthKey: "tskey-auth-net", Tags: []string{"tag:a", "tag:b"}, MTU: 1400,
@@ -54,16 +54,12 @@ func TestCreateNetworkOptions(t *testing.T) {
 			want:      core.Network{AuthKey: "tskey-auth-plugin"},
 		},
 		{name: "no key at all", wantErr: true},
-		{
-			name:    "invalid login server",
-			opts:    map[string]any{"tslink.authkey": "k", core.LoginServerOption: "ftp://x"},
-			wantErr: true,
-		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			td := newTestDriver(t, newFakeDocker())
 			td.config.AuthKey = tt.pluginKey
+			td.config.LoginServer = tt.want.LoginServer
 			id := fakeID(tt.name)
 			err := td.CreateNetwork(&network.CreateNetworkRequest{NetworkID: id, Options: tt.opts})
 			net, stored := td.network(id)
@@ -86,6 +82,42 @@ func TestCreateNetworkOptions(t *testing.T) {
 			}
 			if !td.ownsNetwork(id) {
 				t.Error("driver does not own the network it created")
+			}
+		})
+	}
+}
+
+// A network naming a control server is refused at creation, whatever its
+// credential: the control server is the plugin setting.
+//
+// Guards: G4
+func TestCreateNetworkRefusesLoginServer(t *testing.T) {
+	for name, opts := range map[string]map[string]any{
+		"cluster credential": {"tslink.tags": "tag:app", core.LoginServerOption: "https://x.example"},
+		"own key":            {"tslink.authkey": "hskey-auth-x", core.LoginServerOption: "https://x.example"},
+		"empty value":        {"tslink.authkey": "hskey-auth-x", core.LoginServerOption: ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			td := newTestDriver(t, newFakeDocker())
+			if err := os.WriteFile(
+				filepath.Join(td.config.DataDir, core.ClusterCredentialFile),
+				[]byte("tskey-client-x"), 0o600,
+			); err != nil {
+				t.Fatal(err)
+			}
+			id := fakeID(name)
+			err := td.CreateNetwork(&network.CreateNetworkRequest{
+				NetworkID: id, Options: map[string]any{core.GenericOptionsKey: opts},
+			})
+			if err == nil || !strings.Contains(err.Error(), core.LoginServerSetting) {
+				t.Errorf(
+					"CreateNetwork = %v, want an error naming %s",
+					err,
+					core.LoginServerSetting,
+				)
+			}
+			if _, stored := td.network(id); stored {
+				t.Error("the network was stored")
 			}
 		})
 	}

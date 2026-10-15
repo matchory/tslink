@@ -166,7 +166,7 @@ func (d *daemon) waitServicesFetch(after int64, deadline time.Time) bool {
 // advertised has nothing for control to fetch, and is not waited for.
 func (s *DaemonSupervisor) DrainAndWait() {
 	id := stringid.TruncateID(s.cfg.EndpointID)
-	service := fmt.Sprintf("%q", serviceNames(s.cfg.Services))
+	service := fmt.Sprintf("%q", ServiceNames(s.cfg.Services))
 	if err := s.Drain(); err != nil {
 		logger.Warnf("Endpoint %s: failed to drain %s before leaving: %v", id, service, err)
 	}

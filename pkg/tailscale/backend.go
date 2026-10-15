@@ -80,8 +80,8 @@ func (b *serviceBackend) retryLater() {
 	})
 }
 
-// serviceNames returns the names of services.
-func serviceNames(services []Service) []string {
+// ServiceNames returns the names of services.
+func ServiceNames(services []Service) []string {
 	names := make([]string, 0, len(services))
 	for _, svc := range services {
 		names = append(names, svc.Name)

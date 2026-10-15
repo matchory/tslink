@@ -37,7 +37,7 @@ type Endpoint struct {
 	sharedDir   string     // Directory shared between hosts; empty for none
 
 	hostname    string
-	service     string // Service name (e.g., "svc:hello-world")
+	services    []string // Service names (e.g., "svc:hello-world")
 	tailscaleIP string
 	vethName    string
 	stateDir    string
@@ -77,15 +77,20 @@ func (e permanentError) Unwrap() error { return e.error }
 
 // ContainerInfo holds information extracted from Docker container inspection.
 type ContainerInfo struct {
-	ID         string                    // Container ID
-	StopSignal string                    // Signal docker stop sends; "" for SIGTERM
-	Name       string                    // Container name (without leading /)
-	Labels     map[string]string         // All container labels
-	Hostname   string                    // Parsed tslink.hostname label or container name
-	Tags       []string                  // Parsed tslink.tags label (comma-separated)
-	Service    string                    // Parsed tslink.service label (e.g., "svc:hello-world")
-	Endpoints  []tailscale.ServeEndpoint // Parsed tslink.serve.<port> labels
-	Direct     bool                      // tslink.direct; defaults to true without a Service
+	ID         string            // Container ID
+	StopSignal string            // Signal docker stop sends; "" for SIGTERM
+	Name       string            // Container name (without leading /)
+	Labels     map[string]string // All container labels
+	Hostname   string            // Parsed tslink.hostname label or container name
+	Tags       []string          // Parsed tslink.tags label (comma-separated)
+	// Its Services, sorted by name: tslink.service.<name>.serve.<port>, or
+	// tslink.service with tslink.serve.<port>
+	Services []tailscale.Service
+	// Why its Service labels are refused; nil if they are not
+	ServiceErr error
+	// Parsed tslink.serve.<port> labels: direct serve, and the legacy Service
+	Endpoints []tailscale.ServeEndpoint
+	Direct    bool // tslink.direct; defaults to true without a Service
 
 	Stack        string // Container's com.docker.stack.namespace label
 	NetworkStack string // Network's com.docker.stack.namespace label
@@ -276,37 +281,30 @@ func socketPathFor(dataDir, endpointID string) string {
 	return filepath.Join(dataDir, "sock", stringid.TruncateID(endpointID)+".sock")
 }
 
-// checkService checks the container's Service, if it has one: a valid,
-// lower-case name and something to serve on it.
+// checkService checks the container's Services, if it has any: labels of one
+// form, valid lower-case names and something to serve on each.
 func checkService(info *ContainerInfo) error {
-	if info.Service == "" {
-		return nil
+	if info.ServiceErr != nil {
+		return fmt.Errorf("invalid Service labels: %w", info.ServiceErr)
 	}
-	if err := tailcfg.ServiceName(info.Service).Validate(); err != nil {
-		return fmt.Errorf("invalid %s: %w", ServiceLabel, err)
-	}
-	// Tailscale keeps the case of a name it is given, so an upper-case name
-	// may not match the one control approves the node for
-	if info.Service != strings.ToLower(info.Service) {
-		return fmt.Errorf("invalid %s: %q is not lower case", ServiceLabel, info.Service)
-	}
-	if len(info.Endpoints) == 0 {
-		return fmt.Errorf(
-			"%s requires at least one %s<port> endpoint",
-			ServiceLabel,
-			ServeLabelPrefix,
-		)
+	for _, svc := range info.Services {
+		if err := tailcfg.ServiceName(svc.Name).Validate(); err != nil {
+			return fmt.Errorf("invalid %s: %w", ServiceLabel, err)
+		}
+		// Tailscale keeps the case of a name it is given, so an upper-case name
+		// may not match the one control approves the node for
+		if svc.Name != strings.ToLower(svc.Name) {
+			return fmt.Errorf("invalid %s: %q is not lower case", ServiceLabel, svc.Name)
+		}
+		if len(svc.Endpoints) == 0 {
+			return fmt.Errorf(
+				"%s requires at least one %s<port> endpoint",
+				ServiceLabel,
+				ServeLabelPrefix,
+			)
+		}
 	}
 	return nil
-}
-
-// daemonServices returns the container's Service as the daemon takes it.
-// Transitional until ContainerInfo holds several Services.
-func daemonServices(info *ContainerInfo) []tailscale.Service {
-	if info.Service == "" {
-		return nil
-	}
-	return []tailscale.Service{{Name: info.Service, Endpoints: info.Endpoints}}
 }
 
 // StartTailscale starts the Tailscale daemon with the provided container info.
@@ -356,12 +354,12 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 	}
 
 	logger.Infof(
-		"StartTailscale: endpoint=%s hostname=%s service=%s endpoints=%d direct=%v",
+		"StartTailscale: endpoint=%s hostname=%s services=%q endpoints=%d direct=%v",
 		stringid.TruncateID(
 			endpointID,
 		),
 		info.Hostname,
-		info.Service,
+		tailscale.ServiceNames(info.Services),
 		len(info.Endpoints),
 		info.Direct,
 	)
@@ -382,7 +380,7 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 		NetNSPath:     sandboxKey,
 		TailscaledBin: tailscaledBin,
 		Tags:          tags,
-		Services:      daemonServices(info),
+		Services:      info.Services,
 		Endpoints:     info.Endpoints,
 		Direct:        info.Direct,
 		LoginServer:   e.Network.LoginServer, // set once, at creation
@@ -418,7 +416,7 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 	e.supervisor = supervisor
 	e.tailscaleIP = tailscaleIP
 	e.hostname = info.Hostname
-	e.service = info.Service
+	e.services = tailscale.ServiceNames(info.Services)
 	e.stateDir = stateDir
 	e.tailscaleStarted = true
 	e.mu.Unlock()
@@ -653,17 +651,17 @@ func (e *Endpoint) Leave() {
 // backend, if it has one; existing connections continue.
 func (e *Endpoint) DrainService() {
 	e.mu.RLock()
-	supervisor, service := e.supervisor, e.service
+	supervisor, services := e.supervisor, e.services
 	e.mu.RUnlock()
 
-	if supervisor == nil || service == "" {
+	if supervisor == nil || len(services) == 0 {
 		return
 	}
-	logger.Infof("Endpoint %s stopping, draining %s", stringid.TruncateID(e.ID), service)
+	logger.Infof("Endpoint %s stopping, draining %q", stringid.TruncateID(e.ID), services)
 	if err := supervisor.Drain(); err != nil {
 		logger.Warnf(
-			"Failed to drain %s for endpoint %s: %v",
-			service,
+			"Failed to drain %q for endpoint %s: %v",
+			services,
 			stringid.TruncateID(e.ID),
 			err,
 		)
@@ -967,7 +965,7 @@ func (e *Endpoint) removeUnstartedState(stateDir string) {
 func (e *Endpoint) stopTailscale() {
 	e.mu.Lock()
 	stateDir := e.stateDir
-	service := e.service
+	services := e.services
 	ephemeral := e.Network != nil && e.Network.Ephemeral()
 	supervisor, inFlight := e.takeSupervisorLocked()
 	e.mu.Unlock()
@@ -989,7 +987,7 @@ func (e *Endpoint) stopTailscale() {
 	// A task that exits on its own gets no stop signal, and a node that goes
 	// before control learned of its drain can keep callers of the Service
 	// pointed at it
-	if service != "" {
+	if len(services) > 0 {
 		supervisor.DrainAndWait()
 	}
 	// An ephemeral node would linger offline until Tailscale removes it;

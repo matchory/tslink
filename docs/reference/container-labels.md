@@ -11,6 +11,7 @@ with the container's name and ignores the label.
 | [`tslink.tags`](#tslinktags) | Comma-separated ACL tags | None |
 | [`tslink.serve.<port>`](#tslinkserveport) | A serve rule | None |
 | [`tslink.service`](#tslinkservice) | `svc:<name>` | None |
+| [`tslink.service.<name>.serve.<port>`](#tslinkservicenameserveport) | A serve rule for the Service `svc:<name>` | None |
 | [`tslink.direct`](#tslinkdirect) | `true` or `false` | `true` without `tslink.service`, `false` with it |
 | [`tslink.health`](#tslinkhealth) | A port, 1 to 65535 | None |
 

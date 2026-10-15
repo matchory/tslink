@@ -152,7 +152,10 @@ func (e *Endpoint) serveReady(w http.ResponseWriter, r *http.Request) {
 		code = http.StatusOK
 	}
 	e.mu.RLock()
-	service := e.service
+	var service string
+	if len(e.services) == 1 {
+		service = e.services[0]
+	}
 	e.mu.RUnlock()
 	body, err := json.Marshal(struct {
 		State    tailscale.Readiness            `json:"state"`

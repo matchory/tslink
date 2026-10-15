@@ -344,7 +344,7 @@ func (d *daemon) editAdvertised(ctx context.Context, keep func(string) bool) ([]
 // keep advertising it, and never drain it. A failure is logged: the drain at
 // stop removes every advertised Service anyway.
 func (d *daemon) pruneServices() {
-	names := serviceNames(d.config.Services)
+	names := ServiceNames(d.config.Services)
 	keep := func(s string) bool { return slices.Contains(names, s) }
 	id := stringid.TruncateID(d.config.EndpointID)
 	err := d.config.gate.change(d, func(ctx context.Context) error {

@@ -72,15 +72,15 @@ func TestStartTailscaleRejectsForeignStack(t *testing.T) {
 func TestStartTailscaleRejectsInvalidService(t *testing.T) {
 	serve := []tailscale.ServeEndpoint{{Proto: "https", Port: "443", Target: "8080"}}
 	for _, info := range []ContainerInfo{
-		{Service: "svc:web"},
-		{Service: "web", Endpoints: serve},
-		{Service: "svc", Endpoints: serve},
-		{Service: "svc:", Endpoints: serve},
-		{Service: "svc:-web", Endpoints: serve},
-		{Service: "svc:a.b", Endpoints: serve},
-		{Service: "svc:web_1", Endpoints: serve},
-		{Service: "svc:Web", Endpoints: serve},
-		{Service: "SVC:web", Endpoints: serve},
+		{Services: []tailscale.Service{{Name: "svc:web"}}},
+		{Services: []tailscale.Service{{Name: "web", Endpoints: serve}}},
+		{Services: []tailscale.Service{{Name: "svc", Endpoints: serve}}},
+		{Services: []tailscale.Service{{Name: "svc:", Endpoints: serve}}},
+		{Services: []tailscale.Service{{Name: "svc:-web", Endpoints: serve}}},
+		{Services: []tailscale.Service{{Name: "svc:a.b", Endpoints: serve}}},
+		{Services: []tailscale.Service{{Name: "svc:web_1", Endpoints: serve}}},
+		{Services: []tailscale.Service{{Name: "svc:Web", Endpoints: serve}}},
+		{Services: []tailscale.Service{{Name: "SVC:web", Endpoints: serve}}},
 	} {
 		dataDir := t.TempDir()
 		e := &Endpoint{
@@ -95,18 +95,18 @@ func TestStartTailscaleRejectsInvalidService(t *testing.T) {
 		if _, ok := errors.AsType[permanentError](err); !ok ||
 			!strings.Contains(err.Error(), ServiceLabel) {
 			t.Errorf("service %q: got %v, want a permanent error naming %s",
-				info.Service, err, ServiceLabel)
+				info.Services, err, ServiceLabel)
 		}
 		if entries, err := os.ReadDir(dataDir); err != nil || len(entries) != 0 {
 			t.Errorf(
 				"service %q: data directory holds %v (%v), want nothing",
-				info.Service,
+				info.Services,
 				entries,
 				err,
 			)
 		}
 		if e.StateDir() != "" {
-			t.Errorf("service %q: state directory %q, want none", info.Service, e.StateDir())
+			t.Errorf("service %q: state directory %q, want none", info.Services, e.StateDir())
 		}
 	}
 }
@@ -116,11 +116,11 @@ func TestCheckServiceAcceptsValid(t *testing.T) {
 	serve := []tailscale.ServeEndpoint{{Proto: "https", Port: "443", Target: "8080"}}
 	for _, info := range []ContainerInfo{
 		{},
-		{Service: "svc:web", Endpoints: serve},
-		{Service: "svc:my-api-2", Endpoints: serve},
+		{Services: []tailscale.Service{{Name: "svc:web", Endpoints: serve}}},
+		{Services: []tailscale.Service{{Name: "svc:my-api-2", Endpoints: serve}}},
 	} {
 		if err := checkService(&info); err != nil {
-			t.Errorf("service %q: %v, want none", info.Service, err)
+			t.Errorf("service %q: %v, want none", info.Services, err)
 		}
 	}
 }
@@ -223,5 +223,13 @@ func TestWipeStateOnKeyChange(t *testing.T) {
 				t.Errorf("wiped = %v, want %v", got, tt.wiped)
 			}
 		})
+	}
+}
+
+func TestCheckServiceRefusesServiceErr(t *testing.T) {
+	info := &ContainerInfo{ServiceErr: errors.New("labels tslink.service.a.serve.443 and x")}
+	if err := checkService(info); err == nil ||
+		!strings.Contains(err.Error(), "tslink.service.a.serve.443") {
+		t.Errorf("checkService = %v, want the label error", err)
 	}
 }

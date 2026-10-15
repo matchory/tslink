@@ -359,7 +359,7 @@ func (d *daemon) configureServing() error {
 		logger.Infof("Direct serve configured successfully")
 	}
 
-	logger.Infof("Checking services: %q", serviceNames(d.config.Services))
+	logger.Infof("Checking services: %q", ServiceNames(d.config.Services))
 	d.pruneServices()
 	if len(d.backends) == 0 {
 		return nil

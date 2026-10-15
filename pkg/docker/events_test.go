@@ -2,6 +2,7 @@ package docker
 
 import (
 	"os"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -109,7 +110,7 @@ func TestParseServeValueProxyProtocol(t *testing.T) {
 		{"80", "http:80?proxy-protocol=2", nil}, // TCP forwarding only
 	}
 	for _, tt := range tests {
-		got := parseServeValue("web", tt.port, tt.value)
+		got := parseServeValue("web", core.ServeLabelPrefix+tt.port, tt.port, tt.value)
 		if (got == nil) != (tt.want == nil) || (got != nil && *got != *tt.want) {
 			t.Errorf("parseServeValue(%q, %q) = %+v, want %+v", tt.port, tt.value, got, tt.want)
 		}
@@ -149,7 +150,7 @@ func TestParseServeValueAcceptAppCaps(t *testing.T) {
 		{"5432", "tcp:5432?proxy-protocol=2&accept-app-caps=example.com/cap/a", nil},
 	}
 	for _, tt := range tests {
-		got := parseServeValue("web", tt.port, tt.value)
+		got := parseServeValue("web", core.ServeLabelPrefix+tt.port, tt.port, tt.value)
 		if (got == nil) != (tt.want == nil) || (got != nil && *got != *tt.want) {
 			t.Errorf("parseServeValue(%q, %q) = %+v, want %+v", tt.port, tt.value, got, tt.want)
 		}
@@ -234,7 +235,7 @@ func TestParseContainerInfoWarnsOfUnknownLabels(t *testing.T) {
 		"tslink.serve.443":  "https:8080",
 		"com.example.label": "x",
 	})
-	if info.Service != "svc:web" || len(info.Endpoints) != 1 {
+	if len(info.Services) != 1 || info.Services[0].Name != "svc:web" || len(info.Endpoints) != 1 {
 		t.Errorf("parsed %+v", info)
 	}
 	out := log.String()
@@ -248,7 +249,10 @@ func TestParseContainerInfoWarnsOfUnknownLabels(t *testing.T) {
 
 // The container labels reference lists exactly the labels tslink reads.
 func TestContainerLabelsMatchReference(t *testing.T) {
-	keys := []string{core.ServeLabelPrefix + "<port>"}
+	keys := []string{
+		core.ServeLabelPrefix + "<port>",
+		core.ServiceLabelPrefix + "<name>.serve.<port>",
+	}
 	for key := range containerLabels {
 		keys = append(keys, key)
 	}
@@ -264,5 +268,177 @@ func TestContainerLabelsMatchReference(t *testing.T) {
 	slices.Sort(listed)
 	if !slices.Equal(listed, keys) {
 		t.Errorf("container-labels.md lists %q, tslink reads %q", listed, keys)
+	}
+}
+
+func TestParseServices(t *testing.T) {
+	tests := []struct {
+		name    string
+		labels  map[string]string
+		want    []tailscale.Service
+		wantErr string
+	}{
+		{
+			name: "two services, sorted",
+			labels: map[string]string{
+				"tslink.service.b.serve.443": "https:8081",
+				"tslink.service.a.serve.443": "https:8080",
+				"tslink.service.a.serve.80":  "http:8080",
+			},
+			want: []tailscale.Service{
+				{Name: "svc:a", Endpoints: []tailscale.ServeEndpoint{
+					{Proto: "http", Port: "80", Target: "8080"},
+					{Proto: "https", Port: "443", Target: "8080"},
+				}},
+				{Name: "svc:b", Endpoints: []tailscale.ServeEndpoint{
+					{Proto: "https", Port: "443", Target: "8081"},
+				}},
+			},
+		},
+		{
+			name:   "service named serve",
+			labels: map[string]string{"tslink.service.serve.serve.443": "tcp"},
+			want: []tailscale.Service{{Name: "svc:serve", Endpoints: []tailscale.ServeEndpoint{
+				{Proto: "tcp", Port: "443", Target: "443"},
+			}}},
+		},
+		{name: "none", labels: map[string]string{"tslink.serve.443": "https:80"}},
+		{
+			name:    "no port",
+			labels:  map[string]string{"tslink.service.a.serve.": "tcp"},
+			wantErr: "tslink.service.a.serve.",
+		},
+		{
+			name:    "not a serve key",
+			labels:  map[string]string{"tslink.service.a.443": "tcp"},
+			wantErr: "tslink.service.a.443",
+		},
+		{
+			name:    "upper case",
+			labels:  map[string]string{"tslink.service.A.serve.443": "tcp"},
+			wantErr: "tslink.service.A.serve.443",
+		},
+		{
+			name: "one port twice",
+			labels: map[string]string{
+				"tslink.service.a.serve.443":  "tcp",
+				"tslink.service.a.serve.0443": "tcp",
+			},
+			wantErr: "one port",
+		},
+		{
+			name:    "not a port",
+			labels:  map[string]string{"tslink.service.a.serve.x": "tcp"},
+			wantErr: "not a port",
+		},
+		{
+			name:    "no valid endpoint",
+			labels:  map[string]string{"tslink.service.a.serve.443": "ftp"},
+			wantErr: "svc:a has no valid endpoint",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseServices("web", tt.labels)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("parseServices error = %v, want one containing %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("parseServices = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseContainerInfoServices(t *testing.T) {
+	tests := []struct {
+		name       string
+		labels     map[string]string
+		wantNames  []string
+		wantDirect bool
+		wantErr    bool
+	}{
+		{
+			name: "legacy",
+			labels: map[string]string{
+				"tslink.service":   "svc:web",
+				"tslink.serve.443": "https:80",
+			},
+			wantNames: []string{"svc:web"},
+		},
+		{
+			name:       "direct only",
+			labels:     map[string]string{"tslink.serve.443": "https:80"},
+			wantDirect: true,
+		},
+		{
+			name: "namespaced",
+			labels: map[string]string{
+				"tslink.service.a.serve.443": "https:80",
+				"tslink.service.b.serve.443": "https:81",
+			},
+			wantNames: []string{"svc:a", "svc:b"},
+		},
+		{
+			name: "namespaced with direct=false",
+			labels: map[string]string{
+				"tslink.service.a.serve.443": "https:80",
+				"tslink.direct":              "false",
+			},
+			wantNames: []string{"svc:a"},
+		},
+		{
+			name: "mixed with tslink.service",
+			labels: map[string]string{
+				"tslink.service":             "svc:web",
+				"tslink.service.a.serve.443": "https:80",
+			},
+			wantErr: true,
+		},
+		{
+			name: "mixed with tslink.serve",
+			labels: map[string]string{
+				"tslink.serve.80":            "http:80",
+				"tslink.service.a.serve.443": "https:80",
+			},
+			wantErr: true,
+		},
+		{
+			name: "namespaced with direct=true",
+			labels: map[string]string{
+				"tslink.service.a.serve.443": "https:80",
+				"tslink.direct":              "true",
+			},
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			info := parseContainerInfo("web", tt.labels)
+			if (info.ServiceErr != nil) != tt.wantErr {
+				t.Fatalf("ServiceErr = %v, want error %v", info.ServiceErr, tt.wantErr)
+			}
+			if tt.wantErr {
+				return
+			}
+			var names []string
+			for _, s := range info.Services {
+				names = append(names, s.Name)
+			}
+			if !slices.Equal(names, tt.wantNames) || info.Direct != tt.wantDirect {
+				t.Errorf("Services = %q, Direct = %v; want %q, %v",
+					names, info.Direct, tt.wantNames, tt.wantDirect)
+			}
+			if tt.name == "legacy" && len(info.Services[0].Endpoints) != 1 {
+				t.Errorf("legacy Service endpoints = %v, want the tslink.serve one",
+					info.Services[0].Endpoints)
+			}
+		})
 	}
 }

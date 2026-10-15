@@ -39,7 +39,7 @@ func healthEndpoint(t *testing.T, state *atomic.Value, calls *atomic.Int32) (*En
 		ID:         "0123456789abcdef",
 		dataDir:    t.TempDir(),
 		sandboxKey: "/run/netns/x",
-		service:    "svc:ai",
+		services:   []string{"svc:ai"},
 	}
 	e.readinessFn = func(context.Context) tailscale.ReadinessReport {
 		calls.Add(1)

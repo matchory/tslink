@@ -43,6 +43,12 @@ func newTestDaemon(
 		d.config.Services = []Service{{Name: service, Endpoints: endpoints}}
 	}
 	d.backends = newBackends(d)
+	// Registered after t.TempDir, so it runs first: the daemon's goroutines
+	// write certificate leases into the state directory until they end
+	t.Cleanup(func() {
+		cancel()
+		d.wg.Wait()
+	})
 	return d, api
 }
 

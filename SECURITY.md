@@ -106,8 +106,8 @@ Assumes: E2, E3.
 Auth keys and OAuth client secrets do not appear in these places:
 
 - the plugin log and status files;
-- the command line and environment of the plugin and of tailscaled, but for
-  the plugin setting `TS_AUTHKEY`, which is the plugin's environment;
+- the command line and environment of the plugin and of tailscaled, except
+  that the plugin setting `TS_AUTHKEY` is in the plugin's environment;
 - tailscaled's state and log, and the other files in the plugin's data
   directory, but for `oauth-client.secret`, which holds the cluster
   credential;
@@ -135,9 +135,9 @@ shares only the network namespace with its container: it runs in a mount
 namespace of its own, and its LocalAPI is a Unix socket at a path in the
 plugin's data directory, which the container does not see. State
 directories are `by-hostname/<hostname>/`, or `by-stack/<stack>/<hostname>/`
-for stack tasks, in the plugin's data directory, with mode 0700. A hostname
-or stack name names no other path, and each state directory serves one
-endpoint at a time. A certificate's files are named after a validated DNS
+for stack tasks, in the plugin's data directory, created with mode 0700. A
+hostname or stack name names no other path, and each state directory serves
+one endpoint at a time. A certificate's files are named after a validated DNS
 name, so neither a Service name nor the tailnet's DNS suffix from control
 names a file outside the certificate directory.
 
@@ -193,6 +193,7 @@ finding:
   every Service's TLS private key and the ACME account key: anyone who can
   read it can impersonate those Services (E7).
 - **Known limitation**: A stack that names another stack's Service can hold
-  that Service's certificate lease in the shared directory and delay its
-  issuance and renewal; operators who share a certificate directory across
-  stacks rely on E8 and stack review.
+  that Service's certificate lease in the shared directory, which blocks its
+  issuance and renewal for as long as that task runs, and after
+  `certDomainGrace` advertises the Service; operators who share a certificate
+  directory across stacks rely on E8 and stack review.

@@ -34,15 +34,26 @@ type protected struct {
 	paths, trees []string
 }
 
+// add returns p with path protected too, as both a path and a tree: nothing
+// bind-mounted under it, or over it, is allowed. A blank path, or one already
+// protected, leaves p unchanged.
+func (p protected) add(path string) protected {
+	if path == "" {
+		return p
+	}
+	path = filepath.Clean(path)
+	if slices.Contains(p.paths, path) {
+		return p
+	}
+	p.paths = append(slices.Clone(p.paths), path)
+	p.trees = append(slices.Clone(p.trees), path)
+	return p
+}
+
 // protectedOn returns the protected host paths of a Docker daemon whose data
 // root is rootDir.
 func protectedOn(rootDir string) protected {
-	p := protected{paths: protectedPaths, trees: protectedTrees}
-	if rootDir != "" && !slices.Contains(protectedPaths, filepath.Clean(rootDir)) {
-		p.paths = append(slices.Clone(p.paths), filepath.Clean(rootDir))
-		p.trees = append(slices.Clone(p.trees), filepath.Clean(rootDir))
-	}
-	return p
+	return protected{paths: protectedPaths, trees: protectedTrees}.add(rootDir)
 }
 
 // stackLabel is the label docker stack deploy sets to the stack's name.
@@ -50,8 +61,10 @@ const stackLabel = "com.docker.stack.namespace"
 
 // checkContainers checks E4 on the containers attached, directly or through
 // another container's network namespace, to a network of a tslink plugin,
-// and E1 and E2 on them and the other containers of their stacks.
-func checkContainers(ctx context.Context, d DockerAPI) []Result {
+// and E1 and E2 on them and the other containers of their stacks. sharedDir
+// is the shared certificate directory as E2 should protect it (--shared-dir);
+// empty falls back to each tslink plugin's own shared.source setting.
+func checkContainers(ctx context.Context, d DockerAPI, sharedDir string) []Result {
 	containers, scope, err := tslinkContainers(ctx, d)
 	if err != nil {
 		var results []Result
@@ -63,7 +76,7 @@ func checkContainers(ctx context.Context, d DockerAPI) []Result {
 	if containers == nil {
 		return []Result{noPlugin("E1"), noPlugin("E2"), noPlugin("E4")}
 	}
-	mounts, err := checkMounts(ctx, d, scope)
+	mounts, err := checkMounts(ctx, d, scope, sharedDir)
 	if err != nil {
 		mounts = Result{Property: "E2", Status: Error, Detail: err.Error()}
 	}
@@ -223,8 +236,29 @@ func onTslinkNetwork(
 	return attached, nil
 }
 
-// checkPrivileges checks E1: no container is privileged or has NET_ADMIN or
-// SYS_ADMIN.
+// forwardingSysctl reports whether key is a namespaced sysctl that enables IP
+// forwarding when set to anything other than "0": net.ipv4.ip_forward, or
+// net.ipv4.conf.<any>.forwarding or net.ipv6.conf.<any>.forwarding for any
+// interface or "all"/"default".
+func forwardingSysctl(key string) bool {
+	if key == "net.ipv4.ip_forward" {
+		return true
+	}
+	return (strings.HasPrefix(key, "net.ipv4.conf.") || strings.HasPrefix(key, "net.ipv6.conf.")) &&
+		strings.HasSuffix(key, ".forwarding")
+}
+
+// unconfinedSecurityOpt reports whether opt turns off seccomp or AppArmor
+// confinement: seccomp=unconfined, apparmor=unconfined, or the same with a
+// colon, which Docker accepts too.
+func unconfinedSecurityOpt(opt string) bool {
+	opt = strings.Replace(opt, ":", "=", 1)
+	return opt == "seccomp=unconfined" || opt == "apparmor=unconfined"
+}
+
+// checkPrivileges checks E1: no container is privileged, has NET_ADMIN or
+// SYS_ADMIN, sets a namespaced sysctl that enables forwarding, or disables
+// seccomp or AppArmor confinement.
 func checkPrivileges(containers []container.InspectResponse) Result {
 	var violations []string
 	for _, c := range containers {
@@ -241,9 +275,23 @@ func checkPrivileges(containers []container.InspectResponse) Result {
 				violations = append(violations, core.ContainerName(c.Name)+": cap_add "+capability)
 			}
 		}
+		for key, value := range hc.Sysctls {
+			if forwardingSysctl(key) && value != "0" {
+				violations = append(
+					violations,
+					fmt.Sprintf("%s: sysctl %s=%s", core.ContainerName(c.Name), key, value),
+				)
+			}
+		}
+		for _, opt := range hc.SecurityOpt {
+			if unconfinedSecurityOpt(opt) {
+				violations = append(violations, core.ContainerName(c.Name)+": "+opt)
+			}
+		}
 	}
-	return outcome("E1", violations, "no container on a tslink network on this host, "+
-		"nor another container of its stack, is privileged or has NET_ADMIN or SYS_ADMIN")
+	return outcome("E1", violations, "no container on a tslink network on this host, nor "+
+		"another container of its stack, is privileged, has NET_ADMIN or SYS_ADMIN, enables "+
+		"forwarding by sysctl, or disables seccomp or AppArmor")
 }
 
 // within reports whether path is dir or lies in it.
@@ -267,19 +315,49 @@ func (p protected) exposes(source string) bool {
 	return false
 }
 
+// sharedDirsOf returns the host paths E2 protects as the shared certificate
+// directory: sharedDir if set, else each enabled tslink plugin's own
+// shared.source setting (docker plugin set tslink shared.source=...).
+func sharedDirsOf(ctx context.Context, d DockerAPI, sharedDir string) ([]string, error) {
+	if sharedDir != "" {
+		return []string{sharedDir}, nil
+	}
+	plugins, err := tslinkPlugins(ctx, d)
+	if err != nil {
+		return nil, err
+	}
+	var dirs []string
+	for _, p := range plugins {
+		for _, m := range p.Settings.Mounts {
+			if m.Name == "shared" && m.Source != nil && *m.Source != "" {
+				dirs = append(dirs, *m.Source)
+			}
+		}
+	}
+	return dirs, nil
+}
+
 // checkMounts checks E2: no container bind-mounts protected host state,
 // directly or through a bind-backed local volume, or shares the host's PID
-// namespace.
+// namespace. sharedDir is as checkContainers documents it.
 func checkMounts(
 	ctx context.Context,
 	d DockerAPI,
 	containers []container.InspectResponse,
+	sharedDir string,
 ) (Result, error) {
 	info, err := d.Info(ctx, dockerclient.InfoOptions{})
 	if err != nil {
 		return Result{}, fmt.Errorf("failed to read Docker's data root: %w", err)
 	}
 	prot := protectedOn(info.Info.DockerRootDir)
+	sharedDirs, err := sharedDirsOf(ctx, d, sharedDir)
+	if err != nil {
+		return Result{}, err
+	}
+	for _, dir := range sharedDirs {
+		prot = prot.add(dir)
+	}
 	var violations []string
 	for _, c := range containers {
 		for _, m := range c.Mounts {

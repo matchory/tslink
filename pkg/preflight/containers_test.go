@@ -7,6 +7,7 @@ import (
 
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/mount"
+	"github.com/moby/moby/api/types/plugin"
 	"github.com/moby/moby/api/types/volume"
 )
 
@@ -40,7 +41,71 @@ func TestCapabilities(t *testing.T) {
 			f.add(container.InspectResponse{ID: "c1", Name: "/web", HostConfig: &tt.hc}, "tn")
 			hc := container.HostConfig{Privileged: true}
 			f.add(container.InspectResponse{ID: "c2", Name: "/other", HostConfig: &hc}, "bridge")
-			r := result(t, checkContainers(context.Background(), f), "E1")
+			r := result(t, checkContainers(context.Background(), f, ""), "E1")
+			if r.Status != tt.status {
+				t.Errorf("E1 = %+v, want %s", r, tt.status)
+			}
+			if r.Status == Violated && !strings.Contains(r.Detail, "web") {
+				t.Errorf("E1 detail %q does not name the container", r.Detail)
+			}
+		})
+	}
+}
+
+func TestForwardingSysctls(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		key    string
+		value  string
+		status Status
+	}{
+		{"ipv4 ip_forward on", "net.ipv4.ip_forward", "1", Violated},
+		{"ipv4 ip_forward off", "net.ipv4.ip_forward", "0", OK},
+		{"ipv4 conf.all.forwarding on", "net.ipv4.conf.all.forwarding", "1", Violated},
+		{"ipv4 conf.eth0.forwarding on", "net.ipv4.conf.eth0.forwarding", "1", Violated},
+		{"ipv4 conf.all.forwarding off", "net.ipv4.conf.all.forwarding", "0", OK},
+		{"ipv6 conf.all.forwarding on", "net.ipv6.conf.all.forwarding", "1", Violated},
+		{"ipv6 conf.default.forwarding on", "net.ipv6.conf.default.forwarding", "1", Violated},
+		{"unrelated sysctl", "net.core.somaxconn", "1024", OK},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFakeDocker()
+			f.add(container.InspectResponse{
+				ID: "c1", Name: "/web",
+				HostConfig: &container.HostConfig{Sysctls: map[string]string{tt.key: tt.value}},
+			}, "tn")
+			r := result(t, checkContainers(context.Background(), f, ""), "E1")
+			if r.Status != tt.status {
+				t.Errorf("E1 = %+v, want %s", r, tt.status)
+			}
+			if r.Status == Violated && !strings.Contains(r.Detail, "web") {
+				t.Errorf("E1 detail %q does not name the container", r.Detail)
+			}
+		})
+	}
+}
+
+func TestUnconfinedProfiles(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		opt    string
+		status Status
+	}{
+		{"seccomp unconfined, =", "seccomp=unconfined", Violated},
+		{"seccomp unconfined, :", "seccomp:unconfined", Violated},
+		{"apparmor unconfined, =", "apparmor=unconfined", Violated},
+		{"apparmor unconfined, :", "apparmor:unconfined", Violated},
+		{"seccomp profile", "seccomp=/path/to/profile.json", OK},
+		{"apparmor profile", "apparmor=docker-default", OK},
+		{"no-new-privileges", "no-new-privileges", OK},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFakeDocker()
+			f.add(container.InspectResponse{
+				ID: "c1", Name: "/web",
+				HostConfig: &container.HostConfig{SecurityOpt: []string{tt.opt}},
+			}, "tn")
+			r := result(t, checkContainers(context.Background(), f, ""), "E1")
 			if r.Status != tt.status {
 				t.Errorf("E1 = %+v, want %s", r, tt.status)
 			}
@@ -80,12 +145,81 @@ func TestMounts(t *testing.T) {
 			}, "tn")
 			if r := result(
 				t,
-				checkContainers(context.Background(), f),
+				checkContainers(context.Background(), f, ""),
 				"E2",
 			); r.Status != tt.status {
 				t.Errorf("E2 = %+v, want %s", r, tt.status)
 			}
 		})
+	}
+}
+
+func TestSharedDirMount(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		sharedDir string
+		source    string
+		status    Status
+	}{
+		{"mounts the shared dir", "/shared/certs", "/shared/certs", Violated},
+		{"mounts a subdirectory of it", "/shared/certs", "/shared/certs/tn.example.com", Violated},
+		{"mounts an ancestor of it", "/shared/certs", "/shared", Violated},
+		{"mounts something else", "/shared/certs", "/srv/app", OK},
+		{"no --shared-dir configured", "", "/shared/certs", OK},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFakeDocker()
+			f.add(container.InspectResponse{
+				ID: "c1", Name: "/web", HostConfig: &container.HostConfig{},
+				Mounts: []container.MountPoint{
+					{Type: mount.TypeBind, Source: tt.source, Destination: "/x"},
+				},
+			}, "tn")
+			r := result(t, checkContainers(context.Background(), f, tt.sharedDir), "E2")
+			if r.Status != tt.status {
+				t.Errorf("E2 = %+v, want %s", r, tt.status)
+			}
+		})
+	}
+}
+
+// sharedMountSource is the plugin's own "shared" mount source, as a Docker
+// plugin inspect reports it (docker plugin set tslink shared.source=...).
+func sharedMountSource(source string) plugin.Mount {
+	return plugin.Mount{Name: "shared", Source: &source}
+}
+
+// TestSharedDirFromPluginSettings covers the fallback when --shared-dir is
+// not passed: the plugin's own shared.source protects it instead.
+func TestSharedDirFromPluginSettings(t *testing.T) {
+	f := newFakeDocker()
+	f.plugins[0].Settings.Mounts = []plugin.Mount{sharedMountSource("/var/lib/tslink-shared")}
+	f.add(container.InspectResponse{
+		ID: "c1", Name: "/web", HostConfig: &container.HostConfig{},
+		Mounts: []container.MountPoint{
+			{Type: mount.TypeBind, Source: "/var/lib/tslink-shared", Destination: "/x"},
+		},
+	}, "tn")
+	r := result(t, checkContainers(context.Background(), f, ""), "E2")
+	if r.Status != Violated {
+		t.Errorf("E2 = %+v, want violated", r)
+	}
+}
+
+// TestSharedDirFlagOverridesPluginSettings covers --shared-dir taking
+// precedence: only the path it names is protected.
+func TestSharedDirFlagOverridesPluginSettings(t *testing.T) {
+	f := newFakeDocker()
+	f.plugins[0].Settings.Mounts = []plugin.Mount{sharedMountSource("/var/lib/tslink-shared")}
+	f.add(container.InspectResponse{
+		ID: "c1", Name: "/web", HostConfig: &container.HostConfig{},
+		Mounts: []container.MountPoint{
+			{Type: mount.TypeBind, Source: "/var/lib/tslink-shared", Destination: "/x"},
+		},
+	}, "tn")
+	r := result(t, checkContainers(context.Background(), f, "/mnt/shared-certs"), "E2")
+	if r.Status != OK {
+		t.Errorf("E2 = %+v, want ok: --shared-dir overrides the plugin's own setting", r)
 	}
 }
 
@@ -99,7 +233,7 @@ func TestHostPIDNamespace(t *testing.T) {
 		},
 		"tn",
 	)
-	if r := result(t, checkContainers(context.Background(), f), "E2"); r.Status != Violated {
+	if r := result(t, checkContainers(context.Background(), f, ""), "E2"); r.Status != Violated {
 		t.Errorf("E2 = %+v, want violated", r)
 	}
 }
@@ -112,14 +246,14 @@ func TestStackLabels(t *testing.T) {
 			"com.docker.swarm.service.id": "s1", "com.docker.stack.namespace": "app",
 		}},
 	}, "tn")
-	if r := result(t, checkContainers(context.Background(), f), "E4"); r.Status != OK {
+	if r := result(t, checkContainers(context.Background(), f, ""), "E4"); r.Status != OK {
 		t.Errorf("E4 = %+v, want ok", r)
 	}
 	f.add(container.InspectResponse{
 		ID: "c2", Name: "/loose.1.y", HostConfig: &container.HostConfig{},
 		Config: &container.Config{Labels: map[string]string{"com.docker.swarm.service.id": "s2"}},
 	}, "tn")
-	r := result(t, checkContainers(context.Background(), f), "E4")
+	r := result(t, checkContainers(context.Background(), f, ""), "E4")
 	if r.Status != Unknown || !strings.Contains(r.Detail, "loose.1.y") {
 		t.Errorf("E4 = %+v, want unknown naming loose.1.y", r)
 	}
@@ -165,7 +299,7 @@ func TestStackMates(t *testing.T) {
 			f.networks["ov"] = "overlay"
 			f.add(inStack("web", "app", container.HostConfig{}), "tn")
 			f.add(tt.other, "ov")
-			r := result(t, checkContainers(context.Background(), f), tt.property)
+			r := result(t, checkContainers(context.Background(), f, ""), tt.property)
 			if r.Status != tt.status {
 				t.Errorf("%s = %+v, want %s", tt.property, r, tt.status)
 			}
@@ -183,7 +317,7 @@ func TestNoStackNoMates(t *testing.T) {
 	f.networks["ov"] = "overlay"
 	f.add(inStack("web", "", container.HostConfig{}), "tn")
 	f.add(inStack("other", "", container.HostConfig{Privileged: true}), "ov")
-	if r := result(t, checkContainers(context.Background(), f), "E1"); r.Status != OK {
+	if r := result(t, checkContainers(context.Background(), f, ""), "E1"); r.Status != OK {
 		t.Errorf("E1 = %+v, want ok", r)
 	}
 }
@@ -212,7 +346,7 @@ func TestContainersGoneDuringTheCheck(t *testing.T) {
 	)
 	f.networks["gone-net"] = "tslink:latest"
 	f.gone["c1"], f.gone["gone-net"] = true, true
-	r := result(t, checkContainers(context.Background(), f), "E1")
+	r := result(t, checkContainers(context.Background(), f, ""), "E1")
 	if r.Status != Violated || strings.Contains(r.Detail, "gone") ||
 		!strings.Contains(r.Detail, "web") {
 		t.Errorf("E1 = %+v, want violated by web only", r)
@@ -222,7 +356,7 @@ func TestContainersGoneDuringTheCheck(t *testing.T) {
 func TestDockerUnreachable(t *testing.T) {
 	f := newFakeDocker()
 	f.pluginErr = errDockerDown
-	results := checkContainers(context.Background(), f)
+	results := checkContainers(context.Background(), f, "")
 	for _, p := range []string{"E1", "E2", "E4"} {
 		if r := result(t, results, p); r.Status != Error {
 			t.Errorf("%s = %+v, want error", p, r)
@@ -253,7 +387,7 @@ func TestNetworkModeContainer(t *testing.T) {
 					Privileged:  true,
 				},
 			})
-			r := result(t, checkContainers(context.Background(), f), "E1")
+			r := result(t, checkContainers(context.Background(), f, ""), "E1")
 			if r.Status != Violated || !strings.Contains(r.Detail, "sidecar") {
 				t.Errorf("E1 = %+v, want violated by sidecar, which shares web's netns", r)
 			}
@@ -306,7 +440,7 @@ func TestBindBackedVolume(t *testing.T) {
 			}, "tn")
 			if r := result(
 				t,
-				checkContainers(context.Background(), f),
+				checkContainers(context.Background(), f, ""),
 				"E2",
 			); r.Status != tt.status {
 				t.Errorf("E2 = %+v, want %s", r, tt.status)
@@ -328,7 +462,7 @@ func TestStoppedContainers(t *testing.T) {
 		"tn",
 	)
 	f.stopped["c1"] = true
-	r := result(t, checkContainers(context.Background(), f), "E1")
+	r := result(t, checkContainers(context.Background(), f, ""), "E1")
 	if r.Status != Violated || !strings.Contains(r.Detail, "stopped") {
 		t.Errorf("E1 = %+v, want violated by a stopped container", r)
 	}
@@ -347,7 +481,7 @@ func TestCreatedButNeverStarted(t *testing.T) {
 	)
 	f.stopped["c1"] = true
 	f.containers[0].NetworkSettings.Networks["tn"].NetworkID = ""
-	r := result(t, checkContainers(context.Background(), f), "E1")
+	r := result(t, checkContainers(context.Background(), f, ""), "E1")
 	if r.Status != Violated || !strings.Contains(r.Detail, "never-started") {
 		t.Errorf("E1 = %+v, want violated by never-started", r)
 	}
@@ -360,7 +494,7 @@ func TestNoPluginEnabled(t *testing.T) {
 	f.plugins[0].Enabled = false
 	hc := container.HostConfig{Privileged: true}
 	f.add(container.InspectResponse{ID: "c1", Name: "/web", HostConfig: &hc}, "tn")
-	results := checkContainers(context.Background(), f)
+	results := checkContainers(context.Background(), f, "")
 	for _, p := range []string{"E1", "E2", "E4"} {
 		r := result(t, results, p)
 		if r.Status != Unknown || !strings.Contains(r.Detail, "no tslink plugin is enabled") {
@@ -391,7 +525,7 @@ func TestCustomDataRoot(t *testing.T) {
 					{Type: mount.TypeBind, Source: tt.source, Destination: "/x"},
 				},
 			}, "tn")
-			r := result(t, checkContainers(context.Background(), f), "E2")
+			r := result(t, checkContainers(context.Background(), f, ""), "E2")
 			if r.Status != tt.status {
 				t.Errorf("E2 = %+v, want %s", r, tt.status)
 			}
@@ -406,7 +540,7 @@ func TestDockerInfoFails(t *testing.T) {
 		container.InspectResponse{ID: "c1", Name: "/web", HostConfig: &container.HostConfig{}},
 		"tn",
 	)
-	if r := result(t, checkContainers(context.Background(), f), "E2"); r.Status != Error {
+	if r := result(t, checkContainers(context.Background(), f, ""), "E2"); r.Status != Error {
 		t.Errorf("E2 = %+v, want error", r)
 	}
 }

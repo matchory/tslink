@@ -29,7 +29,7 @@ type Env struct {
 // E4, E5, E6, E7, E8 and E9, in this order.
 func Check(ctx context.Context, env Env) []Result {
 	d := &pluginsOnce{DockerAPI: env.Docker}
-	results := checkContainers(ctx, d)
+	results := checkContainers(ctx, d, env.SharedDir)
 	return append(results,
 		checkIsolation(ctx, d, env.Run),
 		checkPluginDigest(ctx, d),

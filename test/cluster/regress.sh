@@ -29,6 +29,8 @@ CASES=(
 	"R6 a plugin upgrade keeps every identity (--upgrade only)"
 	"R7 several named Services per task: both VIPs answer, HTTPS has the Service's certificate, both replicas approved; with a shared directory, one certificate, advertised only once it exists"
 	"R8 removing a Service's label drains it from the old tasks before their logout, without failing the other Service"
+	"R9 refused label combinations fail their endpoint, naming the labels, without a device; legacy labels cleared next to a named one serve it"
+	"R10 /ready reports each Service, keeps ready while one loses its approval, answers 200 at once after a plugin restart and 503 drained while stopping"
 )
 while [ $# -gt 0 ]; do
 	case $1 in
@@ -115,6 +117,23 @@ approved() { "$B/tsapi" GET "/tailnet/$TN/services/$1/device/$2/approved" | jq -
 node_ids() {
 	devices | jq -r --arg h "$1" '.devices[]|select(.connectedToControl and (.hostname|startswith($h)))|.nodeId'
 }
+node_id_of() { devices | jq -r --arg h "$1" '.devices[]|select(.connectedToControl and .hostname == $h)|.nodeId'; }
+# readylogs start|stop|show [swarm-service]: ready.sh logging to /tmp/ready.log in each running
+# container with tslink.health on every node, or each of the service; show prints "node container
+# epoch code seconds state services" from each container that has a log, running or exited
+readylogs() {
+	local n f=label=tslink.health
+	[ -n "${2:-}" ] && f=label=com.docker.swarm.service.name=$2
+	for n in $("$B/nodes"); do
+		case $1 in
+		start) "$B/s" "$n" "cat >/tmp/ready.sh; for c in \$(docker ps -q -f $f); do p=\$(docker inspect -f '{{index .Config.Labels \"tslink.health\"}}' \$c); docker exec \$c rm -f /tmp/ready.log; docker cp /tmp/ready.sh \$c:/tmp/ready.sh && docker exec -d \$c sh /tmp/ready.sh \$p /tmp/ready.log; done" <"$B/ready.sh" ;;
+		stop) "$B/s" "$n" "for c in \$(docker ps -q -f $f); do docker exec \$c pkill -f /tmp/ready.log; done" </dev/null ;;
+		show) "$B/s" "$n" "for c in \$(docker ps -aq -f $f); do docker cp \$c:/tmp/ready.log - 2>/dev/null | tar -xO | sed \"s/^/$n \$c /\"; done" </dev/null ;;
+		esac
+	done
+}
+# svc_state <ready.sh line> <service>: the Service's state in the line's services
+svc_state() { awk '{ print $5 }' <<<"$1" | jq -r --arg s "$2" '.[$s] // .[$s | ltrimstr("svc:")] // "-"'; }
 
 # R1. Every task tailscaled answers and is Running
 r1() {
@@ -281,6 +300,80 @@ r8() {
 		check "R8 $SVC_C: caller@$n failed requests ($f)" "$([ "$f" = 0 ] && echo ok || echo "$f failed")"
 		echo "INFO  R8 $SVC_O: caller@$n failed requests ($(probe_fails "$n" /tmp/probe-other.log))"
 	done
+	stack_rm multi
+}
+
+# R9. Refused label combinations (mixed.yml): legacy and named labels together, or a named label
+#     with tslink.direct=true, fail the endpoint with an error naming them, and no device comes
+#     up; legacy labels cleared to "" next to a named label serve the named Service
+mixed_settled() {
+	local e
+	e=$(eps | awk -F'\t' '$3 == "mixed" { print $4, $5 }')
+	grep -q '^mixed-combo-.* failed' <<<"$e" && grep -q '^mixed-direct-.* failed' <<<"$e" &&
+		grep -q '^mixed-cleared-.* running' <<<"$e"
+}
+r9() {
+	local since e svc want v d
+	since=$(now)
+	"$B/deploy" mixed callee >/dev/null
+	wait_for 300 mixed_settled || echo "NOTE  mixed not settled after 300 s"
+	e=$(eps | awk -F'\t' '$3 == "mixed"')
+	for svc in combo direct; do
+		want='tslink.service.<name>.serve.<port> cannot be combined with tslink.service or tslink.serve.<port>'
+		[ "$svc" = direct ] && want='tslink.direct=true cannot be combined with tslink.service.<name>.serve.<port>'
+		v=$(awk -F'\t' -v h="mixed-$svc-" 'index($4, h) == 1 { print $5 ": " $7 }' <<<"$e")
+		check "R9 $svc refused ($v)" "$(grep -qF "failed: invalid Service labels: $want" <<<"$v" && echo ok || echo "want failed: $want")"
+		d=$(devices | jq -r --arg h "mixed-$svc-" --arg since "$since" '[.devices[]|select((.hostname|startswith($h)) and .lastSeen > $since)|.hostname]|join(",")')
+		check "R9 $svc has no device" "$([ -z "$d" ] && echo ok || echo "$d")"
+	done
+	v=$(awk -F'\t' 'index($4, "mixed-cleared-") == 1 { print $5, $6 }' <<<"$e")
+	check "R9 cleared serves $SVC_O ($v)" "$([ "$v" = "running $SVC_O" ] && echo ok || echo "want running $SVC_O")"
+	stack_rm mixed
+}
+
+# R10. /ready per Service and the latch (multi.yml): 200 with both Services ready; with one
+#      Service's approval revoked, services shows it while state stays ready; after a plugin
+#      restart, each task's first answer is 200 within 1 s; a stopping task answers 503 drained
+r10() {
+	local n host id line v c code t
+	up_multi || return
+	read -r n _ host _ <<<"$(running multi | head -1)"
+	line=$("$B/cxs" "$n" multi_web "$B/ready.sh" 9002)
+	v=ok
+	if [ "$(awk '{ print $2, $4 }' <<<"$line")" != "200 ready" ] || [ "$(svc_state "$line" "$SVC_C")" != ready ] ||
+		[ "$(svc_state "$line" "$SVC_O")" != ready ]; then v=$line; fi
+	check "R10 /ready on $host: 200 with both Services ready" "$v"
+
+	id=$(node_id_of "$host")
+	"$B/tsapi" POST "/tailnet/$TN/services/$SVC_O/device/$id/approved" '{"approved":false}' >/dev/null
+	sleep 5
+	# a latched endpoint answers from its cache, refreshed in the background: the second answer is current
+	"$B/cxs" "$n" multi_web "$B/ready.sh" 9002 >/dev/null
+	sleep 1
+	line=$("$B/cxs" "$n" multi_web "$B/ready.sh" 9002)
+	v=ok
+	if [ "$(awk '{ print $2, $4 }' <<<"$line")" != "200 ready" ] || [ "$(svc_state "$line" "$SVC_O")" = ready ] ||
+		[ "$(svc_state "$line" "$SVC_C")" != ready ]; then v=$line; fi
+	check "R10 $SVC_O unapproved on $host: services shows it, state stays ready" "$v"
+	"$B/tsapi" POST "/tailnet/$TN/services/$SVC_O/device/$id/approved" '{"approved":true}' >/dev/null
+
+	readylogs start multi_web
+	sleep 2
+	"$B/install-plugin.sh" "$REF" >/dev/null 2>&1
+	sleep 10
+	readylogs stop multi_web
+	# per container, the first answer after the plugin was gone (no answer, code 000)
+	v=$(readylogs show multi_web | awk '{ k = $1 " " $2 } $4 == "000" { gap[k] = 1; next } gap[k] && !done[k] { done[k] = 1; print k, $4, $5 }')
+	[ -n "$v" ] || echo "NOTE  R10 /ready answered throughout the plugin restart"
+	while read -r n c code t; do
+		check "R10 first /ready on $n after the plugin restart: $code in ${t}s" "$([ "$code" = 200 ] && awk -v t="$t" 'BEGIN { exit !(t < 1) }' && echo ok || echo "want 200 within 1 s")"
+	done < <([ -z "$v" ] || echo "$v")
+
+	readylogs start multi_web
+	scale multi_web 0
+	sleep 30
+	v=$(readylogs show multi_web | awk '$4 == "503" && $6 == "drained" { print $1 }' | sort -u | grep -c .)
+	check "R10 both stopping tasks answered 503 drained ($v)" "$([ "$v" = 2 ] && echo ok || echo "$v")"
 	stack_rm multi
 }
 

@@ -5,8 +5,9 @@
 # from the tree and installs it, and starts headscale with the end-to-end
 # test's users (alice, bob, host) and policy, and the host's own tailscaled,
 # logged in as host, which may reach alice's nodes. It sets t1_down as the
-# EXIT trap, which removes all of it, the containers and networks named rt-*
-# and tslink's iptables chains, and keeps the probe's exit status.
+# EXIT trap, which runs the probe's t1_on_exit commands, removes all of it,
+# the containers and networks named rt-* and tslink's iptables chains, and
+# keeps the probe's exit status. A probe sets no EXIT trap of its own.
 #
 # Elsewhere than on the testbed, sourcing it exits SKIPPED (3).
 if [ "$(hostname)" != tslink-security ] || [ ! -f test/integration/run.sh ]; then
@@ -18,6 +19,7 @@ T1_WORK=$(mktemp -d)
 T1_PLUGIN=tslink
 T1_DATA=/var/lib/docker-plugins/tailscale
 T1_PIDS=()
+T1_EXIT=()
 # t1_pin NAME: the image run.sh pins as NAME, so the probes use the same ones
 t1_pin() { sed -n "s/^$1=//p" "$T1_ROOT/test/integration/run.sh"; }
 T1_ALPINE=$(t1_pin ALPINE)
@@ -162,8 +164,13 @@ t1_hold_back() {
 	done
 }
 
+# t1_on_exit CMD: runs CMD, a shell command, when the probe exits, before
+# the ones registered earlier and before t1_down removes the testbed
+t1_on_exit() { T1_EXIT=("$1" "${T1_EXIT[@]}"); }
+
 t1_down() {
 	local status=$? p ipt c
+	for c in "${T1_EXIT[@]}"; do eval "$c"; done
 	for p in "${T1_PIDS[@]}"; do
 		kill "$p" 2>/dev/null && while kill -0 "$p" 2>/dev/null; do sleep 1; done
 	done

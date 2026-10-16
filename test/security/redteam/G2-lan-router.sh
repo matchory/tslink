@@ -29,6 +29,11 @@ pid=$(t1_pid rt-target)
 in_target() { nsenter -t "$pid" -n "$@"; }
 
 LAN=198.51.100.2
+lan_down() {
+	ip link del rtlan-h 2>/dev/null
+	ip netns del rt-lan 2>/dev/null
+}
+t1_on_exit lan_down
 ip netns add rt-lan || t1_error "could not create the LAN namespace"
 ip link add rtlan-h type veth peer name rtlan-p netns rt-lan
 ip addr add 198.51.100.1/30 dev rtlan-h
@@ -37,12 +42,6 @@ ip netns exec rt-lan ip addr add "$LAN/30" dev rtlan-p
 ip netns exec rt-lan ip link set rtlan-p up
 ip netns exec rt-lan ip link set lo up
 ip netns exec rt-lan ip route add 10.200.0.0/16 via 198.51.100.1
-lan_down() {
-	ip link del rtlan-h 2>/dev/null
-	ip netns del rt-lan 2>/dev/null
-}
-# t1_down runs at exit and keeps the status; the namespace goes first
-trap 'lan_down; t1_down' EXIT
 ip netns exec rt-lan ping -c 1 -W 2 198.51.100.1 >/dev/null || t1_error "the LAN namespace does not reach the host"
 
 for proto in tcp:8080 udp:9999; do

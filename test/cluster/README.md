@@ -23,6 +23,11 @@ the other tests: [docs/testing.md](../../docs/testing.md).
     (tcp:80), node → callee (tcp:80, the leak path) and node → node (tcp:5201, icmp)
   - `autoApprovers.services` letting `tag:tslink-test-callee` host `svc:tslink-test-callee` and
     `svc:tslink-test-other`; `svc:tslink-test-mixed` needs none, tslink must refuse to host it
+  - optional, for the red team's `test/security/redteam/G5-canaries.sh` to read the task nodes'
+    peerapi `/v0/env`: a grant node → callee with `"ip": ["tcp:*"]` and
+    `"app": {"https://tailscale.com/cap/debug-peer": [{}]}`, and `nodeAttrs` giving
+    `tag:tslink-test-callee` `"https://tailscale.com/cap/debug"`; without them that probe reports
+    INFO, saying it did not check `/v0/env`
 - On every node, the cluster credential: `oauth-client.secret` in the plugin's data directory
   (`/var/lib/docker-plugins/tailscale`), an OAuth client that may mint `tag:tslink-test-callee`,
   for the `tslink-test-*` stacks (`regress.sh` R11 and R12).

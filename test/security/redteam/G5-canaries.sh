@@ -13,10 +13,18 @@
 #   tailscaled.state, status/*), the shared certificate directory, the output of tslink diag,
 #   /proc/<pid>/environ and cmdline of the plugin and of every tailscaled, and every container's
 #   filesystem, PID 1's environment and docker inspect output. Allowed: oauth-client.secret,
-#   TS_AUTHKEY in the plugin's environment, and Docker's network options, which are not
-#   searched. A hit names the place, never the key. Without a control, and so outside lib.sh:
-#   the peerapi's /v0/env of each task node, from the manager's own tailscaled; peers without
-#   the debug capability are refused it, which the probe reports.
+#   TS_AUTHKEY in the plugin's own environment (not in a tailscaled's), and Docker's network
+#   options, which are not searched. A hit names the place, never the key. Without a control,
+#   and so outside lib.sh: the peerapi's /v0/env of each task node, as a debug-capable peer, the
+#   manager's own tailscaled (tag:tslink-test-node).
+# Needs: for the peerapi check, a tailnet policy that makes the node tag a debug-capable peer
+#   of the task nodes: a grant from tag:tslink-test-node to tag:tslink-test-callee (the tag
+#   prefix of config.sh) with "ip": ["tcp:*"], the peerapi's port being any, and "app":
+#   {"https://tailscale.com/cap/debug-peer": [{}]}, and nodeAttrs giving
+#   tag:tslink-test-callee the attribute "https://tailscale.com/cap/debug", without which a
+#   node serves no debug endpoint. Grants to the caller and nogrant tags are checked as well if
+#   present. Without such a grant, no peer answers: the probe then reports INFO, saying that
+#   /v0/env was not checked, never PASS.
 # Control: a fake key planted on the manager in each place: a file in the data directory, a
 #   status file (which tslink diag shows), a process named tailscaled with it in its
 #   environment, and a container with it in a label and a file. Teardown: all removed.
@@ -45,9 +53,15 @@ data)
 	done
 	;;
 processes)
-	for p in $(pgrep -x tslink) $(pgrep -x tailscaled); do
-		tr "\0" "\n" <"/proc/$p/environ" | grep -v "^TS_AUTHKEY=" | hit && echo "environ of $p ($(cat /proc/$p/comm))"
-		tr "\0" "\n" <"/proc/$p/cmdline" | hit && echo "cmdline of $p ($(cat /proc/$p/comm))"
+	# The plugin setting TS_AUTHKEY is allowed in the plugin environment only:
+	# tslink keeps it out of every tailscaled environment
+	for p in $(pgrep -x tslink); do
+		tr "\0" "\n" <"/proc/$p/environ" | grep -v "^TS_AUTHKEY=" | hit && echo "environ of the plugin ($p)"
+		tr "\0" "\n" <"/proc/$p/cmdline" | hit && echo "cmdline of the plugin ($p)"
+	done
+	for p in $(pgrep -x tailscaled); do
+		tr "\0" "\n" <"/proc/$p/environ" | hit && echo "environ of tailscaled $p"
+		tr "\0" "\n" <"/proc/$p/cmdline" | hit && echo "cmdline of tailscaled $p"
 	done
 	;;
 diag)
@@ -148,23 +162,33 @@ probe G5 "a key in tslink diag output" found diag
 probe G5 "a key in a container or its docker inspect output" found containers
 run_probes
 
-# The peerapi's /v0/env, as the manager's tailscaled, a tailnet peer
+# The peerapi's /v0/env, as the manager's tailscaled, a debug-capable peer
+# if the policy makes it one (see Needs)
 peers=$(tn_s "$M" 'tailscale status --json' | jq -r --arg t "$T" '.Peer[]
-	| select(any(.Tags[]?; startswith($t)) and .Online) | .PeerAPIURL[0] // empty')
-answered=0 refused=0 leaked=0
+	| select(any(.Tags[]?; startswith($t + "-c") or . == $t + "-nogrant") and .Online)
+	| .PeerAPIURL[0] // empty')
+answered=0 refused=0 unreachable=0 leaked=0
 for u in $peers; do
 	code=$(tn_s "$M" "curl -s -m5 -o /tmp/rt-env -w '%{http_code}' $u/v0/env")
-	if [ "$code" = 200 ]; then
+	case $code in
+	200)
 		answered=$((answered + 1))
 		if tn_s "$M" "grep -aqE '$RE' /tmp/rt-env"; then
 			echo "FAIL    G5 a key in the peerapi's /v0/env of $u"
 			leaked=$((leaked + 1))
 		fi
-	else
-		refused=$((refused + 1))
-	fi
+		;;
+	403) refused=$((refused + 1)) ;;
+	*) unreachable=$((unreachable + 1)) ;;
+	esac
 done
 tn_s "$M" 'rm -f /tmp/rt-env'
-echo "peerapi /v0/env: $answered nodes answered, $refused refused (no debug capability), $leaked leaked a key"
+echo "peerapi /v0/env of $(wc -w <<<"$peers" | tr -d ' ') task nodes: $answered answered, $refused refused" \
+	"(not debug-capable), $unreachable unreachable, $leaked leaked a key"
 [ "$leaked" = 0 ] || exit 1
+if [ "$answered" = 0 ]; then
+	echo "NOTE: no task node answered /v0/env to $M: the policy lacks the grant and attribute of Needs"
+	[ "$PROBE_RESULT" = PASS ] &&
+		probe_exit "the search found no key, but the peerapi's /v0/env was not checked: no peer could query it"
+fi
 probe_exit

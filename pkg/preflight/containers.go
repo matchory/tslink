@@ -61,10 +61,8 @@ const stackLabel = "com.docker.stack.namespace"
 
 // checkContainers checks E4 on the containers attached, directly or through
 // another container's network namespace, to a network of a tslink plugin,
-// and E1 and E2 on them and the other containers of their stacks. sharedDir
-// is the shared certificate directory as E2 should protect it (--shared-dir);
-// empty falls back to each tslink plugin's own shared.source setting.
-func checkContainers(ctx context.Context, d DockerAPI, sharedDir string) []Result {
+// and E1 and E2 on them and the other containers of their stacks.
+func checkContainers(ctx context.Context, d DockerAPI) []Result {
 	containers, scope, err := tslinkContainers(ctx, d)
 	if err != nil {
 		var results []Result
@@ -76,7 +74,7 @@ func checkContainers(ctx context.Context, d DockerAPI, sharedDir string) []Resul
 	if containers == nil {
 		return []Result{noPlugin("E1"), noPlugin("E2"), noPlugin("E4")}
 	}
-	mounts, err := checkMounts(ctx, d, scope, sharedDir)
+	mounts, err := checkMounts(ctx, d, scope)
 	if err != nil {
 		mounts = Result{Property: "E2", Status: Error, Detail: err.Error()}
 	}
@@ -316,12 +314,10 @@ func (p protected) exposes(source string) bool {
 }
 
 // sharedDirsOf returns the host paths E2 protects as the shared certificate
-// directory: sharedDir if set, else each enabled tslink plugin's own
-// shared.source setting (docker plugin set tslink shared.source=...).
-func sharedDirsOf(ctx context.Context, d DockerAPI, sharedDir string) ([]string, error) {
-	if sharedDir != "" {
-		return []string{sharedDir}, nil
-	}
+// directory: each enabled tslink plugin's own shared.source setting (docker
+// plugin set tslink shared.source=...). --shared-dir is not one of them: it
+// names the directory as mounted where the preflight runs, for E7.
+func sharedDirsOf(ctx context.Context, d DockerAPI) ([]string, error) {
 	plugins, err := tslinkPlugins(ctx, d)
 	if err != nil {
 		return nil, err
@@ -339,19 +335,18 @@ func sharedDirsOf(ctx context.Context, d DockerAPI, sharedDir string) ([]string,
 
 // checkMounts checks E2: no container bind-mounts protected host state,
 // directly or through a bind-backed local volume, or shares the host's PID
-// namespace. sharedDir is as checkContainers documents it.
+// namespace.
 func checkMounts(
 	ctx context.Context,
 	d DockerAPI,
 	containers []container.InspectResponse,
-	sharedDir string,
 ) (Result, error) {
 	info, err := d.Info(ctx, dockerclient.InfoOptions{})
 	if err != nil {
 		return Result{}, fmt.Errorf("failed to read Docker's data root: %w", err)
 	}
 	prot := protectedOn(info.Info.DockerRootDir)
-	sharedDirs, err := sharedDirsOf(ctx, d, sharedDir)
+	sharedDirs, err := sharedDirsOf(ctx, d)
 	if err != nil {
 		return Result{}, err
 	}

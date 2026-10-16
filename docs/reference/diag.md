@@ -9,7 +9,7 @@ properties that the guarantees in [SECURITY.md](../../SECURITY.md) rely on.
 | --- | --- |
 | `tslink diag` | Shows each endpoint with its state directory, tailnet address, hostname, backend state and status file |
 | `tslink diag --preflight` | Checks the environment properties on the host where it runs |
-| `tslink diag --preflight --shared-dir <dir>` | Also checks the shared certificate directory, mounted at `<dir>` |
+| `tslink diag --preflight --shared-dir <dir>` | Also checks the owner and mode of the shared certificate directory (E7), mounted at `<dir>` |
 | `tslink help` | Shows the usage |
 
 ## Exit codes of the preflight check
@@ -46,7 +46,9 @@ docker run --rm --network host --cap-add NET_ADMIN \
   --entrypoint /tslink tslink-diag diag --preflight
 ```
 
-To check the shared certificate directory, add `-v <shared directory>:/shared:ro` and `--shared-dir /shared`.
+To check the owner and mode of the shared certificate directory (E7), add `-v <shared directory>:/shared:ro` and
+`--shared-dir /shared`. E2 does not use `--shared-dir`: it protects the host path in each tslink plugin's
+`shared.source` setting.
 
 To check more than one host, build the image once and copy it to each host with `docker save` and `docker load`.
 

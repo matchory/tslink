@@ -12,6 +12,6 @@ for id in $("$B/tsapi" GET "/tailnet/$TN/devices" | jq -r --arg t "$TSLINK_TEST_
 	"$B/tsapi" DELETE "/device/$id" >/dev/null && echo "deleted device $id"
 done
 for svc in $TSLINK_TEST_SERVICES; do "$B/tsapi" DELETE "/tailnet/$TN/services/$svc" >/dev/null && echo "deleted $svc"; done
-for id in $("$B/tsapi" GET "/tailnet/$TN/keys" | jq -r --arg d "${TSLINK_TEST_TAG#tag:}" '.keys[]|select((.description // "")|startswith($d))|.id'); do
+for id in $("$B/tsapi" GET "/tailnet/$TN/keys?all=true" | jq -r --arg d "${TSLINK_TEST_TAG#tag:}" '.keys[]|select((.description // "")|startswith($d))|.id'); do
 	"$B/tsapi" DELETE "/tailnet/$TN/keys/$id" >/dev/null && echo "revoked key $id"
 done

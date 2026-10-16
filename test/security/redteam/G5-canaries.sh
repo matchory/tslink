@@ -113,7 +113,7 @@ tn_plugin_set TSLINK_LOG_LEVEL=debug
 [ -s "$TN_WORK/canary.key" ] || tn_error "could not mint the canary key"
 revoke_canary() {
 	local id
-	for id in $("$C/tsapi" GET "/tailnet/$TN/keys" |
+	for id in $("$C/tsapi" GET "/tailnet/$TN/keys?all=true" |
 		jq -r '.keys[] | select(.description == "tslink-test-redteam-g5") | .id'); do
 		"$C/tsapi" DELETE "/tailnet/$TN/keys/$id" >/dev/null
 	done

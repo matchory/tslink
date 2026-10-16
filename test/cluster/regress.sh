@@ -540,7 +540,7 @@ r11() {
 #      tslink.tags fails and a tag outside the stack's scope never starts tailscaled
 scope_settled() { eps | awk -F'\t' '$3 == "tslink-test-scope" { print $5 }' | grep -q .; }
 r12() {
-	local v n out e id since
+	local v n out e id ids since
 	since=$(now)
 	n=$(devices | jq --arg t "$T" '[.devices[]|select(.connectedToControl and (.hostname|test("^(callee|caller|nogrant)-")))]|length')
 	v=$(devices | jq -r --arg t "$T" '.devices[]|select(.connectedToControl)
@@ -548,7 +548,10 @@ r12() {
 		| select(.tags != [$t + "-" + $s] or (.isEphemeral|not))
 		| "\(.hostname) tags=\(.tags // []|join(",")) ephemeral=\(.isEphemeral)"' | tr '\n' ';')
 	check "R12 $n task devices: exactly their network's tag, ephemeral" "$([ -z "$v" ] && [ "$n" -gt 0 ] && echo ok || echo "${v:-no devices}")"
-	v=$(for id in $("$B/tsapi" GET "/tailnet/$TN/keys" | jq -r --arg d "${T#tag:}" '.keys[]|select((.description // "")|startswith($d))|.id'); do
+	# all=true: the keys of every OAuth client, not only tsapi's own
+	ids=$("$B/tsapi" GET "/tailnet/$TN/keys?all=true" | jq -r --arg d "${T#tag:}" '.keys[]|select((.description // "")|startswith($d))|.id')
+	check "R12 test keys examined ($(grep -c . <<<"$ids"))" "$(grep -q . <<<"$ids" && echo ok || echo "none listed")"
+	v=$(for id in $ids; do
 		"$B/tsapi" GET "/tailnet/$TN/keys/$id"
 	done | jq -r --arg now "$(now)" 'select(.expires != null and .expires < $now)|"\(.id) expired \(.expires)"' | tr '\n' ';')
 	check "R12 no test key outlives its expiry" "${v:-ok}"

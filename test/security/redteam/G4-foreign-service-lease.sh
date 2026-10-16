@@ -1,5 +1,4 @@
 #!/bin/bash
-# Guards: G4
 # Testbed: tn
 # Needs: services
 # Attacker: A3, the author of a stack file that passed review.

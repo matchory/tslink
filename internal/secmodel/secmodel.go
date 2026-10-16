@@ -26,12 +26,18 @@ type Guarantee struct {
 	Manual bool   // its section has a "Manual:" line: checked by hand before releases
 }
 
+// idList is the IDs a "Guards:" marker names: the comma-separated list it
+// starts with, so "Guards: G4; see G5" guards G4 only.
+const idList = `(G[0-9]+(?:[ \t]*,[ \t]*G[0-9]+)*)`
+
 var (
 	guaranteeHeading = regexp.MustCompile(`^### (G[0-9]+):`)
-	goMarker         = regexp.MustCompile(`(?m)^//\s*Guards:\s*(.+)$`)
-	tlaMarker        = regexp.MustCompile(`(?m)^\\\*\s*Guards:\s*(.+)$`)
+	goMarker         = regexp.MustCompile(`(?m)^//[ \t]*Guards:[ \t]*` + idList)
+	tlaMarker        = regexp.MustCompile(`(?m)^\\\*[ \t]*Guards:[ \t]*` + idList)
 	// A shell probe: a probe line of lib.sh, or a red-team probe's header.
-	shellProbe  = regexp.MustCompile(`(?m)^(?:\s*probe\s+(G[0-9]+)\s|#\s*Guards:\s*(.+)$)`)
+	shellProbe = regexp.MustCompile(
+		`(?m)^(?:\s*probe\s+(G[0-9]+)\s|#[ \t]*Guards:[ \t]*` + idList + `)`,
+	)
 	guaranteeID = regexp.MustCompile(`G[0-9]+`)
 )
 

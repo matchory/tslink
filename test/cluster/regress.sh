@@ -35,6 +35,8 @@ CASES=(
 	"R12 each task device has exactly its network's tag and is ephemeral, no test key outlives its expiry, the cluster credential refuses a network without tags and a tag outside the stack's scope"
 	"R13 a non-ephemeral task whose device was deleted comes back after a restart as a new device the caller reaches"
 	"R14 a task without dns: resolves through daemon.json's resolver; one with dns: [100.100.100.100, <resolver>] resolves tailnet and site names"
+	"R15 at TSLINK_LOG_LEVEL=warn on one node, the restarted plugin logs nothing at info"
+	"R16 tslink diag --preflight on every node finds nothing violated but E6, which a plugin built from a directory violates"
 )
 while [ $# -gt 0 ]; do
 	case $1 in
@@ -555,6 +557,36 @@ docker rm -f tslink-test-dns >/dev/null
 systemctl restart docker
 EOF_NODE
 	wait_for 300 same "$k" running_on "$n" || echo "NOTE  R14 $n: $(running_on "$n") of $k endpoints running after the Docker restart"
+}
+
+# R15. TSLINK_LOG_LEVEL=warn on one worker: the plugin, restarted with it, logs no info line,
+#      past one watchdog run; then back to info
+r15() {
+	local n k v
+	n=$("$B/nodes" | grep -vx "$M" | head -1)
+	"$B/s" "$n" "docker plugin disable -f tslink:latest >/dev/null && docker plugin set tslink:latest TSLINK_LOG_LEVEL=warn"
+	k=$("$B/s" "$n" "wc -l <$L")
+	"$B/s" "$n" "docker plugin enable tslink:latest >/dev/null"
+	sleep 90
+	v=$("$B/s" "$n" "tail -n +$((k + 1)) $L | grep -ci 'level=info'")
+	check "R15 no info line at warn on $n ($v)" "$([ "$v" = 0 ] && echo ok || echo "$v info lines")"
+	"$B/s" "$n" "docker plugin disable -f tslink:latest >/dev/null && docker plugin set tslink:latest TSLINK_LOG_LEVEL=info && docker plugin enable tslink:latest >/dev/null"
+}
+
+# R16. The preflight as run.sh runs it, from the installed plugin's rootfs, on every node:
+#      nothing violated or failing but E6, which a plugin created from a directory violates
+r16() {
+	local n out v
+	for n in $("$B/nodes"); do
+		out=$("$B/s" "$n" "tar -C /root/plugin/rootfs -c . | docker import -q - tslink:preflight >/dev/null &&
+			docker run --rm --network host --cap-add NET_ADMIN -v /var/run/docker.sock:/var/run/docker.sock \
+			-v /var/lib/docker-plugins/tailscale:/data --entrypoint /tslink tslink:preflight diag --preflight 2>&1
+			echo exit=\$?; docker image rm -f tslink:preflight >/dev/null")
+		echo "INFO  R16 $n: $(grep -E '^E6 |^exit=' <<<"$out" | tr '\n' ';')"
+		v=$(awk '$2 == "violated" || $2 == "error"' <<<"$out" | grep -v '^E6 ' | tr '\n' ';')
+		grep -q '^E1 ' <<<"$out" || v="no preflight output: $(tr '\n' ' ' <<<"$out")"
+		check "R16 preflight on $n" "${v:-ok}"
+	done
 }
 
 CALLEES=()

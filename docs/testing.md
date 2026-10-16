@@ -21,6 +21,7 @@ Each test that verifies a guarantee of [SECURITY.md](../SECURITY.md) has the ID 
 | Go test | `// Guards: G1` in the doc comment |
 | TLA+ model | `\* Guards: G1` |
 | Shell probe | `probe G1 ...` |
+| Red-team probe | `# Guards: G1` in its header; a probe of no guarantee has no `Guards:` line |
 
 With each `go test`, `internal/secmodel` checks that each published guarantee has at least one test. A guarantee
 with a `Manual:` line is exempt: its check is done by hand before each release.
@@ -119,6 +120,16 @@ lists the prerequisites; its scripts can optionally provision such a host on Het
 3. It runs the probes in [`test/security/redteam/`](../test/security/redteam), and the probes in a private directory
    that you give with `--probes`.
 4. It writes a report in `$TSLINK_TEST_DIR/reports/`. Do not commit the report.
+
+Each probe reports PASS (the attack was blocked), FAIL, BROKEN (its control run did not get through), SKIPPED, or
+INFO, with exit code 4: it passed, and its control violates an environment property, so it shows what an operator
+gives up who violates it; or it only records a behaviour.
+
+Some probes run against the Swarm bed of `test/cluster` in a Tailscale tailnet instead (`Testbed: tn` in their
+header): on the single host they report SKIPPED. Install the commit under test on the bed, then run
+[`test/security/redteam-tn.sh`](../test/security/redteam-tn.sh): it runs them from your machine over SSH and writes its
+report in `$TSLINK_TEST_DIR/reports/` too. [`test/security/report.sh`](../test/security/report.sh) needs both reports
+for a release.
 
 The testbed and the red team do not run in CI. Run them by hand. Before a release, follow
 [docs/releasing.md](releasing.md).

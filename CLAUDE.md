@@ -106,15 +106,17 @@ tailscaled logs `c2n: GET /vip-services received`, at least 1 s and at most 10 s
 stop tailscaled. A node gone before control processed its drain leaves callers pointed at it for minutes. A drain is
 final for the supervisor (`serviceGate`, shared by its daemons): neither a certificate that appears later nor a
 restarted tailscaled advertises the backend again, and the certificate lease holder is advertised only once its
-certificate exists. A drain does not wait for a serve configuration in progress: the gate holds the cancel func of the
-change holding its lock (`serviceGate.change`), which the drain calls before taking the lock, and the change runs nothing
-more once drained. Plugin shutdown stops all endpoints concurrently within its deadline (`Driver.Shutdown`), and an
-endpoint's Tailscale run derives from the driver's context, so a start in progress ends with the plugin and is
-abandoned as on `Stop`. A daemon's CLI calls and waits use its context, cancelled by `daemon.Stop`, and its goroutines
-run under its wait group. Each state directory serves one endpoint at a time (`ClaimStateDir`). A drain clears every
-Service the node advertises in one prefs edit (`daemon.Drain`), so one fetch by control covers all; at start, Services
-in the node's state its labels do not name are removed (`pruneServices`); a node that had any removed, or could not
-have them removed, is drained at stop like a Service host (`NeedsDrain`), and waits for control to fetch the removal.
+certificate exists, or once control has refused its domain for `certDomainGrace` (30 s), in case control makes it a
+certificate domain only of hosts that advertise it. A drain does not wait for a serve configuration in progress: the
+gate holds the cancel func of the change holding its lock (`serviceGate.change`), which the drain calls before taking
+the lock, and the change runs nothing more once drained. Plugin shutdown stops all endpoints concurrently within its
+deadline (`Driver.Shutdown`), and an endpoint's Tailscale run derives from the driver's context, so a start in progress
+ends with the plugin and is abandoned as on `Stop`. A daemon's CLI calls and waits use its context, cancelled by
+`daemon.Stop`, and its goroutines run under its wait group. Each state directory serves one endpoint at a time
+(`ClaimStateDir`). A drain clears every Service the node advertises in one prefs edit (`daemon.Drain`), so one fetch by
+control covers all; at start, Services in the node's state its labels do not name are removed (`pruneServices`); a
+node that had any removed, or could not have them removed, is drained at stop like a Service host (`NeedsDrain`), and
+waits for control to fetch the removal.
 
 **Binaries**: the plugin image ships a pinned Tailscale (from the `tailscale/tailscale` stage of the Dockerfile, which
 Dependabot updates), and tslink runs only these binaries: it downloads nothing at runtime and ignores the old
@@ -193,6 +195,9 @@ internal/
 └── secmodel/   # Checks that every guarantee in SECURITY.md is guarded
 test/
 └── security/   # lib.sh: security probes with control runs, used by test/integration/run.sh
+    ├── t1.sh     # The single-host testbed the t1 probes source (plugin, headscale, host tailscaled)
+    ├── tn.sh     # The Swarm bed of test/cluster the tn probes source, reached over SSH
+    ├── redteam-tn.sh  # Runs the tn probes and writes their report for report.sh
     ├── testbed/  # Scripts for a single-host security testbed (optional Hetzner Cloud provisioner)
     └── redteam/  # Standalone probe scripts for redteam.sh, moved here once their fix ships
 ```
@@ -298,8 +303,8 @@ part of `go test ./...`) fails if a published guarantee has no marker, unless it
 markers may name G1 to G10, published or not. A shell probe goes through `test/security/lib.sh`, which runs it once
 against the defended system, where it must fail, and once in a control run with the defence off, where it must get
 through: a probe whose control run does not get through is reported as BROKEN, since it could not catch a regression.
-The red team's probes (`test/security/redteam/`) run on the single host (`t1.sh`) or the Swarm bed (`tn.sh`), and
-report INFO when their control violates an environment property.
+The red team's probes (`test/security/redteam/`) run on the single host (`t1.sh`, through `redteam.sh`) or the Swarm
+bed (`tn.sh`, through `redteam-tn.sh`), and report INFO when their control violates an environment property.
 
 ## Troubleshooting
 

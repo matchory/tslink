@@ -7,6 +7,8 @@
 # report.sh reads, and exits non-zero if a probe failed, broke or errored.
 set -uo pipefail
 B=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=lib.sh
+. "$B/lib.sh"
 C=$(cd "$B/../cluster" && pwd)
 : "${TSLINK_TEST_DIR:=$HOME/.tslink-test}"
 [ $# = 0 ] || {
@@ -23,14 +25,7 @@ for p in "$B"/redteam/*.sh; do
 	grep -q '^# Testbed: tn$' "$p" || continue
 	name=$(basename "$p" .sh)
 	bash "$p" >"$OUT/$name.log" 2>&1
-	case $? in
-	0) results+=("PASS    $name") ;;
-	1) results+=("FAIL    $name") ;;
-	2) results+=("BROKEN  $name") ;;
-	3) results+=("SKIPPED $name") ;;
-	4) results+=("INFO    $name") ;;
-	*) results+=("ERROR   $name") ;;
-	esac
+	results+=("$(probe_label $?) $name")
 done
 
 M=${MGR:-mgr}

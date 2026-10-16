@@ -90,6 +90,19 @@ run_probes() {
 	[ "$PROBE_RESULT" = PASS ]
 }
 
+# probe_label CODE: the result redteam.sh and redteam-tn.sh report for a probe's exit code, padded
+# to one width
+probe_label() {
+	case $1 in
+	0) echo "PASS   " ;;
+	1) echo "FAIL   " ;;
+	2) echo "BROKEN " ;;
+	3) echo "SKIPPED" ;;
+	4) echo "INFO   " ;;
+	*) echo "ERROR  " ;;
+	esac
+}
+
 # probe_exit [INFO]: exits with the code redteam.sh reads for PROBE_RESULT: 1
 # for FAIL, 2 for BROKEN, else 0, or with INFO, a sentence, 4 for INFO: the
 # probes passed, and their control run violated an environment property, so

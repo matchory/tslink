@@ -13,7 +13,7 @@
 # Teardown: both stacks removed, the plugin reinstalled without the shared directory
 #   (TSLINK_REDTEAM_REF, default WT), the shared directory removed, the callee stack's replicas
 #   restored.
-# shellcheck disable=SC2329 # called through tn_wait_for and the exit hooks
+# shellcheck disable=SC2329 # called through wait_for and the exit hooks
 set -uo pipefail
 # shellcheck source=../tn.sh
 . "$(dirname "$0")/../tn.sh" 2>/dev/null || {
@@ -29,8 +29,6 @@ done
 suffix=$(tn_s "$M" 'tailscale status --json | jq -r .MagicDNSSuffix')
 [ -n "$suffix" ] || tn_error "no MagicDNS suffix from $M's tailscaled"
 dom=$SVC.$suffix
-replicas() { tn_s "$M" "docker service inspect $1 --format '{{.Spec.Mode.Replicated.Replicas}}' 2>/dev/null"; }
-scale() { [ -z "$2" ] || tn_s "$M" "docker service scale -d $1=$2 >/dev/null"; }
 # The callee stack's backends serve no HTTPS: the multi tasks alone are A, as in R7
 r=$(replicas callee_whoami)
 ro=$(replicas callee_whoami-other)
@@ -42,7 +40,7 @@ tn_on_exit "\"$C/shared-dir.sh\" off >/dev/null"
 PLUGIN_SETTINGS='shared.source=/mnt/tslink' "$C/install-plugin.sh" "$REF" >/dev/null 2>&1 ||
 	tn_error "could not install $REF with the shared directory"
 tn_on_exit "\"$C/install-plugin.sh\" $REF >/dev/null 2>&1"
-tn_on_exit "tn_stack_rm rt-lease; tn_stack_rm multi"
+tn_on_exit "stack_rm rt-lease; stack_rm multi"
 
 has() { tn_s "$M" "test -e /mnt/tslink/$dom.$1"; }
 tn_deploy rt-lease caller >/dev/null <<EOF || tn_error "could not deploy rt-lease"
@@ -61,21 +59,21 @@ networks:
       com.docker.network.driver.mtu: "\${TSLINK_TEST_MTU:-1450}"
       tslink.tags: \${TSLINK_TEST_TAG:-tag:tslink-test}-caller
 EOF
-tn_wait_for 180 has lease || tn_error "rt-lease did not take the lease for $dom within 180 s"
+wait_for 180 has lease || tn_error "rt-lease did not take the lease for $dom within 180 s"
 echo "rt-lease holds the certificate lease for $dom"
 "$C/deploy" multi callee >/dev/null || tn_error "could not deploy multi"
 start=$SECONDS
-if tn_wait_for "$WAIT" has crt; then
+if wait_for "$WAIT" has crt; then
 	during="issued $((SECONDS - start)) s after A came up, while B held the lease"
 else
 	during="not issued within $WAIT s while B held the lease"
 fi
 echo "$during"
-tn_stack_rm rt-lease
+stack_rm rt-lease
 start=$SECONDS
 if [[ $during == issued* ]]; then
 	after="B left after it"
-elif tn_wait_for "$WAIT" has crt; then
+elif wait_for "$WAIT" has crt; then
 	after="issued $((SECONDS - start)) s after B left"
 else
 	after="not issued within $WAIT s after B left"

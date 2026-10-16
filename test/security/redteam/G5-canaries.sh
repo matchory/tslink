@@ -126,7 +126,7 @@ jq -n --rawfile k "$TN_WORK/canary.key" --arg tag "$T-caller" --arg mtu "$TSLINK
 	tn_s "$M" "curl -fsS --unix-socket /var/run/docker.sock -H 'Content-Type: application/json' \
 		-d @- http://docker/networks/create >/dev/null" || tn_error "could not create rt_canary"
 tn_on_exit "tn_s $M 'docker network rm rt_canary >/dev/null 2>&1; true'"
-tn_on_exit "tn_stack_rm rt-canary"
+tn_on_exit "stack_rm rt-canary"
 tn_deploy rt-canary - >/dev/null <<EOF || tn_error "could not deploy rt-canary"
 services:
   client:
@@ -141,8 +141,8 @@ EOF
 tn_s "$M" "docker service update -d -q --force caller_client >/dev/null"
 "$C/await" caller_client
 canary_up() { tn_states rt-canary | grep -q '^running'; }
-tn_wait_for 180 canary_up || echo "NOTE: rt-canary's task does not run: $(tn_states rt-canary)"
-tn_wait_for 300 tn_healthy || echo "NOTE: not every task's tailscaled runs"
+wait_for 180 canary_up || echo "NOTE: rt-canary's task does not run: $(tn_states rt-canary)"
+wait_for 300 tn_healthy || echo "NOTE: not every task's tailscaled runs"
 
 # The control's fake key, which matches RE
 fake=tskey-auth-kRT$RANDOM${RANDOM}CNTRL-redteam$RANDOM$RANDOM

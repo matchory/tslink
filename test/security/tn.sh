@@ -12,6 +12,8 @@
 C=$(cd "$(dirname "${BASH_SOURCE[0]}")/../cluster" && pwd)
 # shellcheck source=../cluster/config.sh
 . "$C/config.sh"
+# shellcheck source=../cluster/lib.sh
+. "$C/lib.sh"
 if [ ! -f "$TSLINK_TEST_SSH_CONFIG" ] || [ -z "$("$C/nodes")" ]; then
 	echo "SKIPPED: no Swarm bed in $TSLINK_TEST_SSH_CONFIG"
 	exit 3
@@ -29,7 +31,6 @@ TN_WORK=$(
 TN_EXIT=()
 
 tn_s() { "$C/s" "$@"; }
-tn_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
 # tn_error MESSAGE: a failure of the setup, not of an attack: exits ERROR
 tn_error() {
@@ -48,32 +49,9 @@ tn_down() {
 }
 trap tn_down EXIT
 
-# tn_wait_for SECONDS CMD...: runs CMD every 5 s until it succeeds
-tn_wait_for() {
-	local end=$((SECONDS + $1))
-	shift
-	until "$@"; do
-		[ "$SECONDS" -lt "$end" ] || return 1
-		sleep 5
-	done
-}
-
-# tn_eps: endpoints.sh on every node, each line led by the node: node,
-# endpoint, stack, hostname, state, advertised Services, error, tab-separated
-tn_eps() {
-	local n
-	for n in $("$C/nodes"); do
-		tn_s "$n" sh -s <"$C/endpoints.sh" | awk -v n="$n" '{ print n "\t" $0 }'
-	done
-}
 # tn_states STACK: "state: error" of each of the stack's endpoints
-tn_states() { tn_eps | awk -F'\t' -v s="$1" '$3 == s { print $5 ": " $7 }'; }
+tn_states() { eps | awk -F'\t' -v s="$1" '$3 == s { print $5 ": " $7 }'; }
 tn_stack_exists() { tn_s "$M" "docker stack ls --format '{{.Name}}'" | grep -qx "$1"; }
-tn_stack_gone() { [ -z "$(tn_states "$1")" ]; }
-tn_stack_rm() {
-	tn_s "$M" "docker stack rm $1 >/dev/null 2>&1; true"
-	tn_wait_for 120 tn_stack_gone "$1" || echo "NOTE: stack $1 still has endpoints after 120 s"
-}
 
 # tn_deploy STACK SECRET: docker stack deploy of the stack file on stdin, on
 # $M, with config.sh's settings and, unless SECRET is "-",
@@ -101,7 +79,7 @@ tn_plugin_set() {
 			docker plugin set tslink:latest $* && docker plugin enable tslink:latest >/dev/null" ||
 			echo "NOTE: could not set $* on $n"
 	done
-	tn_wait_for 300 tn_healthy || echo "NOTE: not every task's tailscaled runs 300 s after setting $*"
+	wait_for 300 tn_healthy || echo "NOTE: not every task's tailscaled runs 300 s after setting $*"
 }
 # tn_healthy: every node answered health, and none has a task tailscaled not
 # Running; a node that does not answer (SSH failed) prints no line

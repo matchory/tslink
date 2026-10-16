@@ -22,7 +22,7 @@ B=rt-intruder
 NET=callee_tailnet
 tn_stack_exists callee || tn_error "the callee stack is not deployed"
 tn_stack_exists "$B" && tn_error "a stack $B is deployed: remove it first"
-tn_on_exit "tn_stack_rm $B"
+tn_on_exit "stack_rm $B"
 tn_on_exit "tn_s $M 'docker network rm rt_open >/dev/null 2>&1; true'"
 
 settled() { tn_states "$B" | grep -qE '^(running|failed)'; }
@@ -40,10 +40,10 @@ networks:
     external: true
     name: $NET
 EOF
-	tn_wait_for 180 settled
+	wait_for 180 settled
 	st=$(tn_states "$B" | head -n 1)
 	echo "stack $B on $NET: ${st:-no endpoint}"
-	tn_stack_rm "$B"
+	stack_rm "$B"
 	[[ $st == running:* ]]
 }
 open_network() {

@@ -13,6 +13,8 @@ set -uo pipefail
 B=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=config.sh
 . "$B/config.sh"
+# shellcheck source=lib.sh
+. "$B/lib.sh"
 T=$TSLINK_TEST_TAG
 M=${MGR:-mgr}
 TN=$TSLINK_TEST_TAILNET
@@ -82,33 +84,7 @@ test_devices() {
 orphans() {
 	devices | jq --arg since "$1" --arg t "$T" '[.devices[]|select(any(.tags[]?; startswith($t+"-c") or .==$t+"-nogrant") and (.connectedToControl|not) and .isEphemeral and (.lastSeen > $since))]|length'
 }
-now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
-# wait_for <seconds> <command...>: run the command every 5 s until it succeeds, at most that long
-wait_for() {
-	local end=$((SECONDS + $1))
-	shift
-	until "$@"; do
-		[ "$SECONDS" -ge "$end" ] && return 1
-		sleep 5
-	done
-}
-# eps: endpoints.sh on every node, each line led by the node: node, endpoint, stack, hostname,
-# state, advertised Services, error, tab-separated
-eps() {
-	local n
-	for n in $("$B/nodes"); do
-		"$B/s" "$n" sh -s <"$B/endpoints.sh" | awk -v n="$n" '{ print n "\t" $0 }'
-	done
-}
 # running <stack>: "node endpoint hostname advertised" of the stack's running endpoints
-running() { eps | awk -F'\t' -v s="$1" '$3 == s && $5 == "running" { print $1, $2, $4, $6 }'; }
-gone() { [ -z "$(eps | awk -F'\t' -v s="$1" '$3 == s')" ]; }
-stack_rm() {
-	"$B/s" "$M" "docker stack rm $1 >/dev/null 2>&1 || true"
-	wait_for 120 gone "$1" || echo "NOTE  stack $1 still has endpoints after 120 s"
-}
-replicas() { "$B/s" "$M" "docker service inspect $1 --format '{{.Spec.Mode.Replicated.Replicas}}' 2>/dev/null"; }
-scale() { [ -z "$2" ] || "$B/s" "$M" "docker service scale -d $1=$2 >/dev/null"; }
 # probe_fails <node> [log]: failed requests in the probe log of the node's caller
 probe_fails() {
 	"$B/cx" "$1" caller_client "awk \"\\\$3!=200\" ${2:-/tmp/probe.log} | wc -l" | tr -d ' '
@@ -289,8 +265,7 @@ r4() {
 	"$B/await" callee_whoami >/dev/null
 	sleep 12
 	for n in $("$B/nodes"); do
-		# shellcheck disable=SC2016 # awk program, expanded in the container
-		f=$("$B/cx" "$n" caller_client 'awk "\$3!=200" /tmp/probe.log | wc -l' | tr -d ' ')
+		f=$(probe_fails "$n")
 		check "rolling update: caller@$n failed requests ($f)" "$([ "$f" -le 3 ] && echo ok || echo "$f failed")"
 	done
 	"$B/probes" stop >/dev/null 2>&1
@@ -691,7 +666,7 @@ direct_ring() {
 	done
 	for i in "${!ns[@]}"; do
 		j=$(((i + 1) % ${#ns[@]}))
-		for try in 1 2 3 4 5 6 7 8 9 10; do
+		for try in {1..10}; do
 			out=$(localapi "${ns[i]}" "${ids[i]}" "ping?ip=${ips[j]}&type=disco" -X POST)
 			ep=$(jq -r '.Endpoint // empty' <<<"$out" 2>/dev/null)
 			[[ $ep == "${addrs[j]}":6[0-9][0-9][0-9][0-9] ]] && break

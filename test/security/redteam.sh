@@ -6,6 +6,8 @@
 # non-zero if a probe failed, broke or errored.
 set -uo pipefail
 B=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=lib.sh
+. "$B/lib.sh"
 : "${TSLINK_TEST_DIR:=$HOME/.tslink-test}"
 S=$B/testbed/s
 TREE=$(cd "$B/../.." && pwd)
@@ -91,14 +93,7 @@ for p in "${probes[@]}"; do
 		continue
 	fi
 	"$S" 'cd /root/tslink && /root/probes/p.sh' >"$OUT/$name.log" 2>&1
-	case $? in
-	0) results+=("PASS    $name") ;;
-	1) results+=("FAIL    $name") ;;
-	2) results+=("BROKEN  $name") ;;
-	3) results+=("SKIPPED $name") ;;
-	4) results+=("INFO    $name") ;;
-	*) results+=("ERROR   $name") ;;
-	esac
+	results+=("$(probe_label $?) $name")
 done
 
 {

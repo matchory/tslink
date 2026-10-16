@@ -124,6 +124,7 @@ another provider, point `TSLINK_TEST_POWER` at a script with the same arguments.
 | `PROBE=probe-retry.sh probes start <vip> <ip>` | probes that retry through the VIP, then against `<ip>` |
 | `install-drain.sh [--remove]` | install `deploy/systemd`'s drain drop-in on every node |
 | `endpoints.sh` | on a node (`s <node> sh -s <endpoints.sh`): each endpoint's state and advertised Services |
+| `lib.sh` | sourced by `regress.sh` and `test/security/tn.sh`: `wait_for`, `eps`, `stack_rm`, `scale` and the like |
 | `ready.sh <port> [log]` | in a container: `GET /ready` of the readiness endpoint, once or into a log |
 | `shared-dir.sh on\|off` | an NFS directory from `mgr` at `/mnt/tslink` on every node, for `shared.source` |
 | `cleanup.sh` | delete the test devices, Services and the keys created through `tsapi` |

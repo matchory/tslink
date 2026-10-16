@@ -20,17 +20,17 @@ set -uo pipefail
 . "$(dirname "$0")/../lib.sh"
 STACK=$TN_BASE
 tn_stack_exists "$STACK" && tn_error "a stack $STACK is deployed: remove it first"
-tn_on_exit "tn_stack_rm $STACK"
+tn_on_exit "stack_rm $STACK"
 
 settled() { tn_states "$STACK" | grep -qE '^(running|failed)'; }
 # claims_tag: deploys the stack, and whether its endpoint runs; removes it
 claims_tag() {
 	local st
 	tn_deploy "$STACK" - <"$C/stacks/tslink-test-scope.yml" >/dev/null || return 1
-	tn_wait_for 180 settled
+	wait_for 180 settled
 	st=$(tn_states "$STACK" | head -n 1)
 	echo "stack $STACK: ${st:-no endpoint}"
-	tn_stack_rm "$STACK"
+	stack_rm "$STACK"
 	[[ $st == running:* ]]
 }
 

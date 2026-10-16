@@ -533,6 +533,17 @@ log "Auth keys stay out of logs, state, processes, diagnostics and containers"
 # SIGPIPE, a process that exited or a find that could not read one file,
 # turns a found match into a failing pipeline.
 creds_in_data() { sudo grep -rqsF -f "$WORK/keys" "$DATA"; } # logs, status, state
+# tailscaled.state is a JSON map of base64 values, which creds_in_data never
+# matches: creds_in_state searches each value decoded.
+creds_in_state() (
+	set +o pipefail
+	local f
+	for f in $(sudo find "$DATA" -name tailscaled.state -type f); do
+		sudo jq -r '.[] | @base64d' "$f" 2>/dev/null | grep -F -f "$WORK/keys" >/dev/null &&
+			return 0
+	done
+	return 1
+)
 creds_in_processes() (
 	set +o pipefail
 	local pid
@@ -557,7 +568,7 @@ creds_in_containers() (
 	done
 	return 1
 )
-# canary_key is the first key in $WORK/keys, planted in all four places so
+# canary_key is the first key in $WORK/keys, planted in all five places so
 # each probe above has its own thing to find; canary_pid is a process named
 # and run as tailscaled would be, with the key in its environment, not a real
 # tailscaled.
@@ -566,6 +577,9 @@ canary_pid=""
 plant_canaries() {
 	canary_key=$(head -n 1 "$WORK/keys")
 	echo "$canary_key" | sudo tee "$DATA/e2e-canary" >/dev/null
+	sudo mkdir -p "$DATA/e2e-canary-state"
+	printf '{"e2e-canary":"%s"}' "$(printf %s "$canary_key" | base64 -w0)" |
+		sudo tee "$DATA/e2e-canary-state/tailscaled.state" >/dev/null
 	sudo mkdir -p "$DATA/status"
 	printf '{"endpoint":"e2ecanary000","hostname":"e2e-canary","state":"failed",' \
 		>"$WORK/canary.json"
@@ -579,13 +593,14 @@ plant_canaries() {
 	printf '%s' "$canary_key" | docker exec -i e2e-client sh -c 'cat >/tmp/e2e-canary'
 }
 unplant_canaries() {
-	sudo rm -f "$DATA/e2e-canary" "$DATA/status/e2ecanary000.json"
+	sudo rm -rf "$DATA/e2e-canary" "$DATA/e2e-canary-state" "$DATA/status/e2ecanary000.json"
 	docker exec e2e-client rm -f /tmp/e2e-canary
 	sudo kill "$canary_pid" 2>/dev/null || true
 	while sudo kill -0 "$canary_pid" 2>/dev/null; do sleep 1; done
 }
 probe_group "credentials" plant_canaries unplant_canaries 10
 probe G5 "an auth key appears in the plugin's data directory" creds_in_data
+probe G5 "an auth key appears in a base64-decoded value of a tailscaled.state" creds_in_state
 probe G5 "an auth key appears in a process's command line or environment" creds_in_processes
 probe G5 "an auth key appears in tslink diag output" creds_in_diag
 probe G5 "an auth key appears in a container" creds_in_containers

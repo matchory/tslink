@@ -10,7 +10,8 @@
 #   Then every node is searched for any Tailscale key or OAuth client secret (tskey-...), which
 #   takes in the cluster credential, the stacks' OAuth clients, the canary key and every key
 #   tslink minted, in: the plugin's data directory (plugin.log, every tailscaled.log and
-#   tailscaled.state, status/*), the shared certificate directory, the output of tslink diag,
+#   tailscaled.state, status/*), the base64-decoded values of every tailscaled.state (a JSON
+#   map of base64 values, which a plain search never matches), the shared certificate directory, the output of tslink diag,
 #   /proc/<pid>/environ and cmdline of the plugin and of every tailscaled, and every container's
 #   filesystem, PID 1's environment and docker inspect output. Allowed: oauth-client.secret,
 #   TS_AUTHKEY in the plugin's own environment (not in a tailscaled's), and Docker's network
@@ -26,7 +27,7 @@
 #   present. Without such a grant, no peer answers: the probe then reports INFO, saying that
 #   /v0/env was not checked, never PASS.
 # Control: a fake key planted on the manager in each place: a file in the data directory, a
-#   status file (which tslink diag shows), a process named tailscaled with it in its
+#   tailscaled.state with it base64-encoded as a value, a status file (which tslink diag shows), a process named tailscaled with it in its
 #   environment, and a container with it in a label and a file. Teardown: all removed.
 # shellcheck disable=SC2329,SC2119 # attacks and controls run through lib.sh's eval
 set -uo pipefail
@@ -50,6 +51,15 @@ case $2 in
 data)
 	for d in "$D" /mnt/tslink; do
 		[ -d "$d" ] && grep -rlaE "$RE" --exclude=oauth-client.secret "$d"
+	done
+	;;
+state)
+	# tailscaled.state maps each key to its value in base64
+	for d in "$D" /mnt/tslink; do
+		[ -d "$d" ] || continue
+		find "$d" -name tailscaled.state -type f -print0 | while IFS= read -r -d "" f; do
+			jq -r ".[] | @base64d" "$f" 2>/dev/null | hit && echo "$f, decoded"
+		done
 	done
 	;;
 processes)
@@ -140,6 +150,8 @@ plant() {
 	tn_s "$M" bash -s -- "$fake" <<'EOF'
 D=/var/lib/docker-plugins/tailscale
 echo "$1" >"$D/rt-canary"
+mkdir -p "$D/rt-canary-state"
+printf '{"rt-canary":"%s"}' "$(printf %s "$1" | base64 -w0)" >"$D/rt-canary-state/tailscaled.state"
 printf '{"endpoint":"rtcanary0000","hostname":"rt-canary","state":"failed","attempts":1,%s}' \
 	"\"updated\":\"2026-01-01T00:00:00Z\",\"error\":\"$1\"" >"$D/status/rtcanary0000.json"
 mkdir -p /root/rt-canary && cp "$(command -v sleep)" /root/rt-canary/tailscaled
@@ -150,13 +162,14 @@ EOF
 }
 unplant() {
 	# shellcheck disable=SC2016 # runs on the node
-	tn_s "$M" 'D=/var/lib/docker-plugins/tailscale; rm -f "$D/rt-canary" "$D/status/rtcanary0000.json"
+	tn_s "$M" 'D=/var/lib/docker-plugins/tailscale; rm -rf "$D/rt-canary" "$D/rt-canary-state" "$D/status/rtcanary0000.json"
 		pkill -f /root/rt-canary/tailscaled; rm -rf /root/rt-canary; docker rm -f rt-canary-ctr >/dev/null 2>&1; true'
 }
 tn_on_exit unplant
 
 probe_group "credentials" plant unplant 30
 probe G5 "a key in the plugin's data directory or the shared certificate directory" found data
+probe G5 "a key in a base64-decoded value of a tailscaled.state" found state
 probe G5 "a key in the command line or environment of the plugin or a tailscaled" found processes
 probe G5 "a key in tslink diag output" found diag
 probe G5 "a key in a container or its docker inspect output" found containers

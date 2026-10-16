@@ -293,11 +293,13 @@ return fmt.Errorf("failed to create endpoint: %w", err)
 
 `SECURITY.md` publishes guarantees (`### G<n>:`) and the environment properties they assume (E1, E2, ...). A test
 that verifies a guarantee carries its ID: `// Guards: G1` in the doc comment of a Go test, `\* Guards: G1` in a TLA+
-model, and `probe G1 ...` for a shell probe. `internal/secmodel` (`TestRepository`, part of `go test ./...`) fails
-if a published guarantee has no marker, unless its section has a `Manual:` line; markers may name G1 to G10,
-published or not. A shell probe goes through `test/security/lib.sh`, which runs it once against the defended system,
-where it must fail, and once in a control run with the defence off, where it must get through: a probe whose control
-run does not get through is reported as BROKEN, since it could not catch a regression.
+model, and `probe G1 ...` or a `# Guards: G1` header for a shell probe. `internal/secmodel` (`TestRepository`,
+part of `go test ./...`) fails if a published guarantee has no marker, unless its section has a `Manual:` line;
+markers may name G1 to G10, published or not. A shell probe goes through `test/security/lib.sh`, which runs it once
+against the defended system, where it must fail, and once in a control run with the defence off, where it must get
+through: a probe whose control run does not get through is reported as BROKEN, since it could not catch a regression.
+The red team's probes (`test/security/redteam/`) run on the single host (`t1.sh`) or the Swarm bed (`tn.sh`), and
+report INFO when their control violates an environment property.
 
 ## Troubleshooting
 

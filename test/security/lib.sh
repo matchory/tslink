@@ -16,7 +16,9 @@
 # CONTROL_TEARDOWN are shell commands, evaluated.
 #
 # run_probes prints PASS, FAIL or BROKEN per probe, with its guarantee and
-# description, and returns non-zero unless every probe passed.
+# description, and returns non-zero unless every probe passed. It sets
+# PROBE_RESULT to FAIL if a probe failed, else to BROKEN if one was broken,
+# else to PASS; a probe script of test/security/redteam ends with probe_exit.
 
 PROBE_GROUP=""
 PROBE_SETUP=""
@@ -25,6 +27,7 @@ PROBE_SETTLE=60
 PROBE_IDS=()
 PROBE_DESCS=()
 PROBE_CMDS=()
+PROBE_RESULT=""
 
 probe_group() {
 	PROBE_GROUP=$1
@@ -48,7 +51,7 @@ probe() {
 probe_gets_through() { eval "${PROBE_CMDS[$1]}"; }
 
 run_probes() {
-	local i deadline n=${#PROBE_CMDS[@]} failed=0
+	local i deadline n=${#PROBE_CMDS[@]} failed=0 broken=0
 	local -a blocked=() controlled=()
 	printf '\n--- probes: %s\n' "$PROBE_GROUP"
 	for ((i = 0; i < n; i++)); do
@@ -72,7 +75,7 @@ run_probes() {
 			failed=$((failed + 1))
 		elif [ "${controlled[i]}" = 0 ]; then
 			echo "BROKEN  ${PROBE_IDS[i]} ${PROBE_DESCS[i]}: the control run did not get through"
-			failed=$((failed + 1))
+			broken=$((broken + 1))
 		else
 			echo "PASS    ${PROBE_IDS[i]} ${PROBE_DESCS[i]}"
 		fi
@@ -81,5 +84,24 @@ run_probes() {
 		echo "FAIL    ${PROBE_IDS[0]} ${PROBE_DESCS[0]}: the defence did not come back after the control run"
 		failed=$((failed + 1))
 	fi
-	[ "$failed" = 0 ]
+	PROBE_RESULT=PASS
+	[ "$broken" = 0 ] || PROBE_RESULT=BROKEN
+	[ "$failed" = 0 ] || PROBE_RESULT=FAIL
+	[ "$PROBE_RESULT" = PASS ]
+}
+
+# probe_exit [INFO]: exits with the code redteam.sh reads for PROBE_RESULT: 1
+# for FAIL, 2 for BROKEN, else 0, or with INFO, a sentence, 4 for INFO: the
+# probes passed, and their control run violated an environment property, so
+# INFO says what an operator gives up who violates it.
+probe_exit() {
+	case $PROBE_RESULT in
+	PASS) ;;
+	FAIL) exit 1 ;;
+	BROKEN) exit 2 ;;
+	*) exit 5 ;;
+	esac
+	[ $# = 0 ] && exit 0
+	echo "INFO    $1"
+	exit 4
 }

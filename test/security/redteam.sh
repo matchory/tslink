@@ -96,6 +96,7 @@ for p in "${probes[@]}"; do
 	1) results+=("FAIL    $name") ;;
 	2) results+=("BROKEN  $name") ;;
 	3) results+=("SKIPPED $name") ;;
+	4) results+=("INFO    $name") ;;
 	*) results+=("ERROR   $name") ;;
 	esac
 done

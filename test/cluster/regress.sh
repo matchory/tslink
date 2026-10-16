@@ -182,8 +182,9 @@ upgrade() {
 	v=$(readylogs show)
 	[ -n "$v" ] || echo "NOTE  $1: no task with tslink.health to watch /ready on"
 	echo "INFO  $1: /ready unanswered $(awk '$4 == "000"' <<<"$v" | grep -c .) times (5 a second)"
-	v=$(awk '$4 != "200" && $4 != "000"' <<<"$v" | head -3 | tr '\n' ';')
-	check "$1: /ready answered 200 or nothing" "${v:-ok}"
+	v=$(awk '{ k = $1 " " $2; last[k] = $0 } $4 != "200" && $4 != "000" { bad = bad $0 ";" }
+		END { for (k in last) { split(last[k], f, " "); if (f[4] != "200") bad = bad "last: " last[k] ";" }; printf "%s", bad }' <<<"$v")
+	check "$1: /ready answered 200 or nothing, and 200 at the end" "${v:-ok}"
 }
 node_up() { [ -n "$(node_id_of "$1")" ]; }
 # new_node <hostname> <node ID>: a device of that hostname with another node ID is connected
@@ -423,8 +424,12 @@ r10() {
 	sleep 10
 	readylogs stop multi_web
 	# per container, the first answer after the plugin was gone (no answer, code 000)
-	v=$(readylogs show multi_web | awk '{ k = $1 " " $2 } $4 == "000" { gap[k] = 1; next } gap[k] && !done[k] { done[k] = 1; print k, $4, $5 }')
-	[ -n "$v" ] || echo "NOTE  R10 /ready answered throughout the plugin restart"
+	line=$(readylogs show multi_web)
+	[ -n "$line" ] || check "R10 /ready logged across the plugin restart" "no log"
+	v=$(awk '{ k = $1 " " $2; seen[k] = 1 } $4 == "000" { gap[k] = 1; next }
+		gap[k] && !done[k] { done[k] = 1; print k, $4, $5 }
+		END { for (k in seen) if (gap[k] && !done[k]) print k, "000", "-" }' <<<"$line")
+	[ -z "$line" ] || [ -n "$v" ] || echo "NOTE  R10 /ready answered throughout the plugin restart"
 	while read -r n c code t; do
 		check "R10 first /ready on $n after the plugin restart: $code in ${t}s" "$([ "$code" = 200 ] && awk -v t="$t" 'BEGIN { exit !(t < 1) }' && echo ok || echo "want 200 within 1 s")"
 	done < <([ -z "$v" ] || echo "$v")

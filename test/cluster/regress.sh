@@ -26,11 +26,13 @@ CASES=(
 	"R3 DNS from overlay and tslink tasks using quad-100"
 	"R4 a rolling update fails at most 3 VIP requests per caller"
 	"R5 draining and reactivating a worker leaves no orphaned devices"
-	"R6 a plugin upgrade keeps every identity (--upgrade only)"
+	"R6 a plugin upgrade keeps every identity and advertised Service, fails at most 3 VIP requests per caller and /ready only goes unanswered (--upgrade only)"
 	"R7 several named Services per task: both VIPs answer, HTTPS has the Service's certificate, both replicas approved; with a shared directory, one certificate, advertised only once it exists"
 	"R8 removing a Service's label drains it from the old tasks before their logout, without failing the other Service"
 	"R9 refused label combinations fail their endpoint, naming the labels, without a device; legacy labels cleared next to a named one serve it"
 	"R10 /ready reports each Service, keeps ready while one loses its approval, answers 200 at once after a plugin restart and 503 drained while stopping"
+	"R11 an upgrade from v0.3.2 passes R6's checks with legacy HTTPS tasks, named labels work after it, and a downgrade advertises none of them (--upgrade only)"
+	"R12 each task device has exactly its network's tag and is ephemeral, no test key outlives its expiry, the cluster credential refuses a network without tags and a tag outside the stack's scope"
 )
 while [ $# -gt 0 ]; do
 	case $1 in
@@ -134,6 +136,48 @@ readylogs() {
 }
 # svc_state <ready.sh line> <service>: the Service's state in the line's services
 svc_state() { awk '{ print $5 }' <<<"$1" | jq -r --arg s "$2" '.[$s] // .[$s | ltrimstr("svc:")] // "-"'; }
+# advertised: "hostname advertised" of every running endpoint, sorted
+advertised() { eps | awk -F'\t' '$5 == "running" { print $4, $6 }' | sort; }
+# same <want> <command...>: the command prints want
+same() { [ "$1" = "$("${@:2}")" ]; }
+# since_log <since> <ERE>: "node line" of the plugin.log lines on every node matching the
+# expression, logged at or after since
+since_log() {
+	local n
+	for n in $("$B/nodes"); do
+		"$B/s" "$n" "grep -a -E '$2' $L" </dev/null | awk -v n="$n" -v since="time=$1" '$1 >= since { print n, $0 }'
+	done
+}
+# upgrade <name>: install $REF under VIP probes and /ready logs; check that every identity and
+# each device's advertised Services survive, that at most 3 VIP requests per caller fail (as in
+# R4) and that /ready answers 200 or, while the plugin is down, nothing
+upgrade() {
+	local devs adv n f v
+	devs=$(test_devices)
+	adv=$(advertised)
+	"$B/probes" stop >/dev/null 2>&1
+	"$B/probes" start "$VIP" 2>/dev/null
+	readylogs start
+	sleep 5
+	"$B/install-plugin.sh" "$REF" >/dev/null 2>&1
+	wait_for 120 same "$devs" test_devices
+	check "$1 keeps identities" "$(same "$devs" test_devices && echo ok || echo changed)"
+	wait_for 60 same "$adv" advertised
+	v=$(diff <(echo "$adv") <(advertised) | grep '^[<>]' | tr '\n' ';')
+	check "$1 keeps each device's advertised Services" "${v:-ok}"
+	sleep 10
+	"$B/probes" stop >/dev/null 2>&1
+	readylogs stop
+	for n in $("$B/nodes"); do
+		f=$(probe_fails "$n")
+		check "$1: caller@$n failed VIP requests ($f)" "$([ "$f" -le 3 ] && echo ok || echo "$f failed")"
+	done
+	v=$(readylogs show)
+	[ -n "$v" ] || echo "NOTE  $1: no task with tslink.health to watch /ready on"
+	echo "INFO  $1: /ready unanswered $(awk '$4 == "000"' <<<"$v" | grep -c .) times (5 a second)"
+	v=$(awk '$4 != "200" && $4 != "000"' <<<"$v" | head -3 | tr '\n' ';')
+	check "$1: /ready answered 200 or nothing" "${v:-ok}"
+}
 
 # R1. Every task tailscaled answers and is Running
 r1() {
@@ -195,17 +239,13 @@ r5() {
 	check "drain and reactivate leave no orphans" "$([ "$o" = 0 ] && echo ok || echo "$o orphans")"
 }
 
-# R6. A plugin upgrade keeps every identity
+# R6. A plugin upgrade keeps every identity, under probes (upgrade)
 r6() {
-	local before
 	if [ -z "$UPGRADE" ]; then
 		echo "SKIP  plugin upgrade: needs --upgrade"
 		return
 	fi
-	before=$(test_devices)
-	"$B/install-plugin.sh" "$REF" >/dev/null 2>&1
-	sleep 30
-	check "plugin upgrade keeps identities" "$([ "$before" = "$(test_devices)" ] && echo ok || echo changed)"
+	upgrade "R6 plugin upgrade"
 }
 
 # R7. Several named Services per task (multi.yml), then again with a shared certificate directory
@@ -375,6 +415,72 @@ r10() {
 	v=$(readylogs show multi_web | awk '$4 == "503" && $6 == "drained" { print $1 }' | sort -u | grep -c .)
 	check "R10 both stopping tasks answered 503 drained ($v)" "$([ "$v" = 2 ] && echo ok || echo "$v")"
 	stack_rm multi
+}
+
+# R11. Upgrade from v0.3.2, with the legacy callee stacks, tslink-test-callee's HTTPS included,
+#      under R6's checks; then named labels on $REF; then the downgrade, which is unsupported:
+#      v0.3.2 must warn of the named labels and advertise none of their Services
+legacy_up() { [ "$(running tslink-test-callee | grep -c " $SVC_C\$")" -ge 3 ]; }
+r11() {
+	local since v
+	if [ -z "$UPGRADE" ]; then
+		echo "SKIP  R11: needs --upgrade"
+		return
+	fi
+	"$B/install-plugin.sh" v0.3.2 >/dev/null 2>&1
+	"$B/deploy" tslink-test-callee - >/dev/null
+	wait_for 300 legacy_up || echo "NOTE  R11 tslink-test-callee not up on v0.3.2 after 300 s"
+	upgrade "R11 upgrade from v0.3.2"
+	stack_rm tslink-test-callee
+	if up_multi; then
+		check "R11 named labels after the upgrade: both Services advertised" ok
+		since=$(now)
+		"$B/install-plugin.sh" v0.3.2 >/dev/null 2>&1
+		sleep 60
+		v=$(eps | awk -F'\t' '$3 == "multi" { print $1, $4, $5, $6 }')
+		echo "INFO  R11 downgrade, multi endpoints on v0.3.2: $(tr '\n' ';' <<<"$v")"
+		check "R11 downgrade: no named-label Service advertised" "$(awk '$4 != "-"' <<<"$v" | grep -q . && tr '\n' ';' <<<"$v" || echo ok)"
+		v=$(since_log "$since" 'ignoring unknown label tslink\.service\.' | grep -c .)
+		check "R11 downgrade: v0.3.2 warned of the named labels ($v lines)" "$([ "$v" -ge 1 ] && echo ok || echo none)"
+		stack_rm multi
+		"$B/install-plugin.sh" "$REF" >/dev/null 2>&1
+	fi
+}
+
+# R12. OAuth and tags: each task device has exactly its network's tag and is ephemeral; no key
+#      the tests described outlives its expiry; on the cluster credential, a network without
+#      tslink.tags fails and a tag outside the stack's scope never starts tailscaled
+scope_settled() { eps | awk -F'\t' '$3 == "tslink-test-scope" { print $5 }' | grep -q .; }
+r12() {
+	local v n out e id since
+	since=$(now)
+	n=$(devices | jq --arg t "$T" '[.devices[]|select(.connectedToControl and (.hostname|test("^(callee|caller|nogrant)-")))]|length')
+	v=$(devices | jq -r --arg t "$T" '.devices[]|select(.connectedToControl)
+		| (.hostname|capture("^(?<s>callee|caller|nogrant)-").s) as $s
+		| select(.tags != [$t + "-" + $s] or (.isEphemeral|not))
+		| "\(.hostname) tags=\(.tags // []|join(",")) ephemeral=\(.isEphemeral)"' | tr '\n' ';')
+	check "R12 $n task devices: exactly their network's tag, ephemeral" "$([ -z "$v" ] && [ "$n" -gt 0 ] && echo ok || echo "${v:-no devices}")"
+	v=$(for id in $("$B/tsapi" GET "/tailnet/$TN/keys" | jq -r --arg d "${T#tag:}" '.keys[]|select((.description // "")|startswith($d))|.id'); do
+		"$B/tsapi" GET "/tailnet/$TN/keys/$id"
+	done | jq -r --arg now "$(now)" 'select(.expires != null and .expires < $now)|"\(.id) expired \(.expires)"' | tr '\n' ';')
+	check "R12 no test key outlives its expiry" "${v:-ok}"
+
+	out=$("$B/deploy" tslink-test-notags - 2>&1)
+	sleep 30
+	e=$("$B/s" "$M" "docker service ps --no-trunc --format '{{.Error}}' tslink-test-notags_client 2>/dev/null")
+	v=ok
+	grep -q 'tslink.tags is required' <<<"$out $e" || v=$(echo "deploy: $out; tasks: $e" | tr '\n' ' ')
+	check "R12 tslink-test-notags: the network is refused" "$v"
+	stack_rm tslink-test-notags
+
+	"$B/deploy" tslink-test-scope - >/dev/null
+	wait_for 120 scope_settled
+	read -r n id e <<<"$(eps | awk -F'\t' '$3 == "tslink-test-scope" { print $1, $2, $5 ": " $7 }' | head -1)"
+	check "R12 tslink-test-scope: refused ($e)" "$(grep -q '^failed: .*outside stack' <<<"$e" && echo ok || echo "want failed: ... outside stack ...")"
+	v=$("$B/s" "${n:-$M}" "test -e /var/lib/docker-plugins/tailscale/sock/$id.sock && echo socket")
+	v+=$(devices | jq -r --arg since "$since" '.devices[]|select((.hostname|startswith("tslink-test-scope-")) and .lastSeen > $since)|" device \(.hostname)"')
+	check "R12 tslink-test-scope: no tailscaled" "${v:-ok}"
+	stack_rm tslink-test-scope
 }
 
 CALLEES=()

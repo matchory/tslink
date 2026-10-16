@@ -1,10 +1,12 @@
 #!/bin/bash
 # regress.sh [--upgrade [ref]] [--cases R1,R2,...] [--list]: cluster regression checks for tslink
-# on the test swarm, the cases R1 to R8 in this order (--list prints them). --upgrade also runs R6:
-# it installs tslink from ref (default WT, the working tree) with install-plugin.sh and checks that
-# every identity survives. The cases that reinstall the plugin install ref too. --cases runs only
-# the cases named. Exits non-zero if any check fails. Needs the callee, caller and nogrant stacks;
-# the cases deploy and remove the others they use.
+# on the test swarm, the cases R1 to R17 in this order (--list prints them). --upgrade also runs
+# R6, which installs tslink from ref (default WT, the working tree) with install-plugin.sh and
+# checks that every identity survives, and R11, the upgrade from v0.3.2. The cases that reinstall
+# the plugin install ref too. --cases runs only the cases named. Exits non-zero if any check
+# fails. Needs the callee, caller and nogrant stacks and, for R11 and R12, the cluster credential
+# on every node; the cases deploy and remove the others they use. R14 restarts Docker on one
+# worker, R15 the plugin on another, and R17 flushes that one's filter table, then restores it.
 # shellcheck disable=SC2329 # the cases are called by name, as r<n>
 set -uo pipefail
 B=$(cd "$(dirname "$0")" && pwd)
@@ -37,6 +39,7 @@ CASES=(
 	"R14 a task without dns: resolves through daemon.json's resolver; one with dns: [100.100.100.100, <resolver>] resolves tailnet and site names"
 	"R15 at TSLINK_LOG_LEVEL=warn on one node, the restarted plugin logs nothing at info"
 	"R16 tslink diag --preflight on every node finds nothing violated but E6, which a plugin built from a directory violates"
+	"R17 callers on different nodes ping each other directly, over the node's address and its mapped port, not DERP, also after iptables -F on one node and one watchdog run"
 )
 while [ $# -gt 0 ]; do
 	case $1 in
@@ -191,6 +194,10 @@ new_node() {
 }
 # running_on <node>: the number of running endpoints on a node
 running_on() { "$B/s" "$1" sh -s <"$B/endpoints.sh" | awk -F'\t' '$4 == "running"' | grep -c .; }
+# localapi <node> <endpoint> <path> [curl args]: a LocalAPI request to an endpoint's tailscaled
+localapi() {
+	"$B/s" "$1" "curl -s -m10 ${*:4} --unix-socket /var/lib/docker-plugins/tailscale/sock/$2.sock 'http://local-tailscaled.sock/localapi/v0/$3'" </dev/null
+}
 
 # R1. Every task tailscaled answers and is Running
 r1() {
@@ -587,6 +594,39 @@ r16() {
 		grep -q '^E1 ' <<<"$out" || v="no preflight output: $(tr '\n' ' ' <<<"$out")"
 		check "R16 preflight on $n" "${v:-ok}"
 	done
+}
+
+# R17. Direct paths across hosts: a LocalAPI disco ping from each node's caller to the next node's
+#      goes to that node's address with a mapped WireGuard port (6xxxx), not through DERP; again
+#      after iptables -F on one worker, past one watchdog run (which restores tslink's rules)
+direct_ring() {
+	local ns ids=() ips=() addrs=() e i j out ep try
+	read -ra ns <<<"$("$B/nodes" | tr '\n' ' ')"
+	e=$(running caller)
+	for i in "${!ns[@]}"; do
+		ids[i]=$(awk -v n="${ns[i]}" '$1 == n { print $2; exit }' <<<"$e")
+		ips[i]=$(localapi "${ns[i]}" "${ids[i]}" 'status?peers=false' | jq -r '.Self.TailscaleIPs[0]')
+		addrs[i]=$("$B/s" "${ns[i]}" "docker info --format '{{.Swarm.NodeAddr}}'")
+	done
+	for i in "${!ns[@]}"; do
+		j=$(((i + 1) % ${#ns[@]}))
+		for try in 1 2 3 4 5 6 7 8 9 10; do
+			out=$(localapi "${ns[i]}" "${ids[i]}" "ping?ip=${ips[j]}&type=disco" -X POST)
+			ep=$(jq -r '.Endpoint // empty' <<<"$out" 2>/dev/null)
+			[[ $ep == "${addrs[j]}":6[0-9][0-9][0-9][0-9] ]] && break
+			sleep 3
+		done
+		check "$1: ${ns[i]} to ${ns[j]} direct after $try pings (${ep:-$(tr '\n' ' ' <<<"$out")})" "$([[ $ep == "${addrs[j]}":6[0-9][0-9][0-9][0-9] ]] && echo ok || echo "want ${addrs[j]}:6xxxx")"
+	done
+}
+r17() {
+	local w
+	direct_ring R17
+	w=$("$B/nodes" | grep -vx "$M" | head -1)
+	"$B/s" "$w" "iptables-save -t filter >/root/filter.tslink-test && iptables -F"
+	sleep 75
+	direct_ring "R17 after iptables -F on $w"
+	"$B/s" "$w" "iptables-restore </root/filter.tslink-test && rm /root/filter.tslink-test"
 }
 
 CALLEES=()

@@ -3,7 +3,8 @@
 # on the test swarm, the cases R1 to R17 in this order (--list prints them). --upgrade also runs
 # R6, which installs tslink from ref (default WT, the working tree) with install-plugin.sh and
 # checks that every identity survives, and R11, the upgrade from v0.3.2. The cases that reinstall
-# the plugin install ref too. --cases runs only the cases named. Exits non-zero if any check
+# the plugin install ref too; each install is checked (it succeeded and every node runs the plugin
+# it built), then waited on until the endpoints run again. --cases runs only the cases named. Exits non-zero if any check
 # fails. Needs the callee, caller and nogrant stacks and, for R11 and R12, the cluster credential
 # on every node; the cases deploy and remove the others they use. R14 restarts Docker on one
 # worker, R15 the plugin on another, and R17 flushes that one's filter table, then restores it.
@@ -155,7 +156,8 @@ since_log() {
 		"$B/s" "$n" "grep -a -E '$2' $L" </dev/null | awk -v n="$n" -v since="time=$1" '$1 >= since { print n, $0 }'
 	done
 }
-# upgrade <name>: install $REF under VIP probes and /ready logs; check that every identity and
+# upgrade <name>: install $REF under VIP probes and /ready logs (reinstall: fails if it did not
+# take); check that every identity and
 # each device's advertised Services survive, that at most 3 VIP requests per caller fail (as in
 # R4) and that /ready answers 200 or, while the plugin is down, nothing
 upgrade() {
@@ -166,7 +168,11 @@ upgrade() {
 	"$B/probes" start "$VIP" 2>/dev/null
 	readylogs start
 	sleep 5
-	"$B/install-plugin.sh" "$REF" >/dev/null 2>&1
+	if ! reinstall "$1" "$REF"; then
+		"$B/probes" stop >/dev/null 2>&1
+		readylogs stop
+		return 1
+	fi
 	wait_for 120 same "$devs" test_devices
 	check "$1 keeps identities" "$(same "$devs" test_devices && echo ok || echo changed)"
 	wait_for 60 same "$adv" advertised
@@ -195,6 +201,47 @@ new_node() {
 }
 # running_on <node>: the number of running endpoints on a node
 running_on() { "$B/s" "$1" sh -s <"$B/endpoints.sh" | awk -F'\t' '$4 == "running"' | grep -c .; }
+# running_all: "node count" of the running endpoints on every node
+running_all() {
+	local n
+	for n in $("$B/nodes"); do echo "$n $(running_on "$n")"; done
+}
+# recovered <running_all output>: every node runs at least as many endpoints as it did then
+recovered() {
+	awk 'NR == FNR { want[$1] = $2; next } $2 < want[$1] { bad = 1 } END { exit bad }' \
+		<(echo "$1") <(running_all)
+}
+# not_installed: "node: what" of each node whose tslink:latest is not enabled or does not run
+# the binary install-plugin.sh last built on $M
+not_installed() {
+	local n want got
+	want=$("$B/s" "$M" 'sha256sum /root/plugin/rootfs/tslink' | awk '{ print $1 }')
+	for n in $("$B/nodes"); do
+		# shellcheck disable=SC2016 # runs on the node
+		got=$("$B/s" "$n" sh -s <<'EOF_NODE'
+set -- $(docker plugin inspect -f '{{.Id}} {{.Enabled}}' tslink:latest 2>/dev/null)
+[ "${2:-}" = true ] || { echo "enabled=${2:-none}"; exit; }
+sha256sum "$(docker info -f '{{.DockerRootDir}}')/plugins/$1/rootfs/tslink" | awk '{ print $1 }'
+EOF_NODE
+		)
+		[ -n "$want" ] && [ "$got" = "$want" ] || echo "$n: ${got:-no answer}, want ${want:-a build}"
+	done
+}
+# reinstall <case> <ref>: install-plugin.sh <ref>, with PLUGIN_SETTINGS if set, checked: it
+# exits 0 and every node runs the plugin it built; then waits for every node to run as many
+# endpoints as before. Fails if the install did not take.
+reinstall() {
+	local before out rc v
+	before=$(running_all)
+	out=$("$B/install-plugin.sh" "$2" 2>&1)
+	rc=$?
+	v=$(not_installed | tr '\n' ';')
+	[ "$rc" = 0 ] || v="install-plugin.sh exited $rc: $(tail -n 3 <<<"$out" | tr '\n' ' ')"
+	check "$1: $2 installed on every node" "${v:-ok}"
+	[ -z "$v" ] || return 1
+	wait_for 300 recovered "$before" ||
+		echo "NOTE  $1: endpoints not recovered 300 s after installing $2: $(running_all | tr '\n' ';')"
+}
 # localapi <node> <endpoint> <path> [curl args]: a LocalAPI request to an endpoint's tailscaled
 localapi() {
 	"$B/s" "$1" "curl -s -m10 ${*:4} --unix-socket /var/lib/docker-plugins/tailscale/sock/$2.sock 'http://local-tailscaled.sock/localapi/v0/$3'" </dev/null
@@ -306,9 +353,8 @@ r7_shared() {
 	local since dom n crt logs issuer it late configured
 	stack_rm multi
 	"$B/shared-dir.sh" on >/dev/null
-	PLUGIN_SETTINGS='shared.source=/mnt/tslink' "$B/install-plugin.sh" "$REF" >/dev/null 2>&1
 	since=$(now)
-	if up_multi; then
+	if PLUGIN_SETTINGS='shared.source=/mnt/tslink' reinstall "R7 shared" "$REF" && up_multi; then
 		dom=${SVC_C#svc:}.$SUFFIX
 		crt=$("$B/s" "$M" "find /mnt/tslink -name '$dom.crt' | wc -l" | tr -d ' ')
 		check "R7 shared: one $dom.crt in the shared directory ($crt)" "$([ "$crt" = 1 ] && echo ok || echo "$crt")"
@@ -324,17 +370,24 @@ r7_shared() {
 		check "R7 shared: the other replica advertised only once the certificate existed" "$([ "$configured" -ge 1 ] && [ -z "$late" ] && echo ok || echo "configured=$configured before the issue: $late")"
 	fi
 	stack_rm multi
-	"$B/install-plugin.sh" "$REF" >/dev/null 2>&1
+	reinstall "R7 shared, back without it" "$REF"
 	"$B/shared-dir.sh" off >/dev/null
 }
 
-# R8. Removing the label of one Service under probes on both VIPs: the new tasks do not advertise
+# R8. With callee_whoami scaled to 0, removing the label of one Service under probes on both VIPs:
+#     the new tasks do not advertise
 #     it, each old task's node is logged out only after control fetched its drain (tslink logs
 #     tailscaled's "c2n: GET /vip-services received" as "control fetched the drained": the
 #     tailscaled.log goes with the ephemeral node's state), and the other Service fails no request
 r8() {
-	local old n id lines a f v
-	up_multi || return
+	local r old n id lines a f v
+	# As in R7: only the multi tasks host $SVC_C, so its zero failures are theirs
+	r=$(replicas callee_whoami)
+	scale callee_whoami 0
+	if ! up_multi; then
+		scale callee_whoami "$r"
+		return
+	fi
 	old=$(running multi | awk '{ print $1, $2 }')
 	"$B/probes" stop >/dev/null 2>&1
 	"$B/probes" start "$VIP" 2>/dev/null
@@ -362,6 +415,7 @@ r8() {
 		echo "INFO  R8 $SVC_O: caller@$n failed requests ($(probe_fails "$n" /tmp/probe-other.log))"
 	done
 	stack_rm multi
+	scale callee_whoami "$r"
 }
 
 # R9. Refused label combinations (mixed.yml): legacy and named labels together, or a named label
@@ -420,7 +474,7 @@ r10() {
 
 	readylogs start multi_web
 	sleep 2
-	"$B/install-plugin.sh" "$REF" >/dev/null 2>&1
+	reinstall R10 "$REF"
 	sleep 10
 	readylogs stop multi_web
 	# per container, the first answer after the plugin was gone (no answer, code 000)
@@ -452,23 +506,32 @@ r11() {
 		echo "SKIP  R11: needs --upgrade"
 		return
 	fi
-	"$B/install-plugin.sh" v0.3.2 >/dev/null 2>&1
+	if ! reinstall R11 v0.3.2; then
+		reinstall "R11, back to $REF" "$REF"
+		return
+	fi
 	"$B/deploy" tslink-test-callee - >/dev/null
 	wait_for 300 legacy_up || echo "NOTE  R11 tslink-test-callee not up on v0.3.2 after 300 s"
-	upgrade "R11 upgrade from v0.3.2"
+	if ! upgrade "R11 upgrade from v0.3.2"; then
+		stack_rm tslink-test-callee
+		reinstall "R11, back to $REF" "$REF"
+		return
+	fi
 	stack_rm tslink-test-callee
 	if up_multi; then
 		check "R11 named labels after the upgrade: both Services advertised" ok
 		since=$(now)
-		"$B/install-plugin.sh" v0.3.2 >/dev/null 2>&1
-		sleep 60
-		v=$(eps | awk -F'\t' '$3 == "multi" { print $1, $4, $5, $6 }')
-		echo "INFO  R11 downgrade, multi endpoints on v0.3.2: $(tr '\n' ';' <<<"$v")"
-		check "R11 downgrade: no named-label Service advertised" "$(awk '$4 != "-"' <<<"$v" | grep -q . && tr '\n' ';' <<<"$v" || echo ok)"
-		v=$(since_log "$since" 'ignoring unknown label tslink\.service\.' | grep -c .)
-		check "R11 downgrade: v0.3.2 warned of the named labels ($v lines)" "$([ "$v" -ge 1 ] && echo ok || echo none)"
+		if reinstall "R11 downgrade" v0.3.2; then
+			sleep 60
+			v=$(eps | awk -F'\t' '$3 == "multi" { print $1, $4, $5, $6 }')
+			echo "INFO  R11 downgrade, multi endpoints on v0.3.2: $(tr '\n' ';' <<<"$v")"
+			check "R11 downgrade: multi endpoints on v0.3.2" "$(grep -q . <<<"$v" && echo ok || echo none)"
+			check "R11 downgrade: no named-label Service advertised" "$(awk '$4 != "-"' <<<"$v" | grep -q . && tr '\n' ';' <<<"$v" || echo ok)"
+			v=$(since_log "$since" 'ignoring unknown label tslink\.service\.' | grep -c .)
+			check "R11 downgrade: v0.3.2 warned of the named labels ($v lines)" "$([ "$v" -ge 1 ] && echo ok || echo none)"
+		fi
 		stack_rm multi
-		"$B/install-plugin.sh" "$REF" >/dev/null 2>&1
+		reinstall "R11, back to $REF" "$REF"
 	fi
 }
 
@@ -533,6 +596,15 @@ r13() {
 	[ -n "$new" ] && "$B/tsapi" DELETE "/device/$new" >/dev/null
 }
 
+# r14_restore <node>: daemon.json as it was, without the resolver; also on an interrupt
+r14_restore() {
+	"$B/s" "$1" sh -s <<'EOF_NODE'
+f=/etc/docker/daemon.json b=/root/daemon.json.tslink-test
+if [ -f "$b" ]; then mv "$b" "$f"; else rm -f "$f"; fi
+docker rm -f tslink-test-dns >/dev/null
+systemctl restart docker
+EOF_NODE
+}
 # R14. DNS (T8): on one worker, daemon.json's dns names a resolver (dnsmasq on docker0's address)
 #      that alone knows a site name; a task without dns: resolves it through Docker, and a task
 #      with dns: [100.100.100.100, <resolver>] resolves it and a tailnet name
@@ -542,6 +614,8 @@ r14() {
 	h=$("$B/s" "$n" hostname)
 	k=$(running_on "$n")
 	r=$("$B/s" "$n" "ip -4 -o addr show docker0" | awk '{ sub("/.*", "", $4); print $4 }')
+	# shellcheck disable=SC2064 # the node now: $n is local
+	trap "r14_restore $n" EXIT
 	"$B/s" "$n" "R=$r SITE=$site sh -s" <<'EOF_NODE'
 set -e
 docker rm -f tslink-test-dns >/dev/null 2>&1 || true
@@ -562,12 +636,8 @@ EOF_NODE
 	r=$("$B/cxs" "$n" dnsmix_mixed "$B/dns.sh" "$site" "${SVC_C#svc:}.$SUFFIX")
 	check "R14 with dns: [100.100.100.100, resolver], the site and tailnet names ($r)" "$([ "$r" = "ok ok " ] && echo ok || echo "$r")"
 	stack_rm dnsmix
-	"$B/s" "$n" sh -s <<'EOF_NODE'
-f=/etc/docker/daemon.json b=/root/daemon.json.tslink-test
-if [ -f "$b" ]; then mv "$b" "$f"; else rm -f "$f"; fi
-docker rm -f tslink-test-dns >/dev/null
-systemctl restart docker
-EOF_NODE
+	r14_restore "$n"
+	trap - EXIT
 	wait_for 300 same "$k" running_on "$n" || echo "NOTE  R14 $n: $(running_on "$n") of $k endpoints running after the Docker restart"
 }
 
@@ -579,6 +649,8 @@ r15() {
 	"$B/s" "$n" "docker plugin disable -f tslink:latest >/dev/null && docker plugin set tslink:latest TSLINK_LOG_LEVEL=warn"
 	k=$("$B/s" "$n" "wc -l <$L")
 	"$B/s" "$n" "docker plugin enable tslink:latest >/dev/null"
+	v=$("$B/s" "$n" "docker plugin inspect -f '{{.Enabled}} {{.Settings.Env}}' tslink:latest")
+	check "R15 the plugin on $n restarted at warn ($v)" "$(grep -q '^true .*TSLINK_LOG_LEVEL=warn' <<<"$v" && echo ok || echo "want enabled with TSLINK_LOG_LEVEL=warn")"
 	sleep 90
 	v=$("$B/s" "$n" "tail -n +$((k + 1)) $L | grep -ci 'level=info'")
 	check "R15 no info line at warn on $n ($v)" "$([ "$v" = 0 ] && echo ok || echo "$v info lines")"
@@ -628,12 +700,21 @@ r17() {
 	local w
 	direct_ring R17
 	w=$("$B/nodes" | grep -vx "$M" | head -1)
-	"$B/s" "$w" "iptables-save -t filter >/root/filter.tslink-test && iptables -F"
+	"$B/s" "$w" "iptables-save -t filter >/root/filter.tslink-test" || return
+	# the filter table as it was, also on an interrupt
+	# shellcheck disable=SC2064 # the node now: $w is local
+	trap "r17_restore $w" EXIT
+	"$B/s" "$w" "iptables -F"
 	sleep 75
 	direct_ring "R17 after iptables -F on $w"
-	"$B/s" "$w" "iptables-restore </root/filter.tslink-test && rm /root/filter.tslink-test"
+	r17_restore "$w"
+	trap - EXIT
 }
+r17_restore() { "$B/s" "$1" "iptables-restore </root/filter.tslink-test && rm /root/filter.tslink-test"; }
 
+# An interrupt exits, so the EXIT trap a case set restores what it changed
+trap 'exit 130' INT
+trap 'exit 143' TERM
 CALLEES=()
 while read -r a; do CALLEES+=("$a"); done < <(devices | jq -r --arg t "$T" '.devices[]|select(any(.tags[]?; .==$t+"-callee") and .connectedToControl and (.hostname|startswith("callee-whoami-")))|.addresses[0]')
 VIP=$("$B/tsapi" GET "/tailnet/$TSLINK_TEST_TAILNET/services/$TSLINK_TEST_SVC-callee" | jq -r '.addrs[0]')

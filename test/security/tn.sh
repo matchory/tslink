@@ -103,7 +103,14 @@ tn_plugin_set() {
 	done
 	tn_wait_for 300 tn_healthy || echo "NOTE: not every task's tailscaled runs 300 s after setting $*"
 }
-tn_healthy() { ! "$C/health" | grep -qv 'bad: none$'; }
+# tn_healthy: every node answered health, and none has a task tailscaled not
+# Running; a node that does not answer (SSH failed) prints no line
+tn_healthy() {
+	local out
+	out=$("$C/health")
+	[ "$(grep -c 'bad: none$' <<<"$out")" = "$("$C/nodes" | grep -c .)" ] &&
+		! grep -qv 'bad: none$' <<<"$out"
+}
 
 # tn_network NAME SECRET TAG: a swarm-scoped tslink network outside any stack,
 # created on $M through the Docker API, its credential an OAuth client of

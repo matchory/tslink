@@ -7,7 +7,8 @@
 # Attack: the container opens 2000 idle connections to its own readiness endpoint, which the
 #   plugin serves, shared by all containers. It gets through if the plugin holds 1000 or more of
 #   them open (its file descriptors, counted from the host). Without a control, and so outside
-#   lib.sh, during the same flood another container's /ready must answer within 1 s.
+#   lib.sh, during the same flood another container's /ready must answer within 1 s, timed
+#   inside that container (to 10 ms, from /proc/uptime).
 # Control: the plugin built without the connection limit (LimitListener, maxHealthConns) and with
 #   the 5 s ReadHeaderTimeout from before it. Teardown: the plugin built from the tree again.
 #   Each swap removes and recreates the containers and their network.
@@ -23,6 +24,17 @@ ready_answer() {
 	docker exec "$1" sh -c "printf 'GET /ready HTTP/1.0\r\n\r\n' | nc -w 5 127.0.0.1 9002" 2>/dev/null
 }
 answers() { ready_answer "$1" | head -n 1 | grep -q '^HTTP/'; }
+# ready_ms CONTAINER: how many ms the container's /ready took to answer, timed
+# inside the container, so docker exec's own start is not counted; fails if
+# it did not answer
+ready_ms() {
+	# shellcheck disable=SC2016 # runs in the container
+	docker exec "$1" sh -c '
+		s=$(cut -d " " -f 1 /proc/uptime)
+		printf "GET /ready HTTP/1.0\r\n\r\n" | nc -w 5 127.0.0.1 9002 | head -n 1 | grep -q "^HTTP/" || exit 1
+		e=$(cut -d " " -f 1 /proc/uptime)
+		awk -v s="$s" -v e="$e" "BEGIN { printf \"%d\", (e - s) * 1000 }"' 2>/dev/null
+}
 bed_up() {
 	t1_net rt-alice alice || t1_error "could not create rt-alice"
 	docker run -d --name rt-flood --network rt-alice --label tslink.health=9002 \
@@ -65,10 +77,8 @@ held() {
 
 # Availability during the flood, against the defended build
 flood
-start=$(date +%s%N)
-answers rt-other
+ms=$(ready_ms rt-other)
 ok=$?
-ms=$((($(date +%s%N) - start) / 1000000))
 sleep 10
 if [ "$ok" = 0 ] && [ "$ms" -le 1000 ]; then
 	echo "PASS    rt-other's /ready answered in $ms ms during the flood"

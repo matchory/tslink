@@ -33,6 +33,8 @@ CASES=(
 	"R10 /ready reports each Service, keeps ready while one loses its approval, answers 200 at once after a plugin restart and 503 drained while stopping"
 	"R11 an upgrade from v0.3.2 passes R6's checks with legacy HTTPS tasks, named labels work after it, and a downgrade advertises none of them (--upgrade only)"
 	"R12 each task device has exactly its network's tag and is ephemeral, no test key outlives its expiry, the cluster credential refuses a network without tags and a tag outside the stack's scope"
+	"R13 a non-ephemeral task whose device was deleted comes back after a restart as a new device the caller reaches"
+	"R14 a task without dns: resolves through daemon.json's resolver; one with dns: [100.100.100.100, <resolver>] resolves tailnet and site names"
 )
 while [ $# -gt 0 ]; do
 	case $1 in
@@ -178,6 +180,15 @@ upgrade() {
 	v=$(awk '$4 != "200" && $4 != "000"' <<<"$v" | head -3 | tr '\n' ';')
 	check "$1: /ready answered 200 or nothing" "${v:-ok}"
 }
+node_up() { [ -n "$(node_id_of "$1")" ]; }
+# new_node <hostname> <node ID>: a device of that hostname with another node ID is connected
+new_node() {
+	local id
+	id=$(node_id_of "$1")
+	[ -n "$id" ] && [ "$id" != "$2" ]
+}
+# running_on <node>: the number of running endpoints on a node
+running_on() { "$B/s" "$1" sh -s <"$B/endpoints.sh" | awk -F'\t' '$4 == "running"' | grep -c .; }
 
 # R1. Every task tailscaled answers and is Running
 r1() {
@@ -481,6 +492,69 @@ r12() {
 	v+=$(devices | jq -r --arg since "$since" '.devices[]|select((.hostname|startswith("tslink-test-scope-")) and .lastSeen > $since)|" device \(.hostname)"')
 	check "R12 tslink-test-scope: no tailscaled" "${v:-ok}"
 	stack_rm tslink-test-scope
+}
+
+# R13. Stale state as a new device: a non-ephemeral task (stale.yml) whose device was deleted
+#      logs in again as a new device after a restart, and the caller reaches it
+r13() {
+	local old new ip v
+	"$B/deploy" stale callee >/dev/null
+	if ! wait_for 300 node_up stale-web; then
+		check "R13 stale-web comes up" "not within 300 s"
+		stack_rm stale
+		return
+	fi
+	old=$(node_id_of stale-web)
+	"$B/tsapi" DELETE "/device/$old" >/dev/null
+	"$B/s" "$M" "docker service update -d -q --force stale_web" >/dev/null
+	"$B/await" stale_web >/dev/null
+	wait_for 300 new_node stale-web "$old"
+	new=$(node_id_of stale-web)
+	check "R13 a new device after the deleted $old (${new:-none})" "$([ -n "$new" ] && [ "$new" != "$old" ] && echo ok || echo "no new device")"
+	ip=$(devices | jq -r --arg id "$new" '.devices[]|select(.nodeId == $id)|.addresses[0]')
+	v=$("$B/cxs" "$M" caller_client "$B/reach.sh" "$ip")
+	check "R13 the caller reaches the new device $ip ($v)" "$([ "$v" = "ok " ] && echo ok || echo refused)"
+	stack_rm stale
+	# not ephemeral: the device stays until deleted
+	[ -n "$new" ] && "$B/tsapi" DELETE "/device/$new" >/dev/null
+}
+
+# R14. DNS (T8): on one worker, daemon.json's dns names a resolver (dnsmasq on docker0's address)
+#      that alone knows a site name; a task without dns: resolves it through Docker, and a task
+#      with dns: [100.100.100.100, <resolver>] resolves it and a tailnet name
+r14() {
+	local n h r k site=site.tslink-test.internal
+	n=$("$B/nodes" | grep -vx "$M" | tail -1)
+	h=$("$B/s" "$n" hostname)
+	k=$(running_on "$n")
+	r=$("$B/s" "$n" "ip -4 -o addr show docker0" | awk '{ sub("/.*", "", $4); print $4 }')
+	"$B/s" "$n" "R=$r SITE=$site sh -s" <<'EOF_NODE'
+set -e
+docker rm -f tslink-test-dns >/dev/null 2>&1 || true
+docker run -d -q --name tslink-test-dns --restart unless-stopped --network host alpine:3.23 sh -c \
+	"apk add -q dnsmasq && exec dnsmasq -k --listen-address=$R --bind-dynamic --no-hosts --no-resolv --server=1.1.1.1 --address=/$SITE/192.0.2.53" >/dev/null
+f=/etc/docker/daemon.json b=/root/daemon.json.tslink-test
+rm -f "$b"
+[ ! -f "$f" ] || cp "$f" "$b"
+{ cat "$b" 2>/dev/null || echo '{}'; } | jq --arg r "$R" '.dns = [$r]' >"$f.new"
+mv "$f.new" "$f"
+systemctl restart docker
+EOF_NODE
+	wait_for 300 same "$k" running_on "$n" || echo "NOTE  R14 $n: $(running_on "$n") of $k endpoints running after the Docker restart"
+	TSLINK_TEST_PIN=$h TSLINK_TEST_DNS=$r "$B/deploy" dnsmix caller >/dev/null
+	wait_for 300 same "$((k + 2))" running_on "$n"
+	r=$("$B/cxs" "$n" dnsmix_plain "$B/dns.sh" "$site")
+	check "R14 without dns:, $site through daemon.json's resolver ($r)" "$([ "$r" = "ok " ] && echo ok || echo "$r")"
+	r=$("$B/cxs" "$n" dnsmix_mixed "$B/dns.sh" "$site" "${SVC_C#svc:}.$SUFFIX")
+	check "R14 with dns: [100.100.100.100, resolver], the site and tailnet names ($r)" "$([ "$r" = "ok ok " ] && echo ok || echo "$r")"
+	stack_rm dnsmix
+	"$B/s" "$n" sh -s <<'EOF_NODE'
+f=/etc/docker/daemon.json b=/root/daemon.json.tslink-test
+if [ -f "$b" ]; then mv "$b" "$f"; else rm -f "$f"; fi
+docker rm -f tslink-test-dns >/dev/null
+systemctl restart docker
+EOF_NODE
+	wait_for 300 same "$k" running_on "$n" || echo "NOTE  R14 $n: $(running_on "$n") of $k endpoints running after the Docker restart"
 }
 
 CALLEES=()

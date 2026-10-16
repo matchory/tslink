@@ -66,15 +66,37 @@ CI runs the test on each pull request. It does not test Tailscale Services, beca
 
 `test/cluster` installs tslink on a Docker Swarm of three or more nodes, and tests it against a real tailnet,
 with Tailscale Services. See [test/cluster/README.md](../test/cluster/README.md). Its regression suite, `regress.sh`,
-checks these properties:
+checks these properties, as the cases R1 to R17 (`regress.sh --list` prints them):
 
-- The tailscaled of each task runs.
-- A task reaches only what the policy permits.
-- No traffic leaves through the Tailscale of the host.
-- DNS works for tasks on an overlay network and on tslink.
-- A rolling update of a Service backend causes few or no failed requests for its callers.
-- When a node is drained and made active again, no orphaned devices stay in the tailnet.
-- A plugin upgrade keeps the identity of each node.
+1. The tailscaled of each task runs.
+2. A task reaches only what the policy permits, and no traffic leaves through the Tailscale of the host.
+3. DNS works for tasks on an overlay network and on tslink.
+4. A rolling update of a Service backend fails at most 3 requests per caller.
+5. When a node is drained and made active again, no orphaned devices stay in the tailnet.
+6. A plugin upgrade keeps the identity and the advertised Services of each node, fails at most 3 requests per caller,
+   and `/ready` answers nothing but 200 while the plugin runs.
+7. A task can host several named Services: each answers, the HTTPS one with its own certificate, and every replica is
+   approved. With a shared certificate directory, one replica issues the certificate, and the others advertise the
+   Service only once it exists.
+8. Removing a Service's label drains it: the new tasks do not advertise it, control fetches the drain before an old
+   node is logged out, and the other Service fails no request.
+9. Labels that conflict, legacy and named Service labels or a named one with `tslink.direct=true`, fail the endpoint
+   with an error that names them, and no device comes up. Legacy labels cleared to `""` do not conflict.
+10. `/ready` reports each Service. It stays 200 when one Service loses its approval, is 200 within 1 s after a
+    plugin restart, and answers 503 `drained` while the task stops.
+11. An upgrade from v0.3.2 keeps what 6 checks, with legacy HTTPS tasks, and named labels work after it. A
+    downgrade, which is not supported, advertises none of the named labels' Services.
+12. Each task device has exactly the tag of its network and is ephemeral, and no test key outlives its expiry. With
+    the cluster credential, a network without `tslink.tags` is refused, and a tag outside the stack's scope never
+    starts tailscaled.
+13. A node whose device was deleted comes back as a new device after a restart, and callers reach it.
+14. A task without `dns:` resolves through the resolver of Docker's `daemon.json`. A task with
+    `dns: [100.100.100.100, <resolver>]` resolves both tailnet names and the resolver's names.
+15. At `TSLINK_LOG_LEVEL=warn`, the plugin logs no info lines.
+16. `tslink diag --preflight` finds no violated property on any node, except E6 for a plugin created from a
+    directory.
+17. Nodes on different hosts reach each other directly over the hosts' network, not through DERP, also after the
+    filter table of one host is flushed and the watchdog restored tslink's rules.
 
 `disrupt` does one of these actions to a node, a manager included, while callers send requests to a Tailscale
 Service. It then measures the recovery time.

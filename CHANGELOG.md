@@ -25,6 +25,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   labels no longer name, and a drain clears every Service the node advertises.
   A node that had such Services removed, or could not have them removed, is
   drained when it stops, even if its container names no Service.
+- A readiness endpoint (`tslink.health`) accepts at most 16 connections at a
+  time, and closes a connection that has not sent its request headers within 2 s
+  (was 5 s), so a flood of connections cannot hold it.
+- `tslink diag --preflight` checks more: E1 also flags a container that
+  enables forwarding by sysctl or runs without seccomp or AppArmor
+  confinement, and E2 a container that mounts the shared certificate
+  directory (the plugin's `shared.source`). A deployment that passed before
+  may now report "violated".
 
 ## [0.3.2] - 2026-10-14
 

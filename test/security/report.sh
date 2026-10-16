@@ -12,6 +12,28 @@ short=$(git rev-parse --short HEAD)
 OUT=$TSLINK_TEST_DIR/reports/release-$short.md
 mkdir -p "$TSLINK_TEST_DIR/reports"
 miss() { echo "MISSING $*"; }
+# redteam PREFIX WHAT: the newest $TSLINK_TEST_DIR/reports/PREFIX-* summary, and
+# what is missing from it: one for this commit alone, without failures
+redteam() {
+	local latest
+	# shellcheck disable=SC2012 # the scripts' own directory names, no need for find
+	latest=$(ls -d "$TSLINK_TEST_DIR/reports/$1"-* 2>/dev/null | sort | tail -n 1)
+	if [ -z "$latest" ]; then
+		miss "no $2"
+		return
+	fi
+	sed 's/^/    /' "$latest/summary.md"
+	case $latest in *-"$short") ;; *) miss "the newest $2 is not for $short" ;; esac
+	if grep -qF '(with uncommitted changes)' "$latest/summary.md"; then
+		miss "the $2 ran on uncommitted changes, not on $short alone"
+	fi
+	if grep -qE '^ *(FAIL|BROKEN|ERROR)' "$latest/summary.md"; then
+		miss "the $2 has failures"
+	fi
+	if ! grep -qE '^ *(PASS|INFO) ' "$latest/summary.md"; then
+		miss "the $2 has no probe that ran"
+	fi
+}
 
 {
 	echo "# Release evidence for $short"
@@ -43,20 +65,10 @@ miss() { echo "MISSING $*"; }
 		grep -oE 'G[0-9]+: .*' | sed 's/^/    /' || miss "the coverage check failed"
 	echo
 	echo "## Red team"
-	# shellcheck disable=SC2012 # redteam.sh's own directory names, no need for find
-	latest=$(ls -d "$TSLINK_TEST_DIR"/reports/redteam-* 2>/dev/null | sort | tail -n 1)
-	if [ -z "$latest" ]; then
-		miss "no red-team report"
-	else
-		sed 's/^/    /' "$latest/summary.md"
-		case $latest in *-"$short") ;; *) miss "the newest red-team report is not for $short" ;; esac
-		if grep -qF '(with uncommitted changes)' "$latest/summary.md"; then
-			miss "the red team ran on uncommitted changes, not on $short alone"
-		fi
-		if grep -qE '^ *(FAIL|BROKEN|ERROR)' "$latest/summary.md"; then
-			miss "the red-team run has failures"
-		fi
-	fi
+	redteam redteam "red-team report (redteam.sh)"
+	echo
+	echo "## Red team on the Swarm bed"
+	redteam tn "Swarm-bed red-team report (redteam-tn.sh)"
 } | tee "$OUT"
 echo "Report: $OUT"
 ! grep -q '^MISSING' "$OUT"

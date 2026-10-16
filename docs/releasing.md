@@ -12,6 +12,8 @@ check that tslink's security guarantees hold for the commit, as
    Check by hand whether a failing input is still open.
 3. The red team ran on a disposable testbed host for this commit without a
    failure: `test/security/redteam.sh` (see `test/security/testbed/README.md`).
+   Its Swarm-bed probes ran against test/cluster's bed, with this commit
+   installed on it, without a failure: `test/security/redteam-tn.sh`.
 4. `test/security/report.sh` reports nothing missing. It writes the report
    outside the repository; keep it with the release's records.
 5. The guarantees marked `Manual:` in SECURITY.md were checked by hand.

@@ -49,8 +49,9 @@ A `t1` probe sources [`../t1.sh`](../t1.sh), whose `t1_up` installs the plugin b
 working tree, headscale and the host's own tailscaled, and removes them when the probe exits.
 
 A `tn` probe sources [`../tn.sh`](../tn.sh) and runs on the operator's machine, reaching the bed's
-nodes over SSH with test/cluster's helpers: run it directly, as `test/security/redteam/<probe>.sh`.
-`redteam.sh` runs only the single host's probes: a `tn` probe it copies there reports SKIPPED.
+nodes over SSH with test/cluster's helpers: run it directly, as `test/security/redteam/<probe>.sh`,
+or all of them with [`../redteam-tn.sh`](../redteam-tn.sh), which writes a report as `redteam.sh`
+does. `redteam.sh` runs only the single host's probes: a `tn` probe it copies there reports SKIPPED.
 
 ## Where probes live
 

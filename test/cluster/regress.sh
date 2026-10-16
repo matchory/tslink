@@ -218,7 +218,8 @@ not_installed() {
 	want=$("$B/s" "$M" 'sha256sum /root/plugin/rootfs/tslink' | awk '{ print $1 }')
 	for n in $("$B/nodes"); do
 		# shellcheck disable=SC2016 # runs on the node
-		got=$("$B/s" "$n" sh -s <<'EOF_NODE'
+		got=$(
+			"$B/s" "$n" sh -s <<'EOF_NODE'
 set -- $(docker plugin inspect -f '{{.Id}} {{.Enabled}}' tslink:latest 2>/dev/null)
 [ "${2:-}" = true ] || { echo "enabled=${2:-none}"; exit; }
 sha256sum "$(docker info -f '{{.DockerRootDir}}')/plugins/$1/rootfs/tslink" | awk '{ print $1 }'

@@ -64,6 +64,32 @@ Tailscale Service with more than one backend.
 4. If the application needs the identity of the caller, add a serve option. For example, `?proxy-protocol=2` sends
    the address of the caller to a TCP service. See [Serve options](../reference/container-labels.md#serve-options).
 
+5. To make one container a backend of several Services, use one label per port and Service instead of
+   `tslink.service` and `tslink.serve.<port>`:
+
+   ```yaml
+   services:
+     backend:
+       image: my-ai-app
+       networks:
+         - tailnet
+       labels:
+         tslink.service.ai-gateway.serve.443: https:8080
+         tslink.service.ai-admin.serve.443: https:8081
+         tslink.health: "9002"
+       healthcheck:
+         test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:9002/ready"]
+         interval: 10s
+         retries: 3
+       deploy:
+         update_config:
+           order: start-first
+   ```
+
+   Each Service must exist in the admin console and approve the tag of the node, as for one Service. The container
+   is ready when all its Services are. See
+   [`tslink.service.<name>.serve.<port>`](../reference/container-labels.md#tslinkservicenameserveport).
+
 ## Verify
 
 1. From a device in the tailnet, connect to the hostname of step 1:
@@ -78,7 +104,7 @@ Tailscale Service with more than one backend.
    docker exec <container> wget -q -O- http://127.0.0.1:9002/ready
    ```
 
-   The output is `{"state":"ready","service":"svc:my-app"}`.
+   The output is `{"state":"ready","service":"svc:my-app","services":{"svc:my-app":"ready"}}`.
 
 3. From a device in the tailnet, connect to the Service. The admin console shows the address of the Service.
 

@@ -41,6 +41,11 @@ type timing struct {
 	// before tslink warns that it has not.
 	approvalGrace time.Duration
 
+	// controlSync is how long a node waits after its login before configuring
+	// its Services: they are a beta feature, and control needs a moment to
+	// register the node.
+	controlSync time.Duration
+
 	// Leaving waits at least drainAckFloor and at most drainAckTimeout for
 	// control to fetch the drained Service list.
 	drainAckFloor   time.Duration
@@ -60,6 +65,7 @@ var defaultTiming = timing{
 	certDomainGrace:            30 * time.Second,
 	certCheckInterval:          time.Hour,
 	approvalGrace:              2 * time.Minute,
+	controlSync:                2 * time.Second,
 	drainAckFloor:              time.Second,
 	drainAckTimeout:            10 * time.Second,
 }

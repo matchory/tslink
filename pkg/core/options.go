@@ -22,7 +22,9 @@ const (
 	HostnameLabel = "tslink.hostname"
 	TagsLabel     = "tslink.tags"
 	ServiceLabel  = "tslink.service"
-	DirectLabel   = "tslink.direct"
+	// ServiceLabelPrefix starts the labels tslink.service.<name>.serve.<port>.
+	ServiceLabelPrefix = "tslink.service."
+	DirectLabel        = "tslink.direct"
 	// HealthLabel turns on the readiness endpoint on a loopback port of the
 	// container's own, for a Docker healthcheck such as
 	// wget -q -O- http://127.0.0.1:<port>/ready.

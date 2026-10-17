@@ -19,6 +19,7 @@ import (
 	dockerclient "github.com/moby/moby/client"
 	"github.com/moby/moby/client/pkg/stringid"
 	"golang.org/x/sys/unix"
+	"tailscale.com/tailcfg"
 
 	"github.com/matchory/tslink/internal/ctxtime"
 	"github.com/matchory/tslink/pkg/core"
@@ -53,10 +54,10 @@ func (c *ContainerCache) Store(endpointID string, info *core.ContainerInfo) {
 	defer c.mu.Unlock()
 	c.byEndpoint[endpointID] = info
 	logger.Infof(
-		"ContainerCache: stored info for endpoint %s (hostname=%s service=%s endpoints=%d direct=%v)",
+		"ContainerCache: stored info for endpoint %s (hostname=%s services=%q endpoints=%d direct=%v)",
 		stringid.TruncateID(endpointID),
 		info.Hostname,
-		info.Service,
+		tailscale.ServiceNames(info.Services),
 		len(info.Endpoints),
 		info.Direct,
 	)
@@ -401,7 +402,9 @@ var containerLabels = map[string]func(info *core.ContainerInfo, v string){
 		info.Tags = core.ParseTags(v)
 	},
 	core.ServiceLabel: func(info *core.ContainerInfo, v string) {
-		info.Service = v
+		if v != "" {
+			info.Services = []tailscale.Service{{Name: v}}
+		}
 	},
 	// Serve the endpoints on the task's own name too. Defaults to true
 	// without a Service only: with one, it would double what is served, and
@@ -436,15 +439,107 @@ func parseContainerInfo(name string, labels map[string]string) *core.ContainerIn
 		case known:
 			set(info, labels[key])
 		case strings.HasPrefix(key, core.ServeLabelPrefix):
+		case strings.HasPrefix(key, core.ServiceLabelPrefix): // parsed by parseServices
 		case strings.HasPrefix(key, core.KeyPrefix):
 			logger.Warnf("Container %s: ignoring unknown label %s", name, key)
 		}
 	}
-	if _, ok := labels[core.DirectLabel]; !ok {
-		info.Direct = info.Service == ""
-	}
 	info.Endpoints = parseServeEndpoints(name, labels)
+	setServices(info, labels)
 	return info
+}
+
+// setServices sets the container's Services from its labels, or the reason
+// they are refused, and the default of tslink.direct: true without a Service.
+func setServices(info *core.ContainerInfo, labels map[string]string) {
+	named, err := parseServices(info.Name, labels)
+	_, direct := labels[core.DirectLabel]
+	switch {
+	case err != nil:
+		info.ServiceErr = err
+	case len(named) > 0 && hasLegacyServiceLabels(labels):
+		info.ServiceErr = fmt.Errorf("%s<name>.serve.<port> cannot be combined with %s or %s<port>",
+			core.ServiceLabelPrefix, core.ServiceLabel, core.ServeLabelPrefix)
+	case len(named) > 0 && direct && info.Direct:
+		info.ServiceErr = fmt.Errorf("%s=true cannot be combined with %s<name>.serve.<port>",
+			core.DirectLabel, core.ServiceLabelPrefix)
+	case len(named) > 0:
+		info.Services = named
+	case len(info.Services) == 1:
+		info.Services[0].Endpoints = info.Endpoints
+	}
+	if !direct {
+		info.Direct = len(info.Services) == 0 && len(named) == 0
+	}
+}
+
+// hasLegacyServiceLabels reports whether labels set tslink.service or a
+// tslink.serve.<port> label. An empty value counts as unset, as when parsing
+// them: a Compose override clears an inherited label that way.
+func hasLegacyServiceLabels(labels map[string]string) bool {
+	for key, v := range labels {
+		if v != "" && (key == core.ServiceLabel || strings.HasPrefix(key, core.ServeLabelPrefix)) {
+			return true
+		}
+	}
+	return false
+}
+
+// parseServices parses the labels tslink.service.<name>.serve.<port> into
+// Services, sorted by name, each with its endpoints in port order. It fails
+// on a key under tslink.service. not of that form, a name that is not a
+// lower-case Service name, a port that is not one, two keys for one port of a
+// Service, and a Service left without a valid endpoint. An invalid value is
+// logged and skipped, as for tslink.serve.<port>.
+func parseServices(containerName string, labels map[string]string) ([]tailscale.Service, error) {
+	byName := map[string][]tailscale.ServeEndpoint{}
+	keyOf := map[string]string{} // "<service> <port number>" -> label
+	for _, key := range slices.Sorted(maps.Keys(labels)) {
+		rest, ok := strings.CutPrefix(key, core.ServiceLabelPrefix)
+		if !ok {
+			continue
+		}
+		name, port, ok := strings.Cut(rest, ".serve.")
+		if !ok || name == "" || port == "" {
+			return nil, fmt.Errorf(
+				"label %s: want %s<name>.serve.<port>",
+				key,
+				core.ServiceLabelPrefix,
+			)
+		}
+		svc := "svc:" + name
+		if err := tailcfg.ServiceName(svc).Validate(); err != nil {
+			return nil, fmt.Errorf("label %s: %w", key, err)
+		}
+		if name != strings.ToLower(name) {
+			return nil, fmt.Errorf("label %s: Service name %q is not lower case", key, name)
+		}
+		n, err := strconv.ParseUint(port, 10, 16)
+		if err != nil || n == 0 {
+			return nil, fmt.Errorf("label %s: %q is not a port", key, port)
+		}
+		id := svc + " " + strconv.FormatUint(n, 10)
+		if prev, dup := keyOf[id]; dup {
+			return nil, fmt.Errorf("labels %s and %s name one port of %s", prev, key, svc)
+		}
+		keyOf[id] = key
+		eps := byName[svc]
+		if ep := parseServeValue(containerName, key, port, labels[key]); ep != nil {
+			eps = append(eps, *ep)
+		}
+		byName[svc] = eps
+	}
+	var services []tailscale.Service
+	for _, svc := range slices.Sorted(maps.Keys(byName)) {
+		if len(byName[svc]) == 0 {
+			return nil, fmt.Errorf("%s has no valid endpoint", svc)
+		}
+		services = append(
+			services,
+			tailscale.Service{Name: svc, Endpoints: sortEndpoints(byName[svc])},
+		)
+	}
+	return services, nil
 }
 
 // hostnameFromName turns a container name into a DNS label Tailscale accepts.
@@ -484,14 +579,18 @@ func parseServeEndpoints(containerName string, labels map[string]string) []tails
 			continue
 		}
 
-		endpoint := parseServeValue(containerName, externalPort, value)
+		endpoint := parseServeValue(containerName, key, externalPort, value)
 		if endpoint != nil {
 			endpoints = append(endpoints, *endpoint)
 		}
 	}
 
-	// In the order of their ports, as labels come as a map. Ports are
-	// numbers (parseServeValue); "0443" and "443" go by their labels.
+	return sortEndpoints(endpoints)
+}
+
+// sortEndpoints sorts endpoints by port, as labels come as a map. Ports are
+// numbers (parseServeValue); "0443" and "443" go by their labels.
+func sortEndpoints(endpoints []tailscale.ServeEndpoint) []tailscale.ServeEndpoint {
 	slices.SortFunc(endpoints, func(a, b tailscale.ServeEndpoint) int {
 		pa, _ := strconv.Atoi(a.Port)
 		pb, _ := strconv.Atoi(b.Port)
@@ -513,15 +612,15 @@ func parseServeEndpoints(containerName string, labels map[string]string) []tails
 //   - "http:3000/api"   → proto=http, target=3000, path=/api
 //   - "tcp"             → proto=tcp, target=<same as external port>
 //   - "tcp:5432"        → proto=tcp, target=5432
-func parseServeValue(containerName, externalPort, value string) *tailscale.ServeEndpoint {
+func parseServeValue(containerName, label, externalPort, value string) *tailscale.ServeEndpoint {
 	if value == "" {
 		return nil
 	}
 	if port, err := strconv.ParseUint(externalPort, 10, 16); err != nil || port == 0 {
 		logger.Warnf(
-			"Container %s: tslink.serve.%s: ignoring endpoint: not a port",
+			"Container %s: %s: ignoring endpoint: not a port",
 			containerName,
-			externalPort,
+			label,
 		)
 		return nil
 	}
@@ -532,7 +631,7 @@ func parseServeValue(containerName, externalPort, value string) *tailscale.Serve
 	}
 
 	value, options, _ := strings.Cut(value, "?")
-	if options != "" && !parseServeOptions(containerName, endpoint, options) {
+	if options != "" && !parseServeOptions(containerName, label, endpoint, options) {
 		return nil
 	}
 
@@ -546,9 +645,9 @@ func parseServeValue(containerName, externalPort, value string) *tailscale.Serve
 		// Valid
 	default:
 		logger.Warnf(
-			"Container %s: tslink.serve.%s: ignoring endpoint: unknown protocol %q",
+			"Container %s: %s: ignoring endpoint: unknown protocol %q",
 			containerName,
-			externalPort,
+			label,
 			endpoint.Proto,
 		)
 		return nil
@@ -566,7 +665,7 @@ func parseServeValue(containerName, externalPort, value string) *tailscale.Serve
 		}
 	}
 
-	if !optionsFitProtocol(containerName, endpoint) {
+	if !optionsFitProtocol(containerName, label, endpoint) {
 		return nil
 	}
 
@@ -580,25 +679,25 @@ func parseServeValue(containerName, externalPort, value string) *tailscale.Serve
 
 // optionsFitProtocol reports whether the endpoint's options apply to its
 // protocol, and logs the one that does not.
-func optionsFitProtocol(containerName string, endpoint *tailscale.ServeEndpoint) bool {
+func optionsFitProtocol(containerName, label string, endpoint *tailscale.ServeEndpoint) bool {
 	l4 := endpoint.Proto == "tcp" || endpoint.Proto == "tls-terminated-tcp"
 	l7 := endpoint.Proto == "http" || endpoint.Proto == "https"
 	switch {
 	case endpoint.ProxyProtocol != "" && !l4:
 		logger.Warnf(
-			"Container %s: tslink.serve.%s: ignoring endpoint: "+
+			"Container %s: %s: ignoring endpoint: "+
 				"proxy-protocol needs tcp or tls-terminated-tcp, not %s",
 			containerName,
-			endpoint.Port,
+			label,
 			endpoint.Proto,
 		)
 		return false
 	case endpoint.AcceptAppCaps != "" && !l7:
 		logger.Warnf(
-			"Container %s: tslink.serve.%s: ignoring endpoint: "+
+			"Container %s: %s: ignoring endpoint: "+
 				"accept-app-caps needs http or https, not %s",
 			containerName,
-			endpoint.Port,
+			label,
 			endpoint.Proto,
 		)
 		return false
@@ -609,7 +708,7 @@ func optionsFitProtocol(containerName string, endpoint *tailscale.ServeEndpoint)
 // parseServeOptions sets the endpoint's options from the query after the
 // "?" of a tslink.serve value, and reports false if one is invalid.
 func parseServeOptions(
-	containerName string,
+	containerName, label string,
 	endpoint *tailscale.ServeEndpoint,
 	options string,
 ) bool {
@@ -621,9 +720,9 @@ func parseServeOptions(
 		case key == "accept-app-caps" && validAppCaps(v):
 			endpoint.AcceptAppCaps = v
 		default:
-			logger.Warnf("Container %s: tslink.serve.%s: ignoring endpoint with invalid option %q "+
+			logger.Warnf("Container %s: %s: ignoring endpoint with invalid option %q "+
 				"(want proxy-protocol=1|2 or accept-app-caps=<domain>/<name>[,...])",
-				containerName, endpoint.Port, opt)
+				containerName, label, opt)
 			return false
 		}
 	}

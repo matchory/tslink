@@ -143,56 +143,83 @@ var errUntaggedServiceHost = errors.New(
 	"service hosts must be tagged nodes: log in with a tagged auth key or OAuth client",
 )
 
+// errNoMagicDNS is what configuring a Service that serves HTTPS fails with
+// in a tailnet without MagicDNS.
+var errNoMagicDNS = errors.New("tailscale status has no MagicDNS suffix: HTTPS needs MagicDNS")
+
+// tagged reports whether st is the status of a tagged node, as a Service
+// host must be.
+func tagged(st *ipnstate.Status) bool {
+	return st.Self != nil && st.Self.Tags != nil && st.Self.Tags.Len() > 0
+}
+
 // serveDebugLogMaxBytes is where serve-debug.log, the record of serve
 // attempts, is rotated; a variable for tests.
 var serveDebugLogMaxBytes int64 = 1 << 20
 
+// checkServiceHost checks what every Service of the node needs: tags, and a
+// MagicDNS suffix if any Service serves HTTPS. Its error fails the start.
+func (d *daemon) checkServiceHost() error {
+	ctx, cancel := context.WithTimeout(d.ctx, 10*time.Second)
+	defer cancel()
+	st, err := d.lc.StatusWithoutPeers(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to read the node's status: %w", err)
+	}
+	if !tagged(st) {
+		return errUntaggedServiceHost
+	}
+	for _, b := range d.backends {
+		if servesHTTPS(b.endpoints) && magicDNSSuffix(st) == "" {
+			return errNoMagicDNS
+		}
+	}
+	return nil
+}
+
 // configureService configures the node as a backend of its Service, and
 // advertises it. This should be called after bringUp() succeeds.
-func (d *daemon) configureService() error {
-	return d.configureServiceBackend(true)
+func (b *serviceBackend) configureService() error {
+	return b.configureServiceBackend(true)
 }
 
 // configureServiceBackend configures the node as a backend of its Service,
 // and advertises it if advertise is set, or else makes sure it is not
 // advertised. A drained backend is left alone: it returns errDrained.
-func (d *daemon) configureServiceBackend(advertise bool) error {
-	if d.config.Service == "" {
-		return nil // No service configured, skip
-	}
-
-	if len(d.config.Endpoints) == 0 {
-		logger.Warnf("Service %s configured but no endpoints defined", d.config.Service)
+func (b *serviceBackend) configureServiceBackend(advertise bool) error {
+	if len(b.endpoints) == 0 {
+		logger.Warnf("Service %s configured but no endpoints defined", b.name)
 		return nil
 	}
 
-	if d.isDrained() {
-		logger.Infof("Not configuring %s for %s: drained", d.config.Service, d.config.EndpointID)
+	if b.d.isDrained() {
+		logger.Infof("Not configuring %s for %s: drained", b.name, b.d.config.EndpointID)
 		return errDrained
 	}
-	return d.config.gate.change(d, func(ctx context.Context) error {
+	return b.d.config.gate.change(b.d, func(ctx context.Context) error {
 		logger.Infof("Configuring Tailscale Service %s with %d endpoint(s) for %s",
-			d.config.Service, len(d.config.Endpoints), d.config.EndpointID)
+			b.name, len(b.endpoints), b.d.config.EndpointID)
 
-		service := tailcfg.ServiceName(d.config.Service)
-		err := d.editServe(ctx, "service", func(sc *ipn.ServeConfig, st *ipnstate.Status) error {
-			if st.Self == nil || st.Self.Tags == nil || st.Self.Tags.Len() == 0 {
+		service := tailcfg.ServiceName(b.name)
+		err := b.d.editServe(ctx, "service", func(sc *ipn.ServeConfig, st *ipnstate.Status) error {
+			if !tagged(st) {
 				return errUntaggedServiceHost
 			}
-			return applyServeEndpoints(sc, d.config.Endpoints, service, "", magicDNSSuffix(st))
+			return applyServeEndpoints(sc, b.endpoints, service, "", magicDNSSuffix(st))
 		})
 		// A drain cancels the change in progress and waits for this to
 		// return: run nothing more once it began
-		if d.isDrained() {
+		if b.d.isDrained() {
 			return errDrained
 		}
 		if err != nil {
 			return err
 		}
 		if !advertise {
-			return d.setAdvertised(ctx, d.config.Service, false)
+			_, err := b.d.editAdvertised(ctx, func(s string) bool { return s != b.name })
+			return err
 		}
-		return d.runAdvertise(ctx, d.config.Service)
+		return b.runAdvertise(ctx, b.name)
 	})
 }
 
@@ -211,6 +238,10 @@ func applyServeEndpoints(
 	}
 	return nil
 }
+
+// errServeUnchanged, returned by an editServe edit, leaves the serve config
+// as it is: there is nothing to write.
+var errServeUnchanged = errors.New("serve config unchanged")
 
 // editServe changes tailscaled's serve config with edit, as "tailscale serve"
 // does: it reads the config and the node's status, and writes the config
@@ -235,7 +266,11 @@ func (d *daemon) editServe(
 		if sc == nil {
 			sc = new(ipn.ServeConfig)
 		}
-		if err := edit(sc, st); err != nil {
+		err = edit(sc, st)
+		if errors.Is(err, errServeUnchanged) {
+			return nil
+		}
+		if err != nil {
 			return err
 		}
 		if err := d.lc.SetServeConfig(ctx, sc); err != nil {
@@ -254,46 +289,113 @@ func (d *daemon) editServe(
 	return err
 }
 
-// setAdvertised adds service to the Services the node's prefs advertise, or
-// removes it, as "tailscale serve advertise" and "tailscale serve drain" do.
-func (d *daemon) setAdvertised(ctx context.Context, service string, on bool) error {
+// addAdvertised adds service to the Services the node's prefs advertise, as
+// "tailscale serve advertise" does.
+func (d *daemon) addAdvertised(ctx context.Context, service string) error {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	verb := "advertise"
-	if !on {
-		verb = "unadvertise"
-	}
 	prefs, err := d.lc.GetPrefs(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to %s %s: %w", verb, service, err)
+		return fmt.Errorf("failed to advertise %s: %w", service, err)
 	}
-	if slices.Contains(prefs.AdvertiseServices, service) == on {
+	if slices.Contains(prefs.AdvertiseServices, service) {
 		return nil
-	}
-	services := slices.DeleteFunc(
-		slices.Clone(prefs.AdvertiseServices),
-		func(s string) bool { return s == service },
-	)
-	if on {
-		services = append(services, service)
 	}
 	if _, err := d.lc.EditPrefs(ctx, &ipn.MaskedPrefs{
 		AdvertiseServicesSet: true,
-		AdvertiseServices:    services,
+		AdvertiseServices:    append(slices.Clone(prefs.AdvertiseServices), service),
 	}); err != nil {
-		return fmt.Errorf("failed to %s %s: %w", verb, service, err)
+		return fmt.Errorf("failed to advertise %s: %w", service, err)
 	}
 	return nil
 }
 
+// editAdvertised stops advertising every Service of the node's prefs keep
+// rejects, in one prefs edit, and returns those it removed.
+func (d *daemon) editAdvertised(ctx context.Context, keep func(string) bool) ([]string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	prefs, err := d.lc.GetPrefs(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read the advertised Services: %w", err)
+	}
+	var kept, removed []string
+	for _, s := range prefs.AdvertiseServices {
+		if keep(s) {
+			kept = append(kept, s)
+		} else {
+			removed = append(removed, s)
+		}
+	}
+	if len(removed) == 0 {
+		return nil, nil
+	}
+	if _, err := d.lc.EditPrefs(ctx, &ipn.MaskedPrefs{
+		AdvertiseServicesSet: true,
+		AdvertiseServices:    kept,
+	}); err != nil {
+		return nil, fmt.Errorf("failed to unadvertise %q: %w", removed, err)
+	}
+	return removed, nil
+}
+
+// pruneServices removes from the serve config and the prefs every Service the
+// container does not name, as one its labels no longer have: the node would
+// keep advertising it, and never drain it. A failure is logged, and noted in
+// the gate, as is a removal from the prefs: the node is then drained before
+// it goes, and waits for control to fetch the change.
+func (d *daemon) pruneServices() {
+	names := ServiceNames(d.config.Services)
+	keep := func(s string) bool { return slices.Contains(names, s) }
+	id := stringid.TruncateID(d.config.EndpointID)
+	g := d.config.gate
+	err := g.change(d, func(ctx context.Context) error {
+		err := d.editServe(ctx, "prune", func(sc *ipn.ServeConfig, _ *ipnstate.Status) error {
+			var stale []tailcfg.ServiceName
+			for name := range sc.Services {
+				if !keep(string(name)) {
+					stale = append(stale, name)
+				}
+			}
+			if len(stale) == 0 {
+				return errServeUnchanged
+			}
+			for _, name := range stale {
+				logger.Infof(
+					"Removing %s, which its container does not name, from the serve config of %s",
+					name, id)
+				delete(sc.Services, name)
+			}
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+		fetches, _ := d.servicesFetches()
+		removed, err := d.editAdvertised(ctx, keep)
+		if len(removed) > 0 {
+			logger.Infof("Stopped advertising %q, which its container does not name, for %s",
+				removed, id)
+			// The caller holds the gate's lock
+			g.prune = drainRecord{at: time.Now(), daemon: d, fetches: fetches}
+			g.advertised.Store(true)
+		}
+		return err
+	})
+	g.unpruned.Store(err != nil && !errors.Is(err, errDrained))
+	if g.unpruned.Load() {
+		logger.Warnf("Failed to remove stale Services of %s: %v", id, err)
+	}
+}
+
 // runAdvertise advertises the Service and notes that the backend was
 // advertised. The caller holds the gate's lock.
-func (d *daemon) runAdvertise(ctx context.Context, service string) error {
-	if err := d.setAdvertised(ctx, service, true); err != nil {
+func (b *serviceBackend) runAdvertise(ctx context.Context, service string) error {
+	if err := b.d.addAdvertised(ctx, service); err != nil {
 		return err
 	}
-	d.config.gate.advertised.Store(true)
-	d.checkApprovalLater()
+	b.d.config.gate.advertised.Store(true)
+	b.checkApprovalLater()
 	return nil
 }
 
@@ -308,9 +410,9 @@ func (d *daemon) noteSurvivingState() {
 // advertise advertises the Service, unless the backend was drained. A
 // drained service stays drained in the node's state, as after a plugin
 // restart: advertise it again once its endpoints are configured.
-func (d *daemon) advertise(service string) error {
-	return d.config.gate.change(d, func(ctx context.Context) error {
-		return d.runAdvertise(ctx, service)
+func (b *serviceBackend) advertise(service string) error {
+	return b.d.config.gate.change(b.d, func(ctx context.Context) error {
+		return b.runAdvertise(ctx, service)
 	})
 }
 
@@ -354,27 +456,30 @@ func (d *daemon) configureDirectServe() error {
 // right after a start, and warns if it still has not after approvalGrace. A
 // Service that does not exist looks the same: control gives the node no
 // addresses for it. One check runs at a time.
-func (d *daemon) checkApprovalLater() {
-	if !d.approvalCheck.CompareAndSwap(false, true) {
+func (b *serviceBackend) checkApprovalLater() {
+	if !b.approvalCheck.CompareAndSwap(false, true) {
 		return
 	}
-	grace := d.config.times().approvalGrace
-	d.wg.Go(func() {
-		defer d.approvalCheck.Store(false)
-		if d.readiness(d.ctx) != ReadyAwaitingApproval {
+	grace := b.d.config.times().approvalGrace
+	awaiting := func() bool {
+		return b.d.readinessReport(b.d.ctx).Services[b.name] == ReadyAwaitingApproval
+	}
+	b.d.wg.Go(func() {
+		defer b.approvalCheck.Store(false)
+		if !awaiting() {
 			return
 		}
 		logger.Infof("Waiting for control to approve %s as a backend of %s",
-			stringid.TruncateID(d.config.EndpointID), d.config.Service)
-		if !ctxtime.Sleep(d.ctx, grace) {
+			stringid.TruncateID(b.d.config.EndpointID), b.name)
+		if !ctxtime.Sleep(b.d.ctx, grace) {
 			return
 		}
-		if d.readiness(d.ctx) == ReadyAwaitingApproval {
+		if awaiting() {
 			logger.Warnf(
 				"Service backend registered but pending admin approval after %v, "+
 					"or the Service is not defined in the admin console: %s",
 				grace,
-				d.config.Service,
+				b.name,
 			)
 		}
 	})

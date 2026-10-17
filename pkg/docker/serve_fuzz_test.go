@@ -4,6 +4,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"tailscale.com/tailcfg"
 )
 
 // FuzzParseServeValue checks that a tslink.serve label yields an endpoint
@@ -20,7 +22,7 @@ func FuzzParseServeValue(f *testing.F) {
 		f.Add("443", v)
 	}
 	f.Fuzz(func(t *testing.T, port, value string) {
-		ep := parseServeValue("web", port, value)
+		ep := parseServeValue("web", "tslink.serve."+port, port, value)
 		if ep == nil {
 			return
 		}
@@ -50,4 +52,40 @@ func FuzzParseServeValue(f *testing.F) {
 func validPort(port string) bool {
 	n, err := strconv.ParseUint(port, 10, 16)
 	return err == nil && n > 0
+}
+
+// FuzzParseServices checks that tslink.service.<name>.serve.<port> labels
+// yield only valid, lower-case Service names, each with endpoints of known
+// protocols on distinct ports.
+//
+// Guards: G3
+func FuzzParseServices(f *testing.F) {
+	f.Add("tslink.service.a.serve.443", "https:8080", "tslink.service.b.serve.80", "http:80")
+	f.Add("tslink.service.a.serve.443", "tcp", "tslink.service.a.serve.0443", "tcp")
+	f.Add("tslink.service..serve.443", "tcp", "tslink.service.x/../y.serve.1", "tcp")
+	f.Fuzz(func(t *testing.T, k1, v1, k2, v2 string) {
+		services, err := parseServices("web", map[string]string{k1: v1, k2: v2})
+		if err != nil {
+			return
+		}
+		for _, svc := range services {
+			if tailcfg.ServiceName(svc.Name).Validate() != nil ||
+				svc.Name != strings.ToLower(svc.Name) {
+				t.Fatalf("parseServices: Service name %q", svc.Name)
+			}
+			seen := map[uint64]bool{}
+			for _, ep := range svc.Endpoints {
+				n, err := strconv.ParseUint(ep.Port, 10, 16)
+				if err != nil || n == 0 || seen[n] {
+					t.Fatalf("parseServices: %s port %q", svc.Name, ep.Port)
+				}
+				seen[n] = true
+				switch ep.Proto {
+				case "http", "https", "tcp", "tls-terminated-tcp", "tun":
+				default:
+					t.Fatalf("parseServices: %s protocol %q", svc.Name, ep.Proto)
+				}
+			}
+		}
+	})
 }

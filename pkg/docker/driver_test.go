@@ -475,7 +475,7 @@ func TestRecoverEndpoints(t *testing.T) {
 		r.info.Hostname != "billing-api-1-abc" ||
 		r.info.Stack != "billing" ||
 		r.info.NetworkStack != "billing" ||
-		r.info.Service != "svc:api" ||
+		len(r.info.Services) != 1 || r.info.Services[0].Name != "svc:api" ||
 		len(r.info.Endpoints) != 1 ||
 		!slices.Equal(r.info.DNS, []netip.Addr{dns}) {
 		t.Errorf("started Tailscale with %+v", r.info)

@@ -203,16 +203,16 @@ func (s *DaemonSupervisor) Logout() error {
 	return d.Logout()
 }
 
-// Drain stops new connections to the node's backend for a Tailscale Service.
-// The backend stays drained, even if tailscaled is down and the drain fails:
-// a daemon the supervisor starts later does not advertise it.
-func (s *DaemonSupervisor) Drain(service string) error {
+// Drain stops new connections to the node's Service backends. They stay
+// drained, even if tailscaled is down and the drain fails: a daemon the
+// supervisor starts later does not advertise them.
+func (s *DaemonSupervisor) Drain() error {
 	s.cfg.gate.markDrained()
 	d := s.getDaemon()
 	if d == nil {
 		return errors.New("tailscaled is not running")
 	}
-	return d.Drain(service)
+	return d.Drain()
 }
 
 // Status returns the current supervisor status and restart count.
@@ -222,6 +222,19 @@ func (s *DaemonSupervisor) Status() (SupervisorStatus, int) {
 	return s.status, s.restartCount
 }
 
+// NeedsDrain reports whether the node may advertise a Service, or did so
+// recently: its container names one, or Services it does not name were
+// removed at start or could not be. Such a node is drained before it goes.
+func (s *DaemonSupervisor) NeedsDrain() bool {
+	g := s.cfg.gate
+	if len(s.cfg.Services) > 0 || g.unpruned.Load() {
+		return true
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return !g.prune.at.IsZero()
+}
+
 // Drained reports whether the node's Service backend has been drained.
 func (s *DaemonSupervisor) Drained() bool {
 	return s.cfg.gate.drained.Load()
@@ -229,12 +242,12 @@ func (s *DaemonSupervisor) Drained() bool {
 
 // Readiness reports how far the node is from serving what its container asks
 // for. A daemon not started, or restarting, is starting.
-func (s *DaemonSupervisor) Readiness(ctx context.Context) Readiness {
+func (s *DaemonSupervisor) Readiness(ctx context.Context) ReadinessReport {
 	d := s.getDaemon()
 	if d == nil || !d.IsRunning() {
-		return ReadyStarting
+		return ReadinessReport{State: ReadyStarting}
 	}
-	return d.readiness(ctx)
+	return d.readinessReport(ctx)
 }
 
 // WaitForIP waits for the daemon to get a Tailscale IP, or ctx to be done.

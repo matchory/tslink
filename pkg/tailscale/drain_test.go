@@ -27,7 +27,9 @@ func setTiming(cfg *DaemonConfig, set func(*timing)) {
 // svc:web, and the daemon's fake LocalAPI.
 func newTestSupervisor(t *testing.T) (*DaemonSupervisor, *daemon, *fakeLocalAPI) {
 	t.Helper()
-	s := NewDaemonSupervisor(DaemonConfig{EndpointID: "0123456789abcdef", Service: "svc:web"})
+	s := NewDaemonSupervisor(
+		DaemonConfig{EndpointID: "0123456789abcdef", Services: []Service{{Name: "svc:web"}}},
+	)
 	t.Cleanup(s.cancel)
 	d, api := newTestDaemon(t, "svc:web")
 	api.serviceHost(ipn.Prefs{AdvertiseServices: []string{"svc:web"}})
@@ -85,7 +87,7 @@ func TestDrainAndWaitWaitsForControl(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		s.DrainAndWait("svc:web")
+		s.DrainAndWait()
 		if err := d.Logout(); err != nil {
 			t.Error(err)
 		}
@@ -126,7 +128,7 @@ func TestDrainAndWaitAfterExternalDrain(t *testing.T) {
 	api.serviceHost(ipn.Prefs{})
 
 	start := time.Now()
-	s.DrainAndWait("svc:web")
+	s.DrainAndWait()
 	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
 		t.Errorf("waited %v after a drain outside tslink", elapsed)
 	}
@@ -136,7 +138,7 @@ func TestDrainAndWaitAfterExternalDrain(t *testing.T) {
 	if !s.Drained() {
 		t.Error("backend not marked drained")
 	}
-	if err := d.advertise("svc:web"); !errors.Is(err, errDrained) {
+	if err := d.only(t).advertise("svc:web"); !errors.Is(err, errDrained) {
 		t.Errorf("advertise = %v, want errDrained", err)
 	}
 }
@@ -149,7 +151,7 @@ func TestDrainAndWaitFloor(t *testing.T) {
 		d.handleLine(servicesFetchLine) // as fast as it gets
 	})
 	start := time.Now()
-	s.DrainAndWait("svc:web")
+	s.DrainAndWait()
 	if elapsed := time.Since(start); elapsed < s.cfg.times().drainAckFloor {
 		t.Errorf("returned after %v, want at least %v", elapsed, s.cfg.times().drainAckFloor)
 	}
@@ -163,7 +165,7 @@ func TestDrainAndWaitTimesOut(t *testing.T) {
 		tm.drainAckTimeout = 100 * time.Millisecond
 	})
 	start := time.Now()
-	s.DrainAndWait("svc:web")
+	s.DrainAndWait()
 	if elapsed := time.Since(
 		start,
 	); elapsed < s.cfg.times().drainAckTimeout ||
@@ -189,13 +191,13 @@ func TestDrainAndWaitAfterStopSignalDrain(t *testing.T) {
 		&s.cfg,
 		func(tm *timing) { tm.drainAckFloor = 10 * time.Millisecond; tm.drainAckTimeout = 5 * time.Second },
 	)
-	if err := s.Drain("svc:web"); err != nil {
+	if err := s.Drain(); err != nil {
 		t.Fatal(err)
 	}
 	d.handleLine(servicesFetchLine)
 
 	start := time.Now()
-	s.DrainAndWait("svc:web")
+	s.DrainAndWait()
 	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
 		t.Errorf("waited %v for a drain control had fetched already", elapsed)
 	}
@@ -214,7 +216,7 @@ func TestDrainAndWaitNeverAdvertised(t *testing.T) {
 	)
 	s.cfg.gate.advertised.Store(false)
 	start := time.Now()
-	s.DrainAndWait("svc:web")
+	s.DrainAndWait()
 	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
 		t.Errorf("waited %v for a backend never advertised", elapsed)
 	}
@@ -227,14 +229,14 @@ func TestDrainAndWaitNeverAdvertised(t *testing.T) {
 // previous run, mark the backend advertised.
 func TestAdvertisedMarked(t *testing.T) {
 	d, _ := newTestDaemon(t, "svc:web")
-	d.config.Endpoints = []ServeEndpoint{{Proto: "tcp", Port: "22", Target: "22"}}
-	if err := d.configureServiceBackend(false); err != nil {
+	d.setEndpoints([]ServeEndpoint{{Proto: "tcp", Port: "22", Target: "22"}}...)
+	if err := d.only(t).configureServiceBackend(false); err != nil {
 		t.Fatal(err)
 	}
 	if d.config.gate.advertised.Load() {
 		t.Error("configured unadvertised, but marked advertised")
 	}
-	if err := d.advertise("svc:web"); err != nil {
+	if err := d.only(t).advertise("svc:web"); err != nil {
 		t.Fatal(err)
 	}
 	if !d.config.gate.advertised.Load() {
@@ -242,8 +244,8 @@ func TestAdvertisedMarked(t *testing.T) {
 	}
 
 	d, _ = newTestDaemon(t, "svc:web")
-	d.config.Endpoints = []ServeEndpoint{{Proto: "tcp", Port: "22", Target: "22"}}
-	if err := d.configureService(); err != nil {
+	d.setEndpoints([]ServeEndpoint{{Proto: "tcp", Port: "22", Target: "22"}}...)
+	if err := d.only(t).configureService(); err != nil {
 		t.Fatal(err)
 	}
 	if !d.config.gate.advertised.Load() {
@@ -268,10 +270,12 @@ func TestAdvertisedMarked(t *testing.T) {
 
 // With tailscaled down there is nothing to wait for, but the backend stays drained.
 func TestDrainAndWaitWithoutDaemon(t *testing.T) {
-	s := NewDaemonSupervisor(DaemonConfig{EndpointID: "0123456789abcdef", Service: "svc:web"})
+	s := NewDaemonSupervisor(
+		DaemonConfig{EndpointID: "0123456789abcdef", Services: []Service{{Name: "svc:web"}}},
+	)
 	t.Cleanup(s.cancel)
 	start := time.Now()
-	s.DrainAndWait("svc:web")
+	s.DrainAndWait()
 	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
 		t.Errorf("waited %v without a daemon", elapsed)
 	}
@@ -292,7 +296,7 @@ func failCert(api *fakeLocalAPI, msg string) {
 func newCertDaemon(t *testing.T) (*daemon, string, *fakeLocalAPI) {
 	t.Helper()
 	d, api := newTestDaemon(t, "svc:web")
-	d.config.Endpoints = []ServeEndpoint{{Proto: "https", Port: "443", Target: "8080"}}
+	d.setEndpoints([]ServeEndpoint{{Proto: "https", Port: "443", Target: "8080"}}...)
 	dir := filepath.Join(d.config.StateDir, certsDirName)
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		t.Fatal(err)
@@ -308,7 +312,7 @@ func runAfterCert(d *daemon, dir string) <-chan struct{} {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		d.configureServiceAfterCert(dir, certDomain)
+		d.backends[0].configureServiceAfterCert(dir, certDomain)
 	}()
 	return done
 }
@@ -326,7 +330,7 @@ func TestDrainedWaitingReplicaNotAdvertised(t *testing.T) {
 
 	done := runAfterCert(d, dir)
 	time.Sleep(30 * time.Millisecond)
-	if err := d.Drain("svc:web"); err != nil {
+	if err := d.Drain(); err != nil {
 		t.Fatal(err)
 	}
 	writeCert(t, dir, certDomain, certDomain, time.Now().Add(time.Hour))
@@ -349,11 +353,13 @@ func TestDrainSurvivesDaemonRestart(t *testing.T) {
 		EndpointID: "0123456789abcdef",
 		StateDir:   dir,
 		SocketPath: filepath.Join(dir, "sock"),
-		Service:    "svc:web",
-		Endpoints:  []ServeEndpoint{{Proto: "https", Port: "443", Target: "8080"}},
+		Services: []Service{{
+			Name:      "svc:web",
+			Endpoints: []ServeEndpoint{{Proto: "https", Port: "443", Target: "8080"}},
+		}},
 	})
 	t.Cleanup(s.cancel)
-	if err := s.Drain("svc:web"); err == nil {
+	if err := s.Drain(); err == nil {
 		t.Fatal("Drain without tailscaled succeeded")
 	}
 
@@ -364,16 +370,16 @@ func TestDrainSurvivesDaemonRestart(t *testing.T) {
 	api := newFakeLocalAPI(t)
 	api.serviceHost(ipn.Prefs{})
 	d.lc = api.client()
-	if err := d.configureServiceWhenCertified(); err != nil {
+	if err := d.only(t).configureServiceWhenCertified(); err != nil {
 		t.Errorf(
 			"configureServiceWhenCertified = %v, want nil: a drain must not fail the start",
 			err,
 		)
 	}
-	if err := d.configureService(); !errors.Is(err, errDrained) {
+	if err := d.only(t).configureService(); !errors.Is(err, errDrained) {
 		t.Errorf("configureService = %v, want errDrained", err)
 	}
-	if err := d.advertise("svc:web"); !errors.Is(err, errDrained) {
+	if err := d.only(t).advertise("svc:web"); !errors.Is(err, errDrained) {
 		t.Errorf("advertise = %v, want errDrained", err)
 	}
 	if ops := api.operations(); len(ops) != 0 {
@@ -387,7 +393,7 @@ func TestDrainSurvivesDaemonRestart(t *testing.T) {
 func TestDrainAfterConfigureInProgress(t *testing.T) {
 	d, api := newTestDaemon(t, "svc:web")
 	api.serviceHost(ipn.Prefs{AdvertiseServices: []string{"svc:web"}})
-	d.config.Endpoints = []ServeEndpoint{{Proto: "tcp", Port: "22", Target: "22"}}
+	d.setEndpoints([]ServeEndpoint{{Proto: "tcp", Port: "22", Target: "22"}}...)
 	started, release := make(chan struct{}), make(chan struct{})
 	var once sync.Once
 	// tailscaled finishes the change, though its client gave up
@@ -400,10 +406,10 @@ func TestDrainAfterConfigureInProgress(t *testing.T) {
 		}
 	})
 	configured := make(chan error)
-	go func() { configured <- d.configureService() }()
+	go func() { configured <- d.only(t).configureService() }()
 	<-started
 	drained := make(chan error)
-	go func() { drained <- d.Drain("svc:web") }()
+	go func() { drained <- d.Drain() }()
 	time.Sleep(20 * time.Millisecond)
 	close(release)
 	if err := <-configured; !errors.Is(err, errDrained) {
@@ -487,7 +493,7 @@ func TestDrainedLeaseHolderStops(t *testing.T) {
 		"the serve configuration",
 		func() bool { return ran(api.operations(), "serve") },
 	)
-	if err := d.Drain("svc:web"); err != nil {
+	if err := d.Drain(); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -509,18 +515,18 @@ func TestDrainedLeaseHolderStops(t *testing.T) {
 func TestDrainCancelsConfigureInProgress(t *testing.T) {
 	d, api := newTestDaemon(t, "svc:web")
 	api.serviceHost(ipn.Prefs{AdvertiseServices: []string{"svc:web"}})
-	d.config.Endpoints = []ServeEndpoint{
+	d.setEndpoints([]ServeEndpoint{
 		{Proto: "tcp", Port: "22", Target: "22"},
 		{Proto: "tcp", Port: "23", Target: "23"},
-	}
+	}...)
 	started := make(chan struct{})
 	blockOn(api, "serve", started)
 	configured := make(chan error, 1)
-	go func() { configured <- d.configureService() }()
+	go func() { configured <- d.only(t).configureService() }()
 	<-started
 
 	if err := returnsWithin(t, "Drain", func() error {
-		return d.Drain("svc:web")
+		return d.Drain()
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -533,7 +539,7 @@ func TestDrainCancelsConfigureInProgress(t *testing.T) {
 	if got := api.operations(); !slices.EqualFunc(got, want, slices.Equal) {
 		t.Errorf("operations = %q, want only the drain", got)
 	}
-	if err := d.advertise("svc:web"); !errors.Is(err, errDrained) {
+	if err := d.only(t).advertise("svc:web"); !errors.Is(err, errDrained) {
 		t.Errorf("advertise after the drain = %v, want errDrained", err)
 	}
 }
@@ -543,15 +549,15 @@ func TestDrainCancelsConfigureInProgress(t *testing.T) {
 // and stop it, and with it the drain.
 func TestDrainCancelsAdvertiseInProgress(t *testing.T) {
 	d, api := newTestDaemon(t, "svc:web")
-	d.config.Endpoints = []ServeEndpoint{{Proto: "tcp", Port: "22", Target: "22"}}
+	d.setEndpoints([]ServeEndpoint{{Proto: "tcp", Port: "22", Target: "22"}}...)
 	started := make(chan struct{})
 	blockOn(api, "prefs", started)
 	configured := make(chan error, 1)
-	go func() { configured <- d.configureService() }()
+	go func() { configured <- d.only(t).configureService() }()
 	<-started
 
 	if err := returnsWithin(t, "Drain", func() error {
-		return d.Drain("svc:web")
+		return d.Drain()
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -568,19 +574,180 @@ func TestSupervisorDrainCancelsConfigureWithoutDaemon(t *testing.T) {
 	d, api := newTestDaemon(t, "svc:web")
 	s := NewDaemonSupervisor(d.config)
 	d.config.gate = s.cfg.gate
-	d.config.Endpoints = []ServeEndpoint{{Proto: "tcp", Port: "22", Target: "22"}}
+	d.setEndpoints([]ServeEndpoint{{Proto: "tcp", Port: "22", Target: "22"}}...)
 	started := make(chan struct{})
 	blockOn(api, "serve", started)
 	configured := make(chan error, 1)
-	go func() { configured <- d.configureService() }()
+	go func() { configured <- d.only(t).configureService() }()
 	<-started
 
-	if err := s.Drain("svc:web"); err == nil {
+	if err := s.Drain(); err == nil {
 		t.Error("Drain without a daemon succeeded")
 	}
 	if err := returnsWithin(t, "the configuration", func() error {
 		return <-configured
 	}); !errors.Is(err, errDrained) {
 		t.Errorf("configureService = %v, want errDrained", err)
+	}
+}
+
+// A drain stops advertising every Service of the node in one prefs edit,
+// also one its container does not name.
+func TestDrainClearsEveryAdvertisedService(t *testing.T) {
+	d, api := newMultiDaemon(t, tcpService("svc:a", "1"), tcpService("svc:b", "2"))
+	api.serviceHost(ipn.Prefs{AdvertiseServices: []string{"svc:a", "svc:b", "svc:other"}})
+	if err := d.Drain(); err != nil {
+		t.Fatal(err)
+	}
+	ops := api.operations()
+	for _, s := range []string{"svc:a", "svc:b", "svc:other"} {
+		if !ran(ops, "unadvertise", s) {
+			t.Errorf("operations = %q, want %s unadvertised", ops, s)
+		}
+	}
+	edits := 0
+	for _, r := range api.paths() {
+		if r == "PATCH "+prefsPath {
+			edits++
+		}
+	}
+	if edits != 1 {
+		t.Errorf("%d prefs edits, want 1", edits)
+	}
+	if g := d.config.gate; g.drain.at.IsZero() || g.drain.external {
+		t.Errorf("drain record = %+v, want a drain to wait for", g.drain)
+	}
+}
+
+// Draining a node whose Services were all drained outside tslink records an
+// external drain, which is not waited for.
+func TestDrainNothingAdvertised(t *testing.T) {
+	d, api := newMultiDaemon(t, tcpService("svc:a", "1"))
+	if err := d.Drain(); err != nil {
+		t.Fatal(err)
+	}
+	if ops := api.operations(); len(ops) != 0 {
+		t.Errorf("operations = %q, want none", ops)
+	}
+	if !d.config.gate.drain.external {
+		t.Error("drain not recorded as external")
+	}
+}
+
+// A drain while one backend holds the certificate lease and another waits
+// for it ends both waits; neither is advertised, and the lease is released.
+func TestDrainWhileLeaseHeldAndWaiting(t *testing.T) {
+	d, api := newMultiDaemon(t, httpsService("svc:a"), httpsService("svc:b"))
+	dir := filepath.Join(d.config.StateDir, certsDirName)
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	failCert(api, "not yet")
+	other, err := tryLease(dir, "b.example.ts.net", "other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.release()
+	if err := d.configureServing(); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "both waiting", func() bool {
+		return d.backends[0].certWaiting.Load() && d.backends[1].certWaiting.Load()
+	})
+	if err := d.Drain(); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "waits ended", func() bool {
+		return !d.backends[0].certWaiting.Load() && !d.backends[1].certWaiting.Load()
+	})
+	for _, s := range []string{"svc:a", "svc:b"} {
+		if ran(api.operations(), "advertise", s) {
+			t.Errorf("%s advertised after the drain", s)
+		}
+	}
+	lease, err := tryLease(dir, "a.example.ts.net", "x")
+	if err != nil {
+		t.Fatalf("lease of svc:a still held: %v", err)
+	}
+	lease.release()
+}
+
+// newPruningSupervisor returns a supervisor whose container names no
+// Service, its daemon advertising svc:old from an earlier start, and the
+// daemon's fake LocalAPI.
+func newPruningSupervisor(t *testing.T) (*DaemonSupervisor, *daemon, *fakeLocalAPI) {
+	t.Helper()
+	s := NewDaemonSupervisor(DaemonConfig{EndpointID: "0123456789abcdef"})
+	t.Cleanup(s.cancel)
+	d, api := newTestDaemon(t, "")
+	api.serviceHost(ipn.Prefs{AdvertiseServices: []string{"svc:old"}})
+	d.config.gate = s.cfg.gate
+	s.daemon = d
+	setTiming(
+		&s.cfg,
+		func(tm *timing) { tm.drainAckFloor = 10 * time.Millisecond; tm.drainAckTimeout = 5 * time.Second },
+	)
+	return s, d, api
+}
+
+// A node whose container names no Service needs no drain, unless Services
+// it no longer names were removed at start: leaving then waits for control
+// to fetch that removal, so callers are not left pointed at a node gone.
+func TestDrainAndWaitAfterPrune(t *testing.T) {
+	s, d, api := newPruningSupervisor(t)
+	if s.NeedsDrain() {
+		t.Fatal("a node naming no Service needs a drain before pruning")
+	}
+	d.pruneServices()
+	if !ran(api.operations(), "unadvertise", "svc:old") {
+		t.Fatalf("operations = %q, want svc:old unadvertised", api.operations())
+	}
+	if !s.NeedsDrain() {
+		t.Fatal("no drain needed after removing an advertised Service")
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.DrainAndWait()
+	}()
+	select {
+	case <-done:
+		t.Fatal("left before control fetched the removal")
+	case <-time.After(100 * time.Millisecond):
+	}
+	d.handleLine(servicesFetchLine)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("DrainAndWait did not return after control fetched the removal")
+	}
+}
+
+// A removal control fetched already is not waited for again.
+func TestDrainAndWaitAfterFetchedPrune(t *testing.T) {
+	s, d, _ := newPruningSupervisor(t)
+	d.pruneServices()
+	d.handleLine(servicesFetchLine)
+	start := time.Now()
+	s.DrainAndWait()
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Errorf("waited %v for a removal control fetched already", elapsed)
+	}
+}
+
+// A removal that failed leaves Services the container does not name
+// advertised: the node is drained before it goes.
+func TestNeedsDrainAfterFailedPrune(t *testing.T) {
+	s, d, api := newPruningSupervisor(t)
+	api.failOp("prefs", "boom")
+	d.pruneServices()
+	if !s.NeedsDrain() {
+		t.Fatal("no drain needed after a failed removal")
+	}
+	api.failOp("prefs", "")
+	s.DrainAndWait()
+	if !ran(api.operations(), "unadvertise", "svc:old") {
+		t.Errorf("operations = %q, want svc:old unadvertised by the drain", api.operations())
 	}
 }

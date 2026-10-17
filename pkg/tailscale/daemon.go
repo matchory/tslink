@@ -33,8 +33,8 @@ type DaemonConfig struct {
 	NetNSPath     string
 	TailscaledBin string          // Path to tailscaled daemon binary
 	Tags          []string        // ACL tags for --advertise-tags
-	Service       string          // Service name for tailscale serve (e.g., "svc:hello-world")
-	Endpoints     []ServeEndpoint // Serve endpoints (L3/L4/L7)
+	Services      []Service       // Services the node is a backend of, sorted by name
+	Endpoints     []ServeEndpoint // What direct serve serves on the node's own name
 	Direct        bool            // Enable direct machine serve (HTTPS on machine hostname)
 	LoginServer   string          // Control server URL for --login-server; empty for Tailscale's
 	ContainerDNS  []netip.Addr    // DNS servers the container was given, as with docker run --dns
@@ -75,9 +75,6 @@ type daemon struct {
 	// (deleted, or an expired ephemeral node), as Unix seconds
 	nodeNotFound atomic.Int64
 
-	// A check whether control approved the backend is waiting
-	approvalCheck atomic.Bool
-
 	// How often control has fetched the node's Service list, and a channel
 	// closed at the next fetch
 	fetchMu sync.Mutex
@@ -88,13 +85,11 @@ type daemon struct {
 	// goroutine may wait for a process
 	exited chan struct{}
 
-	// Start the certificate expiry watcher at most once
-	certWatch sync.Once
-	// Set while the Service waits for its certificate to be configured
-	certWaiting atomic.Bool
-
 	// lc talks to tailscaled's LocalAPI on its socket
 	lc *local.Client
+
+	// One per Service of config.Services
+	backends []*serviceBackend
 }
 
 // newDaemon creates a new daemon instance.
@@ -145,6 +140,7 @@ func newDaemon(cfg DaemonConfig) (*daemon, error) {
 		ctx:        ctx,
 		cancel:     cancel,
 	}
+	d.backends = newBackends(d)
 
 	if cfg.HostEndpoints != nil {
 		eps, err := cfg.HostEndpoints()
@@ -363,21 +359,21 @@ func (d *daemon) configureServing() error {
 		logger.Infof("Direct serve configured successfully")
 	}
 
-	// Configure service backend if specified
-	// Services is a beta feature - add delay to let control plane fully register the node
-	logger.Infof("Checking service: Service=%q", d.config.Service)
-	if d.config.Service != "" {
-		logger.Infof("Waiting for control plane sync before configuring service backend...")
-		if !ctxtime.Sleep(d.ctx, 2*time.Second) {
-			return fmt.Errorf("failed to configure Tailscale service: %w", d.ctx.Err())
-		}
-		logger.Infof("Configuring service backend...")
-		if err := d.configureServiceWhenCertified(); err != nil {
-			return fmt.Errorf("failed to configure Tailscale service: %w", err)
-		}
-		logger.Infof("Service backend configured successfully")
+	logger.Infof("Checking services: %q", ServiceNames(d.config.Services))
+	d.pruneServices()
+	if len(d.backends) == 0 {
+		return nil
 	}
-
+	// Services is a beta feature - let control plane fully register the node
+	if !ctxtime.Sleep(d.ctx, d.config.times().controlSync) {
+		return fmt.Errorf("failed to configure Tailscale services: %w", d.ctx.Err())
+	}
+	if err := d.checkServiceHost(); err != nil {
+		return fmt.Errorf("failed to configure Tailscale services: %w", err)
+	}
+	for _, b := range d.backends {
+		b.start()
+	}
 	return nil
 }
 

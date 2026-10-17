@@ -175,6 +175,26 @@ func TestHostIsolationRules(t *testing.T) {
 	}
 }
 
+// IsolatedBridges reads back the bridges SetupHostIsolation installed.
+// Guards: G1
+func TestIsolatedBridges(t *testing.T) {
+	nsPath := newTestNetNS(t)
+	var got []string
+	if err := inNetNS(nsPath, func() error {
+		if err := SetupHostIsolation([]string{"custombr0", "docker0"}); err != nil {
+			return err
+		}
+		var err error
+		got, err = IsolatedBridges()
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"custombr0"}; !slices.Equal(got, want) {
+		t.Errorf("bridges = %q, want %q", got, want)
+	}
+}
+
 // Guards: G1
 func TestIsolationRulesCoverEveryContainerInterface(t *testing.T) {
 	for _, f := range isolationFamilies {

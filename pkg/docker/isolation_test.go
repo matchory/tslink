@@ -136,6 +136,7 @@ func TestStartIsolatesBeforeDockerAnswers(t *testing.T) {
 	d := newDriver(&core.Config{DataDir: dir, IsolateHostTailnet: true}, fake)
 	var calls isolationCalls
 	d.hostIsolation = calls.apply
+	d.installedBridges = func() ([]string, error) { return nil, nil }
 	t.Cleanup(func() {
 		d.cancel()
 		d.wg.Wait()
@@ -162,6 +163,7 @@ func TestStartUpdatesSavedBridges(t *testing.T) {
 	d := newDriver(&core.Config{DataDir: dir, IsolateHostTailnet: true}, fake)
 	var calls isolationCalls
 	d.hostIsolation = calls.apply
+	d.installedBridges = func() ([]string, error) { return nil, nil }
 	t.Cleanup(func() {
 		d.cancel()
 		d.wg.Wait()
@@ -170,6 +172,11 @@ func TestStartUpdatesSavedBridges(t *testing.T) {
 	d.start()
 	if got := calls.last(); len(got) != 0 {
 		t.Errorf("bridges = %q before Docker answered, with none saved", got)
+	}
+	// A failed listing changes nothing, so it applies nothing again
+	time.Sleep(1500 * time.Millisecond)
+	if n := calls.count(); n != 1 {
+		t.Errorf("%d isolation updates while Docker failed to list its networks, want 1", n)
 	}
 	fake.mu.Lock()
 	fake.networkListErr = nil
@@ -185,5 +192,65 @@ func TestStartUpdatesSavedBridges(t *testing.T) {
 	saved, err := os.ReadFile(filepath.Join(dir, bridgesFile))
 	if err != nil || string(saved) != "newbr0\n" {
 		t.Errorf("saved bridges = %q (%v), want newbr0", saved, err)
+	}
+}
+
+// A start without the saved list, as the first after an upgrade, keeps the
+// bridges the isolation already covers: the plugin's restart must not open
+// the host's tailnet to containers on them until Docker answers.
+// Guards: G1
+func TestStartKeepsInstalledBridges(t *testing.T) {
+	for _, saved := range []string{"", "custombr0\n"} {
+		fake := newFakeDocker()
+		fake.hangList = true
+		dir := t.TempDir()
+		if saved != "" {
+			if err := os.WriteFile(
+				filepath.Join(dir, bridgesFile),
+				[]byte(saved),
+				0o600,
+			); err != nil {
+				t.Fatal(err)
+			}
+		}
+		d := newDriver(&core.Config{DataDir: dir, IsolateHostTailnet: true}, fake)
+		var calls isolationCalls
+		d.hostIsolation = calls.apply
+		d.installedBridges = func() ([]string, error) { return []string{"oldbr0"}, nil }
+
+		d.start()
+		want := []string{"oldbr0"}
+		if saved != "" {
+			want = []string{"custombr0", "oldbr0"}
+		}
+		if got := calls.last(); !slices.Equal(got, want) {
+			t.Errorf("saved %q: bridges = %q, want %q", saved, got, want)
+		}
+		d.cancel()
+		d.wg.Wait()
+	}
+}
+
+// A list that could not be saved is saved at the next listing, even if the
+// bridges did not change meanwhile.
+func TestSaveBridgesRetried(t *testing.T) {
+	fake := newFakeDocker()
+	fake.addNetwork("custom", "bridge", map[string]string{bridgeNameOption: "custombr0"}, nil)
+	dir := t.TempDir()
+	path := filepath.Join(dir, bridgesFile)
+	// A directory in its place fails the save
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	d := newDriver(&core.Config{DataDir: dir, IsolateHostTailnet: true}, fake)
+	d.hostIsolation = func(bool, []string) error { return nil }
+
+	d.applyHostIsolation()
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	d.applyHostIsolation()
+	if saved, err := os.ReadFile(path); err != nil || string(saved) != "custombr0\n" {
+		t.Errorf("saved bridges = %q (%v), want custombr0", saved, err)
 	}
 }

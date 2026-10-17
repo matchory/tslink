@@ -53,9 +53,12 @@ type Driver struct {
 	// Installs (true) or removes (false) the host's tailnet isolation, given
 	// the interface names of Docker's bridge networks
 	hostIsolation func(on bool, bridges []string) error
+	// Returns the bridges the host's tailnet isolation covers as installed
+	installedBridges func() ([]string, error)
 
-	// Serializes applyHostIsolation, which keeps the bridge names it last
-	// got from Docker in bridges
+	// Serializes the isolation's updates, which keep the bridge names it
+	// covers in bridges: those Docker listed last, and at start those saved
+	// in the data directory and those the isolation already covered
 	isolationMu sync.Mutex
 	bridges     []string
 
@@ -106,21 +109,22 @@ func NewDriver() (*Driver, error) {
 func newDriver(cfg *core.Config, docker dockerAPI) *Driver {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Driver{
-		networks:       make(map[string]*core.Network),
-		endpoints:      make(map[string]*core.Endpoint),
-		config:         cfg,
-		claims:         core.NewStateClaims(),
-		cache:          NewContainerCache(),
-		docker:         docker,
-		joinEndpoint:   (*core.Endpoint).Join,
-		recoverRouting: (*core.Endpoint).Recover,
-		runTailscale:   (*core.Endpoint).RunTailscale,
-		leaveEndpoint:  (*core.Endpoint).Leave,
-		stopEndpoint:   (*core.Endpoint).Stop,
-		drainService:   (*core.Endpoint).DrainService,
-		hostIsolation:  applyHostIsolation,
-		ctx:            ctx,
-		cancel:         cancel,
+		networks:         make(map[string]*core.Network),
+		endpoints:        make(map[string]*core.Endpoint),
+		config:           cfg,
+		claims:           core.NewStateClaims(),
+		cache:            NewContainerCache(),
+		docker:           docker,
+		joinEndpoint:     (*core.Endpoint).Join,
+		recoverRouting:   (*core.Endpoint).Recover,
+		runTailscale:     (*core.Endpoint).RunTailscale,
+		leaveEndpoint:    (*core.Endpoint).Leave,
+		stopEndpoint:     (*core.Endpoint).Stop,
+		drainService:     (*core.Endpoint).DrainService,
+		hostIsolation:    applyHostIsolation,
+		installedBridges: netutil.IsolatedBridges,
+		ctx:              ctx,
+		cancel:           cancel,
 	}
 }
 
@@ -504,14 +508,19 @@ func (d *Driver) start() {
 	// host reboot it answers no API call involving plugins until the plugin's
 	// socket is open, and disables a plugin that does not open it in time.
 	d.installHostIsolation()
-	d.wg.Go(func() {
-		// Every second until Docker lists its bridges, as recovery does
-		for !d.refreshHostIsolation() {
-			if !ctxtime.Sleep(ctx, time.Second) {
-				return
+	if d.config.IsolateHostTailnet {
+		d.wg.Go(func() {
+			// Every second until Docker lists its bridges, as recovery does
+			err := d.updateHostIsolation()
+			if err != nil {
+				logger.Warnf("Host tailnet isolation: Docker's bridges unknown, "+
+					"using the saved list until Docker answers: %v", err)
 			}
-		}
-	})
+			for err != nil && ctxtime.Sleep(ctx, time.Second) {
+				err = d.updateHostIsolation()
+			}
+		})
+	}
 
 	// Start event watcher in background (tracked by waitgroup)
 	// Pass callback to trigger Tailscale setup when container info arrives
@@ -701,46 +710,65 @@ func (d *Driver) collectGarbage(ctx context.Context) {
 // tailnet, or other containers, to containers. The isolation covers the
 // bridges of Docker's bridge networks by name: a stack file may name one
 // otherwise than Docker would. If Docker cannot list them, it keeps those it
-// listed last.
+// covers.
 func (d *Driver) applyHostIsolation() {
-	d.refreshHostIsolation()
-}
-
-// refreshHostIsolation is applyHostIsolation, and reports whether Docker
-// listed its bridges, if the host's tailnet isolation needs them. It saves
-// the list in the data directory for the next start.
-func (d *Driver) refreshHostIsolation() bool {
 	d.isolationMu.Lock()
 	defer d.isolationMu.Unlock()
-	listed := true
 	if d.config.IsolateHostTailnet {
-		bridges, err := bridgeNames(d.ctx, d.docker)
-		if err != nil {
+		if err := d.listBridges(); err != nil {
 			logger.Warnf(
 				"Host tailnet isolation: Docker's bridges unknown, using the last list: %v",
 				err,
 			)
-			listed = false
-		} else {
-			if !slices.Equal(bridges, d.bridges) {
-				d.saveBridges(bridges)
-			}
-			d.bridges = bridges
 		}
 	}
 	d.setHostIsolation()
-	return listed
 }
 
-// installHostIsolation is applyHostIsolation with the bridges Docker listed
-// last, saved in the data directory: it makes no Docker API call.
+// updateHostIsolation is applyHostIsolation with the host's tailnet isolation
+// on, but applies nothing if Docker cannot list its bridges: the list is as it
+// was applied.
+func (d *Driver) updateHostIsolation() error {
+	d.isolationMu.Lock()
+	defer d.isolationMu.Unlock()
+	if err := d.listBridges(); err != nil {
+		return err
+	}
+	d.setHostIsolation()
+	return nil
+}
+
+// installHostIsolation is applyHostIsolation without a Docker API call: with
+// the bridges saved in the data directory, and those the isolation already
+// covers, so a missing or outdated list never narrows it.
 func (d *Driver) installHostIsolation() {
 	d.isolationMu.Lock()
 	defer d.isolationMu.Unlock()
 	if d.config.IsolateHostTailnet {
-		d.bridges = d.loadBridges()
+		installed, err := d.installedBridges()
+		if err != nil {
+			logger.Warnf("Host tailnet isolation: failed to read the bridges it covers: %v", err)
+		}
+		d.bridges = slices.Compact(slices.Sorted(slices.Values(
+			append(d.loadBridges(), installed...),
+		)))
 	}
 	d.setHostIsolation()
+}
+
+// listBridges sets bridges to those Docker lists, and saves them for the next
+// start unless the saved list is the same; the caller holds isolationMu.
+func (d *Driver) listBridges() error {
+	bridges, err := bridgeNames(d.ctx, d.docker)
+	if err != nil {
+		return err
+	}
+	d.bridges = bridges
+	// Against the file, not the last list: a failed save is retried
+	if !slices.Equal(bridges, d.loadBridges()) {
+		d.saveBridges(bridges)
+	}
+	return nil
 }
 
 // setHostIsolation applies the plugin's settings with d.bridges; the caller
@@ -768,20 +796,39 @@ func (d *Driver) loadBridges() []string {
 // saveBridges saves the bridge names in the data directory, for the next
 // start.
 func (d *Driver) saveBridges(bridges []string) {
-	path := filepath.Join(d.config.DataDir, bridgesFile)
-	var data []byte
-	for _, b := range bridges {
-		data = append(data, b+"\n"...)
-	}
-	// Write and rename, so a crash never leaves a partial list
-	tmp := path + ".tmp"
-	err := os.WriteFile(tmp, data, 0o600)
-	if err == nil {
-		err = os.Rename(tmp, path)
-	}
-	if err != nil {
+	if err := writeSynced(d.config.DataDir, bridgesFile, bridges); err != nil {
 		logger.Warnf("Host tailnet isolation: failed to save the bridges: %v", err)
 	}
+}
+
+// writeSynced writes lines to the file name in dir through a temporary file
+// it renames, syncing both and the directory: after a crash, of the plugin
+// or the host, the file holds either the old lines or the new ones.
+func writeSynced(dir, name string, lines []string) error {
+	f, err := os.CreateTemp(dir, name+".tmp*")
+	if err != nil {
+		return err
+	}
+	for _, l := range lines {
+		if _, err = f.WriteString(l + "\n"); err != nil {
+			break
+		}
+	}
+	err = errors.Join(err, f.Sync(), f.Close())
+	if err == nil {
+		err = os.Rename(f.Name(), filepath.Join(dir, name))
+	}
+	if err != nil {
+		if rmErr := os.Remove(f.Name()); rmErr != nil && !errors.Is(rmErr, fs.ErrNotExist) {
+			logger.Warnf("Failed to remove %s: %v", f.Name(), rmErr)
+		}
+		return err
+	}
+	df, err := os.Open(dir) // #nosec G304 -- the plugin's data directory
+	if err != nil {
+		return err
+	}
+	return errors.Join(df.Sync(), df.Close())
 }
 
 // bridgesFile, in the data directory, holds the bridge names Docker listed

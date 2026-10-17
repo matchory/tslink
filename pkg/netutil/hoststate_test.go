@@ -53,3 +53,28 @@ func TestCheckedChainHolds(t *testing.T) {
 		t.Error("the lines hold other rules")
 	}
 }
+
+// The bridges the isolation chains cover, beyond containerInterfaces, as
+// listed: what a start without the saved list must not narrow.
+// Guards: G1
+func TestIsolatedBridgesIn(t *testing.T) {
+	out := `*mangle
+:TSLINK-ISOLATE-FWD - [0:0]
+:TSLINK-ISOLATE-IN - [0:0]
+:OTHER - [0:0]
+-A TSLINK-ISOLATE-FWD -i docker0 -o tailscale+ -j DROP
+-A TSLINK-ISOLATE-FWD -i custombr0 -o tailscale+ -d 100.100.100.100/32 -p udp --dport 53 -j RETURN
+-A TSLINK-ISOLATE-FWD -i custombr0 -o tailscale+ -j DROP
+-A TSLINK-ISOLATE-IN -i br-+ -d 100.64.0.0/10 -j DROP
+-A TSLINK-ISOLATE-IN -i otherbr0 -d 100.64.0.0/10 -j DROP
+-A OTHER -i notours0 -j DROP
+COMMIT
+`
+	got := isolatedBridgesIn(parseSave(out))
+	if want := []string{"custombr0", "otherbr0"}; !slices.Equal(got, want) {
+		t.Errorf("bridges = %q, want %q", got, want)
+	}
+	if got := isolatedBridgesIn(parseSave("")); len(got) != 0 {
+		t.Errorf("without the chains: bridges = %q, want none", got)
+	}
+}

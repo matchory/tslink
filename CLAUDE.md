@@ -60,8 +60,10 @@ not at all. Those routes stop sockets, not raw frames, and the host's tailscaled
 host enforces it too: `netutil.SetupHostIsolation` drops traffic from Docker's bridges and veths to `tailscale+` and to
 the host's tailnet addresses in the mangle table (`TSLINK_ISOLATE_HOST_TAILNET`), for every container on the host. It
 matches Docker's default interface names and the bridge names Docker's bridge networks set
-(`com.docker.network.bridge.name`), which the driver lists at start, on every watchdog run and on a network `create`
-event, keeping the last list if Docker cannot answer. The plugin installs it before serving, the watchdog restores it
+(`com.docker.network.bridge.name`), which the driver lists after start (every second until Docker answers), on every
+watchdog run and on a network `create` event, keeping the last list if Docker cannot answer, saved in `/data/bridges`.
+The plugin installs it before serving, with the saved list: after a host reboot Docker answers no API call involving
+plugins until the plugin's socket is open, and disables a plugin that does not open it in time. The watchdog restores it
 (a chain and its jump in one `iptables-restore --noflush` of the backend `iptables` uses, so a repair never opens a
 gap), and it stays when the plugin stops. The host also forwards between tslink's veths, so `netutil.SetupVethIsolation`
 (always on) drops everything forwarded to `10.200.0.0/16`, whatever interface it arrives on, except replies on

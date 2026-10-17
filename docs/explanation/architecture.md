@@ -88,7 +88,8 @@ the tailscaled of a host accepts forwarded traffic. Thus the host also enforces 
   tailnet addresses of the host. This applies to all containers, on tslink networks and on other networks. The rules
   match the interface names that Docker uses by default, and the names of bridges that have their own name
   (`com.docker.network.bridge.name`). tslink gets these names from Docker when it starts, on each watchdog run, and
-  when a network is created. The plugin setting `TSLINK_ISOLATE_HOST_TAILNET` controls host isolation. tslink
+  when a network is created. It keeps the last list in its data directory, and starts with that list, so that it
+  does not wait for Docker before it accepts requests. The plugin setting `TSLINK_ISOLATE_HOST_TAILNET` controls host isolation. tslink
   installs the rules before it accepts requests, restores them when they change, and keeps them when the plugin
   stops. This is the guarantee `G1` in [SECURITY.md](../../SECURITY.md), with the conditions that it relies on.
 - **Isolation between containers.** The host drops all traffic that it forwards to `10.200.0.0/16`, whatever

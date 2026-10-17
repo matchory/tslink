@@ -185,6 +185,49 @@ func SetupVethIsolation(port int) error {
 	return defaultHost.setupVethIsolation(port)
 }
 
+// IsolatedBridges returns the bridges the host's tailnet isolation covers as
+// installed, of any family, beyond the interfaces it always covers.
+func IsolatedBridges() ([]string, error) {
+	return defaultHost.isolatedBridges()
+}
+
+func (s *hostState) isolatedBridges() ([]string, error) {
+	var bridges []string
+	var errs []error
+	for _, fam := range isolationFamilies {
+		f, err := s.family(fam.proto)
+		if err == nil {
+			var mangle tableRules
+			if mangle, err = f.list("mangle"); err == nil {
+				bridges = append(bridges, isolatedBridgesIn(mangle)...)
+			}
+		}
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", fam.name, err))
+		}
+	}
+	slices.Sort(bridges)
+	return slices.Compact(bridges), errors.Join(errs...)
+}
+
+// isolatedBridgesIn returns the interfaces the isolation chains of the
+// listed mangle table match beyond containerInterfaces, sorted.
+func isolatedBridgesIn(mangle tableRules) []string {
+	var bridges []string
+	for _, chain := range []string{IsolateForwardChain, IsolateInputChain} {
+		for _, line := range mangle.rules[chain] {
+			fields := strings.Fields(line)
+			i := slices.Index(fields, "-i")
+			if i < 0 || i+1 == len(fields) || slices.Contains(containerInterfaces, fields[i+1]) {
+				continue
+			}
+			bridges = append(bridges, fields[i+1])
+		}
+	}
+	slices.Sort(bridges)
+	return slices.Compact(bridges)
+}
+
 func (s *hostState) setupHostIsolation(bridges []string) error {
 	ifcs := isolatedInterfaces(bridges)
 	var errs []error

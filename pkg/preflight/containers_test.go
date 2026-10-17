@@ -7,6 +7,7 @@ import (
 
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/mount"
+	"github.com/moby/moby/api/types/plugin"
 	"github.com/moby/moby/api/types/volume"
 )
 
@@ -51,6 +52,70 @@ func TestCapabilities(t *testing.T) {
 	}
 }
 
+func TestForwardingSysctls(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		key    string
+		value  string
+		status Status
+	}{
+		{"ipv4 ip_forward on", "net.ipv4.ip_forward", "1", Violated},
+		{"ipv4 ip_forward off", "net.ipv4.ip_forward", "0", OK},
+		{"ipv4 conf.all.forwarding on", "net.ipv4.conf.all.forwarding", "1", Violated},
+		{"ipv4 conf.eth0.forwarding on", "net.ipv4.conf.eth0.forwarding", "1", Violated},
+		{"ipv4 conf.all.forwarding off", "net.ipv4.conf.all.forwarding", "0", OK},
+		{"ipv6 conf.all.forwarding on", "net.ipv6.conf.all.forwarding", "1", Violated},
+		{"ipv6 conf.default.forwarding on", "net.ipv6.conf.default.forwarding", "1", Violated},
+		{"unrelated sysctl", "net.core.somaxconn", "1024", OK},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFakeDocker()
+			f.add(container.InspectResponse{
+				ID: "c1", Name: "/web",
+				HostConfig: &container.HostConfig{Sysctls: map[string]string{tt.key: tt.value}},
+			}, "tn")
+			r := result(t, checkContainers(context.Background(), f), "E1")
+			if r.Status != tt.status {
+				t.Errorf("E1 = %+v, want %s", r, tt.status)
+			}
+			if r.Status == Violated && !strings.Contains(r.Detail, "web") {
+				t.Errorf("E1 detail %q does not name the container", r.Detail)
+			}
+		})
+	}
+}
+
+func TestUnconfinedProfiles(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		opt    string
+		status Status
+	}{
+		{"seccomp unconfined, =", "seccomp=unconfined", Violated},
+		{"seccomp unconfined, :", "seccomp:unconfined", Violated},
+		{"apparmor unconfined, =", "apparmor=unconfined", Violated},
+		{"apparmor unconfined, :", "apparmor:unconfined", Violated},
+		{"seccomp profile", "seccomp=/path/to/profile.json", OK},
+		{"apparmor profile", "apparmor=docker-default", OK},
+		{"no-new-privileges", "no-new-privileges", OK},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFakeDocker()
+			f.add(container.InspectResponse{
+				ID: "c1", Name: "/web",
+				HostConfig: &container.HostConfig{SecurityOpt: []string{tt.opt}},
+			}, "tn")
+			r := result(t, checkContainers(context.Background(), f), "E1")
+			if r.Status != tt.status {
+				t.Errorf("E1 = %+v, want %s", r, tt.status)
+			}
+			if r.Status == Violated && !strings.Contains(r.Detail, "web") {
+				t.Errorf("E1 detail %q does not name the container", r.Detail)
+			}
+		})
+	}
+}
+
 func TestMounts(t *testing.T) {
 	for _, tt := range []struct {
 		source, typ string
@@ -83,6 +148,77 @@ func TestMounts(t *testing.T) {
 				checkContainers(context.Background(), f),
 				"E2",
 			); r.Status != tt.status {
+				t.Errorf("E2 = %+v, want %s", r, tt.status)
+			}
+		})
+	}
+}
+
+// sharedMountSource is the plugin's own "shared" mount source, as a Docker
+// plugin inspect reports it (docker plugin set tslink shared.source=...).
+func sharedMountSource(source string) plugin.Mount {
+	return plugin.Mount{Name: "shared", Source: &source}
+}
+
+// TestSharedDirMount covers E2 protecting the plugin's own shared.source
+// setting, the host path of the shared certificate directory.
+func TestSharedDirMount(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		shared string
+		source string
+		status Status
+	}{
+		{"mounts the shared dir", "/shared/certs", "/shared/certs", Violated},
+		{"mounts a subdirectory of it", "/shared/certs", "/shared/certs/tn.example.com", Violated},
+		{"mounts an ancestor of it", "/shared/certs", "/shared", Violated},
+		{"mounts something else", "/shared/certs", "/srv/app", OK},
+		{"no shared.source configured", "", "/shared/certs", OK},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFakeDocker()
+			if tt.shared != "" {
+				f.plugins[0].Settings.Mounts = []plugin.Mount{sharedMountSource(tt.shared)}
+			}
+			f.add(container.InspectResponse{
+				ID: "c1", Name: "/web", HostConfig: &container.HostConfig{},
+				Mounts: []container.MountPoint{
+					{Type: mount.TypeBind, Source: tt.source, Destination: "/x"},
+				},
+			}, "tn")
+			r := result(t, checkContainers(context.Background(), f), "E2")
+			if r.Status != tt.status {
+				t.Errorf("E2 = %+v, want %s", r, tt.status)
+			}
+		})
+	}
+}
+
+// TestSharedDirFlagDoesNotReplacePluginSettings covers --shared-dir, the
+// directory as mounted where the preflight runs: E2 still protects the
+// plugin's shared.source, the host path, and not the --shared-dir path.
+func TestSharedDirFlagDoesNotReplacePluginSettings(t *testing.T) {
+	for _, tt := range []struct {
+		source string
+		status Status
+	}{
+		{"/var/lib/tslink-shared", Violated},
+		{"/shared", OK},
+	} {
+		t.Run(tt.source, func(t *testing.T) {
+			f := newFakeDocker()
+			f.plugins[0].Settings.Mounts = []plugin.Mount{
+				sharedMountSource("/var/lib/tslink-shared"),
+			}
+			f.add(container.InspectResponse{
+				ID: "c1", Name: "/web", HostConfig: &container.HostConfig{},
+				Mounts: []container.MountPoint{
+					{Type: mount.TypeBind, Source: tt.source, Destination: "/x"},
+				},
+			}, "tn")
+			env := testEnv(t)
+			env.Docker, env.SharedDir = f, "/shared"
+			if r := result(t, Check(context.Background(), env), "E2"); r.Status != tt.status {
 				t.Errorf("E2 = %+v, want %s", r, tt.status)
 			}
 		})

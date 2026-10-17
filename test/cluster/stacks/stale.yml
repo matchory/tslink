@@ -1,0 +1,15 @@
+# A node that is not ephemeral, whose state outlives its device (regress.sh R13)
+services:
+  web:
+    image: traefik/whoami:v1.11
+    networks: [tailnet]
+    labels: {tslink.hostname: stale-web}
+    deploy:
+      replicas: 1
+networks:
+  tailnet:
+    driver: tslink:latest
+    driver_opts:
+      tslink.authkey: ${TSLINK_OAUTH_SECRET}?ephemeral=false&preauthorized=true
+      com.docker.network.driver.mtu: "${TSLINK_TEST_MTU:-1450}"
+      tslink.tags: ${TSLINK_TEST_TAG:-tag:tslink-test}-callee

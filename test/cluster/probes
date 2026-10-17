@@ -1,7 +1,9 @@
 #!/bin/bash
 # probes start [ip [args]]|stop|report -- VIP probes in the caller tasks on all nodes. ip defaults
-# to the VIP of $TSLINK_TEST_SVC-callee. $PROBE selects the probe script (default probe.sh); args
-# follow the log file on its command line.
+# to the VIP of $TSLINK_TEST_SVC-callee. $PROBE selects the probe script (default probe.sh) and
+# $PROBE_LOG its log in the container (default /tmp/probe.log, which report reads; another log lets
+# a second probe run, from the script copied next to it); args follow the log file on its command
+# line. stop stops every probe.
 B=$(dirname "$0")
 # shellcheck source=config.sh
 . "$B/config.sh"
@@ -10,12 +12,14 @@ target=$2
 	target=$("$B/tsapi" GET "/tailnet/$TSLINK_TEST_TAILNET/services/$TSLINK_TEST_SVC-callee" | jq -r '.addrs[0]')
 args=${*:3}
 probe=${PROBE:-probe.sh}
+log=${PROBE_LOG:-/tmp/probe.log}
+script=${log%.log}.sh
 # shellcheck disable=SC2016 # awk program
 report='{ n++; if ($3 != "200") { f++; if (!fs) fs = $2; fe = $2 }; b[$4]++ } END { printf "requests=%d failed=%d fail_window=%.1fs\n", n, f, fe - fs; for (k in b) printf "  %s %d\n", k, b[k] }'
 for n in $("$B/nodes"); do
 	case $1 in
-	start) "$B/s" "$n" "c=\$(docker ps -q -f label=com.docker.swarm.service.name=caller_client|head -1); cat > /tmp/probe.sh; docker cp /tmp/probe.sh \$c:/probe.sh; docker exec -d \$c sh /probe.sh $target /tmp/probe.log $args" <"$B/$probe" ;;
-	stop) "$B/cx" "$n" caller_client 'pkill -f probe.sh' ;;
+	start) "$B/s" "$n" "c=\$(docker ps -q -f label=com.docker.swarm.service.name=caller_client|head -1); cat > /tmp/probe.sh; docker cp /tmp/probe.sh \$c:$script; docker exec -d \$c sh $script $target $log $args" <"$B/$probe" ;;
+	stop) "$B/cx" "$n" caller_client 'pkill -f /tmp/probe' ;;
 	report)
 		echo "== $n"
 		"$B/probelog" "$n" | awk "$report"

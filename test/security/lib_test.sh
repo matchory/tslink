@@ -57,5 +57,34 @@ probe_group args defence_off defence_on 0
 probe GT "with arguments" test "a b" = "a b"
 expect "arguments with spaces reach the attack" 1 $'\n--- probes: args\nFAIL    GT with arguments'
 
+# expect_result NAME WANT_RESULT WANT_EXIT [INFO]: runs run_probes, then
+# probe_exit, and compares PROBE_RESULT and the exit status
+expect_result() {
+	local status
+	run_probes >/dev/null
+	(probe_exit "${@:4}") >/dev/null
+	status=$?
+	if [ "$PROBE_RESULT" != "$2" ] || [ "$status" != "$3" ]; then
+		printf 'FAIL %s\n  want %s, exit %s; got %s, exit %s\n' "$1" "$2" "$3" "$PROBE_RESULT" "$status"
+		FAILS=$((FAILS + 1))
+	else
+		echo "ok   $1"
+	fi
+}
+
+probe_group pass defence_off defence_on 0
+probe GT "blocked" blocked_by_defence
+expect_result "a pass exits 0" PASS 0
+probe_group info defence_off defence_on 0
+probe GT "blocked" blocked_by_defence
+expect_result "a pass with INFO exits 4" PASS 4 "what an operator gives up"
+probe_group fail defence_off defence_on 0
+probe GT "leaks" always_through
+probe GT "dead" never_through
+expect_result "a failure outweighs a broken probe" FAIL 1 "not reported"
+probe_group broken defence_off defence_on 0
+probe GT "dead" never_through
+expect_result "a broken probe exits 2" BROKEN 2
+
 echo "$FAILS failed"
 exit "$FAILS"

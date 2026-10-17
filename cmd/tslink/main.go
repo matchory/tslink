@@ -173,8 +173,8 @@ Preflight:
       -v /var/lib/docker-plugins/tailscale:/data \
       --entrypoint /tslink tslink-diag diag --preflight
 
-  Add -v <shared dir>:/shared:ro --shared-dir /shared to check the shared
-  certificate directory. It exits non-zero if a property is violated, or a
+  Add -v <shared dir>:/shared:ro --shared-dir /shared to check the owner
+  and mode of the shared certificate directory (E7). It exits non-zero if a property is violated, or a
   check failed to run; unknown does not fail it.
 
 `)

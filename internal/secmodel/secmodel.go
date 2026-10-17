@@ -26,12 +26,19 @@ type Guarantee struct {
 	Manual bool   // its section has a "Manual:" line: checked by hand before releases
 }
 
+// idList is the IDs a "Guards:" marker names: the comma-separated list it
+// starts with, so "Guards: G4; see G5" guards G4 only.
+const idList = `(G[0-9]+(?:[ \t]*,[ \t]*G[0-9]+)*)`
+
 var (
 	guaranteeHeading = regexp.MustCompile(`^### (G[0-9]+):`)
-	goMarker         = regexp.MustCompile(`(?m)^//\s*Guards:\s*(.+)$`)
-	tlaMarker        = regexp.MustCompile(`(?m)^\\\*\s*Guards:\s*(.+)$`)
-	shellProbe       = regexp.MustCompile(`(?m)^\s*probe\s+(G[0-9]+)\s`)
-	guaranteeID      = regexp.MustCompile(`G[0-9]+`)
+	goMarker         = regexp.MustCompile(`(?m)^//[ \t]*Guards:[ \t]*` + idList)
+	tlaMarker        = regexp.MustCompile(`(?m)^\\\*[ \t]*Guards:[ \t]*` + idList)
+	// A shell probe: a probe line of lib.sh, or a red-team probe's header.
+	shellProbe = regexp.MustCompile(
+		`(?m)^(?:\s*probe\s+(G[0-9]+)\s|#[ \t]*Guards:[ \t]*` + idList + `)`,
+	)
+	guaranteeID = regexp.MustCompile(`G[0-9]+`)
 )
 
 // ParseGuarantees returns the guarantees in a SECURITY.md: its "### G<n>:"
@@ -59,7 +66,8 @@ func ParseGuarantees(md []byte) []Guarantee {
 }
 
 // markerPattern returns the pattern of guarantee markers in a file, or nil
-// for files that hold none: Go tests, TLA+ models and shell probes.
+// for files that hold none: Go tests, TLA+ models and shell probes. The
+// guarantee IDs of a marker are in its first group that matched.
 func markerPattern(path string) *regexp.Regexp {
 	switch {
 	case strings.HasSuffix(path, "_test.go"):
@@ -107,7 +115,7 @@ func Markers(root string) (map[string][]string, error) {
 				filepath.ToSlash(rel),
 				1+bytes.Count(content[:loc[0]], []byte("\n")),
 			)
-			for _, id := range guaranteeID.FindAll(content[loc[2]:loc[3]], -1) {
+			for _, id := range guaranteeID.FindAll(matchedGroup(content, loc), -1) {
 				markers[string(id)] = append(markers[string(id)], at)
 			}
 		}
@@ -117,6 +125,17 @@ func Markers(root string) (map[string][]string, error) {
 		return nil, fmt.Errorf("failed to collect guarantee markers: %w", err)
 	}
 	return markers, nil
+}
+
+// matchedGroup returns the first group of a match, as FindSubmatchIndex
+// locates it in content, that took part in it.
+func matchedGroup(content []byte, loc []int) []byte {
+	for i := 2; i+1 < len(loc); i += 2 {
+		if loc[i] >= 0 {
+			return content[loc[i]:loc[i+1]]
+		}
+	}
+	return nil
 }
 
 // Check returns the problems of a security model: published guarantees that

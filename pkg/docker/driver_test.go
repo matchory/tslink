@@ -804,13 +804,13 @@ func TestStartAppliesHostIsolation(t *testing.T) {
 		d.start()
 		// The first call, before start returned: refreshes follow it
 		mu.Lock()
-		calls = calls[:min(len(calls), 1)]
+		first := slices.Clone(calls[:min(len(calls), 1)])
 		mu.Unlock()
-		if !slices.Equal(calls, []bool{on}) {
+		if !slices.Equal(first, []bool{on}) {
 			t.Errorf(
 				"IsolateHostTailnet=%v: start applied %v, want [%v] before returning",
 				on,
-				calls,
+				first,
 				on,
 			)
 		}

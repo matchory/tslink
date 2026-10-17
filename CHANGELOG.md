@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-10-17
+
+### Fixed
+
+- A start without the saved list of Docker's bridges, as the first after an
+  upgrade from v0.3.2 or earlier, keeps the bridges the host's tailnet
+  isolation already covers. Before, it covered only Docker's default
+  interface names until Docker listed its bridges, so containers on a bridge
+  with its own name could reach the host's tailnet for that time.
+- The list of Docker's bridges is synced to disk when saved, so it survives
+  a host crash, and saved again at the next listing if saving it failed.
+- While Docker cannot list its bridges at start, the plugin no longer
+  reapplies its isolation and warns every second: it warns once, and
+  applies the list once Docker answers. With `TSLINK_ISOLATE_HOST_TAILNET`
+  off, it does not list them at all.
+
 ## [0.3.3] - 2026-10-17
 
 ### Fixed
@@ -580,7 +596,8 @@ features were tested on three- and five-node swarms; see
   index its `tailscale0` has in the container: often the host's primary
   interface. tailscaled does not start if the bus cannot be hidden.
 
-[Unreleased]: https://github.com/matchory/tslink/compare/v0.3.3...HEAD
+[Unreleased]: https://github.com/matchory/tslink/compare/v0.3.4...HEAD
+[0.3.4]: https://github.com/matchory/tslink/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/matchory/tslink/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/matchory/tslink/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/matchory/tslink/compare/v0.3.0...v0.3.1

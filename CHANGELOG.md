@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- With `TSLINK_ISOLATE_HOST_TAILNET` on, the plugin no longer comes up
+  disabled after a host reboot. It listed Docker's bridge networks before
+  opening its socket, and Docker, which answers no API call involving
+  plugins until the socket is open, gave up waiting and disabled it. The
+  plugin now starts with the bridges Docker listed last, saved in the data
+  directory as `bridges`, and lists them once Docker answers.
+
 ## [0.3.2] - 2026-10-14
 
 ### Changed

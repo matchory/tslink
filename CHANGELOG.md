@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-10-17
+
 ### Fixed
 
 - A start without the saved list of Docker's bridges, as the first after an
@@ -594,7 +596,8 @@ features were tested on three- and five-node swarms; see
   index its `tailscale0` has in the container: often the host's primary
   interface. tailscaled does not start if the bus cannot be hidden.
 
-[Unreleased]: https://github.com/matchory/tslink/compare/v0.3.3...HEAD
+[Unreleased]: https://github.com/matchory/tslink/compare/v0.3.4...HEAD
+[0.3.4]: https://github.com/matchory/tslink/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/matchory/tslink/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/matchory/tslink/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/matchory/tslink/compare/v0.3.0...v0.3.1

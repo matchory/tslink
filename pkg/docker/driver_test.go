@@ -793,17 +793,24 @@ func TestRecoverEndpointsWithoutNetworkSettings(t *testing.T) {
 func TestStartAppliesHostIsolation(t *testing.T) {
 	for _, on := range []bool{true, false} {
 		d := newDriver(&core.Config{DataDir: t.TempDir(), IsolateHostTailnet: on}, newFakeDocker())
+		var mu sync.Mutex
 		var calls []bool
 		d.hostIsolation = func(on bool, _ []string) error {
+			mu.Lock()
+			defer mu.Unlock()
 			calls = append(calls, on)
 			return nil
 		}
 		d.start()
-		if !slices.Equal(calls, []bool{on}) {
+		// The first call, before start returned: refreshes follow it
+		mu.Lock()
+		first := slices.Clone(calls[:min(len(calls), 1)])
+		mu.Unlock()
+		if !slices.Equal(first, []bool{on}) {
 			t.Errorf(
 				"IsolateHostTailnet=%v: start applied %v, want [%v] before returning",
 				on,
-				calls,
+				first,
 				on,
 			)
 		}

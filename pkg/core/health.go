@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/moby/moby/client/pkg/stringid"
+	xnetutil "golang.org/x/net/netutil"
 
 	"github.com/matchory/tslink/pkg/logger"
 	"github.com/matchory/tslink/pkg/netutil"
@@ -24,6 +25,12 @@ import (
 // healthWarning is the status warning key for a readiness endpoint tslink
 // cannot serve.
 const healthWarning = "health"
+
+// maxHealthConns caps concurrent connections to a readiness endpoint: the
+// server runs in the plugin, shared by all containers, so one container
+// opening unbounded idle connections must not exhaust its file descriptors
+// or goroutines.
+const maxHealthConns = 16
 
 // readinessCacheTTL is how long a computed readiness answers requests: a
 // container asking every second does not make tslink ask tailscaled as often.
@@ -106,12 +113,15 @@ func (e *Endpoint) listenHealth(addr string) error {
 	if err != nil {
 		return err
 	}
+	ln = xnetutil.LimitListener(ln, maxHealthConns)
 	h := &health{}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ready", e.serveReady)
 	h.srv = &http.Server{
-		Handler:           mux,
-		ReadHeaderTimeout: 5 * time.Second,
+		Handler: mux,
+		// Short: an idle connection must free its slot of maxHealthConns
+		// quickly.
+		ReadHeaderTimeout: 2 * time.Second,
 		ReadTimeout:       5 * time.Second,
 		WriteTimeout:      15 * time.Second,
 		MaxHeaderBytes:    4 << 10,

@@ -1,0 +1,33 @@
+# Label combinations tslink refuses, and one it accepts (regress.sh R9). Compose does not
+# interpolate label keys, so the Service names are the default ones of TSLINK_TEST_SVC.
+services:
+  # Legacy and named labels: refused
+  combo:
+    image: traefik/whoami:v1.11
+    networks: [tailnet]
+    labels:
+      tslink.service: ${TSLINK_TEST_SVC:-svc:tslink-test}-mixed
+      tslink.serve.80: http:80
+      tslink.service.tslink-test-mixed.serve.81: http:80
+  # A named label with tslink.direct=true: refused
+  direct:
+    image: traefik/whoami:v1.11
+    networks: [tailnet]
+    labels:
+      tslink.service.tslink-test-mixed.serve.80: http:80
+      tslink.direct: "true"
+  # Legacy labels cleared next to a named label: serves the named Service
+  cleared:
+    image: traefik/whoami:v1.11
+    networks: [tailnet]
+    labels:
+      tslink.service: ""
+      tslink.serve.80: ""
+      tslink.service.tslink-test-other.serve.80: http:80
+networks:
+  tailnet:
+    driver: tslink:latest
+    driver_opts:
+      tslink.authkey: ${TSLINK_OAUTH_SECRET}?ephemeral=true&preauthorized=true
+      com.docker.network.driver.mtu: "${TSLINK_TEST_MTU:-1450}"
+      tslink.tags: ${TSLINK_TEST_TAG:-tag:tslink-test}-callee

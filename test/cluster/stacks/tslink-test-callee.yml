@@ -9,6 +9,7 @@ services:
       tslink.serve.80: http:80
       tslink.serve.443: https:80
       tslink.direct: "false"
+      tslink.health: "9002"
     deploy:
       replicas: 3
       update_config:

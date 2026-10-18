@@ -6,6 +6,8 @@
 # non-zero if a probe failed, broke or errored.
 set -uo pipefail
 B=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=lib.sh
+. "$B/lib.sh"
 : "${TSLINK_TEST_DIR:=$HOME/.tslink-test}"
 S=$B/testbed/s
 TREE=$(cd "$B/../.." && pwd)
@@ -68,6 +70,13 @@ fi
 			$ipt -t mangle -F "${c#*:}" 2>/dev/null; $ipt -t mangle -X "${c#*:}" 2>/dev/null
 		done
 	done
+	iptables -t mangle -D INPUT -j TSLINK-WG-IN 2>/dev/null
+	iptables -t mangle -F TSLINK-WG-IN 2>/dev/null; iptables -t mangle -X TSLINK-WG-IN 2>/dev/null
+	iptables -t nat -D POSTROUTING -j TSLINK-WG-SNAT 2>/dev/null
+	iptables -t nat -F TSLINK-WG-SNAT 2>/dev/null; iptables -t nat -X TSLINK-WG-SNAT 2>/dev/null
+	iptables -t filter -D FORWARD -j TSLINK-FORWARD 2>/dev/null
+	iptables -t filter -F TSLINK-FORWARD 2>/dev/null; iptables -t filter -X TSLINK-FORWARD 2>/dev/null
+	iptables -t nat -D POSTROUTING -s 10.200.0.0/16 -j MASQUERADE 2>/dev/null
 	rm -rf /var/lib/docker-plugins/tailscale /root/probes; true'
 
 results=()
@@ -84,13 +93,7 @@ for p in "${probes[@]}"; do
 		continue
 	fi
 	"$S" 'cd /root/tslink && /root/probes/p.sh' >"$OUT/$name.log" 2>&1
-	case $? in
-	0) results+=("PASS    $name") ;;
-	1) results+=("FAIL    $name") ;;
-	2) results+=("BROKEN  $name") ;;
-	3) results+=("SKIPPED $name") ;;
-	*) results+=("ERROR   $name") ;;
-	esac
+	results+=("$(probe_label $?) $name")
 done
 
 {

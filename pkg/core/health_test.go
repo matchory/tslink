@@ -7,8 +7,10 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -197,6 +199,67 @@ func TestHealthOptInAndListenFailure(t *testing.T) {
 	e.statusMu.Unlock()
 	if !warned {
 		t.Error("no status warning for a port tslink cannot listen on")
+	}
+}
+
+// A container cannot exhaust the plugin's file descriptors or goroutines by
+// opening many idle connections: the listener caps concurrent connections,
+// and closing them frees their slot at once, without waiting for the read
+// header timeout.
+func TestHealthLimitsConnections(t *testing.T) {
+	var state atomic.Value
+	var calls atomic.Int32
+	state.Store(tailscale.Ready)
+	_, url := healthEndpoint(t, &state, &calls)
+	addr := strings.TrimPrefix(url, "http://")
+
+	before := runtime.NumGoroutine()
+
+	const flood = 200
+	var mu sync.Mutex
+	var conns []net.Conn
+	var wg sync.WaitGroup
+	for range flood {
+		wg.Go(func() {
+			c, err := net.DialTimeout("tcp", addr, 500*time.Millisecond)
+			if err != nil {
+				return // the kernel's own backlog limit, not under test here
+			}
+			mu.Lock()
+			conns = append(conns, c)
+			mu.Unlock()
+		})
+	}
+	wg.Wait()
+	t.Cleanup(func() {
+		for _, c := range conns {
+			_ = c.Close()
+		}
+	})
+
+	time.Sleep(100 * time.Millisecond) // let accepted connections' goroutines start
+	if grown := runtime.NumGoroutine() - before; grown > maxHealthConns+5 {
+		t.Errorf("goroutines grew by %d, want at most %d", grown, maxHealthConns+5)
+	}
+
+	for _, c := range conns {
+		if err := c.Close(); err != nil {
+			t.Error(err)
+		}
+	}
+	conns = nil
+
+	deadline := time.Now().Add(1 * time.Second)
+	var code int
+	for time.Now().Before(deadline) {
+		code, _ = get(t, http.MethodGet, url+"/ready")
+		if code == http.StatusOK {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if code != http.StatusOK {
+		t.Errorf("GET after flood closed: %d, want 200", code)
 	}
 }
 

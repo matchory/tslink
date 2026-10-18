@@ -37,6 +37,13 @@ func TestMarkers(t *testing.T) {
 	write("pkg/a/a.go", "package a\n\n// "+"Guards: G2\n")
 	write("test/models/drain.tla", "---- MODULE drain ----\n\\* "+"Guards: G7\n")
 	write("test/integration/run.sh", "#!/bin/bash\nprobe() { :; }\n  pro"+"be G1 \"desc\" attack\n")
+	write("test/security/redteam/G2-x.sh", "#!/bin/bash\n# "+"Guards: G2, G4\n# Attacker: A1\n")
+	write(
+		"test/security/redteam/G6-y.sh",
+		"#!/bin/bash\n# "+"Guards: G6\n. lib.sh\npro"+"be G6 \"d\" a\n",
+	)
+	// Only the leading ID list counts: G8 is a reference, not a marker
+	write("test/security/redteam/G3-z.sh", "#!/bin/bash\n# "+"Guards: G3; see G8\n")
 	write(".git/hooks/x.sh", "pro"+"be G9 \"x\" y\n")
 	write("pkg/a/testdata/x_test.go", "// "+"Guards: G8\n")
 
@@ -46,7 +53,11 @@ func TestMarkers(t *testing.T) {
 	}
 	want := map[string][]string{
 		"G1": {"pkg/a/a_test.go:3", "test/integration/run.sh:3"},
+		"G2": {"test/security/redteam/G2-x.sh:2"},
+		"G3": {"test/security/redteam/G3-z.sh:2"},
+		"G4": {"test/security/redteam/G2-x.sh:2"},
 		"G5": {"pkg/a/a_test.go:3"},
+		"G6": {"test/security/redteam/G6-y.sh:2", "test/security/redteam/G6-y.sh:4"},
 		"G7": {"test/models/drain.tla:2"},
 	}
 	if !maps.EqualFunc(got, want, slices.Equal) {

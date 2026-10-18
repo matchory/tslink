@@ -10,7 +10,17 @@ properties that the guarantees in [SECURITY.md](../../SECURITY.md) rely on.
 | `tslink diag` | Shows each endpoint with its state directory, tailnet address, hostname, backend state and status file |
 | `tslink diag --preflight` | Checks the environment properties on the host where it runs |
 | `tslink diag --preflight --shared-dir <dir>` | Also checks the owner and mode of the shared certificate directory (E7), mounted at `<dir>` |
+| `tslink version` | Shows the versions of tslink and its bundled Tailscale |
 | `tslink help` | Shows the usage |
+
+Any other argument exits with status 2 and the usage. Run without arguments, the binary starts the plugin: run it
+only as the plugin's entrypoint.
+
+To see which version a host runs, run the binary from the plugin's root filesystem, as root:
+
+```bash
+/var/lib/docker/plugins/$(docker plugin inspect -f '{{.Id}}' tslink)/rootfs/tslink version
+```
 
 ## Exit codes of the preflight check
 

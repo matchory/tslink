@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   together on stop. `/ready` lists each Service's state under `services`.
   Upgrade every node before deploying these labels: older versions ignore
   them. `tslink.service` with `tslink.serve.<port>` works as before.
+- `tslink version` prints the versions of tslink and its bundled Tailscale.
 
 ### Changed
 
@@ -33,6 +34,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   confinement, and E2 a container that mounts the shared certificate
   directory (the plugin's `shared.source`). A deployment that passed before
   may now report "violated".
+
+### Fixed
+
+- The plugin binary, run with arguments it does not know, exits with usage
+  instead of starting a plugin instance, which on the host could install
+  isolation chains the host's settings turn off.
 
 ## [0.3.4] - 2026-10-17
 

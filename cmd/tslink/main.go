@@ -5,12 +5,14 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"io"
 	"log"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -30,22 +32,34 @@ const (
 )
 
 func main() {
-	if err := logger.Init(filepath.Join(core.DataDir(), "plugin.log")); err != nil {
-		log.Printf("Warning: failed to initialize file logger: %v", err)
-	}
-
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "diag", "diagnose", "status":
+			initLogger()
 			runDiag(os.Args[2:])
 			return
 		case "help", "-h", "--help":
-			printHelp()
+			printHelp(os.Stdout)
 			return
+		case "version", "-v", "--version":
+			printVersion(os.Stdout)
+			return
+		default:
+			// Anything else would start a plugin instance, on the host if run there
+			fmt.Fprintf(os.Stderr, "tslink: unknown command %q\n\n", os.Args[1])
+			printHelp(os.Stderr)
+			os.Exit(2)
 		}
 	}
 
+	initLogger()
 	runPlugin()
+}
+
+func initLogger() {
+	if err := logger.Init(filepath.Join(core.DataDir(), "plugin.log")); err != nil {
+		log.Printf("Warning: failed to initialize file logger: %v", err)
+	}
 }
 
 func runPlugin() {
@@ -139,14 +153,36 @@ func runPreflight(ctx context.Context, env preflight.Env, w io.Writer) int {
 	return 0
 }
 
-func printHelp() {
-	os.Stdout.WriteString(`tslink - Tailscale Container Network Plugin
+// printVersion prints tslink's version and that of the Tailscale it is built
+// with, which is the bundled one (TestLocalAPIClientMatchesBundledTailscale).
+func printVersion(w io.Writer) {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		fmt.Fprintln(w, "tslink (unknown version)")
+		return
+	}
+	fmt.Fprint(w, versionText(info))
+}
+
+func versionText(info *debug.BuildInfo) string {
+	text := "tslink " + info.Main.Version + "\n"
+	for _, dep := range info.Deps {
+		if dep.Path == "tailscale.com" {
+			return text + "tailscale " + dep.Version + "\n"
+		}
+	}
+	return text
+}
+
+func printHelp(w io.Writer) {
+	fmt.Fprint(w, `tslink - Tailscale Container Network Plugin
 
 Usage:
   tslink          Start the plugin server
   tslink diag     Run diagnostics on all endpoints
   tslink diag --preflight [--shared-dir DIR]   Check the environment properties in SECURITY.md
   tslink help     Show this help message
+  tslink version  Show the versions of tslink and its bundled Tailscale
 
 Diagnostics:
   The 'diag' command shows the health status of all Tailscale endpoints.

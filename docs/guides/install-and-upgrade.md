@@ -73,10 +73,16 @@ docker run --rm --privileged -v /var/lib:/var/lib alpine mkdir -p /var/lib/docke
 
    ```bash
    docker plugin disable -f tslink
-   docker plugin upgrade --grant-all-permissions tslink ghcr.io/matchory/tslink:<version>-amd64
+   docker plugin upgrade --grant-all-permissions --skip-remote-check tslink ghcr.io/matchory/tslink:<version>-amd64
    docker plugin set tslink shared.source=<shared directory>
    docker plugin enable tslink
    ```
+
+   Without `--skip-remote-check`, `docker plugin upgrade` asks whether to upgrade to an image other than the
+   installed one, which a new version always is. Without a terminal, as in configuration management, CI or a script
+   piped to `ssh`, it reads the answer from standard input, takes an empty one as "no", and exits with status 0
+   having changed nothing. In a script piped to it, it reads the script's next line as its answer, so the commands
+   after it do not run.
 
    `docker plugin upgrade` keeps the plugin's settings but resets the source of its mounts. If you set
    [`shared.source`](../reference/plugin-settings.md#sharedsource), set it again before you enable the plugin, as

@@ -87,8 +87,20 @@ dump_logs() {
 	sudo sh -c "for f in $DATA/by-hostname/*/tailscaled.log; do echo \"--- \$f\"; tail -n 60 \"\$f\"; done; cat $DATA/status/*.json" || true
 }
 
+# blind_restart (below) moves Docker's socket to REAL_SOCK, so the plugin
+# cannot reach Docker; see_docker puts it back, if it was moved
+DOCKER_SOCK=$(readlink -f /var/run/docker.sock)
+REAL_SOCK=$DOCKER_SOCK.e2e
+see_docker() {
+	[ -e "$REAL_SOCK" ] || return 0
+	sudo rm -f "$DOCKER_SOCK"
+	sudo mv "$REAL_SOCK" "$DOCKER_SOCK"
+	unset DOCKER_HOST
+}
+
 cleanup() {
 	local status=$?
+	see_docker
 	[ "$status" -eq 0 ] || dump_logs
 	docker rm -f "${CONTAINERS[@]}" e2e-headscale >/dev/null 2>&1 || true
 	docker network rm "${NETWORKS[@]}" >/dev/null 2>&1 || true
@@ -391,6 +403,45 @@ for ifc in veth eth0; do
 	probe G1 "raw frames through $ifc reach the tailnet" raw_arrives "$ifc" "probe-$ifc"
 done
 run_probes || fail "host tailnet isolation"
+
+log "A plugin start that cannot reach Docker keeps the isolation of custom-named bridges"
+# After a host reboot Docker answers the plugin only once its socket is open,
+# so the plugin starts with the bridges it saved and those its rules already
+# cover. A start without the saved list must not narrow the rules: with the
+# Docker socket swapped for a dead one, the plugin never learns the bridges,
+# which holds that start open. Only the host's own tailnet address is
+# attacked: the tailnet's nodes need the plugin to recover them from Docker.
+# The Docker CLI reaches Docker at REAL_SOCK meanwhile (see see_docker).
+# blind_restart [forget]: restarts the plugin without its saved bridges and
+# with a Docker socket nobody answers on; forget also empties the isolation
+# chains, so the plugin finds no bridges in them, as v0.3.3 dropped them
+blind_restart() {
+	docker plugin disable -f "$PLUGIN"
+	sudo rm -f "$DATA/bridges"
+	if [ "${1:-}" = forget ]; then
+		for ipt in iptables ip6tables; do
+			sudo "$ipt" -t mangle -F TSLINK-ISOLATE-FWD
+			sudo "$ipt" -t mangle -F TSLINK-ISOLATE-IN
+		done
+	fi
+	if [ ! -e "$REAL_SOCK" ]; then
+		sudo mv "$DOCKER_SOCK" "$REAL_SOCK"
+		export DOCKER_HOST=unix://$REAL_SOCK
+		sudo python3 -c 'import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$DOCKER_SOCK"
+	fi
+	docker plugin enable "$PLUGIN"
+}
+seeing_restart() {
+	docker plugin disable -f "$PLUGIN"
+	see_docker
+	docker plugin enable "$PLUGIN"
+	retry 180 has_ip e2e-sink || fail "sink lost its tailnet IP after the restart"
+}
+blind_restart
+probe_group "isolation across a start without Docker" "blind_restart forget" seeing_restart 60
+probe G1 "a container on a custom-named bridge reaches the host's tailnet address while the plugin starts" \
+	plain_reaches "$host_ts_ip" 8081 e2e-custombr
+run_probes || fail "isolation across a start without Docker"
 
 log "Containers do not reach each other through tslink's veths"
 # The host forwards between tslink's veths: without the veth isolation, a

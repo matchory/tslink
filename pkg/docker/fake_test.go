@@ -377,6 +377,7 @@ func newTestDriver(t *testing.T, fake *fakeDocker) *testDriver {
 	cfg := &core.Config{AuthKey: "tskey-auth-plugin", DataDir: t.TempDir()}
 	td := &testDriver{Driver: newDriver(cfg, fake), fake: fake, runs: make(chan tsRun, 16)}
 	td.hostIsolation = func(bool, []string) error { return nil }
+	td.installedBridges = func() ([]string, error) { return nil, nil }
 	release := make(chan struct{})
 
 	td.joinEndpoint = func(e *core.Endpoint, sandboxKey string) (*network.JoinResponse, error) {

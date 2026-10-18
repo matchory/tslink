@@ -17,13 +17,19 @@ reach it.
 The status code is `200` if the state is `ready`, and `503` for all other states. The body is a JSON object:
 
 ```json
-{"state": "awaiting-approval", "service": "svc:api"}
+{"state": "certificate-pending", "services": {"svc:a": "ready", "svc:b": "certificate-pending"}}
 ```
 
 | Field | Value |
 | --- | --- |
-| `state` | One of the [states](#states) |
-| `service` | The value of `tslink.service`. The field is absent without a Service. |
+| `state` | One of the [states](#states): the least ready of the container's Services. It [latches](#latching) at `ready`. |
+| `services` | The current state of each Service, also after `state` latched: a Service that lost its approval shows here while `state` stays `ready`. Once latched, the answer does not wait for tailscaled: it shows the states from the previous check, a few seconds old at most when the container asks regularly. The field is absent without a Service. |
+| `service` | The name of the Service when the container has exactly one. The field is absent otherwise. |
+
+A container with several Services is ready only when all are. One Service whose certificate is stuck or that waits
+for approval keeps the container unready, so a healthcheck on `/ready` fails the whole task, its working Services
+included. This is deliberate: an update must not replace working tasks with tasks that serve less. Deploy Services
+that should fail independently as separate containers.
 
 tslink keeps a result for 2 seconds. A request in this period gets the same result.
 
@@ -46,7 +52,7 @@ The state is `ready` when all these conditions are true:
 
 1. The node is running.
 2. tailscaled has applied the `tslink.serve.<port>` rules.
-3. With `tslink.service`: the control server has approved the container as a backend of the Service.
+3. For each Service: the control server has approved the container as a backend of the Service.
 
 ## Latching
 

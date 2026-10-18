@@ -60,6 +60,9 @@ type fakeLocalAPI struct {
 	// request's context, unless nil; the request fails if the context ended
 	before func(ctx context.Context, op string)
 	fail   map[string]string // What an operation fails with
+
+	// What a serve config set adding that Service fails with
+	failSvc map[string]string
 }
 
 func newFakeLocalAPI(t *testing.T) *fakeLocalAPI {
@@ -355,6 +358,13 @@ func (f *fakeLocalAPI) setServe(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "serve config changed", http.StatusPreconditionFailed)
 		return
 	}
+	for name := range sc.Services {
+		had := f.serve != nil && f.serve.Services[name] != nil
+		if msg := f.failSvc[string(name)]; msg != "" && !had {
+			http.Error(w, msg, http.StatusInternalServerError)
+			return
+		}
+	}
 	f.serve = &sc
 	f.etag++
 	f.ops = append(f.ops, []string{"serve"})
@@ -395,6 +405,14 @@ func (f *fakeLocalAPI) failOp(op, msg string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	mak.Set(&f.fail, op, msg)
+}
+
+// failService makes a serve config set that adds the Service name fail with
+// msg; an empty msg ends that.
+func (f *fakeLocalAPI) failService(name, msg string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	mak.Set(&f.failSvc, name, msg)
 }
 
 // setBefore sets the hook that runs ahead of each operation.

@@ -222,18 +222,18 @@ func (l *certLease) release() {
 // The holder asks unadvertised. Should control keep refusing the name for
 // certDomainGrace, the holder advertises the Service, in case control makes it
 // a certificate domain only of hosts that advertise it.
-func (d *daemon) requestCert(dir, domain string) error {
+func (b *serviceBackend) requestCert(dir, domain string) error {
 	var lastErr string
 	start, advertised := time.Now(), false
-	tm := d.config.times()
+	tm := b.d.config.times()
 	for !validCert(dir, domain, time.Now()) {
-		if d.isDrained() {
+		if b.d.isDrained() {
 			return errDrained
 		}
-		ctx, cancel := context.WithTimeout(d.ctx, certLeaseStale)
+		ctx, cancel := context.WithTimeout(b.d.ctx, certLeaseStale)
 		// tailscaled keeps the pair in its certificate directory: the copy
 		// it returns is not needed
-		_, _, err := d.lc.CertPair(ctx, domain)
+		_, _, err := b.d.lc.CertPair(ctx, domain)
 		cancel()
 		if err != nil {
 			if err.Error() != lastErr {
@@ -245,18 +245,18 @@ func (d *daemon) requestCert(dir, domain string) error {
 				logger.Warnf(
 					"Control has not made %s a certificate domain of %s within %v: advertising %s",
 					domain,
-					d.config.EndpointID,
+					b.d.config.EndpointID,
 					tm.certDomainGrace,
-					d.config.Service,
+					b.name,
 				)
-				if err := d.advertise(d.config.Service); err != nil {
+				if err := b.advertise(b.name); err != nil {
 					return err
 				}
 				advertised = true
 			}
 		}
-		if !ctxtime.Sleep(d.ctx, tm.certPollInterval) {
-			return d.ctx.Err()
+		if !ctxtime.Sleep(b.d.ctx, tm.certPollInterval) {
+			return b.d.ctx.Err()
 		}
 	}
 	return nil
@@ -266,36 +266,36 @@ func (d *daemon) requestCert(dir, domain string) error {
 // serves no HTTPS or its certificate exists, and otherwise in the background
 // once it does or this replica holds the lease to issue it: waiting here would
 // hold up the daemon's start. A drained backend is left alone.
-func (d *daemon) configureServiceWhenCertified() error {
-	if d.isDrained() {
-		logger.Infof("Not configuring %s for %s: drained", d.config.Service, d.config.EndpointID)
+func (b *serviceBackend) configureServiceWhenCertified() error {
+	if b.d.isDrained() {
+		logger.Infof("Not configuring %s for %s: drained", b.name, b.d.config.EndpointID)
 		return nil
 	}
-	if !servesHTTPS(d.config.Endpoints) {
-		return ignoreDrained(d.configureService())
+	if !servesHTTPS(b.endpoints) {
+		return ignoreDrained(b.configureService())
 	}
-	domain, err := d.serviceDomain()
+	domain, err := b.serviceDomain()
 	if err != nil {
 		return err
 	}
-	dir := filepath.Join(d.config.StateDir, certsDirName)
+	dir := filepath.Join(b.d.config.StateDir, certsDirName)
 	// Once per daemon: Reauthenticate configures the Service again
-	d.certWatch.Do(func() { d.wg.Go(func() { d.watchCertExpiry(dir, domain) }) })
+	b.certWatch.Do(func() { b.d.wg.Go(func() { b.d.watchCertExpiry(dir, domain) }) })
 	if validCert(dir, domain, time.Now()) {
-		return ignoreDrained(d.configureService())
+		return ignoreDrained(b.configureService())
 	}
 	// One wait at a time: Reauthenticate may find no certificate again
-	if !d.certWaiting.CompareAndSwap(false, true) {
+	if !b.certWaiting.CompareAndSwap(false, true) {
 		return nil
 	}
 	logger.Infof(
 		"No certificate for %s yet: configuring %s once there is one",
 		domain,
-		d.config.Service,
+		b.name,
 	)
-	d.wg.Go(func() {
-		defer d.certWaiting.Store(false)
-		d.configureServiceAfterCert(dir, domain)
+	b.d.wg.Go(func() {
+		defer b.certWaiting.Store(false)
+		b.configureServiceAfterCert(dir, domain)
 	})
 	return nil
 }
@@ -308,19 +308,19 @@ func ignoreDrained(err error) error {
 	return err
 }
 
-func (d *daemon) configureServiceAfterCert(dir, domain string) {
-	ctxtime.Poll(d.ctx, d.config.times().certPollInterval, func() bool {
-		err := d.configureServiceWithCert(dir, domain)
+func (b *serviceBackend) configureServiceAfterCert(dir, domain string) {
+	ctxtime.Poll(b.d.ctx, b.d.config.times().certPollInterval, func() bool {
+		err := b.configureServiceWithCert(dir, domain)
 		if errors.Is(err, errDrained) {
 			logger.Infof("%s drained for %s: no longer waiting for the certificate for %s",
-				d.config.Service, d.config.EndpointID, domain)
+				b.name, b.d.config.EndpointID, domain)
 			return true
 		}
-		if err == nil || d.ctx.Err() != nil {
+		if err == nil || b.d.ctx.Err() != nil {
 			return true
 		}
 		if !errors.Is(err, errLeaseHeld) {
-			logger.Warnf("Failed to configure %s, retrying: %v", d.config.Service, err)
+			logger.Warnf("Failed to configure %s, retrying: %v", b.name, err)
 		}
 		return false
 	})
@@ -330,34 +330,34 @@ func (d *daemon) configureServiceAfterCert(dir, domain string) {
 // or if this replica takes the lease to issue it. It returns errLeaseHeld if
 // another replica holds the lease, and errDrained once the backend is drained.
 // No replica is advertised before the certificate exists.
-func (d *daemon) configureServiceWithCert(dir, domain string) error {
-	if d.isDrained() {
+func (b *serviceBackend) configureServiceWithCert(dir, domain string) error {
+	if b.d.isDrained() {
 		return errDrained
 	}
 	if validCert(dir, domain, time.Now()) {
-		if err := d.configureService(); err != nil {
+		if err := b.configureService(); err != nil {
 			return err
 		}
-		logger.Infof("Configured %s with the certificate for %s", d.config.Service, domain)
+		logger.Infof("Configured %s with the certificate for %s", b.name, domain)
 		return nil
 	}
 
-	lease, err := tryLease(dir, domain, d.config.EndpointID)
+	lease, err := tryLease(dir, domain, b.d.config.EndpointID)
 	if err != nil {
 		return err
 	}
 	defer lease.release()
 	logger.Infof("Holding the certificate lease for %s: configuring %s, unadvertised, to issue it",
-		domain, d.config.Service)
-	if err := d.configureServiceBackend(false); err != nil {
+		domain, b.name)
+	if err := b.configureServiceBackend(false); err != nil {
 		return err
 	}
 	// Keep the lease until the certificate exists, so the others wait for it
-	if err := d.requestCert(dir, domain); err != nil {
+	if err := b.requestCert(dir, domain); err != nil {
 		return err
 	}
-	logger.Infof("Certificate for %s issued: advertising %s", domain, d.config.Service)
-	return d.advertise(d.config.Service)
+	logger.Infof("Certificate for %s issued: advertising %s", domain, b.name)
+	return b.advertise(b.name)
 }
 
 // servesHTTPS reports whether any endpoint makes tailscaled terminate TLS.
@@ -383,23 +383,23 @@ func servesWeb(endpoints []ServeEndpoint) bool {
 
 // serviceDomainIn returns the domain of the endpoint's Service in the tailnet
 // with the MagicDNS suffix suffix.
-func (d *daemon) serviceDomainIn(suffix string) string {
-	return tailcfg.ServiceName(d.config.Service).WithoutPrefix() + "." + suffix
+func (b *serviceBackend) serviceDomainIn(suffix string) string {
+	return tailcfg.ServiceName(b.name).WithoutPrefix() + "." + suffix
 }
 
 // serviceDomain returns the Service's DNS name, which its certificate is for.
-func (d *daemon) serviceDomain() (string, error) {
-	ctx, cancel := context.WithTimeout(d.ctx, 10*time.Second)
+func (b *serviceBackend) serviceDomain() (string, error) {
+	ctx, cancel := context.WithTimeout(b.d.ctx, 10*time.Second)
 	defer cancel()
-	st, err := d.lc.StatusWithoutPeers(ctx)
+	st, err := b.d.lc.StatusWithoutPeers(ctx)
 	if err != nil {
 		return "", fmt.Errorf("tailscale status failed: %w", err)
 	}
 	suffix := magicDNSSuffix(st)
 	if suffix == "" {
-		return "", errors.New("tailscale status has no MagicDNS suffix: HTTPS needs MagicDNS")
+		return "", errNoMagicDNS
 	}
-	domain := d.serviceDomainIn(suffix)
+	domain := b.serviceDomainIn(suffix)
 	// The domain names files the plugin writes and deletes as root: the
 	// Service name comes from a label, the suffix from control
 	if !dnsName.MatchString(domain) {

@@ -21,6 +21,8 @@ eps() {
 		"$CL/s" "$n" sh -s <"$CL/endpoints.sh" | awk -v n="$n" '{ print n "\t" $0 }'
 	done
 }
+# running <stack>: "node endpoint hostname advertised" of the stack's running endpoints
+running() { eps | awk -F'\t' -v s="$1" '$3 == s && $5 == "running" { print $1, $2, $4, $6 }'; }
 # gone <stack>: the stack has no endpoints left
 gone() { [ -z "$(eps | awk -F'\t' -v s="$1" '$3 == s')" ]; }
 stack_rm() {

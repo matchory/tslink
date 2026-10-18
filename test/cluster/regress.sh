@@ -84,7 +84,6 @@ test_devices() {
 orphans() {
 	devices | jq --arg since "$1" --arg t "$T" '[.devices[]|select(any(.tags[]?; startswith($t+"-c") or .==$t+"-nogrant") and (.connectedToControl|not) and .isEphemeral and (.lastSeen > $since))]|length'
 }
-# running <stack>: "node endpoint hostname advertised" of the stack's running endpoints
 # probe_fails <node> [log]: failed requests in the probe log of the node's caller
 probe_fails() {
 	"$B/cx" "$1" caller_client "awk \"\\\$3!=200\" ${2:-/tmp/probe.log} | wc -l" | tr -d ' '

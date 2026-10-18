@@ -14,10 +14,13 @@ S="$B/s"
 ready() {
 	for n in "$@"; do "$S" "$n" test -f /var/lib/cloud-init-done 2>/dev/null || return 1; done
 }
+FP=$(ssh-keygen -E md5 -lf ~/.ssh/id_ed25519.pub | awk '{print $2}')
+KEY=$(hcloud ssh-key list -o noheader -o columns=name,fingerprint |
+	awk -v fp="${FP#MD5:}" '$2 == fp { print $1 }')
 for n in "$@"; do
 	hcloud server describe "tslink-test-$n" >/dev/null 2>&1 && continue
 	hcloud server create --name "tslink-test-$n" --type cpx32 --location fsn1 --image ubuntu-24.04 \
-		--ssh-key tslink-test --network tslink-test --firewall tslink-test \
+		--ssh-key "$KEY" --network tslink-test --firewall tslink-test \
 		--user-data-from-file "$B/cloud-init.yaml" --label purpose=tslink-test --label role="$n" >/dev/null &
 done
 wait

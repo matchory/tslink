@@ -2,8 +2,10 @@
 # install-plugin.sh [ref|WT] -- build tslink from a git ref (default main) or the working tree (WT)
 # on $MGR (default mgr), and replace the plugin tslink (tslink:latest, the name the documented
 # install --alias tslink gives it) with it on every node. PLUGIN_SETTINGS, if set, is passed to
-# docker plugin set before the plugin is enabled (e.g. "shared.source=/mnt/x KEY=value"). Exits
-# non-zero if the build or any node's install failed
+# docker plugin set before the plugin is enabled (e.g. "shared.source=/mnt/x KEY=value"). With
+# ONE_BY_ONE=1, nodes are replaced one at a time, as the upgrade guide does: the next only once every
+# endpoint of the last runs again and ONE_BY_ONE_SETTLE seconds (default 15) passed, so the other
+# replicas of a Service keep serving. Exits non-zero if the build or any node's install failed
 set -euo pipefail
 B=$(cd "$(dirname "$0")" && pwd)
 REF=${1:-main}
@@ -31,6 +33,9 @@ done
 
 # docker plugin install cannot read a local directory, so create the plugin under the alias's name
 P=tslink:latest
+rc=0
+# settled <node>: every endpoint on the node runs
+settled() { ! "$S" "$1" sh -s <"$B/endpoints.sh" | awk -F'\t' '$4 != "running"' | grep -q .; }
 pids=()
 for h in $("$B/nodes"); do
 	"$S" "$h" "set -e; mkdir -p /var/lib/docker-plugins/tailscale
@@ -40,8 +45,19 @@ for h in $("$B/nodes"); do
     docker plugin enable $P >/dev/null
     echo \"\$(hostname): \$(docker plugin ls --format '{{.Name}} {{.Enabled}}')\"" &
 	pids+=("$!")
+	if [ -n "${ONE_BY_ONE:-}" ]; then
+		wait "$!" || rc=1
+		pids=()
+		sleep 5 # recovery replaces the status files the old plugin left
+		t=0
+		until settled "$h" || [ "$t" -ge 180 ]; do
+			sleep 5
+			t=$((t + 5))
+		done
+		settled "$h" || echo "$h: endpoints not running 180 s after the install" >&2
+		sleep "${ONE_BY_ONE_SETTLE:-15}"
+	fi
 done
 # Each node's install, so a node that failed fails the script
-rc=0
-for p in "${pids[@]}"; do wait "$p" || rc=1; done
+for p in ${pids[@]+"${pids[@]}"}; do wait "$p" || rc=1; done
 exit "$rc"

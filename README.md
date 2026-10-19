@@ -35,7 +35,6 @@ The container reaches the tailnet only as its own node, never through the Tailsc
 Replace `amd64` with `arm64` on an ARM host, and `tskey-auth-…` with your auth key:
 
 ```bash
-sudo install -d -m 0755 /var/lib/docker-plugins/tailscale
 docker plugin install --alias tslink --grant-all-permissions ghcr.io/matchory/tslink:latest-amd64
 docker network create --driver tslink:latest --opt tslink.authkey=tskey-auth-… my-tailnet
 docker run -d --network my-tailnet --label tslink.hostname=web nginx:alpine

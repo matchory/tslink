@@ -179,10 +179,15 @@ finding:
 
 - **The plugin runs as root on the host** with host networking,
   `CAP_NET_ADMIN`, `CAP_SYS_ADMIN`, `/dev/net/tun`, the Docker socket, the
-  host's `/run` and `/var/lib/docker-plugins/tailscale`. It enters container
-  network namespaces and changes interfaces, routes and firewall rules. A flaw
-  that lets a container or a tailnet peer influence what the plugin does on
-  the host is in scope.
+  host's `/run` and `/var/lib/docker-plugins/tailscale`. Docker mounts the
+  host's whole `/var/lib` into the plugin, read-write; the plugin uses it
+  only as it starts, to create `/var/lib/docker-plugins/tailscale` and mount
+  that at `/data`, and unmounts it before it opens its socket. Thus it
+  serves no request while it sees the host's `/var/lib`, and refuses to
+  start if it cannot unmount it. It enters container network namespaces and
+  changes interfaces, routes and firewall rules. A flaw that lets a container
+  or a tailnet peer influence what the plugin does on the host is in scope,
+  and so is a way to make it keep the host's `/var/lib` past its start.
 - **Credentials are visible to persons with access to the Docker API.**
   `docker network inspect` shows the network option `tslink.authkey`, and
   `docker plugin inspect` shows the plugin setting `TS_AUTHKEY`. On a Swarm,

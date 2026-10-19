@@ -9,6 +9,5 @@ runcmd:
   - ethtool -K eth0 rx-udp-gro-forwarding on rx-gro-list off
   - curl -fsSL https://get.docker.com | sh
   - curl -fsSL https://tailscale.com/install.sh | sh
-  - mkdir -p /var/lib/docker-plugins/tailscale
   - systemctl enable --now docker
   - touch /var/lib/cloud-init-done

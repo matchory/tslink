@@ -52,8 +52,34 @@ func main() {
 		}
 	}
 
+	// Anywhere else, as on a host, a plugin instance would install isolation
+	// chains the host's settings may turn off
+	id, ok := pluginID()
+	if !ok {
+		fmt.Fprintf(os.Stderr, "tslink: not running as a Docker plugin (no plugin socket mount "+
+			"at %s); install it with docker plugin install, see "+
+			"docs/guides/install-and-upgrade.md\n\n", pluginSocketDir)
+		printHelp(os.Stderr)
+		os.Exit(2)
+	}
+	shared, err := prepareDataDir(pluginDirs{
+		HostVarLib: hostVarLib,
+		Data:       core.DataDir(),
+		Shared:     os.Getenv("TS_SHARED_DIR"),
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "tslink: %v\n", err)
+		os.Exit(1)
+	}
+	// LoadConfig reads it; the environment is the first install's, which a
+	// docker plugin upgrade keeps
+	if err := os.Setenv("TS_SHARED_DIR", shared); err != nil {
+		fmt.Fprintf(os.Stderr, "tslink: %v\n", err)
+		os.Exit(1)
+	}
+
 	initLogger()
-	runPlugin()
+	runPlugin(id)
 }
 
 func initLogger() {
@@ -62,8 +88,13 @@ func initLogger() {
 	}
 }
 
-func runPlugin() {
-	logger.Infof("Starting Tailscale Docker network plugin")
+func runPlugin(id string) {
+	info, _ := debug.ReadBuildInfo()
+	logger.Infof(
+		"Starting Tailscale Docker network plugin, tslink %s, plugin %s",
+		tslinkVersion(version, info),
+		id,
+	)
 
 	driver, err := docker.NewDriver()
 	if err != nil {
@@ -153,19 +184,34 @@ func runPreflight(ctx context.Context, env preflight.Env, w io.Writer) int {
 	return 0
 }
 
+// version is tslink's version, set at build time with
+// -ldflags "-X main.version=...". Empty, it is the module version the Go
+// toolchain stamps, (devel) if it found no version control.
+var version string
+
 // printVersion prints tslink's version and that of the Tailscale it is built
 // with, which is the bundled one (TestLocalAPIClientMatchesBundledTailscale).
 func printVersion(w io.Writer) {
-	info, ok := debug.ReadBuildInfo()
-	if !ok {
-		fmt.Fprintln(w, "tslink (unknown version)")
-		return
-	}
-	fmt.Fprint(w, versionText(info))
+	info, _ := debug.ReadBuildInfo()
+	fmt.Fprint(w, versionText(version, info))
 }
 
-func versionText(info *debug.BuildInfo) string {
-	text := "tslink " + info.Main.Version + "\n"
+// tslinkVersion returns stamped, else the module version of info.
+func tslinkVersion(stamped string, info *debug.BuildInfo) string {
+	switch {
+	case stamped != "":
+		return stamped
+	case info != nil && info.Main.Version != "":
+		return info.Main.Version
+	}
+	return "(devel)"
+}
+
+func versionText(stamped string, info *debug.BuildInfo) string {
+	text := "tslink " + tslinkVersion(stamped, info) + "\n"
+	if info == nil {
+		return text
+	}
 	for _, dep := range info.Deps {
 		if dep.Path == "tailscale.com" {
 			return text + "tailscale " + dep.Version + "\n"
@@ -178,7 +224,7 @@ func printHelp(w io.Writer) {
 	fmt.Fprint(w, `tslink - Tailscale Container Network Plugin
 
 Usage:
-  tslink          Start the plugin server
+  tslink          Serve as the Docker plugin; it refuses to run anywhere else
   tslink diag     Run diagnostics on all endpoints
   tslink diag --preflight [--shared-dir DIR]   Check the environment properties in SECURITY.md
   tslink help     Show this help message

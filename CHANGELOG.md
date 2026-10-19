@@ -55,6 +55,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Services that control does not fetch, and drains that control fetches
   after tslink's 10 s limit.
 
+- The plugin creates its data directory, `/var/lib/docker-plugins/tailscale`,
+  as it starts: it no longer needs to exist before the install, and a host
+  without it no longer leaves the plugin disabled. For this, Docker mounts
+  the host's `/var/lib` into the plugin, which unmounts it before it serves;
+  `docker plugin upgrade --grant-all-permissions` grants the new mount. The
+  default of `shared.source` is now `/var/lib`, which sets no shared
+  directory: as with the old default, the data directory, certificates stay
+  in the data directory's `certs/`.
+
 ### Fixed
 
 - A login that control answered after more than 60 s, as during a rollout
@@ -72,6 +81,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The plugin binary, run with arguments it does not know, exits with usage
   instead of starting a plugin instance, which on the host could install
   isolation chains the host's settings turn off.
+- Without arguments, the plugin binary starts a plugin instance only inside a
+  Docker plugin, which it recognizes by the plugin socket directory Docker
+  mounts. On a host or in a container, it exits with usage (#96).
+- Builds from a source tree without Git metadata, such as the cluster test
+  bed's, reported `tslink (devel)`. The builds now stamp the version
+  (`scripts/version.sh`) into the binary, and the plugin logs it at start.
 - With a shared certificate directory (`shared.source`), a stack that named
   another stack's Service took its certificate lease, which control never
   let it use, and the other stack's replicas waited for the lease: its

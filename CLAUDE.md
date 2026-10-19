@@ -327,12 +327,8 @@ bed (`tn.sh`, through `redteam-tn.sh`), and report INFO when their control viola
 
 ### Plugin won't enable
 
-Check that the state directory exists:
-
-```bash
-docker run --rm --privileged -v /var/lib:/var/lib alpine \
-  mkdir -p /var/lib/docker-plugins/tailscale
-```
+The plugin creates `/var/lib/docker-plugins/tailscale` itself as it starts (`prepareDataDir`); a failure is in the
+Docker daemon's log as `tslink: ...`, and the plugin does not start.
 
 ### Options not being passed
 

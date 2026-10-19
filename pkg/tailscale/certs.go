@@ -23,13 +23,16 @@ import (
 	"github.com/matchory/tslink/pkg/logger"
 )
 
-// Every tailscaled keeps its certificates in one directory, on a volume shared
-// between hosts if the plugin's shared mount points at one, so a Tailscale
-// Service's certificate outlives its ephemeral nodes. tailscaled issues a
-// certificate for a name it has none for, so without coordination every
-// replica of a new Service would issue its own and exhaust Let's Encrypt's
-// limit of five per name a week. Until a certificate exists, only the replica
-// holding a lease configures the Service; the others wait for it.
+// The tailscaleds of a stack keep their certificates in one directory, the
+// stack's in the shared certificate directory, on a volume shared between
+// hosts if the plugin's shared mount points at one, so a Tailscale Service's
+// certificate outlives its ephemeral nodes; other containers share the shared
+// directory itself. tailscaled issues a certificate for a name it has none
+// for, so without coordination every replica of a new Service would issue its
+// own and exhaust Let's Encrypt's limit of five per name a week. Until a
+// certificate exists, only the replica holding a lease configures the Service;
+// the others wait for it. A stack naming another stack's Service holds only a
+// lease of its own directory, so it cannot keep the other from issuing.
 
 const (
 	certsDirName       = "certs"                // tailscaled's directory in its state directory
@@ -48,10 +51,12 @@ const certDomainError = "invalid domain"
 var errLeaseHeld = errors.New("another replica is issuing the certificate")
 
 // LinkCertsDir makes the state directory's certs directory a link to shared,
-// creating shared and an ACME account key in it. A certs directory that is not
-// a link, as kept by a non-ephemeral node from before, is left alone. An empty
-// shared leaves tailscaled its own directory.
-func LinkCertsDir(stateDir, shared string) error {
+// creating shared and an ACME account key in it: parent's, if shared is a
+// stack's directory in parent and parent has one. A link elsewhere, as to the
+// shared directory before stacks had their own, is pointed at shared. A certs
+// directory that is not a link, as kept by a non-ephemeral node from before,
+// is left alone. An empty shared leaves tailscaled its own directory.
+func LinkCertsDir(stateDir, shared, parent string) error {
 	if shared == "" {
 		return nil
 	}
@@ -60,7 +65,7 @@ func LinkCertsDir(stateDir, shared string) error {
 	}
 	// Two tailscaleds would each create their own key, and certificates issued
 	// under the one overwritten could no longer be renewed as renewals
-	if err := ensureAccountKey(shared); err != nil {
+	if err := ensureAccountKey(shared, parent); err != nil {
 		return err
 	}
 
@@ -86,27 +91,47 @@ func LinkCertsDir(stateDir, shared string) error {
 	return nil
 }
 
-// ensureAccountKey creates an ACME account key in dir unless one exists. It is
-// written to a temporary file and linked into place, so no tailscaled reads it
+// ensureAccountKey creates an ACME account key in dir unless one exists: a
+// copy of parent's if parent has one, so a stack's directory registers no
+// ACME account of its own, and a new key otherwise. It is written to a
+// temporary file and linked into place, so no tailscaled reads it
 // half-written, and only one of several racing writers wins.
-func ensureAccountKey(dir string) error {
+func ensureAccountKey(dir, parent string) error {
 	path := filepath.Join(dir, acmeAccountKeyFile)
 	if _, err := os.Stat(path); err == nil {
 		return nil
 	}
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	pemKey, err := accountKey(parent)
 	if err != nil {
-		return fmt.Errorf("failed to generate ACME account key: %w", err)
+		return err
 	}
-	der, err := x509.MarshalECPrivateKey(key)
-	if err != nil {
-		return fmt.Errorf("failed to encode ACME account key: %w", err)
-	}
-	pemKey := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: der})
 	if err := createExclusive(path, pemKey, 0o600); err != nil && !errors.Is(err, fs.ErrExist) {
 		return fmt.Errorf("failed to write ACME account key: %w", err)
 	}
 	return nil
+}
+
+// accountKey returns parent's ACME account key, or a new one if parent is
+// empty or has none.
+func accountKey(parent string) ([]byte, error) {
+	if parent != "" {
+		pemKey, err := os.ReadFile(filepath.Join(parent, acmeAccountKeyFile))
+		if err == nil {
+			return pemKey, nil
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("failed to read the shared ACME account key: %w", err)
+		}
+	}
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate ACME account key: %w", err)
+	}
+	der, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode ACME account key: %w", err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: der}), nil
 }
 
 // createExclusive writes data to path unless path exists, atomically: it
@@ -147,6 +172,48 @@ func validCert(dir, domain string, now time.Time) bool {
 		return false
 	}
 	return now.Before(pair.Leaf.NotAfter) && pair.Leaf.VerifyHostname(domain) == nil
+}
+
+// adoptCert links a valid certificate for domain and its key from parent,
+// the shared directory as it was before stacks had directories of their own,
+// into dir, the stack's, unless dir has a valid one or a file of either name.
+// The key goes first, as tailscaled writes them, and neither is overwritten:
+// a replica adopting at the same time, or tailscaled, wins. An empty parent
+// adopts nothing.
+func adoptCert(dir, parent, domain string, now time.Time) {
+	if parent == "" || !dnsName.MatchString(domain) || validCert(dir, domain, now) ||
+		!validCert(parent, domain, now) {
+		return
+	}
+	key, crt := domain+".key", domain+".crt"
+	if _, err := os.Lstat(filepath.Join(dir, crt)); !errors.Is(err, fs.ErrNotExist) {
+		return
+	}
+	if err := os.Link(filepath.Join(parent, key), filepath.Join(dir, key)); err != nil {
+		if !errors.Is(err, fs.ErrExist) {
+			logger.Warnf("Failed to adopt the certificate key for %s: %v", domain, err)
+		}
+		return
+	}
+	if err := os.Link(filepath.Join(parent, crt), filepath.Join(dir, crt)); err != nil {
+		logger.Warnf("Failed to adopt the certificate for %s: %v", domain, err)
+		removeAdopted(filepath.Join(dir, key), filepath.Join(parent, key))
+		return
+	}
+	logger.Infof("Adopted the certificate for %s from %s", domain, parent)
+}
+
+// removeAdopted removes the key adoptCert linked to path from original,
+// unless it was replaced since.
+func removeAdopted(path, original string) {
+	st, err := os.Lstat(path)
+	orig, origErr := os.Lstat(original)
+	if err != nil || origErr != nil || !os.SameFile(st, orig) {
+		return
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		logger.Warnf("Failed to remove %s: %v", path, err)
+	}
 }
 
 // certLease is held by the replica issuing a domain's certificate. Its file's
@@ -281,6 +348,7 @@ func (b *serviceBackend) configureServiceWhenCertified() error {
 	dir := filepath.Join(b.d.config.StateDir, certsDirName)
 	// Once per daemon: Reauthenticate configures the Service again
 	b.certWatch.Do(func() { b.d.wg.Go(func() { b.d.watchCertExpiry(dir, domain) }) })
+	adoptCert(dir, b.d.config.ParentCertsDir, domain, time.Now())
 	if validCert(dir, domain, time.Now()) {
 		return ignoreDrained(b.configureService())
 	}

@@ -62,6 +62,21 @@ func main() {
 		printHelp(os.Stderr)
 		os.Exit(2)
 	}
+	shared, err := prepareDataDir(pluginDirs{
+		HostVarLib: hostVarLib,
+		Data:       core.DataDir(),
+		Shared:     os.Getenv("TS_SHARED_DIR"),
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "tslink: %v\n", err)
+		os.Exit(1)
+	}
+	// LoadConfig reads it; the environment is the first install's, which a
+	// docker plugin upgrade keeps
+	if err := os.Setenv("TS_SHARED_DIR", shared); err != nil {
+		fmt.Fprintf(os.Stderr, "tslink: %v\n", err)
+		os.Exit(1)
+	}
 
 	initLogger()
 	runPlugin(id)

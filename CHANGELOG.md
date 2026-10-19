@@ -35,6 +35,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   directory (the plugin's `shared.source`). A deployment that passed before
   may now report "violated".
 
+- The plugin creates its data directory, `/var/lib/docker-plugins/tailscale`,
+  as it starts: it no longer needs to exist before the install, and a host
+  without it no longer leaves the plugin disabled. For this, Docker mounts
+  the host's `/var/lib` into the plugin, which unmounts it before it serves;
+  `docker plugin upgrade --grant-all-permissions` grants the new mount. The
+  default of `shared.source` is now `/var/lib`, which sets no shared
+  directory: as with the old default, the data directory, certificates stay
+  in the data directory's `certs/`.
+
 ### Fixed
 
 - A login that control answered after more than 60 s, as during a rollout

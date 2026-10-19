@@ -8,7 +8,11 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -o /tslink ./cmd/tslink
+# The version tslink reports (scripts/version.sh). Empty, the Go toolchain's
+# stamp from the repository's metadata, if the build context has it
+ARG TSLINK_VERSION=""
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags "-X main.version=${TSLINK_VERSION}" \
+    -o /tslink ./cmd/tslink
 
 SHELL ["/bin/ash", "-o", "pipefail", "-c"]
 

@@ -147,7 +147,8 @@ fi
 trap cleanup EXIT
 
 log "Building the plugin"
-docker build -t tslink:rootfs -f "$ROOT/docker/Dockerfile" "$ROOT"
+docker build --build-arg TSLINK_VERSION="$("$ROOT/scripts/version.sh")" \
+	-t tslink:rootfs -f "$ROOT/docker/Dockerfile" "$ROOT"
 mkdir -p "$WORK/plugin/rootfs"
 cp "$ROOT/docker/config.json" "$WORK/plugin/"
 id=$(docker create tslink:rootfs)

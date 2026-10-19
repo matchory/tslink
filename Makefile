@@ -3,6 +3,10 @@
 PLUGIN_NAME ?= tslink
 PLUGIN_TAG ?= latest
 GOARCH ?= $(shell go env GOARCH)
+# The version the binary reports. Empty outside a repository, which leaves the
+# Go toolchain's stamp
+VERSION ?= $(shell scripts/version.sh 2>/dev/null)
+LDFLAGS = -X main.version=$(VERSION)
 
 .PHONY: all build clean create enable disable test reinstall
 
@@ -11,7 +15,7 @@ all: build
 
 build:
 	@echo "Building plugin binary for $(GOARCH)..."
-	CGO_ENABLED=0 GOOS=linux GOARCH=$(GOARCH) go build -o docker/rootfs/tslink ./cmd/tslink
+	CGO_ENABLED=0 GOOS=linux GOARCH=$(GOARCH) go build -ldflags "$(LDFLAGS)" -o docker/rootfs/tslink ./cmd/tslink
 
 # The rootfs is assembled in a container, never on the host: on a filesystem
 # that ignores case, as macOS's default volume, libxt_MARK.so and libxt_mark.so
@@ -20,7 +24,7 @@ DOCKER_CLI ?= docker:29.3.1-cli@sha256:18f5ab0fab739ea822819b342357947dfba235cde
 
 create:
 	@echo "Building Docker image for rootfs..."
-	docker build -t $(PLUGIN_NAME):rootfs -f docker/Dockerfile .
+	docker build --build-arg TSLINK_VERSION=$(VERSION) -t $(PLUGIN_NAME):rootfs -f docker/Dockerfile .
 	@echo "Creating plugin..."
 	docker plugin rm -f $(PLUGIN_NAME):$(PLUGIN_TAG) 2>/dev/null || true
 	docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
@@ -50,7 +54,7 @@ test:
 
 # Development helpers
 dev-build:
-	go build -o tslink ./cmd/tslink
+	go build -ldflags "$(LDFLAGS)" -o tslink ./cmd/tslink
 
 dev-run: dev-build
 	./tslink

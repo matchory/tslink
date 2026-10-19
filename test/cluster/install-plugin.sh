@@ -13,6 +13,11 @@ S="$B/s"
 M=${MGR:-mgr}
 cd "$(git -C "$B" rev-parse --show-toplevel)"
 
+# The version the binary reports, found here: the source on $M has no history. Checked to need no
+# quoting in the command for $M
+if [ "$REF" = WT ]; then V=$(scripts/version.sh); else V=$(scripts/version.sh "$REF"); fi
+case $V in *[!A-Za-z0-9._+-]* | "") echo "unexpected version: $V" >&2 && exit 1 ;; esac
+
 source_tar() {
 	if [ "$REF" = WT ]; then
 		git ls-files -co --exclude-standard | COPYFILE_DISABLE=1 tar --no-xattrs -cf - -T -
@@ -23,7 +28,8 @@ source_tar() {
 source_tar | "$S" "$M" 'rm -rf /root/src && mkdir -p /root/src && tar -x -C /root/src'
 
 # shellcheck disable=SC2016 # runs on $M
-"$S" "$M" 'set -e; cd /root/src; docker build -q -t tslink:rootfs -f docker/Dockerfile . >/dev/null
+"$S" "$M" 'set -e; cd /root/src
+  docker build -q --build-arg TSLINK_VERSION='"$V"' -t tslink:rootfs -f docker/Dockerfile . >/dev/null
   rm -rf /root/plugin && mkdir -p /root/plugin/rootfs && cp docker/config.json /root/plugin/
   id=$(docker create tslink:rootfs); docker export "$id" | tar -x -C /root/plugin/rootfs; docker rm "$id" >/dev/null
   tar -C /root -czf /root/plugin.tgz plugin'

@@ -63,7 +63,11 @@ func initLogger() {
 }
 
 func runPlugin() {
-	logger.Infof("Starting Tailscale Docker network plugin")
+	info, _ := debug.ReadBuildInfo()
+	logger.Infof(
+		"Starting Tailscale Docker network plugin, tslink %s",
+		tslinkVersion(version, info),
+	)
 
 	driver, err := docker.NewDriver()
 	if err != nil {
@@ -153,19 +157,34 @@ func runPreflight(ctx context.Context, env preflight.Env, w io.Writer) int {
 	return 0
 }
 
+// version is tslink's version, set at build time with
+// -ldflags "-X main.version=...". Empty, it is the module version the Go
+// toolchain stamps, (devel) if it found no version control.
+var version string
+
 // printVersion prints tslink's version and that of the Tailscale it is built
 // with, which is the bundled one (TestLocalAPIClientMatchesBundledTailscale).
 func printVersion(w io.Writer) {
-	info, ok := debug.ReadBuildInfo()
-	if !ok {
-		fmt.Fprintln(w, "tslink (unknown version)")
-		return
-	}
-	fmt.Fprint(w, versionText(info))
+	info, _ := debug.ReadBuildInfo()
+	fmt.Fprint(w, versionText(version, info))
 }
 
-func versionText(info *debug.BuildInfo) string {
-	text := "tslink " + info.Main.Version + "\n"
+// tslinkVersion returns stamped, else the module version of info.
+func tslinkVersion(stamped string, info *debug.BuildInfo) string {
+	switch {
+	case stamped != "":
+		return stamped
+	case info != nil && info.Main.Version != "":
+		return info.Main.Version
+	}
+	return "(devel)"
+}
+
+func versionText(stamped string, info *debug.BuildInfo) string {
+	text := "tslink " + tslinkVersion(stamped, info) + "\n"
+	if info == nil {
+		return text
+	}
 	for _, dep := range info.Deps {
 		if dep.Path == "tailscale.com" {
 			return text + "tailscale " + dep.Version + "\n"

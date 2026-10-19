@@ -64,6 +64,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   directory: as with the old default, the data directory, certificates stay
   in the data directory's `certs/`.
 
+### Removed
+
+- The `tslink.loginserver` network option. The control server is now the
+  plugin setting `TSLINK_LOGIN_SERVER`, for every network on the host: an
+  `https` URL, or an `http` URL with an IP address, since tailscaled resolves
+  names with the container's DNS servers and plain http does not
+  authenticate the server. Any other value keeps the plugin from starting.
+  Recreate networks that set the option without it, with the same auth key:
+  with another key, their containers register as new nodes.
+
 ### Fixed
 
 - With `TSLINK_LOG_LEVEL` at `warn` or `error`, the plugin still logged its
@@ -95,6 +105,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   certificate was neither issued nor renewed while the first stack ran.
   Each stack now keeps its certificates and leases in a directory of its
   own.
+
+### Security
+
+- A network that names a control server of its own is refused: creating one
+  with the `tslink.loginserver` option fails, whatever its credential. On one
+  that an earlier version created, a container fails to start with an error
+  naming `TSLINK_LOGIN_SERVER`, and one already running when the plugin
+  restarts gets the status `failed`, naming it. A network could
+  otherwise have nodes present their credential, one minted from the cluster
+  credential included, to a server it chose
+  ([GHSA-28r2-gm83-4qwq](https://github.com/matchory/tslink/security/advisories/GHSA-28r2-gm83-4qwq);
+  affects v0.2.0 to v0.3.4).
 
 ## [0.3.4] - 2026-10-17
 

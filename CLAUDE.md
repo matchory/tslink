@@ -295,7 +295,7 @@ return fmt.Errorf("failed to create endpoint: %w", err)
 - `linter.yml`: super-linter for everything except Go (Markdown, YAML, shell, Dockerfile). Configs are in
   `.github/linters/`.
 - `e2e.yml`: `test/integration/run.sh`, the end-to-end test. It builds the plugin, installs it as `tslink` and runs
-  containers against a headscale control server on the runner (`tslink.loginserver`), so it needs no Tailscale
+  containers against a headscale control server on the runner (`TSLINK_LOGIN_SERVER`), so it needs no Tailscale
   account: tailnet reachability, an ACL refusal, identity across a plugin restart, and removal of an ephemeral node.
   Tailscale Services are not covered: headscale does not support them. The headscale and Alpine images are pinned
   by digest in `run.sh`, which Dependabot does not update. It replaces the host's `tslink` plugin; run it locally only

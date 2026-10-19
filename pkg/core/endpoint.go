@@ -367,6 +367,10 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 	vethName := e.vethName
 	e.mu.Unlock()
 
+	// Before anything else: recovery adopts endpoints without Join, which refuses
+	if err := network.Refused(); err != nil {
+		return permanentError{err}
+	}
 	if err := checkStackScope(info, network, tags); err != nil {
 		return permanentError{err}
 	}
@@ -415,7 +419,7 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 		Services:       info.Services,
 		Endpoints:      info.Endpoints,
 		Direct:         info.Direct,
-		LoginServer:    e.Network.LoginServer, // set once, at creation
+		LoginServer:    network.LoginServer, // the plugin's
 		ContainerDNS:   info.DNS,
 		HostEndpoints:  func() ([]netip.AddrPort, error) { return netutil.HostEndpoints(vethName) },
 		Warn:           e.setWarning,

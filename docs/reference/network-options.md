@@ -11,7 +11,6 @@ option does not leave the network with another credential or other tags than you
 | [`tslink.authkey`](#tslinkauthkey) | A credential | Required, except in the conditions below |
 | [`tslink.tags`](#tslinktags) | Comma-separated ACL tags | None |
 | [`tslink.ephemeral`](#tslinkephemeral) | `true` or `false` | From the credential |
-| [`tslink.loginserver`](#tslinkloginserver) | An `http` or `https` URL | Tailscale's control server |
 | [`com.docker.network.driver.mtu`](#comdockernetworkdrivermtu) | 576 to 65535 | 1500 |
 
 ## tslink.authkey
@@ -55,15 +54,16 @@ keys and headscale's keys. For the effect, see [Ephemeral nodes](credentials.md#
 > Set `true` only with a credential that creates ephemeral nodes. With `true`, tslink deletes the state of a node
 > when its container stops, and the node loses its identity.
 
-## tslink.loginserver
-
-The URL of a control server other than Tailscale's, for example [headscale](https://github.com/juanfont/headscale).
-tailscaled logs in to this server. The URL must use `http` or `https` and must have a hostname.
-
 ## com.docker.network.driver.mtu
 
 The MTU of the interface that tslink adds to the container. `docker network create` fails for a value that is not a
 number from 576 to 65535.
+
+## Removed options
+
+| Option | Status |
+| --- | --- |
+| `tslink.loginserver` | `docker network create` fails. On a network that an earlier version created with it, `docker run` or the task fails with an error that names `TSLINK_LOGIN_SERVER`, and a container that was running when the plugin restarted gets the status `failed`, which names it. Recreate the network without it, and set the control server with the plugin setting [`TSLINK_LOGIN_SERVER`](plugin-settings.md#tslink_login_server). |
 
 ## Stack networks
 

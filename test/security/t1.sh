@@ -60,13 +60,18 @@ t1_build() {
 	docker rm "$id" >/dev/null
 }
 
-# t1_install DIR: replaces the plugin with the one built in DIR.
+# t1_install DIR: replaces the plugin with the one built in DIR. A plugin
+# that has the setting TSLINK_LOGIN_SERVER gets headscale's URL there; t1_net
+# passes it as a network option otherwise.
 t1_install() {
 	if docker plugin inspect "$T1_PLUGIN" >/dev/null 2>&1; then
 		docker plugin disable -f "$T1_PLUGIN" >/dev/null 2>&1
 		docker plugin rm -f "$T1_PLUGIN" >/dev/null || return 1
 	fi
 	docker plugin create "$T1_PLUGIN" "$1" >/dev/null || return 1
+	if grep -q '"TSLINK_LOGIN_SERVER"' "$1/config.json"; then
+		docker plugin set "$T1_PLUGIN" TSLINK_LOGIN_SERVER="$T1_URL" || return 1
+	fi
 	docker plugin enable "$T1_PLUGIN" >/dev/null
 }
 
@@ -118,7 +123,8 @@ t1_net() {
 	key=$(t1_key "$2") || return 1
 	opts=$(printf '%s\n' "${@:3}" | jq -R 'select(. != "") | split("=") | {(.[0]): (.[1:] | join("="))}' |
 		jq -s 'add // {}')
-	opts=$(jq --arg u "$T1_URL" '. + {"tslink.loginserver": $u}' <<<"$opts")
+	grep -q '"TSLINK_LOGIN_SERVER"' "$T1_WORK/plugin/config.json" ||
+		opts=$(jq --arg u "$T1_URL" '. + {"tslink.loginserver": $u}' <<<"$opts")
 	jq -n --arg name "$1" --arg driver "$T1_PLUGIN:latest" --arg key "$key" --argjson opts "$opts" \
 		'{Name: $name, Driver: $driver, Options: ({"tslink.authkey": $key} + $opts)}' |
 		curl -fsS --unix-socket /var/run/docker.sock -H 'Content-Type: application/json' \

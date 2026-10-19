@@ -181,6 +181,8 @@ docker run --rm --entrypoint /tslink tslink:rootfs >/dev/null 2>&1 || rc=$?
 [ "$rc" = 2 ] || fail "tslink in a container: exit status $rc, want 2"
 # Docker creates /var/run/docker/netns with the first container
 docker run --rm "$ALPINE" true
+# Every node of the plugin logs in to headscale, started below
+docker plugin set "$PLUGIN" TSLINK_LOGIN_SERVER="$URL"
 docker plugin enable "$PLUGIN"
 
 log "The plugin sees its data directory, and not the host's /var/lib"
@@ -234,7 +236,7 @@ key "$host" | host_ts up --login-server="$URL" --auth-key=file:/dev/stdin --host
 network() {
 	# A plain "tslink" does not resolve: the driver is registered under the
 	# plugin's full name
-	docker network create --driver "$PLUGIN:latest" --opt tslink.loginserver="$URL" --opt tslink.authkey="$2" "${@:3}" "$1" >/dev/null
+	docker network create --driver "$PLUGIN:latest" --opt tslink.authkey="$2" "${@:3}" "$1" >/dev/null
 }
 network e2e-alice "$(key "$alice")"
 network e2e-bob "$(key "$bob")"
@@ -268,8 +270,9 @@ ready_answer e2e-server | head -n 1 | grep -q ' 200 ' || fail "ready without 200
 if [ -n "$(ready_answer e2e-client)" ]; then
 	fail "a container without tslink.health has a readiness endpoint"
 fi
-# A node that cannot reach its control server is not ready, and says why
-docker network create --driver "$PLUGIN:latest" --opt tslink.loginserver=http://127.0.0.1:9 \
+# A node that cannot log in is not ready, and says why: the control server
+# is the plugin's, which refuses the key
+docker network create --driver "$PLUGIN:latest" \
 	--opt tslink.authkey=tskey-auth-unused e2e-nocontrol >/dev/null
 echo tskey-auth-unused >>"$WORK/keys"
 docker run -d --name e2e-unready --network e2e-nocontrol --label tslink.health=9002 "$ALPINE" sleep 3600
@@ -721,7 +724,11 @@ docker plugin push "$UPGRADE"
 docker plugin rm -f "$UPGRADE"
 
 docker plugin install --alias "$PLUGIN" --grant-all-permissions "$previous"
-network e2e-upgrade "$(key "$alice")"
+# v0.3.4 takes the control server only as a network option, which this build
+# refuses: the upgrade sets the plugin setting and recreates the network
+# One key for both networks: a network with another key starts its nodes anew
+upgrade_key=$(key "$alice")
+network e2e-upgrade "$upgrade_key" --opt tslink.loginserver="$URL"
 docker run -d --name e2e-upgrade --network e2e-upgrade "$ALPINE" sleep 3600
 upgrade_ip=$(wait_ip e2e-upgrade)
 # node_id NAME: the headscale ID of the node named NAME
@@ -732,8 +739,12 @@ echo "e2e-upgrade: node $upgrade_id, $upgrade_ip"
 mkdir -p "$WORK/shared"
 docker plugin disable -f "$PLUGIN"
 docker plugin upgrade --grant-all-permissions --skip-remote-check "$PLUGIN" "$UPGRADE"
-docker plugin set "$PLUGIN" shared.source="$WORK/shared"
+docker plugin set "$PLUGIN" shared.source="$WORK/shared" TSLINK_LOGIN_SERVER="$URL"
 docker plugin enable "$PLUGIN"
+docker rm -f e2e-upgrade >/dev/null
+docker network rm e2e-upgrade >/dev/null
+network e2e-upgrade "$upgrade_key"
+docker run -d --name e2e-upgrade --network e2e-upgrade "$ALPINE" sleep 3600
 retry 180 has_ip e2e-upgrade || fail "e2e-upgrade got no tailnet IP after the upgrade"
 [ "$(tailnet_ip e2e-upgrade)" = "$upgrade_ip" ] || fail "e2e-upgrade's IP changed: $(tailnet_ip e2e-upgrade)"
 [ "$(node_id e2e-upgrade)" = "$upgrade_id" ] || fail "e2e-upgrade's node changed: $(node_id e2e-upgrade)"

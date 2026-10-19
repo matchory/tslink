@@ -24,27 +24,39 @@ type Network struct {
 	Tags    []string // If set, overrides the tslink.tags container label
 	MTU     int      // veth MTU; 0 for the default
 
-	LoginServer string // control server URL; empty for Tailscale's
+	LoginServer string // the plugin's control server URL; empty for Tailscale's
 
 	ephemeral *bool // tslink.ephemeral; nil if unset
+
+	// refused says why no endpoint may join the network; nil if one may
+	refused error
 
 	StrictTagScope bool // confine a cluster-credential stack to tag:<stack> exactly
 }
 
+// errLoginServerOption refuses a network with tslink.loginserver.
+var errLoginServerOption = fmt.Errorf(
+	"network option %s is no longer supported: the control server is the plugin setting %s; "+
+		"recreate the network without it",
+	LoginServerOption, LoginServerSetting,
+)
+
 // NewNetwork builds a network from its options and resolves its credential:
 // its tslink.authkey option, else the cluster credential, else the plugin's
-// TS_AUTHKEY.
+// TS_AUTHKEY. Its nodes use the plugin's control server. A network with
+// tslink.loginserver is built, so one Docker kept from before is known, and
+// refused (see Refused).
 func NewNetwork(id string, opts NetworkOptions, cfg *Config) (*Network, error) {
-	if err := ValidateLoginServer(opts.LoginServer); err != nil {
-		return nil, err
-	}
 	n := &Network{
 		ID:             id,
 		AuthKey:        opts.AuthKey,
 		Tags:           opts.Tags,
 		MTU:            opts.MTU,
-		LoginServer:    opts.LoginServer,
+		LoginServer:    cfg.LoginServer,
 		StrictTagScope: cfg.StrictTagScope,
+	}
+	if opts.loginServerOption {
+		n.refused = errLoginServerOption
 	}
 	if opts.Ephemeral != "" {
 		v, err := strconv.ParseBool(opts.Ephemeral)
@@ -71,6 +83,13 @@ func NewNetwork(id string, opts NetworkOptions, cfg *Config) (*Network, error) {
 		return nil, err
 	}
 	return n, nil
+}
+
+// Refused returns why the network may not be created or joined, nil if it
+// may: a network with tslink.loginserver names a control server of its own,
+// to which its nodes would present their keys.
+func (n *Network) Refused() error {
+	return n.refused
 }
 
 // UsesClusterCredential reports whether the network's nodes register with the

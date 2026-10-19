@@ -70,11 +70,14 @@ func referenceKeys(t *testing.T, page string) []string {
 	return keys
 }
 
-// The network options reference lists exactly the options tslink parses.
+// The network options reference lists exactly the options tslink parses, but
+// for the removed tslink.loginserver, parsed only to refuse the network.
 func TestNetworkOptionsMatchReference(t *testing.T) {
 	var keys []string
 	for key := range networkOptions {
-		keys = append(keys, key)
+		if key != LoginServerOption {
+			keys = append(keys, key)
+		}
 	}
 	slices.Sort(keys)
 	if got := referenceKeys(t, "network-options.md"); !slices.Equal(got, keys) {

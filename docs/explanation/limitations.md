@@ -62,8 +62,8 @@ first node in the admin console. See [Troubleshooting](../guides/troubleshoot.md
 ## headscale
 
 tslink is built and tested for the control server of Tailscale. It also works with
-[headscale](https://github.com/juanfont/headscale) through `tslink.loginserver`, and the end-to-end test runs against
-headscale. Support for headscale is best-effort:
+[headscale](https://github.com/juanfont/headscale) through the plugin setting `TSLINK_LOGIN_SERVER`, and the
+end-to-end test runs against headscale. Support for headscale is best-effort:
 
 - Features that headscale does not have, such as Tailscale Services, are not available.
 - A change does not make tslink worse with Tailscale to make it better with headscale.

@@ -10,10 +10,12 @@ import (
 
 // The options of a tslink network, as docker network create --opt passes them.
 const (
-	AuthKeyOption     = "tslink.authkey"
-	TagsOption        = "tslink.tags"
-	EphemeralOption   = "tslink.ephemeral"   // for keys that do not say so themselves
-	LoginServerOption = "tslink.loginserver" // a control server other than Tailscale's
+	AuthKeyOption   = "tslink.authkey"
+	TagsOption      = "tslink.tags"
+	EphemeralOption = "tslink.ephemeral" // for keys that do not say so themselves
+	// LoginServerOption is no longer supported: the control server is the
+	// plugin setting LoginServerSetting. A network with it is refused.
+	LoginServerOption = "tslink.loginserver"
 	MTUOption         = "com.docker.network.driver.mtu"
 )
 
@@ -46,13 +48,15 @@ var networkOptions = map[string]func(o *NetworkOptions, v string) error{
 		o.Tags = ParseTags(v)
 		return nil
 	},
-	// NewNetwork validates these two
+	// NewNetwork validates it
 	EphemeralOption: func(o *NetworkOptions, v string) error {
 		o.Ephemeral = v
 		return nil
 	},
-	LoginServerOption: func(o *NetworkOptions, v string) error {
-		o.LoginServer = v
+	// The network is refused, by its creation and its endpoints: one created
+	// before the option was removed is rebuilt all the same
+	LoginServerOption: func(o *NetworkOptions, _ string) error {
+		o.loginServerOption = true
 		return nil
 	},
 	MTUOption: func(o *NetworkOptions, v string) error {

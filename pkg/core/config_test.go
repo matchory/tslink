@@ -66,7 +66,7 @@ func TestLoadConfigIgnoresDownloadSettings(t *testing.T) {
 	t.Cleanup(func() { logger.SetOutput(os.Stdout) })
 	t.Setenv("TS_VERSION", "1.76.6")
 	t.Setenv("TS_PATH", "/opt/tailscale/bin")
-	LoadConfig()
+	mustLoadConfig(t)
 	for _, want := range []string{"Ignoring TS_VERSION=1.76.6", "Ignoring TS_PATH=/opt/tailscale/bin"} {
 		if !strings.Contains(log.String(), want) {
 			t.Errorf("log does not contain %q:\n%s", want, log.String())
@@ -76,11 +76,11 @@ func TestLoadConfigIgnoresDownloadSettings(t *testing.T) {
 
 func TestLoadConfigDataDir(t *testing.T) {
 	t.Setenv("TS_DATA_DIR", "")
-	if cfg := LoadConfig(); cfg.DataDir != "/data" {
+	if cfg := mustLoadConfig(t); cfg.DataDir != "/data" {
 		t.Errorf("without TS_DATA_DIR: config %+v, want DataDir /data", cfg)
 	}
 	t.Setenv("TS_DATA_DIR", "/var/lib/tslink")
-	if cfg := LoadConfig(); cfg.DataDir != "/var/lib/tslink" {
+	if cfg := mustLoadConfig(t); cfg.DataDir != "/var/lib/tslink" {
 		t.Errorf("config %+v, want DataDir from TS_DATA_DIR", cfg)
 	}
 }
@@ -92,7 +92,7 @@ func TestLoadConfigIsolateHostTailnet(t *testing.T) {
 		"": true, "true": true, "false": false, "FALSE": false, "0": true, "no": true,
 	} {
 		t.Setenv(IsolateHostTailnetSetting, value)
-		cfg := LoadConfig()
+		cfg := mustLoadConfig(t)
 		if cfg.IsolateHostTailnet != want {
 			t.Errorf("%s=%q: IsolateHostTailnet = %v, want %v",
 				IsolateHostTailnetSetting, value, cfg.IsolateHostTailnet, want)
@@ -110,7 +110,7 @@ func TestLoadConfigWireGuardPorts(t *testing.T) {
 		"41000-42000": netutil.DefaultPortRange, // tailscaled's own port
 	} {
 		t.Setenv(WireGuardPortsSetting, value)
-		cfg := LoadConfig()
+		cfg := mustLoadConfig(t)
 		if cfg.WireGuardPorts != want {
 			t.Errorf("%s=%q: WireGuardPorts = %v, want %v",
 				WireGuardPortsSetting, value, cfg.WireGuardPorts, want)
@@ -132,7 +132,7 @@ func TestLoadConfigHostEndpoints(t *testing.T) {
 		"10.10.0.2,":                          {}, // an empty entry
 	} {
 		t.Setenv(HostEndpointsSetting, value)
-		cfg := LoadConfig()
+		cfg := mustLoadConfig(t)
 		if cfg.HostEndpoints.Off != want.Off || !slices.Equal(cfg.HostEndpoints.Addrs, want.Addrs) {
 			t.Errorf("%s=%q: HostEndpoints = %+v, want %+v",
 				HostEndpointsSetting, value, cfg.HostEndpoints, want)
@@ -166,12 +166,46 @@ func TestLoadConfigLogLevel(t *testing.T) {
 		"error+8": slog.LevelInfo, // slog's offsets are not accepted
 	} {
 		t.Setenv(LogLevelSetting, value)
-		if got := LoadConfig().LogLevel; got != want {
+		if got := mustLoadConfig(t).LogLevel; got != want {
 			t.Errorf("%s=%q: LogLevel = %v, want %v", LogLevelSetting, value, got, want)
 		}
 		if !logger.Get().Enabled(t.Context(), want) || want > slog.LevelDebug &&
 			logger.Get().Enabled(t.Context(), want-1) {
 			t.Errorf("%s=%q: the logger does not log from %v on", LogLevelSetting, value, want)
+		}
+	}
+}
+
+func mustLoadConfig(t *testing.T) *Config {
+	t.Helper()
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cfg
+}
+
+// The control server is a plugin setting. An invalid one fails loading the
+// configuration: falling back to Tailscale's would send it the keys meant
+// for another server.
+func TestLoadConfigLoginServer(t *testing.T) {
+	for value, want := range map[string]string{
+		"":                   "",
+		"https://hs.example": "https://hs.example",
+	} {
+		t.Setenv(LoginServerSetting, value)
+		if got := mustLoadConfig(t).LoginServer; got != want {
+			t.Errorf("%s=%q: LoginServer = %q, want %q", LoginServerSetting, value, got, want)
+		}
+	}
+	for _, value := range []string{
+		"hs.example", "ftp://hs.example", "https://", "http://hs.example:8080",
+	} {
+		t.Setenv(LoginServerSetting, value)
+		if _, err := LoadConfig(); err == nil ||
+			!strings.Contains(err.Error(), LoginServerSetting) {
+			t.Errorf("%s=%q: LoadConfig() = %v, want an error naming the setting",
+				LoginServerSetting, value, err)
 		}
 	}
 }

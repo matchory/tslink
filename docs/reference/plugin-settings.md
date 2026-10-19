@@ -9,6 +9,7 @@ is disabled. See [Change a setting](../guides/install-and-upgrade.md#change-a-se
 | [`shared.source`](#sharedsource) | A directory on the host | `/var/lib`, which sets none |
 | [`TSLINK_ISOLATE_HOST_TAILNET`](#tslink_isolate_host_tailnet) | `true` or `false` | `true` |
 | [`TSLINK_TAG_SCOPE`](#tslink_tag_scope) | `exact` or `prefix` | `exact` |
+| [`TSLINK_LOGIN_SERVER`](#tslink_login_server) | An `https` URL, or `http` with an IP address | Tailscale's control server |
 | [`TSLINK_WIREGUARD_PORTS`](#tslink_wireguard_ports) | A port range `first-last` | `61000-65535` |
 | [`TSLINK_HOST_ENDPOINTS`](#tslink_host_endpoints) | `auto`, `off`, or up to 3 IPv4 addresses | `auto` |
 | [`TSLINK_LOG_LEVEL`](#tslink_log_level) | `debug`, `info`, `warn` or `error` | `info` |
@@ -62,6 +63,22 @@ Sets which tags a stack can use with the cluster credential: `exact` or `prefix`
 > With `prefix`, a stack can use the base tag of a stack with a longer name. For example, stack `a` can use
 > `tag:a-b`, the base tag of stack `a-b`. If a stack needs more than one tag, give its network its own
 > `tslink.authkey`.
+
+## TSLINK_LOGIN_SERVER
+
+The URL of the control server that all nodes of the plugin log in to, for example a
+[headscale](https://github.com/juanfont/headscale) server. Leave it empty for the control server of Tailscale. The URL
+must use `https` with a hostname or IP address, or `http` with an IP address, such as `http://10.0.0.5:8080` or
+`http://[fd00::5]:8080`, and must not contain a username or password. For other values, including `http` with a
+hostname such as `localhost`, the plugin does not start.
+
+> [!NOTE]
+> tailscaled resolves the name of the control server with the DNS servers of the container, which a stack can set.
+> Over `https`, the server's certificate proves its identity. Over `http`, nothing does, so a stack could direct a
+> name to a server of its own and receive the keys of its nodes.
+
+The setting applies to all networks on the host and all credentials, the cluster credential included. A network
+cannot set a control server of its own.
 
 ## TSLINK_WIREGUARD_PORTS
 

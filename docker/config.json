@@ -108,6 +108,12 @@
 			"value": "exact"
 		},
 		{
+			"name": "TSLINK_LOGIN_SERVER",
+			"description": "Control server every node of the plugin logs in to, such as a headscale server: an https URL, or an http URL with an IP address as its host; empty for Tailscale's",
+			"settable": ["value"],
+			"value": ""
+		},
+		{
 			"name": "TSLINK_WIREGUARD_PORTS",
 			"description": "Host UDP ports, first-last, that containers' tailscaled leave the host on, one for each container; keep it outside the kernel's ephemeral range and free of host services",
 			"settable": ["value"],

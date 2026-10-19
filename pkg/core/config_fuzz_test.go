@@ -1,16 +1,18 @@
 package core
 
 import (
+	"net/netip"
 	"net/url"
 	"strings"
 	"testing"
 )
 
 // FuzzParseNetworkOptions checks what ParseNetworkOptions hands on from
-// network options: the key, login server and ephemeral setting unchanged,
-// tags as single non-empty elements of a comma-separated list, an MTU in
-// range or an error, and a login server ValidateLoginServer accepts only if
-// it is an http or https URL with a host.
+// network options: the key and ephemeral setting unchanged, tags as single
+// non-empty elements of a comma-separated list, an MTU in range or an error,
+// a login server option marked as given whatever its value, and a login
+// server ValidateLoginServer accepts only if it is an https URL with a host,
+// or an http URL with an IP address as its host, without userinfo.
 //
 // Guards: G3
 func FuzzParseNetworkOptions(f *testing.F) {
@@ -25,7 +27,7 @@ func FuzzParseNetworkOptions(f *testing.F) {
 		if (err != nil) != (ParseMTU(mtu) == 0) {
 			t.Fatalf("MTU %q: error %v", mtu, err)
 		}
-		if o.AuthKey != key || o.LoginServer != login || o.Ephemeral != ephemeral {
+		if o.AuthKey != key || o.Ephemeral != ephemeral || !o.loginServerOption {
 			t.Fatalf("ParseNetworkOptions changed a value: %+v", o)
 		}
 		for _, tag := range o.Tags {
@@ -38,7 +40,11 @@ func FuzzParseNetworkOptions(f *testing.F) {
 		}
 		if login != "" && ValidateLoginServer(login) == nil {
 			u, err := url.Parse(login)
-			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			if err != nil || u.Host == "" || u.User != nil {
+				t.Fatalf("ValidateLoginServer accepted %q", login)
+			}
+			_, ipErr := netip.ParseAddr(u.Hostname())
+			if u.Scheme != "https" && (u.Scheme != "http" || ipErr != nil) {
 				t.Fatalf("ValidateLoginServer accepted %q", login)
 			}
 		}

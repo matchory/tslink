@@ -50,6 +50,12 @@ type timing struct {
 	// control to fetch the drained Service list.
 	drainAckFloor   time.Duration
 	drainAckTimeout time.Duration
+
+	// Advertising a Service waits advertiseAckTimeout for control to fetch
+	// the node's Service list, and without a fetch advertises it anew, the
+	// Service unadvertised for advertiseNudgeGap in between.
+	advertiseAckTimeout time.Duration
+	advertiseNudgeGap   time.Duration
 }
 
 var defaultTiming = timing{
@@ -68,6 +74,8 @@ var defaultTiming = timing{
 	controlSync:                2 * time.Second,
 	drainAckFloor:              time.Second,
 	drainAckTimeout:            10 * time.Second,
+	advertiseAckTimeout:        15 * time.Second,
+	advertiseNudgeGap:          2 * time.Second,
 }
 
 // times returns a copy of the config's timing, or of the defaults without

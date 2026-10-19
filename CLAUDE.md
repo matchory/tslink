@@ -142,7 +142,9 @@ API). The login waits on the IPN bus for Running, and when logging in as a new d
 `tslink.serve.<port>`) each get a `serviceBackend` (`pkg/tailscale/backend.go`): its serve config, advertisement,
 certificate lease and wait, and approval check. The backends share the supervisor's `serviceGate`. A backend whose
 configuration fails is retried in place (`retryLater`), with a status warning until it succeeds; only tags and MagicDNS,
-which all need, fail the start.
+which all need, fail the start. After advertising, a backend waits for control to fetch the node's Service list; control
+was seen to skip that fetch after a plugin restart, leaving the host inactive. Without a fetch within 15 s it
+unadvertises and advertises the Service again, up to 3 times (`confirmAdvertisedLater`).
 
 **Readiness endpoint**: with the label `tslink.health=<port>`, `Endpoint.startHealth` serves `GET /ready` on that port
 of the container's loopback, from a listener the plugin opens in the container's netns (`netutil.ListenInNetNS`).

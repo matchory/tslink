@@ -12,17 +12,7 @@ Install the tslink plugin on a host, upgrade it, and change its settings.
 
 ## Steps
 
-1. Create the data directory:
-
-   ```bash
-   sudo install -d -m 0755 /var/lib/docker-plugins/tailscale
-   ```
-
-   The plugin does not enable without this directory.
-
-   On macOS, do the step in [macOS](#macos) instead.
-
-2. Find the architecture of the host:
+1. Find the architecture of the host:
 
    ```bash
    uname -m
@@ -30,7 +20,7 @@ Install the tslink plugin on a host, upgrade it, and change its settings.
 
    If the output is `x86_64`, use `amd64`. If the output is `aarch64` or `arm64`, use `arm64`.
 
-3. Select an image tag. Docker plugins have no multi-architecture images, so each tag contains the architecture:
+2. Select an image tag. Docker plugins have no multi-architecture images, so each tag contains the architecture:
 
    | Tag | Content |
    | --- | --- |
@@ -38,28 +28,21 @@ Install the tslink plugin on a host, upgrade it, and change its settings.
    | `latest-<arch>` | The newest release |
    | `main-<arch>` | The `main` branch |
 
-4. Install the plugin with the alias `tslink`:
+3. Install the plugin with the alias `tslink`:
 
    ```bash
    docker plugin install --alias tslink --grant-all-permissions \
      ghcr.io/matchory/tslink:<version>-amd64
    ```
 
-   On an ARM host, use `<version>-arm64`. Docker enables the plugin when the installation is complete.
+   On an ARM host, use `<version>-arm64`. Docker enables the plugin when the installation is complete. The plugin
+   creates its data directory, `/var/lib/docker-plugins/tailscale`, when it starts. Versions up to v0.3.4 do not
+   enable without it: for them, create it first with `sudo install -d -m 0755 /var/lib/docker-plugins/tailscale`.
 
    > [!NOTE]
    > Docker stores the alias with the tag `latest`. Thus networks and stack files use the driver name
    > `tslink:latest` for all versions and architectures. Plugin commands accept `tslink`, but the driver name of a
    > network must be complete.
-
-### macOS
-
-On macOS, the data directory must be in the Linux VM of OrbStack or Docker Desktop, not on the Mac. Create it with a
-container, then continue with step 2:
-
-```bash
-docker run --rm --privileged -v /var/lib:/var/lib alpine mkdir -p /var/lib/docker-plugins/tailscale
-```
 
 ### Upgrade
 
@@ -84,7 +67,7 @@ docker run --rm --privileged -v /var/lib:/var/lib alpine mkdir -p /var/lib/docke
    having changed nothing. In a script piped to it, it reads the script's next line as its answer, so the commands
    after it do not run.
 
-   `docker plugin upgrade` keeps the plugin's settings but resets the source of its mounts. If you set
+   `docker plugin upgrade` keeps the plugin's settings but resets the source of its mounts to their defaults. If you set
    [`shared.source`](../reference/plugin-settings.md#sharedsource), set it again before you enable the plugin, as
    above. Otherwise leave out that command. Without it, the host uses certificates of its own and gets them again from
    Let's Encrypt.

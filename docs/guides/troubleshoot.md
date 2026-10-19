@@ -33,7 +33,7 @@ Find the symptom below, then do the checks in the sequence of the table. Before 
 
 | Cause | Check | Fix |
 | --- | --- | --- |
-| The data directory does not exist | `ls -d /var/lib/docker-plugins/tailscale` | Create it: `sudo install -d -m 0755 /var/lib/docker-plugins/tailscale`. On macOS, see [macOS](install-and-upgrade.md#macos). |
+| The plugin cannot create or mount its data directory | `tslink:` in the Docker daemon log, for example `journalctl -u docker \| grep tslink:` | Fix the cause the message names, for example a full or read-only `/var/lib`. |
 
 ## `docker network create` fails
 

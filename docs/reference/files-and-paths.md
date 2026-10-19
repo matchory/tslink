@@ -21,7 +21,7 @@ plugin, the data directory is `/data`. An endpoint is the connection of one cont
 directories, because a Unix socket path can have only 108 bytes. `<hostname>` and `<stack>` must start with a
 letter or a digit, and contain only letters, digits, `.`, `_` and `-`.
 
-The data directory must exist before you install the plugin. Do not delete it while the plugin is installed.
+The plugin creates the data directory, with mode 0755, when it starts. Do not delete it while the plugin is installed.
 
 ## State directory
 

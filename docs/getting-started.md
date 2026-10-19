@@ -13,22 +13,14 @@ over HTTPS from another device in the tailnet.
 
 ## 1. Install the plugin
 
-1. Create the data directory:
-
-   ```bash
-   sudo install -d -m 0755 /var/lib/docker-plugins/tailscale
-   ```
-
-   On a Mac, use the command in [macOS](guides/install-and-upgrade.md#macos) instead.
-
-2. Install the plugin. On an ARM host or an Apple silicon Mac, replace `amd64` with `arm64`:
+1. Install the plugin. On an ARM host or an Apple silicon Mac, replace `amd64` with `arm64`:
 
    ```bash
    docker plugin install --alias tslink --grant-all-permissions \
      ghcr.io/matchory/tslink:latest-amd64
    ```
 
-3. Make sure that the plugin is enabled:
+2. Make sure that the plugin is enabled:
 
    ```bash
    docker plugin ls

@@ -39,6 +39,7 @@ properties of the two models, see [Security model](../explanation/security-model
 3. On each host, write the OAuth client secret to the cluster credential file. Do not append parameters:
 
    ```bash
+   install -d -m 0755 /var/lib/docker-plugins/tailscale
    install -m 0600 /dev/stdin /var/lib/docker-plugins/tailscale/oauth-client.secret <<<"$SECRET"
    ```
 

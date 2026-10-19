@@ -38,9 +38,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 - The `tslink.loginserver` network option. The control server is now the
-  plugin setting `TSLINK_LOGIN_SERVER`, for every network on the host; an
-  invalid URL keeps the plugin from starting. Recreate networks that set the
-  option without it.
+  plugin setting `TSLINK_LOGIN_SERVER`, for every network on the host: an
+  `https` URL, or an `http` URL with an IP address, since tailscaled resolves
+  names with the container's DNS servers and plain http does not
+  authenticate the server. Any other value keeps the plugin from starting.
+  Recreate networks that set the option without it.
 
 ### Fixed
 

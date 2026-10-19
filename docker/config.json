@@ -109,7 +109,7 @@
 		},
 		{
 			"name": "TSLINK_LOGIN_SERVER",
-			"description": "Control server every node of the plugin logs in to, an http or https URL such as a headscale server's; empty for Tailscale's",
+			"description": "Control server every node of the plugin logs in to, such as a headscale server: an https URL, or an http URL with an IP address as its host; empty for Tailscale's",
 			"settable": ["value"],
 			"value": ""
 		},

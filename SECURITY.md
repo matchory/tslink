@@ -93,7 +93,9 @@ tasks. With the cluster credential, a stack's nodes get only the tag
 `exact`; `prefix` also allows `tag:<stack>-*`, which lets a stack claim a
 longer-named stack's base tag. Networks outside a stack cannot use the
 cluster credential. The control server is the operator's choice, a plugin
-setting; a stack network cannot name one.
+setting; a stack network cannot name one. An `http` control server must be
+an IP address: tailscaled resolves names with the container's DNS servers,
+which a stack sets, and plain http does not authenticate the server.
 
 A stack can label any Service name; whether control makes its nodes backends
 depends on the tailnet policy's auto-approvers (E8).

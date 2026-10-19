@@ -23,9 +23,11 @@ the other tests: [docs/testing.md](../../docs/testing.md).
     (tcp:80), node → callee (tcp:80, the leak path) and node → node (tcp:5201, icmp)
   - `autoApprovers.services` letting `tag:tslink-test-callee` host `svc:tslink-test-callee` and
     `svc:tslink-test-other`; `svc:tslink-test-mixed` needs none, tslink must refuse to host it.
-    With autoApprovers, R10 skips its check of a revoked approval: revoking does not undo them
+    No autoApprovers for `svc:tslink-test-manual`: R10 approves and revokes its host through the
+    API, and revoking does not undo an approval autoApprovers gave
   - the Services `svc:tslink-test-callee` with the ports tcp:80 and tcp:443, and
-    `svc:tslink-test-other` with tcp:80
+    `svc:tslink-test-other` with tcp:80; R10 creates `svc:tslink-test-manual` (tcp:80) if it is
+    missing
   - optional, for the red team's `test/security/redteam/G5-canaries.sh` to read the task nodes'
     peerapi `/v0/env`: a grant node → callee with `"ip": ["tcp:*"]` and
     `"app": {"https://tailscale.com/cap/debug-peer": [{}]}`, and `nodeAttrs` giving
@@ -50,8 +52,8 @@ the other tests: [docs/testing.md](../../docs/testing.md).
 | `TSLINK_TEST_SSH_CONFIG` | `test/cluster/ssh_config` | SSH config whose hosts are the nodes |
 | `TSLINK_TEST_DIR` | `~/.tslink-test` | credentials, API token cache, SSH state |
 | `TSLINK_TEST_TAG` | `tag:tslink-test` | tag prefix: `-caller`, `-callee`, `-nogrant`, `-node` |
-| `TSLINK_TEST_SVC` | `svc:tslink-test` | Service prefix: `-callee`, `-other`, `-mixed` |
-| `TSLINK_TEST_SERVICES` | the three of `TSLINK_TEST_SVC` | the Services `cleanup.sh` deletes |
+| `TSLINK_TEST_SVC` | `svc:tslink-test` | Service prefix: `-callee`, `-other`, `-mixed`, `-manual` |
+| `TSLINK_TEST_SERVICES` | the four of `TSLINK_TEST_SVC` | the Services `cleanup.sh` deletes |
 | `TSLINK_TEST_API` | `https://api.tailscale.com/api/v2` | Tailscale API |
 | `TSLINK_TEST_TAILNET` | `-` | tailnet; `-` is the API client's |
 | `TSLINK_TEST_MTU` | `1450` | MTU of the stacks' tslink networks (suits the Hetzner provisioner) |
@@ -97,7 +99,8 @@ whose Services, grants and autoApprovers exist (`deploy` renames the Services in
 label keys after it), e.g.
 `TSLINK_TEST_SVC=svc:tslink-r7 TSLINK_TEST_SERVICES="svc:tslink-r7-callee svc:tslink-r7-other"
 ./regress.sh --cases R7`. A Service whose name is over the limit does not start: its replicas wait
-for their certificate (`429 ... rateLimited` in `tailscaled.log`).
+for their certificate (`429 ... rateLimited` in `tailscaled.log`). R10 creates its
+`<prefix>-manual` Service itself; no autoApprovers may cover it.
 
 R6 and R11 upgrade the plugin one node at a time (`ONE_BY_ONE=1 ./install-plugin.sh`), as the
 upgrade guide does: each node's endpoints run again before the next node's plugin stops, which

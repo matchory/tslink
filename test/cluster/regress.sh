@@ -20,6 +20,7 @@ M=${MGR:-mgr}
 TN=$TSLINK_TEST_TAILNET
 SVC_C=$TSLINK_TEST_SVC-callee
 SVC_O=$TSLINK_TEST_SVC-other
+SVC_M=$TSLINK_TEST_SVC-manual
 L=/var/lib/docker-plugins/tailscale/plugin.log
 FAILS=0
 UPGRADE=
@@ -35,7 +36,7 @@ CASES=(
 	"R7 several named Services per task: both VIPs answer, HTTPS has the Service's certificate, both replicas approved; with a shared directory, one certificate, advertised only once it exists"
 	"R8 removing a Service's label drains it from the old tasks before their logout, without failing the other Service"
 	"R9 refused label combinations fail their endpoint, naming the labels, without a device; legacy labels cleared next to a named one serve it"
-	"R10 /ready reports each Service, keeps ready while one loses its approval, answers 200 at once after a plugin restart and 503 drained while stopping"
+	"R10 /ready reports each Service; a host of a Service without autoApprovers answers 503 awaiting-approval until approved through the API, then 200, and keeps 200 once the approval is revoked, its services showing it; 200 at once after a plugin restart and 503 drained while stopping"
 	"R11 an upgrade from v0.3.2 passes R6's checks with legacy HTTPS tasks, named labels work after it, and a downgrade advertises none of them (--upgrade only)"
 	"R12 each task device has exactly its network's tag and is ephemeral, no test key outlives its expiry, the cluster credential refuses a network without tags and a tag outside the stack's scope"
 	"R13 a non-ephemeral task whose device was deleted comes back after a restart as a new device the caller reaches"
@@ -438,27 +439,67 @@ r9() {
 	stack_rm mixed
 }
 
-# R10. /ready per Service and the latch (multi.yml): 200 with both Services ready; with one
-#      Service's approval revoked, services shows it while state stays ready; after a plugin
-#      restart, each task's first answer is 200 within 1 s; a stopping task answers 503 drained
-# r10_unapproved <node> <host> <node ID>: with $SVC_O's approval of the host revoked, /ready shows
-# it in services and stays ready, as the container's other Service is
-r10_unapproved() {
-	local line v
-	"$B/tsapi" POST "/tailnet/$TN/services/$SVC_O/device/$3/approved" '{"approved":false}' >/dev/null
-	sleep 5
-	# a latched endpoint answers from its cache, refreshed in the background: the second answer is current
-	"$B/cxs" "$1" multi_web "$B/ready.sh" 9002 >/dev/null
+# R10. /ready per Service and the latch: 200 with both of multi.yml's Services ready; on
+#      manual.yml's task, whose Service $SVC_M no autoApprovers approve (revoking an approval does
+#      not undo theirs), 503 awaiting-approval, 200 once approved through the API, and, latched,
+#      200 ready with services showing it awaiting-approval once the approval is revoked; after a
+#      plugin restart, each multi task's first answer is 200 within 1 s; a stopping task answers
+#      503 drained
+manual_up() { [ "$(running manual | grep -c " $SVC_M\$")" = 1 ]; }
+# manual_ready <node>: the manual task's /ready answers 200 ready
+manual_ready() { [ "$("$B/cxs" "$1" manual_web "$B/ready.sh" 9002 | awk '{ print $2, $4 }')" = "200 ready" ]; }
+# manual_ready_line <node>: a current /ready line of the manual task: a latched endpoint answers
+# from its cache, refreshed in the background, so the second answer is current
+manual_ready_line() {
+	"$B/cxs" "$1" manual_web "$B/ready.sh" 9002 >/dev/null
 	sleep 1
-	line=$("$B/cxs" "$1" multi_web "$B/ready.sh" 9002)
+	"$B/cxs" "$1" manual_web "$B/ready.sh" 9002
+}
+# approve <svc> <node ID> true|false: approve the node as the Service's host, or revoke that
+approve() { "$B/tsapi" POST "/tailnet/$TN/services/$1/device/$2/approved" "{\"approved\":$3}"; }
+r10_manual() {
+	local n host id line v
+	# PUT creates a Service that does not exist; the name in the body must match the path's
+	if [ "$("$B/tsapi" GET "/tailnet/$TN/services/$SVC_M" | jq -r '.name // empty')" != "$SVC_M" ]; then
+		"$B/tsapi" PUT "/tailnet/$TN/services/$SVC_M" "$(jq -nc --arg s "$SVC_M" \
+			'{name: $s, ports: ["tcp:80"], comment: "tslink regress.sh R10: approved by hand only"}')" >/dev/null
+	fi
+	v=$("$B/tsapi" GET "/tailnet/$TN/services/$SVC_M" | jq -c '{name, ports}')
+	check "R10 $SVC_M exists ($v)" "$([ "$(jq -r .name <<<"$v")" = "$SVC_M" ] && echo ok || echo "not created")"
+	"$B/deploy" manual callee >/dev/null
+	if ! wait_for 300 manual_up; then
+		check "R10 the manual task advertises $SVC_M" "not within 300 s: $(running manual | tr '\n' ';')"
+		stack_rm manual
+		return
+	fi
+	read -r n _ host _ <<<"$(running manual | head -1)"
+	id=$(node_id_of "$host")
+	v=$("$B/tsapi" GET "/tailnet/$TN/services/$SVC_M/device/$id/approved" | jq -c .)
+	echo "INFO  R10 approval of $host ($id) for $SVC_M before the case approves it: $v"
+	if [ "$(jq -r .autoApproved <<<"$v")" = true ]; then
+		check "R10 $SVC_M is not auto-approved" "autoApprovers approve it: remove them from the policy"
+		stack_rm manual
+		return
+	fi
+	[ "$(jq -r .approved <<<"$v")" != true ] || approve "$SVC_M" "$id" false >/dev/null
+	sleep 10
+	line=$(manual_ready_line "$n")
+	check "R10 $SVC_M unapproved on $host: 503 awaiting-approval ($line)" "$([ "$(awk '{ print $2, $4 }' <<<"$line")" = "503 awaiting-approval" ] && echo ok || echo "want 503 awaiting-approval")"
+	echo "INFO  R10 approved $host for $SVC_M through the API: $(approve "$SVC_M" "$id" true | jq -c .)"
+	wait_for 120 manual_ready "$n"
+	line=$(manual_ready_line "$n")
+	check "R10 $SVC_M approved on $host: 200 ready ($line)" "$([ "$(awk '{ print $2, $4 }' <<<"$line")" = "200 ready" ] && echo ok || echo "want 200 ready within 120 s")"
+	echo "INFO  R10 revoked $host's approval for $SVC_M through the API: $(approve "$SVC_M" "$id" false | jq -c .)"
+	sleep 10
+	line=$(manual_ready_line "$n")
 	v=ok
-	if [ "$(awk '{ print $2, $4 }' <<<"$line")" != "200 ready" ] || [ "$(svc_state "$line" "$SVC_O")" = ready ] ||
-		[ "$(svc_state "$line" "$SVC_C")" != ready ]; then v=$line; fi
-	check "R10 $SVC_O unapproved on $2: services shows it, state stays ready" "$v"
-	"$B/tsapi" POST "/tailnet/$TN/services/$SVC_O/device/$3/approved" '{"approved":true}' >/dev/null
+	if [ "$(awk '{ print $2, $4 }' <<<"$line")" != "200 ready" ] ||
+		[ "$(svc_state "$line" "$SVC_M")" != awaiting-approval ]; then v="want 200 ready, services $SVC_M awaiting-approval"; fi
+	check "R10 $SVC_M revoked on $host: latched 200 ready, services shows it awaiting-approval ($line)" "$v"
+	stack_rm manual
 }
 r10() {
-	local n host id line v c code t
+	local n host line v c code t
 	up_multi || return
 	read -r n _ host _ <<<"$(running multi | head -1)"
 	line=$("$B/cxs" "$n" multi_web "$B/ready.sh" 9002)
@@ -467,13 +508,7 @@ r10() {
 		[ "$(svc_state "$line" "$SVC_O")" != ready ]; then v=$line; fi
 	check "R10 /ready on $host: 200 with both Services ready" "$v"
 
-	id=$(node_id_of "$host")
-	# Revoking an approval the policy's autoApprovers gave changes nothing
-	if [ "$("$B/tsapi" GET "/tailnet/$TN/services/$SVC_O/device/$id/approved" | jq -r '.autoApproved')" = true ]; then
-		echo "SKIP  R10 $SVC_O unapproved on $host: autoApprovers approve it, and revoking does not undo that"
-	else
-		r10_unapproved "$n" "$host" "$id"
-	fi
+	r10_manual
 
 	readylogs start multi_web
 	sleep 2
@@ -494,7 +529,10 @@ r10() {
 	readylogs start multi_web
 	scale multi_web 0
 	sleep 30
-	v=$(readylogs show multi_web | awk '$4 == "503" && $6 == "drained" { print $1 }' | sort -u | grep -c .)
+	# readylogs keeps its lines on the node: Swarm removes the containers of a scaled-down service
+	line=$(readylogs show multi_web)
+	echo "INFO  R10 /ready lines while stopping, per container: $(awk '{ n[$1 " " $2]++ } END { for (k in n) printf "%s=%d;", k, n[k] }' <<<"$line")"
+	v=$(awk '$4 == "503" && $6 == "drained" { print $1 " " $2 }' <<<"$line" | sort -u | grep -c .)
 	check "R10 both stopping tasks answered 503 drained ($v)" "$([ "$v" = 2 ] && echo ok || echo "$v")"
 	stack_rm multi
 }

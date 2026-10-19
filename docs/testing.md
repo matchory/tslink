@@ -83,8 +83,10 @@ checks these properties, as the cases R1 to R17 (`regress.sh --list` prints them
    node is logged out, and the other Service fails no request.
 9. Labels that conflict, legacy and named Service labels or a named one with `tslink.direct=true`, fail the endpoint
    with an error that names them, and no device comes up. Legacy labels cleared to `""` do not conflict.
-10. `/ready` reports each Service. It stays 200 when one Service loses its approval, is 200 within 1 s after a
-    plugin restart, and answers 503 `drained` while the task stops.
+10. `/ready` reports each Service. A host of a Service that no autoApprovers approve answers 503
+    `awaiting-approval` until it is approved through the API, then 200, and stays 200 when the approval is revoked,
+    listing the Service as `awaiting-approval`. `/ready` is 200 within 1 s after a plugin restart, and answers 503
+    `drained` while the task stops.
 11. An upgrade from v0.3.2 keeps what 6 checks, with legacy HTTPS tasks, and named labels work after it. A
     downgrade, which is not supported, advertises none of the named labels' Services.
 12. Each task device has exactly the tag of its network and is ephemeral, and no test key outlives its expiry. With

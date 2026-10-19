@@ -217,6 +217,8 @@ profile after the tests: goroutines blocked forever on a channel or lock nothing
   from `<state dir>/tailscaled.sock`
 - Logs: `<state dir>/tailscaled.log` (rotated at 10 MB), `/data/plugin.log` (rotated at 50 MB)
 - Status: `/data/status/<endpoint-id[:12]>.json` while the endpoint exists
+- Certificates (with `shared.source`): `<shared>/certs/by-stack/<stack>/` for stack tasks, `<shared>/certs/` for
+  other containers, linked from `<state dir>/certs`
 
 ## Code Style
 

@@ -89,18 +89,18 @@ func initLogger() {
 }
 
 func runPlugin(id string) {
+	// After the driver, whose configuration sets the log level
+	driver, err := docker.NewDriver()
+	if err != nil {
+		logger.Errorf("Failed to create driver: %v", err)
+		os.Exit(1)
+	}
 	info, _ := debug.ReadBuildInfo()
 	logger.Infof(
 		"Starting Tailscale Docker network plugin, tslink %s, plugin %s",
 		tslinkVersion(version, info),
 		id,
 	)
-
-	driver, err := docker.NewDriver()
-	if err != nil {
-		logger.Errorf("Failed to create driver: %v", err)
-		os.Exit(1)
-	}
 
 	// Set up signal handling for graceful shutdown
 	// A second signal is ignored, as the shutdown is under way

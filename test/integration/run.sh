@@ -726,7 +726,9 @@ docker plugin rm -f "$UPGRADE"
 docker plugin install --alias "$PLUGIN" --grant-all-permissions "$previous"
 # v0.3.4 takes the control server only as a network option, which this build
 # refuses: the upgrade sets the plugin setting and recreates the network
-network e2e-upgrade "$(key "$alice")" --opt tslink.loginserver="$URL"
+# One key for both networks: a network with another key starts its nodes anew
+upgrade_key=$(key "$alice")
+network e2e-upgrade "$upgrade_key" --opt tslink.loginserver="$URL"
 docker run -d --name e2e-upgrade --network e2e-upgrade "$ALPINE" sleep 3600
 upgrade_ip=$(wait_ip e2e-upgrade)
 # node_id NAME: the headscale ID of the node named NAME
@@ -741,7 +743,7 @@ docker plugin set "$PLUGIN" shared.source="$WORK/shared" TSLINK_LOGIN_SERVER="$U
 docker plugin enable "$PLUGIN"
 docker rm -f e2e-upgrade >/dev/null
 docker network rm e2e-upgrade >/dev/null
-network e2e-upgrade "$(key "$alice")"
+network e2e-upgrade "$upgrade_key"
 docker run -d --name e2e-upgrade --network e2e-upgrade "$ALPINE" sleep 3600
 retry 180 has_ip e2e-upgrade || fail "e2e-upgrade got no tailnet IP after the upgrade"
 [ "$(tailnet_ip e2e-upgrade)" = "$upgrade_ip" ] || fail "e2e-upgrade's IP changed: $(tailnet_ip e2e-upgrade)"

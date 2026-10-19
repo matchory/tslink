@@ -71,7 +71,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `https` URL, or an `http` URL with an IP address, since tailscaled resolves
   names with the container's DNS servers and plain http does not
   authenticate the server. Any other value keeps the plugin from starting.
-  Recreate networks that set the option without it.
+  Recreate networks that set the option without it, with the same auth key:
+  with another key, their containers register as new nodes.
 
 ### Fixed
 

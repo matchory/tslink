@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/moby/moby/client/pkg/stringid"
 	"tailscale.com/client/local"
 	"tailscale.com/ipn"
 	"tailscale.com/types/key"
@@ -39,6 +40,8 @@ func (d *daemon) bringUp() error {
 			if d.registeredAsConfigured() {
 				err := d.applySettings()
 				if err == nil {
+					// The status lost the warning with a plugin restart
+					d.checkNodeName(d.ctx)
 					return nil
 				}
 				logger.Warnf("Applying settings failed, logging in again: %v", err)
@@ -248,7 +251,44 @@ func (d *daemon) logIn(withKey, forceReauth bool) error {
 		return err
 	}
 	logger.Infof("Tailscale is up for endpoint %s", d.config.EndpointID)
+	d.checkNodeName(ctx)
 	return nil
+}
+
+// nodeNameWarning is the status warning key for a node control named after
+// its hostname with a suffix.
+const nodeNameWarning = "node-name"
+
+// checkNodeName warns if control named the node <hostname>-N: another node
+// holds the hostname, as the first node of a registration control answered
+// so late that tailscaled was restarted and registered a second. A name
+// without the suffix clears the warning.
+func (d *daemon) checkNodeName(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	st, err := d.lc.StatusWithoutPeers(ctx)
+	if err != nil || st.Self == nil {
+		logger.Debugf("Endpoint %s: cannot read the node's name: %v", d.config.EndpointID, err)
+		return
+	}
+	label, _, _ := strings.Cut(st.Self.DNSName, ".")
+	if !suffixedName(label, d.config.Hostname) {
+		d.warn(nodeNameWarning, "", 0)
+		return
+	}
+	d.warn(nodeNameWarning, fmt.Sprintf(
+		"Endpoint %s: control named the node %q because another node holds %q, such as an "+
+			"orphaned node of a registration control answered late; remove that node in the "+
+			"admin console",
+		stringid.TruncateID(d.config.EndpointID), label, d.config.Hostname,
+	), 0)
+}
+
+// suffixedName reports whether label is hostname with the suffix "-N" that
+// control appends to a name another node holds.
+func suffixedName(label, hostname string) bool {
+	n, ok := strings.CutPrefix(strings.ToLower(label), strings.ToLower(hostname)+"-")
+	return ok && n != "" && strings.Trim(n, "0123456789") == ""
 }
 
 // waitRunning waits on the IPN bus until the node runs and, with newKey, has

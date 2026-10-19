@@ -23,8 +23,16 @@ earlier. `tslink version` shows the version of the Tailscale that the plugin con
 The backends of a Tailscale Service share the certificate of the Service. tslink gets this certificate once. Thus
 only the first deployment of a Service counts against the limits.
 
-If the plugin setting `shared.source` is a volume that all hosts share, tslink gets the certificate once for the
-cluster. Otherwise, each host gets it once.
+If the plugin setting `shared.source` is a volume that all hosts share, tslink gets the certificate once for each
+stack: each stack keeps its certificates in a directory of its own, `certs/by-stack/<stack>/`, so a stack that names
+another stack's Service cannot hold up its certificate. Containers outside a stack share `certs/`. Otherwise, each
+host gets the certificate once.
+
+Thus a Service that moves to another stack gets a new certificate, as in a blue/green deployment with two stacks, or
+when a stack is renamed. Each such move counts against the limit of 5 for each name in a week.
+
+After an upgrade from a version without these directories, a stack takes over a valid certificate from `certs/` for
+its Service, instead of getting a new one.
 
 tslink coordinates the backends only for a Service that serves HTTPS. For a Service that serves only plain HTTP,
 backends that start at the same time can each get a certificate.

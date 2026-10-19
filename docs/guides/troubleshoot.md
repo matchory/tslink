@@ -82,6 +82,7 @@ Find the symptom below, then do the checks in the sequence of the table. Before 
 | Cause | Check | Fix |
 | --- | --- | --- |
 | An earlier node with the same name is still in the tailnet | The admin console shows an offline node with the name | tslink logs out ephemeral nodes that no container uses. For other nodes, remove the old node in the admin console. |
+| The control server answered a registration after more than 5 minutes, and tailscaled registered a second node | A `node-name` warning in the status file, and the admin console shows an offline node with the name | Remove the offline node in the admin console. See [Slow registrations](../explanation/limitations.md#slow-registrations). |
 
 ## Get a new identity for a hostname
 

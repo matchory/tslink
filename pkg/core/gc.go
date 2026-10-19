@@ -35,8 +35,8 @@ const (
 // a container with the same hostname reuses its identity. Anything modified
 // within minAge is kept too, as it may belong to an endpoint still starting,
 // and so is state claimed in claims. Collection claims the state it removes.
-// In the shared certificate directory, it removes certificates and files of
-// names no task uses any more.
+// In the shared certificate directory and each stack's directory in it, it
+// removes certificates and files of names no task uses any more.
 func CollectGarbage(
 	ctx context.Context,
 	cfg *Config,
@@ -83,7 +83,11 @@ func CollectGarbage(
 	}
 
 	if cfg.SharedDir != "" {
-		collectCertificates(filepath.Join(cfg.SharedDir, "certs"), time.Now())
+		certs := filepath.Join(cfg.SharedDir, "certs")
+		stackDirs, _ := filepath.Glob(filepath.Join(certs, "by-stack", "*"))
+		for _, dir := range append([]string{certs}, stackDirs...) {
+			collectCertificates(dir, time.Now())
+		}
 	}
 	wg.Wait()
 }

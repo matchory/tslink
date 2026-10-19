@@ -274,6 +274,36 @@ func stateDirFor(dataDir, stack, hostname string) (string, error) {
 	return filepath.Join(dataDir, "by-stack", stack, hostname), nil
 }
 
+// certsDirFor returns the certificate directory in the shared directory for
+// a container, or "" without a shared directory. Stack tasks get
+// <shared>/certs/by-stack/<stack>, so a stack naming another stack's Service
+// cannot hold the lease to issue its certificate; other containers keep
+// <shared>/certs. The stack name may come from a label, so it may not name a
+// path outside its directory.
+func certsDirFor(sharedDir, stack string) (string, error) {
+	if sharedDir == "" {
+		return "", nil
+	}
+	certs := filepath.Join(sharedDir, "certs")
+	if stack == "" {
+		return certs, nil
+	}
+	if !validHostname.MatchString(stack) {
+		return "", fmt.Errorf("invalid stack name %q", stack)
+	}
+	return filepath.Join(certs, "by-stack", stack), nil
+}
+
+// parentCertsDir returns the shared certificate directory a stack task's
+// directory is in, whose ACME account key and certificates from before
+// per-stack directories it adopts, or "" for other containers.
+func parentCertsDir(sharedDir, stack string) string {
+	if sharedDir == "" || stack == "" {
+		return ""
+	}
+	return filepath.Join(sharedDir, "certs")
+}
+
 // socketPathFor returns the tailscaled socket path for an endpoint. It is kept
 // out of the state directory because Unix socket paths are limited to 108
 // bytes, and stack and hostname can make the state directory longer than that.
@@ -331,10 +361,7 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 	// Copy immutable config needed for supervisor creation
 	endpointID := e.ID
 	dataDir := e.dataDir
-	certsDir := ""
-	if e.sharedDir != "" {
-		certsDir = filepath.Join(e.sharedDir, "certs")
-	}
+	sharedDir := e.sharedDir
 	network := e.Network
 	tags := e.tagsFor(info)
 	vethName := e.vethName
@@ -351,6 +378,10 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 	stateDir, err := e.prepareStateDir(info, network)
 	if err != nil {
 		return err
+	}
+	certsDir, err := certsDirFor(sharedDir, info.Stack)
+	if err != nil {
+		return permanentError{err}
 	}
 
 	logger.Infof(
@@ -371,22 +402,23 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 
 	// Create supervisor (handles daemon lifecycle with auto-recovery)
 	supervisor := tailscale.NewDaemonSupervisor(tailscale.DaemonConfig{
-		EndpointID:    endpointID,
-		StateDir:      stateDir,
-		SocketPath:    socketPathFor(dataDir, endpointID),
-		Hostname:      info.Hostname,
-		AuthKey:       authKey,
-		CertsDir:      certsDir,
-		NetNSPath:     sandboxKey,
-		TailscaledBin: tailscaledBin,
-		Tags:          tags,
-		Services:      info.Services,
-		Endpoints:     info.Endpoints,
-		Direct:        info.Direct,
-		LoginServer:   e.Network.LoginServer, // set once, at creation
-		ContainerDNS:  info.DNS,
-		HostEndpoints: func() ([]netip.AddrPort, error) { return netutil.HostEndpoints(vethName) },
-		Warn:          e.setWarning,
+		EndpointID:     endpointID,
+		StateDir:       stateDir,
+		SocketPath:     socketPathFor(dataDir, endpointID),
+		Hostname:       info.Hostname,
+		AuthKey:        authKey,
+		CertsDir:       certsDir,
+		ParentCertsDir: parentCertsDir(sharedDir, info.Stack),
+		NetNSPath:      sandboxKey,
+		TailscaledBin:  tailscaledBin,
+		Tags:           tags,
+		Services:       info.Services,
+		Endpoints:      info.Endpoints,
+		Direct:         info.Direct,
+		LoginServer:    e.Network.LoginServer, // set once, at creation
+		ContainerDNS:   info.DNS,
+		HostEndpoints:  func() ([]netip.AddrPort, error) { return netutil.HostEndpoints(vethName) },
+		Warn:           e.setWarning,
 	})
 
 	tailscaleIP, err := e.startSupervisor(supervisor)

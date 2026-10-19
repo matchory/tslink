@@ -17,6 +17,7 @@ jobs:
       matrix:
         include:
           - { package: ./pkg/core, target: FuzzStateDirFor }
+          - { package: ./pkg/core, target: FuzzCertsDirFor }
           - { package: ./pkg/core, target: FuzzParseNetworkOptions }
           - { package: ./pkg/docker, target: FuzzParseServeValue }
           - { package: ./pkg/tailscale, target: FuzzServeConfig }

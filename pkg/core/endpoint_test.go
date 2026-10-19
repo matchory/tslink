@@ -51,6 +51,52 @@ func TestStateDirFor(t *testing.T) {
 	}
 }
 
+// TestCertsDirFor checks that each stack keeps its certificates and leases
+// in a directory of its own, so a stack naming another's Service cannot hold
+// that Service's certificate lease, and that no name leaves <shared>/certs.
+//
+// Guards: G4
+func TestCertsDirFor(t *testing.T) {
+	tests := []struct {
+		shared, stack, want string
+	}{
+		{"", "", ""},
+		{"", "billing", ""},
+		{"/shared", "", "/shared/certs"},
+		{"/shared", "billing", "/shared/certs/by-stack/billing"},
+		{"/shared", "shop", "/shared/certs/by-stack/shop"},
+	}
+	for _, tt := range tests {
+		got, err := certsDirFor(tt.shared, tt.stack)
+		if err != nil || got != tt.want {
+			t.Errorf(
+				"certsDirFor(%q, %q) = %q, %v; want %q",
+				tt.shared,
+				tt.stack,
+				got,
+				err,
+				tt.want,
+			)
+		}
+	}
+	for _, stack := range []string{"..", ".", "a/b", "../x", "-x", "a\x00b", "a\nb"} {
+		if got, err := certsDirFor("/shared", stack); err == nil {
+			t.Errorf("certsDirFor(%q) = %q, want error", stack, got)
+		}
+	}
+
+	// A stack's directory adopts from the shared one; nothing else does
+	for _, tt := range [][3]string{
+		{"/shared", "billing", "/shared/certs"},
+		{"/shared", "", ""},
+		{"", "billing", ""},
+	} {
+		if got := parentCertsDir(tt[0], tt[1]); got != tt[2] {
+			t.Errorf("parentCertsDir(%q, %q) = %q, want %q", tt[0], tt[1], got, tt[2])
+		}
+	}
+}
+
 func TestStartTailscaleRejectsForeignStack(t *testing.T) {
 	e := &Endpoint{
 		ID:         "0123456789abcdef",

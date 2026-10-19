@@ -50,6 +50,12 @@ type DaemonConfig struct {
 	// if message is empty; nil ignores warnings
 	Warn func(key, message string)
 
+	// ParentCertsDir is the shared certificate directory when CertsDir is a
+	// stack's directory in it: its ACME account key and the certificates it
+	// held before stacks had directories of their own are adopted. Empty for
+	// none.
+	ParentCertsDir string
+
 	gate   *serviceGate // Shared by the daemons of one supervisor; newDaemon creates one if nil
 	timing *timing      // Shared like gate; nil for defaultTiming
 }
@@ -163,7 +169,8 @@ func (d *daemon) Start() error {
 		d.config.NetNSPath,
 	)
 
-	if err := LinkCertsDir(d.config.StateDir, d.config.CertsDir); err != nil {
+	err := LinkCertsDir(d.config.StateDir, d.config.CertsDir, d.config.ParentCertsDir)
+	if err != nil {
 		return err
 	}
 	d.noteSurvivingState()

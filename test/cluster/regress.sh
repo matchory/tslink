@@ -40,7 +40,7 @@ CASES=(
 	"R11 an upgrade from v0.3.2 passes R6's checks with legacy HTTPS tasks, named labels work after it, and a downgrade advertises none of them (--upgrade only)"
 	"R12 each task device has exactly its network's tag and is ephemeral, no test key outlives its expiry, the cluster credential refuses a network without tags and a tag outside the stack's scope"
 	"R13 a non-ephemeral task whose device was deleted comes back after a restart as a new device the caller reaches"
-	"R14 a task without dns: resolves through daemon.json's resolver; one with dns: [100.100.100.100, <resolver>] resolves tailnet and site names"
+	"R14 a task with dns: [100.100.100.100, <site resolver>] resolves tailnet, site and public names through tailscaled, which forwards to the site resolver alone, where a task without dns: does not resolve the site name; once daemon.json names the resolver, a task without dns: resolves through it, and the mixed list still resolves tailnet and site names"
 	"R15 at TSLINK_LOG_LEVEL=warn on one node, the restarted plugin logs nothing at info"
 	"R16 tslink diag --preflight on every node finds nothing violated but E6, which a plugin built from a directory violates"
 	"R17 callers on different nodes ping each other directly, over the node's address and its mapped port, not DERP, also after iptables -F on one node and one watchdog run"
@@ -649,11 +649,35 @@ docker rm -f tslink-test-dns >/dev/null
 systemctl restart docker
 EOF_NODE
 }
-# R14. DNS (T8): on one worker, daemon.json's dns names a resolver (dnsmasq on docker0's address)
-#      that alone knows a site name; a task without dns: resolves it through Docker, and a task
-#      with dns: [100.100.100.100, <resolver>] resolves it and a tailnet name
+# r14_ts_resolv <node> <swarm-service>: the resolv.conf tslink wrote for the tailscaled of the
+# service's task on the node (<state dir>/resolv.conf), and the task's own ExtServers line
+r14_ts_resolv() {
+	# shellcheck disable=SC2016 # runs on the node
+	"$B/s" "$1" "SVC=$2 sh -s" <<'EOF_NODE'
+D=/var/lib/docker-plugins/tailscale
+c=$(docker ps -q -f label=com.docker.swarm.service.name=$SVC | head -1)
+for e in $(docker inspect -f '{{range .NetworkSettings.Networks}}{{.EndpointID}} {{end}}' "$c"); do
+	f=$D/status/$(echo "$e" | cut -c1-12).json
+	[ -f "$f" ] || continue
+	cat "$D/by-stack/$(jq -r .stack "$f")/$(jq -r .hostname "$f")/resolv.conf"
+done
+docker exec "$c" grep -h 'ExtServers' /etc/resolv.conf
+EOF_NODE
+}
+# R14. DNS (T8). Expected, per docs/explanation/architecture.md#dns and tailscaledResolvConf: a
+#      container's own dns: list is tailscaled's first source of upstreams, without Tailscale's
+#      100.100.100.100 and Docker's 127.0.0.11. Docker's embedded resolver sends each query to the
+#      first server, 100.100.100.100, and accepts its answer; so with dns: [100.100.100.100,
+#      <site resolver>], tailscaled answers tailnet names and forwards every other name to the
+#      site resolver alone, not to the host's or daemon.json's resolvers. On one worker, a resolver
+#      (dnsmasq on docker0's address) alone knows a site name and forwards the rest to 1.1.1.1.
+#      First, with daemon.json as it is: the mixed task resolves the site, a tailnet and a public
+#      name, tailscaled's resolv.conf names only the site resolver, and the task without dns:
+#      does not resolve the site name (the control: only the site resolver knows it). Then with
+#      daemon.json's dns naming the resolver: the task without dns: resolves the site name through
+#      Docker, and the mixed one the site and tailnet names
 r14() {
-	local n h r k site=site.tslink-test.internal
+	local n h r k v site=site.tslink-test.internal
 	n=$("$B/nodes" | grep -vx "$M" | tail -1)
 	h=$("$B/s" "$n" hostname)
 	k=$(running_on "$n")
@@ -668,6 +692,14 @@ docker run -d -q --name tslink-test-dns --restart unless-stopped --network host 
 f=/etc/docker/daemon.json b=/root/daemon.json.tslink-test
 rm -f "$b"
 [ ! -f "$f" ] || cp "$f" "$b"
+EOF_NODE
+	TSLINK_TEST_PIN=$h TSLINK_TEST_DNS=$r "$B/deploy" dnsmix caller >/dev/null
+	wait_for 300 same "$((k + 2))" running_on "$n"
+	r14_mixed_first "$n" "$r" "$site"
+	stack_rm dnsmix
+	"$B/s" "$n" "R=$r sh -s" <<'EOF_NODE'
+set -e
+f=/etc/docker/daemon.json b=/root/daemon.json.tslink-test
 { cat "$b" 2>/dev/null || echo '{}'; } | jq --arg r "$R" '.dns = [$r]' >"$f.new"
 mv "$f.new" "$f"
 systemctl restart docker
@@ -675,14 +707,26 @@ EOF_NODE
 	wait_for 300 same "$k" running_on "$n" || echo "NOTE  R14 $n: $(running_on "$n") of $k endpoints running after the Docker restart"
 	TSLINK_TEST_PIN=$h TSLINK_TEST_DNS=$r "$B/deploy" dnsmix caller >/dev/null
 	wait_for 300 same "$((k + 2))" running_on "$n"
-	r=$("$B/cxs" "$n" dnsmix_plain "$B/dns.sh" "$site")
-	check "R14 without dns:, $site through daemon.json's resolver ($r)" "$([ "$r" = "ok " ] && echo ok || echo "$r")"
-	r=$("$B/cxs" "$n" dnsmix_mixed "$B/dns.sh" "$site" "${SVC_C#svc:}.$SUFFIX")
-	check "R14 with dns: [100.100.100.100, resolver], the site and tailnet names ($r)" "$([ "$r" = "ok ok " ] && echo ok || echo "$r")"
+	v=$("$B/cxs" "$n" dnsmix_plain "$B/dns.sh" "$site")
+	check "R14 without dns:, $site through daemon.json's resolver ($v)" "$([ "$v" = "ok " ] && echo ok || echo "$v")"
+	v=$("$B/cxs" "$n" dnsmix_mixed "$B/dns.sh" "$site" "${SVC_C#svc:}.$SUFFIX")
+	check "R14 with dns: [100.100.100.100, resolver], the site and tailnet names ($v)" "$([ "$v" = "ok ok " ] && echo ok || echo "$v")"
 	stack_rm dnsmix
 	r14_restore "$n"
 	trap - EXIT
 	wait_for 300 same "$k" running_on "$n" || echo "NOTE  R14 $n: $(running_on "$n") of $k endpoints running after the Docker restart"
+}
+# r14_mixed_first <node> <resolver> <site>: R14's checks before daemon.json names the resolver
+r14_mixed_first() {
+	local v
+	v=$("$B/cxs" "$1" dnsmix_plain "$B/dns.sh" "$3")
+	check "R14 control: without dns: and the resolver in daemon.json, $3 does not resolve ($v)" "$([ "$v" = "FAIL($3) " ] && echo ok || echo "want FAIL($3)")"
+	v=$("$B/cxs" "$1" dnsmix_mixed "$B/dns.sh" "$3" "${SVC_C#svc:}.$SUFFIX" example.com)
+	check "R14 with dns: [100.100.100.100, $2] alone, the site, tailnet and public names ($v)" "$([ "$v" = "ok ok ok " ] && echo ok || echo "$v")"
+	v=$(r14_ts_resolv "$1" dnsmix_mixed)
+	echo "INFO  R14 the mixed task: $(tr '\n' ';' <<<"$v")"
+	v=$(grep '^nameserver' <<<"$v" | tr '\n' ';')
+	check "R14 the mixed task's tailscaled forwards to $2 alone ($v)" "$([ "$v" = "nameserver $2;" ] && echo ok || echo "want nameserver $2")"
 }
 
 # R15. TSLINK_LOG_LEVEL=warn on one worker: the plugin, restarted with it, logs no info line,

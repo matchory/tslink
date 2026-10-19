@@ -93,8 +93,9 @@ checks these properties, as the cases R1 to R17 (`regress.sh --list` prints them
     the cluster credential, a network without `tslink.tags` is refused, and a tag outside the stack's scope never
     starts tailscaled.
 13. A node whose device was deleted comes back as a new device after a restart, and callers reach it.
-14. A task without `dns:` resolves through the resolver of Docker's `daemon.json`. A task with
-    `dns: [100.100.100.100, <resolver>]` resolves both tailnet names and the resolver's names.
+14. A task with `dns: [100.100.100.100, <resolver>]` resolves tailnet names, the resolver's names and public
+    names, and its tailscaled forwards to that resolver alone, whose names a task without `dns:` does not resolve.
+    Once Docker's `daemon.json` names the resolver, a task without `dns:` resolves through it.
 15. At `TSLINK_LOG_LEVEL=warn`, the plugin logs no info lines.
 16. `tslink diag --preflight` finds no violated property on any node, except E6 for a plugin created from a
     directory.

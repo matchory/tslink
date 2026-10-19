@@ -72,6 +72,23 @@ func get(t *testing.T, method, url string) (int, string) {
 	return resp.StatusCode, r.State
 }
 
+// tryGet sends a GET to url and returns the status code, or the error of a
+// request that got no response.
+func tryGet(t *testing.T, url string) (int, error) {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return resp.StatusCode, nil
+}
+
 // /ready answers 503 until the node is ready, then 200, and stays 200 once
 // it was: a plugin restart or a briefly lost connection to control must not
 // make Swarm replace the task. Draining and leaving end it.
@@ -249,17 +266,19 @@ func TestHealthLimitsConnections(t *testing.T) {
 	}
 	conns = nil
 
+	// While the server drains the flood's closed connections from the
+	// listen backlog, a new connection can be reset: retry until the deadline
 	deadline := time.Now().Add(1 * time.Second)
 	var code int
+	var err error
 	for time.Now().Before(deadline) {
-		code, _ = get(t, http.MethodGet, url+"/ready")
-		if code == http.StatusOK {
+		if code, err = tryGet(t, url+"/ready"); code == http.StatusOK {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	if code != http.StatusOK {
-		t.Errorf("GET after flood closed: %d, want 200", code)
+		t.Errorf("GET after flood closed: %d (%v), want 200", code, err)
 	}
 }
 

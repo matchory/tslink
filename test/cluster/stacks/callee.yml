@@ -7,6 +7,9 @@ services:
     labels:
       tslink.service: ${TSLINK_TEST_SVC:-svc:tslink-test}-callee
       tslink.serve.80: http:80
+      # The Service also has 443, which the multi stack serves over HTTPS. Control was seen to route
+      # no traffic to a host serving only some of its ports; TCP needs no certificate.
+      tslink.serve.443: tcp:80
       tslink.direct: "false"
     deploy:
       replicas: 3

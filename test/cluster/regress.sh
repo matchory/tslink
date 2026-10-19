@@ -31,7 +31,7 @@ CASES=(
 	"R3 DNS from overlay and tslink tasks using quad-100"
 	"R4 a rolling update fails at most 3 VIP requests per caller"
 	"R5 draining and reactivating a worker leaves no orphaned devices"
-	"R6 a plugin upgrade keeps every identity and advertised Service, fails at most 3 VIP requests per caller and /ready only goes unanswered (--upgrade only)"
+	"R6 a plugin upgrade, one node at a time, keeps every identity and advertised Service, fails at most 3 VIP requests per caller and /ready only goes unanswered or drained (--upgrade only)"
 	"R7 several named Services per task: both VIPs answer, HTTPS has the Service's certificate, both replicas approved; with a shared directory, one certificate, advertised only once it exists"
 	"R8 removing a Service's label drains it from the old tasks before their logout, without failing the other Service"
 	"R9 refused label combinations fail their endpoint, naming the labels, without a device; legacy labels cleared next to a named one serve it"
@@ -84,7 +84,6 @@ test_devices() {
 orphans() {
 	devices | jq --arg since "$1" --arg t "$T" '[.devices[]|select(any(.tags[]?; startswith($t+"-c") or .==$t+"-nogrant") and (.connectedToControl|not) and .isEphemeral and (.lastSeen > $since))]|length'
 }
-# running <stack>: "node endpoint hostname advertised" of the stack's running endpoints
 # probe_fails <node> [log]: failed requests in the probe log of the node's caller
 probe_fails() {
 	"$B/cx" "$1" caller_client "awk \"\\\$3!=200\" ${2:-/tmp/probe.log} | wc -l" | tr -d ' '
@@ -99,22 +98,35 @@ up_multi() {
 	check "multi tasks advertise both Services" "not within 300 s: $(running multi | tr '\n' ';')"
 	return 1
 }
-approved() { "$B/tsapi" GET "/tailnet/$TN/services/$1/device/$2/approved" | jq -r '.approved'; }
+# approved <svc> <node>: whether control approved the node as the Service's host, by hand or by
+# autoApprovers
+approved() { "$B/tsapi" GET "/tailnet/$TN/services/$1/device/$2/approved" | jq -r '.approved or .autoApproved'; }
 node_ids() {
 	devices | jq -r --arg h "$1" '.devices[]|select(.connectedToControl and (.hostname|startswith($h)))|.nodeId'
 }
 node_id_of() { devices | jq -r --arg h "$1" '.devices[]|select(.connectedToControl and .hostname == $h)|.nodeId'; }
-# readylogs start|stop|show [swarm-service]: ready.sh logging to /tmp/ready.log in each running
-# container with tslink.health on every node, or each of the service; show prints "node container
-# epoch code seconds state services" from each container that has a log, running or exited
+# readylogs start|stop|show [swarm-service]: ready.sh in each running container with
+# tslink.health on every node, or each of the service, five times a second. Its lines go to
+# /tmp/tslink-ready/<service>.<container>.log on the node, which outlives the container: Swarm
+# removes the containers of a service scaled down. show prints "node container epoch code seconds
+# state services" of each log of the service, or of all; start clears them first
 readylogs() {
-	local n f=label=tslink.health
-	[ -n "${2:-}" ] && f=label=com.docker.swarm.service.name=$2
+	local n f=label=tslink.health g='*'
+	if [ -n "${2:-}" ]; then
+		f=label=com.docker.swarm.service.name=$2
+		g=$2
+	fi
 	for n in $("$B/nodes"); do
 		case $1 in
-		start) "$B/s" "$n" "cat >/tmp/ready.sh; for c in \$(docker ps -q -f $f); do p=\$(docker inspect -f '{{index .Config.Labels \"tslink.health\"}}' \$c); docker exec \$c rm -f /tmp/ready.log; docker cp /tmp/ready.sh \$c:/tmp/ready.sh && docker exec -d \$c sh /tmp/ready.sh \$p /tmp/ready.log; done" <"$B/ready.sh" ;;
-		stop) "$B/s" "$n" "for c in \$(docker ps -q -f $f); do docker exec \$c pkill -f /tmp/ready.log; done" </dev/null ;;
-		show) "$B/s" "$n" "for c in \$(docker ps -aq -f $f); do docker cp \$c:/tmp/ready.log - 2>/dev/null | tar -xO | sed \"s/^/$n \$c /\"; done" </dev/null ;;
+		start) "$B/s" "$n" "cat >/tmp/ready.sh; mkdir -p /tmp/tslink-ready; rm -f /tmp/tslink-ready/$g.*.log
+		  for c in \$(docker ps -q -f $f); do
+		    p=\$(docker inspect -f '{{index .Config.Labels \"tslink.health\"}}' \$c)
+		    s=\$(docker inspect -f '{{index .Config.Labels \"com.docker.swarm.service.name\"}}' \$c)
+		    docker cp /tmp/ready.sh \$c:/tmp/ready.sh &&
+		      nohup docker exec \$c sh /tmp/ready.sh \$p - >/tmp/tslink-ready/\${s:--}.\$c.log 2>/dev/null </dev/null &
+		  done" <"$B/ready.sh" ;;
+		stop) "$B/s" "$n" "for c in \$(docker ps -q -f $f); do docker exec \$c pkill -f '^python3 - [0-9]+ -\$'; done" </dev/null ;;
+		show) "$B/s" "$n" "for l in /tmp/tslink-ready/$g.*.log; do [ -f \"\$l\" ] || continue; c=\${l%.log}; c=\${c##*.}; sed \"s/^/$n \$c /\" \"\$l\"; done" </dev/null ;;
 		esac
 	done
 }
@@ -132,10 +144,10 @@ since_log() {
 		"$B/s" "$n" "grep -a -E '$2' $L" </dev/null | awk -v n="$n" -v since="time=$1" '$1 >= since { print n, $0 }'
 	done
 }
-# upgrade <name>: install $REF under VIP probes and /ready logs (reinstall: fails if it did not
-# take); check that every identity and
+# upgrade <name>: install $REF node by node under VIP probes and /ready logs (reinstall: fails if
+# it did not take); check that every identity and
 # each device's advertised Services survive, that at most 3 VIP requests per caller fail (as in
-# R4) and that /ready answers 200 or, while the plugin is down, nothing
+# R4) and that /ready answers 200 or, while the plugin stops or is down, 503 drained or nothing
 upgrade() {
 	local devs adv n f v
 	devs=$(test_devices)
@@ -144,7 +156,9 @@ upgrade() {
 	"$B/probes" start "$VIP" 2>/dev/null
 	readylogs start
 	sleep 5
-	if ! reinstall "$1" "$REF"; then
+	# One node at a time, as the upgrade guide does: replacing every node at once drains every
+	# replica of a Service together
+	if ! ONE_BY_ONE=1 reinstall "$1" "$REF"; then
 		"$B/probes" stop >/dev/null 2>&1
 		readylogs stop
 		return 1
@@ -164,9 +178,11 @@ upgrade() {
 	v=$(readylogs show)
 	[ -n "$v" ] || echo "NOTE  $1: no task with tslink.health to watch /ready on"
 	echo "INFO  $1: /ready unanswered $(awk '$4 == "000"' <<<"$v" | grep -c .) times (5 a second)"
-	v=$(awk '{ k = $1 " " $2; last[k] = $0 } $4 != "200" && $4 != "000" { bad = bad $0 ";" }
+	echo "INFO  $1: /ready answered 503 drained $(awk '$4 == "503" && $6 == "drained"' <<<"$v" | grep -c .) times"
+	# A stopping plugin drains its Service backends, so /ready answers 503 drained meanwhile
+	v=$(awk '{ k = $1 " " $2; last[k] = $0 } $4 != "200" && $4 != "000" && !($4 == "503" && $6 == "drained") { bad = bad $0 ";" }
 		END { for (k in last) { split(last[k], f, " "); if (f[4] != "200") bad = bad "last: " last[k] ";" }; printf "%s", bad }' <<<"$v")
-	check "$1: /ready answered 200 or nothing, and 200 at the end" "${v:-ok}"
+	check "$1: /ready answered 200, nothing or 503 drained, and 200 at the end" "${v:-ok}"
 }
 node_up() { [ -n "$(node_id_of "$1")" ]; }
 # new_node <hostname> <node ID>: a device of that hostname with another node ID is connected
@@ -425,6 +441,22 @@ r9() {
 # R10. /ready per Service and the latch (multi.yml): 200 with both Services ready; with one
 #      Service's approval revoked, services shows it while state stays ready; after a plugin
 #      restart, each task's first answer is 200 within 1 s; a stopping task answers 503 drained
+# r10_unapproved <node> <host> <node ID>: with $SVC_O's approval of the host revoked, /ready shows
+# it in services and stays ready, as the container's other Service is
+r10_unapproved() {
+	local line v
+	"$B/tsapi" POST "/tailnet/$TN/services/$SVC_O/device/$3/approved" '{"approved":false}' >/dev/null
+	sleep 5
+	# a latched endpoint answers from its cache, refreshed in the background: the second answer is current
+	"$B/cxs" "$1" multi_web "$B/ready.sh" 9002 >/dev/null
+	sleep 1
+	line=$("$B/cxs" "$1" multi_web "$B/ready.sh" 9002)
+	v=ok
+	if [ "$(awk '{ print $2, $4 }' <<<"$line")" != "200 ready" ] || [ "$(svc_state "$line" "$SVC_O")" = ready ] ||
+		[ "$(svc_state "$line" "$SVC_C")" != ready ]; then v=$line; fi
+	check "R10 $SVC_O unapproved on $2: services shows it, state stays ready" "$v"
+	"$B/tsapi" POST "/tailnet/$TN/services/$SVC_O/device/$3/approved" '{"approved":true}' >/dev/null
+}
 r10() {
 	local n host id line v c code t
 	up_multi || return
@@ -436,17 +468,12 @@ r10() {
 	check "R10 /ready on $host: 200 with both Services ready" "$v"
 
 	id=$(node_id_of "$host")
-	"$B/tsapi" POST "/tailnet/$TN/services/$SVC_O/device/$id/approved" '{"approved":false}' >/dev/null
-	sleep 5
-	# a latched endpoint answers from its cache, refreshed in the background: the second answer is current
-	"$B/cxs" "$n" multi_web "$B/ready.sh" 9002 >/dev/null
-	sleep 1
-	line=$("$B/cxs" "$n" multi_web "$B/ready.sh" 9002)
-	v=ok
-	if [ "$(awk '{ print $2, $4 }' <<<"$line")" != "200 ready" ] || [ "$(svc_state "$line" "$SVC_O")" = ready ] ||
-		[ "$(svc_state "$line" "$SVC_C")" != ready ]; then v=$line; fi
-	check "R10 $SVC_O unapproved on $host: services shows it, state stays ready" "$v"
-	"$B/tsapi" POST "/tailnet/$TN/services/$SVC_O/device/$id/approved" '{"approved":true}' >/dev/null
+	# Revoking an approval the policy's autoApprovers gave changes nothing
+	if [ "$("$B/tsapi" GET "/tailnet/$TN/services/$SVC_O/device/$id/approved" | jq -r '.autoApproved')" = true ]; then
+		echo "SKIP  R10 $SVC_O unapproved on $host: autoApprovers approve it, and revoking does not undo that"
+	else
+		r10_unapproved "$n" "$host" "$id"
+	fi
 
 	readylogs start multi_web
 	sleep 2

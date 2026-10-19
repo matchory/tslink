@@ -1,6 +1,6 @@
 # Two Tailscale Services in each task, with the labels tslink.service.<name>.serve.<port> (regress.sh
-# R7, R8, R10, R11). Compose does not interpolate label keys, so the Service names are the default
-# ones of TSLINK_TEST_SVC.
+# R7, R8, R10, R11). Compose does not interpolate label keys: deploy renames tslink-test- in them
+# after TSLINK_TEST_SVC.
 services:
   web:
     image: python:3.13-alpine

@@ -14,7 +14,14 @@ L=(--label purpose=tslink-test)
 ME=$(curl -s4 https://ifconfig.me)
 N=(mgr w1 w2 w3 w4)
 
-hcloud ssh-key create --name tslink-test --public-key-from-file ~/.ssh/id_ed25519.pub "${L[@]}"
+# Hetzner refuses a second copy of a public key: use the one another testbed registered, if any
+FP=$(ssh-keygen -E md5 -lf ~/.ssh/id_ed25519.pub | awk '{print $2}')
+KEY=$(hcloud ssh-key list -o noheader -o columns=name,fingerprint |
+	awk -v fp="${FP#MD5:}" '$2 == fp { print $1 }')
+if [ -z "$KEY" ]; then
+	KEY=tslink-test
+	hcloud ssh-key create --name $KEY --public-key-from-file ~/.ssh/id_ed25519.pub "${L[@]}"
+fi
 hcloud network create --name tslink-test --ip-range 10.77.0.0/16 "${L[@]}"
 hcloud network add-subnet tslink-test --type cloud --network-zone eu-central --ip-range 10.77.0.0/24
 hcloud firewall create --name tslink-test "${L[@]}"
@@ -23,7 +30,7 @@ hcloud firewall replace-rules tslink-test --rules-file "$B/.fw.json"
 rm "$B/.fw.json"
 for n in "${N[@]}"; do
 	hcloud server create --name "tslink-test-$n" --type cpx32 --location fsn1 --image ubuntu-24.04 \
-		--ssh-key tslink-test --network tslink-test --firewall tslink-test \
+		--ssh-key "$KEY" --network tslink-test --firewall tslink-test \
 		--user-data-from-file "$B/cloud-init.yaml" "${L[@]}" --label role="$n" >/dev/null &
 done
 wait

@@ -158,6 +158,10 @@ If tslink stopped the node before the control server knew about the drain, calle
 for some minutes. A drain is final: tslink does not make the container a backend again, also after a restart of
 tailscaled.
 
+If the control server has not fetched the drained list after 10 seconds, tslink logs a warning and stops the node
+anyway. Callers can then send traffic to the stopped node until the control server removes it. In the cluster test,
+this occurred once, and no request failed.
+
 When Docker stops, it sends no more events. The
 [drain drop-in](../guides/zero-downtime-updates.md#install-the-drain-drop-in) drains the backends of the host before
 Docker stops.

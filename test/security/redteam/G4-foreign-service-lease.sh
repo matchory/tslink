@@ -9,10 +9,12 @@
 #   HTTPS and so holds a certificate lease for its name, which control never lets B issue; then
 #   A (rt-victim, on the callee credential and tag) serves the Service over HTTPS. Both use
 #   tslink.service and tslink.serve.<port>, which the control's release reads too. It gets
-#   through if A's certificate (in certs/by-stack/rt-victim/, or certs/ itself for a release
-#   without per-stack directories) is not issued within TSLINK_REDTEAM_LEASE_WAIT (default 180)
-#   s while B runs. Each attack starts without a certificate for the name, so the probe issues
-#   up to two, as regress.sh R7 issues one.
+#   through if, within TSLINK_REDTEAM_LEASE_WAIT (default 180) s while B runs, A neither holds a
+#   lease for the name in a directory of its own (certs/by-stack/rt-victim/) nor has its
+#   certificate (there, or in certs/ itself for a release without per-stack directories): A
+#   holding its own lease is issuing, which a slow DNS-01 validation can make take minutes.
+#   Each attack starts without a certificate for the name, so the probe issues up to two, as
+#   regress.sh R7 issues one.
 # Control: v0.3.4, the release whose stacks share one certificate directory, installed with the
 #   shared directory. Teardown: the build under test (TSLINK_REDTEAM_REF, default WT) with the
 #   shared directory; at exit, both stacks removed, the build under test reinstalled without
@@ -76,10 +78,14 @@ networks:
 EOF
 }
 leased() { tn_s "$M" "find $CERTS -name '$dom.lease' | grep -q ."; }
-issued() { tn_s "$M" "test -e $CERTS/by-stack/rt-victim/$dom.crt || test -e $CERTS/$dom.crt"; }
+# issuing: A holds a lease of its own for the name, or has its certificate
+issuing() {
+	tn_s "$M" "test -e $CERTS/by-stack/rt-victim/$dom.lease || test -e $CERTS/by-stack/rt-victim/$dom.crt ||
+		test -e $CERTS/$dom.crt"
+}
 
-# blocks_victim: deploys B, then A once B holds the lease, and whether A's certificate is not
-# issued while B runs; removes both, and the name's certificate files
+# blocks_victim: deploys B, then A once B holds the lease, and whether A does not start issuing
+# its certificate while B runs; removes both, and the name's certificate files
 blocks_victim() {
 	local held=0
 	tn_s "$M" "find $CERTS -name '$dom.*' -delete" || return 1
@@ -90,8 +96,8 @@ blocks_victim() {
 		return 1
 	fi
 	if https_stack callee | tn_deploy rt-victim callee >/dev/null &&
-		! wait_for "$WAIT" issued; then
-		echo "rt-victim's certificate for $dom not issued within $WAIT s while rt-lease ran"
+		! wait_for "$WAIT" issuing; then
+		echo "rt-victim neither issued nor took a lease of its own for $dom within $WAIT s while rt-lease ran"
 		held=1
 	fi
 	stack_rm rt-lease

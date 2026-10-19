@@ -22,7 +22,10 @@ the other tests: [docs/testing.md](../../docs/testing.md).
     caller → `svc:tslink-test-callee` (tcp:80, tcp:443), caller → `svc:tslink-test-other`
     (tcp:80), node → callee (tcp:80, the leak path) and node → node (tcp:5201, icmp)
   - `autoApprovers.services` letting `tag:tslink-test-callee` host `svc:tslink-test-callee` and
-    `svc:tslink-test-other`; `svc:tslink-test-mixed` needs none, tslink must refuse to host it
+    `svc:tslink-test-other`; `svc:tslink-test-mixed` needs none, tslink must refuse to host it.
+    With autoApprovers, R10 skips its check of a revoked approval: revoking does not undo them
+  - the Services `svc:tslink-test-callee` with the ports tcp:80 and tcp:443, and
+    `svc:tslink-test-other` with tcp:80
   - optional, for the red team's `test/security/redteam/G5-canaries.sh` to read the task nodes'
     peerapi `/v0/env`: a grant node → callee with `"ip": ["tcp:*"]` and
     `"app": {"https://tailscale.com/cap/debug-peer": [{}]}`, and `nodeAttrs` giving
@@ -80,6 +83,19 @@ Services, so they do not run against headscale.
 ./regress.sh --list                # the cases R1 to R17; --cases R7,R8 runs only those
 ./cleanup.sh                       # delete the test devices, Services and keys
 ```
+
+Let's Encrypt issues at most 5 certificates a week for one name. Each deployment of the multi stack
+is new ephemeral nodes, each replica issuing its own certificate for `$TSLINK_TEST_SVC-callee`, so
+R7, R8, R10 and R11 together issue about 12. Run each of them with a `TSLINK_TEST_SVC` of its own,
+whose Services, grants and autoApprovers exist (`deploy` renames the Services in the multi stack's
+label keys after it), e.g.
+`TSLINK_TEST_SVC=svc:tslink-r7 TSLINK_TEST_SERVICES="svc:tslink-r7-callee svc:tslink-r7-other"
+./regress.sh --cases R7`. A Service whose name is over the limit does not start: its replicas wait
+for their certificate (`429 ... rateLimited` in `tailscaled.log`).
+
+R6 and R11 upgrade the plugin one node at a time (`ONE_BY_ONE=1 ./install-plugin.sh`), as the
+upgrade guide does: each node's endpoints run again before the next node's plugin stops, which
+drains that node's Service backends.
 
 `install-plugin.sh` installs the plugin as `tslink` (`tslink:latest`), the name the documented
 `docker plugin install --alias tslink` gives it, and the stacks name the driver `tslink:latest`.

@@ -1,12 +1,15 @@
 #!/bin/sh
 # ready.sh <port> [log]: in a container, GET /ready of tslink's readiness endpoint on <port> and
-# print "<epoch> <code> <seconds> <state> <services>"; code 000 when nothing answers. With a log,
-# append a line to it five times a second until killed.
+# print "<epoch> <code> <seconds> <state> <services>"; code 000 when nothing answers. With a log
+# ("-": standard output), append a line to it five times a second until killed.
 exec python3 - "$@" <<'PY'
 import json, sys, time, urllib.error, urllib.request
 
 port = sys.argv[1]
-log = open(sys.argv[2], "a", buffering=1) if len(sys.argv) > 2 else sys.stdout
+if len(sys.argv) > 2 and sys.argv[2] != "-":
+    log = open(sys.argv[2], "a", buffering=1)
+else:
+    log = sys.stdout
 while True:
     t0 = time.time()
     try:
@@ -21,7 +24,7 @@ while True:
     except ValueError:
         doc = {}
     services = json.dumps(doc.get("services", {}), separators=(",", ":"))
-    print("%.1f %03d %.3f %s %s" % (t0, code, time.time() - t0, doc.get("state", "-"), services), file=log)
+    print("%.1f %03d %.3f %s %s" % (t0, code, time.time() - t0, doc.get("state", "-"), services), file=log, flush=True)
     if len(sys.argv) < 3:
         break
     time.sleep(0.2)

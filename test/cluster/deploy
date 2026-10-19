@@ -14,7 +14,10 @@ vip=
 if grep -q TSLINK_TEST_VIP "$B/stacks/$st.yml"; then
 	vip=${TSLINK_TEST_VIP:-$("$B/tsapi" GET "/tailnet/$TSLINK_TEST_TAILNET/services/$TSLINK_TEST_SVC-callee" | jq -r '.addrs[0] // empty')}
 fi
-scp -q -F "$TSLINK_TEST_SSH_CONFIG" "$B/stacks/$st.yml" "${MGR:-mgr}:/root/$st.yml"
+# Compose does not interpolate label keys: name the Services of tslink.service.<name>.* keys after
+# the prefix here
+sed "s/tslink\.service\.tslink-test-/tslink.service.${TSLINK_TEST_SVC#svc:}-/" "$B/stacks/$st.yml" |
+	"$B/s" "${MGR:-mgr}" "cat >/root/$st.yml"
 {
 	printf 'TSLINK_TEST_TAG=%q\nTSLINK_TEST_SVC=%q\nTSLINK_TEST_MTU=%q\n' \
 		"$TSLINK_TEST_TAG" "$TSLINK_TEST_SVC" "$TSLINK_TEST_MTU"

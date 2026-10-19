@@ -98,7 +98,9 @@ up_multi() {
 	check "multi tasks advertise both Services" "not within 300 s: $(running multi | tr '\n' ';')"
 	return 1
 }
-approved() { "$B/tsapi" GET "/tailnet/$TN/services/$1/device/$2/approved" | jq -r '.approved'; }
+# approved <svc> <node>: whether control approved the node as the Service's host, by hand or by
+# autoApprovers
+approved() { "$B/tsapi" GET "/tailnet/$TN/services/$1/device/$2/approved" | jq -r '.approved or .autoApproved'; }
 node_ids() {
 	devices | jq -r --arg h "$1" '.devices[]|select(.connectedToControl and (.hostname|startswith($h)))|.nodeId'
 }

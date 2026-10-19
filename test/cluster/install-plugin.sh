@@ -44,7 +44,7 @@ rc=0
 settled() { ! "$S" "$1" sh -s <"$B/endpoints.sh" | awk -F'\t' '$4 != "running"' | grep -q .; }
 pids=()
 for h in $("$B/nodes"); do
-	"$S" "$h" "set -e; mkdir -p /var/lib/docker-plugins/tailscale
+	"$S" "$h" "set -e
     if docker plugin inspect $P >/dev/null 2>&1; then docker plugin disable -f $P >/dev/null || true; docker plugin rm -f $P >/dev/null; fi
     docker plugin create $P /root/plugin >/dev/null
     ${PLUGIN_SETTINGS:+docker plugin set $P $PLUGIN_SETTINGS}

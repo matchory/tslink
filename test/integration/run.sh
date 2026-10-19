@@ -14,6 +14,12 @@ DATA=/var/lib/docker-plugins/tailscale
 HEADSCALE_IMAGE=docker.io/headscale/headscale:0.29.4@sha256:8833f828b414c0907b7e5c71da76473216fe17cce0818a166b536ec552c0903f
 ALPINE=alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
 PYTHON=python:3.13-alpine@sha256:2d9aefe2fef018a7eb2c13064c89c71929800fd2e5dccdbf52ea5da5bb8d929a
+# The upgrade test starts from v0.3.4, which mounted the data directory from
+# the host, and upgrades to this build, pushed to a registry on this host
+PREVIOUS_AMD64=ghcr.io/matchory/tslink:v0.3.4-amd64@sha256:ffdcdd93334a41999e6e5f5bad999f8f90ecfd9ff8a9c86d25cae2de53316645
+PREVIOUS_ARM64=ghcr.io/matchory/tslink:v0.3.4-arm64@sha256:70a963fbe7d7c7b75d25ab6d35410924952876f873a1195a9ab7577ada46aa97
+REGISTRY_IMAGE=docker.io/library/registry:3@sha256:ddf754342cfc8acc51a56d5d0ab6af06826461864460636d8bd5c546dab2a7b8
+UPGRADE=127.0.0.1:5000/tslink:e2e
 MARK=tslink-e2e
 # A name only the test's DNS server knows, and its address
 PROBE_NAME=probe.tslink.test
@@ -22,8 +28,8 @@ PROBE_IP=192.0.2.53
 # host, so it must listen on an address other than loopback
 HOST_IP=${HOST_IP:-$(ip -4 route get 1.1.1.1 | awk '{for (i = 1; i < NF; i++) if ($i == "src") print $(i + 1)}')}
 URL=http://$HOST_IP:8080
-CONTAINERS=(e2e-server e2e-unready e2e-client e2e-outsider e2e-ephemeral e2e-late e2e-dns e2e-resolver e2e-sink e2e-raw e2e-hostsvc e2e-custombr)
-NETWORKS=(e2e-alice e2e-bob e2e-ephemeral e2e-nocontrol e2e-custombr)
+CONTAINERS=(e2e-server e2e-unready e2e-client e2e-outsider e2e-ephemeral e2e-late e2e-dns e2e-resolver e2e-sink e2e-raw e2e-hostsvc e2e-custombr e2e-upgrade e2e-registry)
+NETWORKS=(e2e-alice e2e-bob e2e-ephemeral e2e-nocontrol e2e-custombr e2e-upgrade)
 WORK=$(mktemp -d)
 
 log() { printf '\n=== %s\n' "$*"; }
@@ -106,6 +112,7 @@ cleanup() {
 	docker network rm "${NETWORKS[@]}" >/dev/null 2>&1 || true
 	docker plugin disable -f "$PLUGIN" >/dev/null 2>&1 || true
 	docker plugin rm -f "$PLUGIN" >/dev/null 2>&1 || true
+	docker plugin rm -f "$UPGRADE" >/dev/null 2>&1 || true
 	if [ -n "${HOST_TS_PID:-}" ]; then
 		sudo kill "$HOST_TS_PID" 2>/dev/null || true
 		while sudo kill -0 "$HOST_TS_PID" 2>/dev/null; do sleep 1; done
@@ -154,7 +161,8 @@ cp "$ROOT/docker/config.json" "$WORK/plugin/"
 id=$(docker create tslink:rootfs)
 docker export "$id" | sudo tar -x -C "$WORK/plugin/rootfs"
 docker rm "$id" >/dev/null
-sudo mkdir -p "$DATA"
+# The plugin creates its data directory, checked if there is none yet
+fresh_data=$(sudo test -e "$DATA" || echo yes)
 # The CLI packs the rootfs, which is root's like in the image
 sudo docker plugin create "$PLUGIN" "$WORK/plugin"
 
@@ -174,6 +182,26 @@ docker run --rm --entrypoint /tslink tslink:rootfs >/dev/null 2>&1 || rc=$?
 # Docker creates /var/run/docker/netns with the first container
 docker run --rm "$ALPINE" true
 docker plugin enable "$PLUGIN"
+
+log "The plugin sees its data directory, and not the host's /var/lib"
+if [ -n "$fresh_data" ]; then
+	sudo test -d "$DATA" || fail "the plugin did not create $DATA"
+fi
+# plugin_mounts: the mount points of the plugin's process
+plugin_mounts() { sudo awk '{print $5}' "/proc/$(pgrep -xn tslink)/mountinfo"; }
+# no_host_var_lib: whether the plugin has its data directory and no longer
+# sees the host's /var/lib
+no_host_var_lib() {
+	local mounts
+	mounts=$(plugin_mounts)
+	grep -qx /data <<<"$mounts" || fail "the plugin has no mount at /data: $mounts"
+	! grep -qE '^/host/var/lib(/|$)' <<<"$mounts"
+}
+no_host_var_lib || fail "the plugin still sees the host's /var/lib: $(plugin_mounts)"
+# Without shared.source, the host's /var/lib, it has no shared mount
+if plugin_mounts | grep -qx /shared; then
+	fail "the plugin keeps the default shared mount, the host's /var/lib"
+fi
 
 log "Starting headscale at $URL"
 docker run -d --name e2e-headscale --network host \
@@ -671,5 +699,48 @@ probe G5 "an auth key appears in a process's command line or environment" creds_
 probe G5 "an auth key appears in tslink diag output" creds_in_diag
 probe G5 "an auth key appears in a container" creds_in_containers
 run_probes || fail "credentials"
+
+log "An upgrade from the previous release keeps the nodes"
+# The documented upgrade, from a release whose config.json mounted the data
+# directory from the host. docker plugin upgrade replaces the mounts but
+# keeps the environment of the install, and resets shared.source.
+case $(uname -m) in
+x86_64) previous=$PREVIOUS_AMD64 ;;
+aarch64 | arm64) previous=$PREVIOUS_ARM64 ;;
+*) fail "no previous release for $(uname -m)" ;;
+esac
+docker rm -f "${CONTAINERS[@]}" >/dev/null 2>&1 || true
+docker network rm "${NETWORKS[@]}" >/dev/null 2>&1 || true
+docker plugin disable -f "$PLUGIN"
+docker plugin rm -f "$PLUGIN"
+# This build, from a registry: docker plugin upgrade cannot read a directory
+docker run -d --name e2e-registry -p 127.0.0.1:5000:5000 "$REGISTRY_IMAGE" >/dev/null
+retry 30 curl -fsS -o /dev/null http://127.0.0.1:5000/v2/ || fail "the registry did not come up"
+sudo docker plugin create "$UPGRADE" "$WORK/plugin"
+docker plugin push "$UPGRADE"
+docker plugin rm -f "$UPGRADE"
+
+docker plugin install --alias "$PLUGIN" --grant-all-permissions "$previous"
+network e2e-upgrade "$(key "$alice")"
+docker run -d --name e2e-upgrade --network e2e-upgrade "$ALPINE" sleep 3600
+upgrade_ip=$(wait_ip e2e-upgrade)
+# node_id NAME: the headscale ID of the node named NAME
+node_id() { hs nodes list -o json | jq -r --arg n "$1" '[(. // [])[] | select(.given_name == $n)][0].id'; }
+upgrade_id=$(node_id e2e-upgrade)
+echo "e2e-upgrade: node $upgrade_id, $upgrade_ip"
+
+mkdir -p "$WORK/shared"
+docker plugin disable -f "$PLUGIN"
+docker plugin upgrade --grant-all-permissions --skip-remote-check "$PLUGIN" "$UPGRADE"
+docker plugin set "$PLUGIN" shared.source="$WORK/shared"
+docker plugin enable "$PLUGIN"
+retry 180 has_ip e2e-upgrade || fail "e2e-upgrade got no tailnet IP after the upgrade"
+[ "$(tailnet_ip e2e-upgrade)" = "$upgrade_ip" ] || fail "e2e-upgrade's IP changed: $(tailnet_ip e2e-upgrade)"
+[ "$(node_id e2e-upgrade)" = "$upgrade_id" ] || fail "e2e-upgrade's node changed: $(node_id e2e-upgrade)"
+[ "$(nodes_named e2e-upgrade)" = 1 ] || fail "e2e-upgrade registered again"
+docker plugin inspect -f '{{json .Settings.Env}}' "$PLUGIN" | jq -e 'any(. == "TS_DATA_DIR=/data")' >/dev/null ||
+	fail "the upgrade changed TS_DATA_DIR: $(docker plugin inspect -f '{{json .Settings.Env}}' "$PLUGIN")"
+no_host_var_lib || fail "the upgraded plugin still sees the host's /var/lib: $(plugin_mounts)"
+plugin_mounts | grep -qx /shared || fail "the upgraded plugin has no shared mount: $(plugin_mounts)"
 
 log "All end-to-end tests passed"

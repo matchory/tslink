@@ -136,7 +136,10 @@ runs no `tailscale` CLI: serve configs are built with `ipn.ServeConfig`'s helper
 applied as the prefs edit tailscaled would make of it, minus Services: the config file would set those on every start.
 The tags go in the same edit, and the auth key only into the LocalAPI's start request, never into arguments, the
 environment or a file. An OAuth client secret first becomes a single-use key with the tags (`resolveAuthKey`, Tailscale's
-API). The login waits on the IPN bus for Running, and when logging in as a new device for a new node key.
+API). The login waits on the IPN bus for Running, and when logging in as a new device for a new node key. After it,
+and when a node still logged in comes up, a DNS name `<hostname>-N` gets a `node-name` status warning
+(`checkNodeName`): another node holds the name, as the orphan of a registration control answered after the login's
+60 s and 4 min grace, once tailscaled restarted and registered a new node key.
 
 **Services**: a container's Services (`tslink.service.<name>.serve.<port>`, or `tslink.service` with
 `tslink.serve.<port>`) each get a `serviceBackend` (`pkg/tailscale/backend.go`): its serve config, advertisement,

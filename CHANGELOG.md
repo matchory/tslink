@@ -46,7 +46,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of many tasks, restarted tailscaled, which then registered a second node:
   control named it `<hostname>-1`, and the first, offline node kept the
   name (#127). tslink now warns at 60 s and waits up to 4 more minutes for
-  the registration in progress.
+  the registration in progress. A registration answered even later still
+  leaves the orphaned first node; tslink now reports a node named
+  `<hostname>-N` as a `node-name` warning in the status and the log.
 - After a plugin restart, which drains each Service backend on shutdown and
   advertises it again on start, control sometimes never fetched the node's
   new Service list: the host stayed inactive, and a Service with no other

@@ -51,6 +51,14 @@ After a power loss or a crash of dockerd, ephemeral nodes stay in the tailnet, o
 removes them. In the cluster test, this took one hour. When tslink starts again, it logs out the ephemeral nodes
 that no container uses.
 
+## Slow registrations
+
+When a node registers, tslink waits up to 5 minutes for the control server to answer. If the answer comes later,
+tslink restarts tailscaled, which registers a second node. The first node stays in the tailnet, offline, and holds the
+hostname, so the control server names the second node `<hostname>-1`. tslink cannot remove the first node: it has no
+key for it. tslink reports the name as a `node-name` warning in the status file and in the plugin log. Remove the
+first node in the admin console. See [Troubleshooting](../guides/troubleshoot.md#the-node-gets-the-name-hostname-1).
+
 ## headscale
 
 tslink is built and tested for the control server of Tailscale. It also works with

@@ -181,8 +181,19 @@ func (d *daemon) waitBackendState() string {
 // single-use key with the node's tags.
 func (d *daemon) logIn(withKey, forceReauth bool) error {
 	logger.Infof("Bringing up Tailscale for endpoint %s", d.config.EndpointID)
-	ctx, cancel := context.WithTimeout(d.ctx, d.config.times().loginTimeout)
+	tm := d.config.times()
+	ctx, cancel := context.WithTimeout(d.ctx, tm.loginTimeout+tm.loginGrace)
 	defer cancel()
+	// A registration control has not answered yet: tailscaled has not saved the
+	// node's key, so restarting it would register a second node, which control
+	// names <hostname>-1 while the first keeps the name
+	slow := time.AfterFunc(tm.loginTimeout, func() {
+		logger.Warnf(
+			"Endpoint %s: not running %v after the login, waiting up to %v longer for control",
+			d.config.EndpointID, tm.loginTimeout, tm.loginGrace,
+		)
+	})
+	defer slow.Stop()
 
 	// Watch first, or the notifications the login causes may be missed
 	watcher, err := d.lc.WatchIPNBus(ctx, 0)

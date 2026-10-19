@@ -25,8 +25,12 @@ type timing struct {
 	// before it kills it.
 	stopGrace time.Duration
 
-	// loginTimeout bounds a login, from the settings to a running node.
+	// loginTimeout is how long a login, from the settings to a running node,
+	// may take before tslink warns. tailscaled keeps a registration control
+	// has not answered going: the login waits loginGrace longer for it, since
+	// restarting tailscaled would register a second node.
 	loginTimeout time.Duration
+	loginGrace   time.Duration
 
 	// certPollInterval spaces the checks for a certificate, and
 	// certDomainGrace is how long the lease holder waits, unadvertised, for
@@ -67,6 +71,7 @@ var defaultTiming = timing{
 	maxStartupJitter:           500 * time.Millisecond,
 	stopGrace:                  5 * time.Second,
 	loginTimeout:               60 * time.Second,
+	loginGrace:                 4 * time.Minute,
 	certPollInterval:           5 * time.Second,
 	certDomainGrace:            30 * time.Second,
 	certCheckInterval:          time.Hour,

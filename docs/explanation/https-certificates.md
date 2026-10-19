@@ -7,7 +7,9 @@ Encrypt.
 
 Tailscale gets a Let's Encrypt certificate for each name that it serves HTTP on. Since Tailscale 1.100, this is also
 true for plain HTTP. This is a Tailscale bug:
-[tailscale/tailscale#21693](https://github.com/tailscale/tailscale/issues/21693).
+[tailscale/tailscale#21693](https://github.com/tailscale/tailscale/issues/21693). The fix,
+[tailscale/tailscale#21736](https://github.com/tailscale/tailscale/pull/21736), is not in Tailscale 1.104.1 or
+earlier. `tslink version` shows the version of the Tailscale that the plugin contains.
 
 ## Rate limits
 
@@ -23,6 +25,9 @@ only the first deployment of a Service counts against the limits.
 
 If the plugin setting `shared.source` is a volume that all hosts share, tslink gets the certificate once for the
 cluster. Otherwise, each host gets it once.
+
+tslink coordinates the backends only for a Service that serves HTTPS. For a Service that serves only plain HTTP,
+backends that start at the same time can each get a certificate.
 
 ## Names of containers
 

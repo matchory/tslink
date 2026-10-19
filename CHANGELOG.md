@@ -34,6 +34,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   confinement, and E2 a container that mounts the shared certificate
   directory (the plugin's `shared.source`). A deployment that passed before
   may now report "violated".
+- The documentation states that tslink is not tested with Tailnet Lock, and
+  is expected to work under it only with a pre-signed auth key. It also
+  describes failed DNS-01 validations of HTTPS certificates,
+  Services that control does not fetch, and drains that control fetches
+  after tslink's 10 s limit.
 
 ### Fixed
 

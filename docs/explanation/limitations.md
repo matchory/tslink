@@ -69,6 +69,16 @@ headscale. Support for headscale is best-effort:
 - A change does not make tslink worse with Tailscale to make it better with headscale.
 - Issues that occur only with headscale are fixed when possible.
 
+## Tailnet Lock
+
+tslink is not tested with [Tailnet Lock](https://tailscale.com/docs/features/tailnet-lock). The tailscaled of each
+container is a node of its own, and an ephemeral container is a new node each time it starts. With Tailnet Lock, a
+trusted signing key must sign each new node before it can connect to other nodes.
+
+tslink is expected to work only with a reusable auth key that is pre-signed with `tailscale lock sign`. With such a
+key, each node signs its own node key when it registers. tslink is not expected to work with an OAuth client secret
+or the cluster credential: tslink makes auth keys from them, and these keys are not signed.
+
 ## Workload identity federation
 
 tslink does not support workload identity federation. This section describes how it could work.

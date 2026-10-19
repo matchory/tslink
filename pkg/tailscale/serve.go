@@ -398,10 +398,11 @@ func (b *serviceBackend) runAdvertise(ctx context.Context, service string) error
 	}
 	b.d.config.gate.advertised.Store(true)
 	if added {
+		b.markAdvertised(fetches)
 		// ctx ends with this change; the check runs on the daemon's
 		b.confirmAdvertisedLater(service, fetches) //nolint:contextcheck // see above
 	}
-	b.checkApprovalLater()
+	b.checkApprovalLater() //nolint:contextcheck // as is the approval check
 	return nil
 }
 
@@ -461,7 +462,8 @@ func (d *daemon) configureDirectServe() error {
 // checkApprovalLater notes when control has not approved the backend yet, as
 // right after a start, and warns if it still has not after approvalGrace. A
 // Service that does not exist looks the same: control gives the node no
-// addresses for it. One check runs at a time.
+// addresses for it. Each check reads the ports of the Service's definition
+// from Tailscale's API, if it can. One check runs at a time.
 func (b *serviceBackend) checkApprovalLater() {
 	if !b.approvalCheck.CompareAndSwap(false, true) {
 		return
@@ -472,6 +474,7 @@ func (b *serviceBackend) checkApprovalLater() {
 	}
 	b.d.wg.Go(func() {
 		defer b.approvalCheck.Store(false)
+		b.refreshDefinedPorts()
 		if !awaiting() {
 			return
 		}
@@ -480,6 +483,7 @@ func (b *serviceBackend) checkApprovalLater() {
 		if !ctxtime.Sleep(b.d.ctx, grace) {
 			return
 		}
+		b.refreshDefinedPorts()
 		if awaiting() {
 			logger.Warnf(
 				"Service backend registered but pending admin approval after %v, "+

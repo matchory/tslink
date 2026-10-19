@@ -393,6 +393,61 @@ func TestServeReadyKeepsServiceField(t *testing.T) {
 	t.Errorf("after the latch, body = %s, want %s", body, want)
 }
 
+// Before the latch, a Service control has not fetched or whose ports the
+// node does not all serve keeps the endpoint unready; after it, the endpoint
+// stays ready and shows the state under services only.
+func TestHealthLatchKeepsControlStates(t *testing.T) {
+	for _, state := range []tailscale.Readiness{
+		tailscale.ReadyAwaitingControl, tailscale.ReadyPortsUncovered,
+	} {
+		t.Run(string(state), func(t *testing.T) {
+			var unused atomic.Value
+			var calls atomic.Int32
+			unused.Store(tailscale.Ready)
+			e, url := healthEndpoint(t, &unused, &calls)
+			var report atomic.Value
+			report.Store(tailscale.ReadinessReport{
+				State:    state,
+				Services: map[string]tailscale.Readiness{"svc:ai": state},
+			})
+			e.mu.Lock()
+			e.readinessFn = func(context.Context) tailscale.ReadinessReport {
+				return report.Load().(tailscale.ReadinessReport)
+			}
+			e.mu.Unlock()
+			if code, got := get(t, http.MethodGet, url+"/ready"); code != 503 ||
+				got != string(state) {
+				t.Errorf("before the latch: %d %q, want 503 %q", code, got, state)
+			}
+
+			report.Store(tailscale.ReadinessReport{
+				State:    tailscale.Ready,
+				Services: map[string]tailscale.Readiness{"svc:ai": tailscale.Ready},
+			})
+			e.clearReadinessCache()
+			if code, _ := get(t, http.MethodGet, url+"/ready"); code != 200 {
+				t.Fatalf("ready: %d, want 200", code)
+			}
+
+			report.Store(tailscale.ReadinessReport{
+				State:    state,
+				Services: map[string]tailscale.Readiness{"svc:ai": state},
+			})
+			e.clearReadinessCache()
+			want := `{"state":"ready","service":"svc:ai","services":{"svc:ai":"` +
+				string(state) + `"}}`
+			var body string
+			for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
+				if body = getBody(t, url+"/ready"); body == want {
+					return
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			t.Errorf("after the latch, body = %s, want %s", body, want)
+		})
+	}
+}
+
 // A latched endpoint answers at once, without waiting for tailscaled: a
 // tailscaled slow to answer must not fail the container's healthcheck.
 func TestHealthLatchedDoesNotWait(t *testing.T) {

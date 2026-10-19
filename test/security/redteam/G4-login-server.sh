@@ -42,7 +42,7 @@ class H(http.server.BaseHTTPRequestHandler):
         self.send_error(404)
     do_POST = do_GET
 http.server.ThreadingHTTPServer((sys.argv[1], int(sys.argv[2])), H).serve_forever()' \
-	$addr $PORT >/root/rt-listener.log 2>/dev/null </dev/null & echo \$! >/root/rt-listener.pid"
+	$addr $PORT >>/root/rt-listener.log 2>/dev/null </dev/null & echo \$! >/root/rt-listener.pid"
 tn_on_exit "tn_s $M 'kill \$(cat /root/rt-listener.pid) 2>/dev/null; rm -f /root/rt-listener.pid /root/rt-listener.log'"
 tn_on_exit "stack_rm $STACK"
 sleep 2
@@ -75,7 +75,9 @@ revoke_minted() {
 # deployed CHECK: deploys the stack, waits up to 120 s for CHECK, removes it
 deployed() {
 	local out ok=1
-	tn_s "$M" "sed -i '/rt-self/!d' /root/rt-listener.log"
+	# Truncated in place: the listener appends to this file, and a new one (sed -i) would leave
+	# it writing to the old, unlinked one
+	tn_s "$M" ": >/root/rt-listener.log"
 	out=$(
 		tn_deploy "$STACK" - 2>&1 <<EOF
 services:

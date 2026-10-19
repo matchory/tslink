@@ -325,16 +325,23 @@ r6() {
 
 # R7. Several named Services per task (multi.yml), then again with a shared certificate directory
 r7() {
-	local r ro v code dom ids id svc
+	local r ro v code dom ids id svc t
 	# The callee stack's backends serve no HTTPS: let only the multi tasks host the Services
 	r=$(replicas callee_whoami)
 	ro=$(replicas callee_whoami-other)
 	scale callee_whoami 0
 	scale callee_whoami-other 0
 	if up_multi; then
+		# Control routes a VIP to callers some seconds after the host advertised it
 		for v in "$VIP" "$VIP_O"; do
-			code=$(in_caller "curl -s -m5 -o /dev/null -w %{http_code} http://$v/")
-			check "R7 VIP $v answers over HTTP ($code)" "$([ "$code" = 200 ] && echo ok || echo "$code")"
+			t=0
+			until code=$(in_caller "curl -s -m5 -o /dev/null -w %{http_code} http://$v/") && [ "$code" = 200 ] ||
+				[ "$t" -ge 30 ]; do
+				sleep 5
+				t=$((t + 5))
+			done
+			echo "INFO  R7 VIP $v answered $code after about $t s"
+			check "R7 VIP $v answers over HTTP within 30 s ($code)" "$([ "$code" = 200 ] && echo ok || echo "$code")"
 		done
 		# curl checks the certificate against the name: a success means its SAN is the Service's
 		dom=${SVC_C#svc:}.$SUFFIX

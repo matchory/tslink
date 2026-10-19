@@ -33,6 +33,10 @@ Tailscale Service with more than one backend.
 2. To serve more than one container under one name, create a Tailscale Service. In the admin console, open
    [Services](https://login.tailscale.com/admin/services) and create the Service, for example `svc:my-app`.
 
+   A backend gets traffic only if it serves every port that the Service defines. Define only the ports that the
+   containers serve, or give each container a serve label for each port of the Service. A container that serves only
+   some ports is `ports-uncovered`.
+
 3. Make the containers backends of the Service, with a readiness healthcheck. With the healthcheck, Swarm replaces a
    task only when the new task is a backend of the Service:
 

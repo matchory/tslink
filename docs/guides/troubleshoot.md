@@ -77,6 +77,14 @@ Find the symptom below, then do the checks in the sequence of the table. Before 
 | --- | --- | --- |
 | The container does not use the DNS server of tailscaled | `cat /etc/resolv.conf` in the container | Set `dns: [100.100.100.100]` on the container. See [MagicDNS](../explanation/limitations.md#magicdns). |
 
+## A Service backend gets no traffic
+
+| Cause | Check | Fix |
+| --- | --- | --- |
+| The container does not serve every port of the Service | `ports-uncovered` from `/ready`, or a `ports/<service>` warning in the status file, which names the ports | Serve each port of the Service with a serve label, or remove the port from the Service in the admin console. The control server sends no traffic to a backend that serves only some ports. |
+| The control server has not fetched the Service list of the node | `awaiting-control` from `/ready`, or a `control/<service>` warning in the status file | tslink advertises the Service again, up to 3 times. If the warning stays, restart the container. |
+| The control server has not approved the backend | `awaiting-approval` from `/ready` | Approve the tag of the node for the Service in the admin console. |
+
 ## The node gets the name hostname-1
 
 | Cause | Check | Fix |

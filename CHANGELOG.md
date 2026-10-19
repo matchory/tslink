@@ -29,6 +29,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A readiness endpoint (`tslink.health`) accepts at most 16 connections at a
   time, and closes a connection that has not sent its request headers within 2 s
   (was 5 s), so a flood of connections cannot hold it.
+- `/ready` reports two more states before `ready`, so a healthcheck on it
+  now waits until control routes traffic to the host: `awaiting-control`
+  until control has fetched the node's Service list after tslink advertised
+  a Service, and `ports-uncovered` when the host does not serve every port
+  of the Service's definition, which control treats as partially configured
+  and sends nothing to. The status file warns of both (`control/<service>`,
+  `ports/<service>`). The ports come from the node's capabilities or, for an
+  OAuth client with the `services:read` scope, from Tailscale's API. A
+  latched endpoint stays ready and shows them under `services`.
 - `tslink diag --preflight` checks more: E1 also flags a container that
   enables forwarding by sysctl or runs without seccomp or AppArmor
   confinement, and E2 a container that mounts the shared certificate

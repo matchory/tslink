@@ -42,7 +42,9 @@ tslink keeps a result for 2 seconds. A request in this period gets the same resu
 | `logged-out` | The node must log in. |
 | `serving-pending` | The `tslink.serve.<port>` rules are not applied yet. |
 | `certificate-pending` | The Service waits for its HTTPS certificate. |
+| `ports-uncovered` | The Service defines ports that the container does not serve. The control server sends no traffic to such a backend. The status file names the ports. |
 | `awaiting-approval` | The control server has not approved the container as a backend of the Service. |
+| `awaiting-control` | tslink advertised the Service, and the control server has not fetched the Service list of the node since. Until it does, it may send no traffic to the container. |
 | `drained` | The backend is drained, or the container is leaving the network. |
 | `ready` | All conditions for ready are true. |
 
@@ -52,7 +54,15 @@ The state is `ready` when all these conditions are true:
 
 1. The node is running.
 2. tailscaled has applied the `tslink.serve.<port>` rules.
-3. For each Service: the control server has approved the container as a backend of the Service.
+3. For each Service: the container serves every port that the Service defines, if tslink knows these ports.
+4. For each Service: the control server has approved the container as a backend of the Service.
+5. For each Service: the control server has fetched the Service list of the node since tslink last advertised the
+   Service.
+
+tslink knows the ports of a Service from the capabilities that the control server gives the node. Otherwise, if the
+credential is an OAuth client with the scope `services:read`, tslink reads them from the Tailscale API. If neither
+source has them, or the Service does not validate its ports (`do-not-validate`), tslink does not check them. See
+[Credentials](credentials.md#optional-api-scopes).
 
 ## Latching
 

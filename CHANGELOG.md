@@ -37,6 +37,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- After a plugin restart, which drains each Service backend on shutdown and
+  advertises it again on start, control sometimes never fetched the node's
+  new Service list: the host stayed inactive, and a Service with no other
+  host unreachable, until the next change. tslink now advertises a Service
+  anew when control has not fetched it within 15 s, up to 3 times.
 - The plugin binary, run with arguments it does not know, exits with usage
   instead of starting a plugin instance, which on the host could install
   isolation chains the host's settings turn off.

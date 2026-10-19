@@ -751,3 +751,108 @@ func TestNeedsDrainAfterFailedPrune(t *testing.T) {
 		t.Errorf("operations = %q, want svc:old unadvertised by the drain", api.operations())
 	}
 }
+
+// advertiseTiming shortens the wait for control's fetch of an advertisement.
+func advertiseTiming(d *daemon) {
+	setTiming(&d.config, func(tm *timing) {
+		tm.advertiseAckTimeout = 50 * time.Millisecond
+		tm.advertiseNudgeGap = 10 * time.Millisecond
+	})
+}
+
+// After a plugin restart, control was seen not to fetch a re-advertised
+// Service list at all, leaving the host unrouted: without a fetch, the
+// Service is advertised anew, which makes control fetch it, until it does.
+func TestAdvertiseAgainUntilControlFetches(t *testing.T) {
+	d, api := newTestDaemon(t, "svc:web")
+	advertiseTiming(d)
+	if err := d.only(t).advertise("svc:web"); err != nil {
+		t.Fatal(err)
+	}
+	advertised := func(n int) func() bool {
+		return func() bool {
+			c := 0
+			for _, op := range api.operations() {
+				if slices.Equal(op, []string{"advertise", "svc:web"}) {
+					c++
+				}
+			}
+			return c >= n
+		}
+	}
+	waitFor(t, "the Service advertised anew", advertised(2))
+	d.handleLine(servicesFetchLine)
+	n := len(api.operations())
+	time.Sleep(200 * time.Millisecond)
+	if got := api.operations(); len(got) != n {
+		t.Errorf("advertised again after control fetched: %q", got[n:])
+	}
+	want := [][]string{
+		{"advertise", "svc:web"},
+		{"unadvertise", "svc:web"},
+		{"advertise", "svc:web"},
+	}
+	if got := api.operations(); !slices.EqualFunc(got[:3], want, slices.Equal) {
+		t.Errorf("operations = %q, want %q first", got, want)
+	}
+}
+
+// An advertisement control fetched is left alone.
+func TestAdvertiseFetchedIsNotRepeated(t *testing.T) {
+	d, api := newTestDaemon(t, "svc:web")
+	advertiseTiming(d)
+	if err := d.only(t).advertise("svc:web"); err != nil {
+		t.Fatal(err)
+	}
+	d.handleLine(servicesFetchLine)
+	time.Sleep(200 * time.Millisecond)
+	want := [][]string{{"advertise", "svc:web"}}
+	if got := api.operations(); !slices.EqualFunc(got, want, slices.Equal) {
+		t.Errorf("operations = %q, want %q", got, want)
+	}
+}
+
+// A drained backend is not advertised anew while control has not fetched.
+func TestAdvertiseNotRepeatedOnceDrained(t *testing.T) {
+	d, api := newTestDaemon(t, "svc:web")
+	advertiseTiming(d)
+	if err := d.only(t).advertise("svc:web"); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Drain(); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	want := [][]string{{"advertise", "svc:web"}, {"unadvertise", "svc:web"}}
+	if got := api.operations(); !slices.EqualFunc(got, want, slices.Equal) {
+		t.Errorf("operations = %q, want %q", got, want)
+	}
+}
+
+// Advertising anew gives up after advertiseNudges attempts.
+func TestAdvertiseAgainGivesUp(t *testing.T) {
+	d, api := newTestDaemon(t, "svc:web")
+	advertiseTiming(d)
+	if err := d.only(t).advertise("svc:web"); err != nil {
+		t.Fatal(err)
+	}
+	count := func() int {
+		c := 0
+		for _, op := range api.operations() {
+			if slices.Equal(op, []string{"advertise", "svc:web"}) {
+				c++
+			}
+		}
+		return c
+	}
+	want := advertiseNudges + 1
+	deadline := time.Now().Add(5 * time.Second)
+	for count() < want && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	// Longer than another attempt would take
+	time.Sleep(300 * time.Millisecond)
+	if c := count(); c != want {
+		t.Errorf("advertised %d times, want %d", c, want)
+	}
+}

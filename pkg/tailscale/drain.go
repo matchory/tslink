@@ -162,6 +162,8 @@ func (d *daemon) waitServicesFetch(after int64, deadline time.Time) bool {
 		case <-next:
 		case <-timer.C:
 			return false
+		case <-d.ctx.Done():
+			return false
 		}
 	}
 }
@@ -216,4 +218,72 @@ func (s *DaemonSupervisor) DrainAndWait() {
 	}
 	logger.Warnf("Endpoint %s: control did not fetch the drained %s within %v, leaving anyway",
 		id, service, tm.drainAckTimeout)
+}
+
+// advertiseNudges bounds how often confirmAdvertisedLater advertises a
+// Service anew.
+const advertiseNudges = 3
+
+// confirmAdvertisedLater makes sure control learns that the node advertises
+// service. Control fetches the node's Service list once tailscaled reports a
+// change of its advertised Services, but after a plugin restart it was seen
+// not to, for good: the host stayed configured but inactive, and no caller
+// reached it. Without a fetch after more than after within
+// advertiseAckTimeout, the Service is advertised anew, which made control
+// fetch the list, up to advertiseNudges times. A drained backend is left
+// drained.
+func (b *serviceBackend) confirmAdvertisedLater(service string, after int64) {
+	tm := b.d.config.times()
+	id := stringid.TruncateID(b.d.config.EndpointID)
+	b.d.wg.Go(func() {
+		for attempt := 1; ; attempt++ {
+			if b.d.waitServicesFetch(after, time.Now().Add(tm.advertiseAckTimeout)) ||
+				b.d.ctx.Err() != nil || b.d.isDrained() {
+				return
+			}
+			if attempt > advertiseNudges {
+				logger.Warnf(
+					"Endpoint %s: control has not fetched the advertised %s after %d attempts",
+					id,
+					service,
+					advertiseNudges,
+				)
+				return
+			}
+			logger.Warnf(
+				"Endpoint %s: control has not fetched the advertised %s within %v, advertising it anew",
+				id,
+				service,
+				tm.advertiseAckTimeout,
+			)
+			after, _ = b.d.servicesFetches()
+			if err := b.readvertise(service, tm.advertiseNudgeGap); err != nil {
+				if !errors.Is(err, errDrained) && b.d.ctx.Err() == nil {
+					logger.Warnf("Endpoint %s: failed to advertise %s anew: %v", id, service, err)
+				}
+				return
+			}
+		}
+	})
+}
+
+// readvertise stops advertising service, and advertises it again gap later:
+// two changes of the advertised Services, each reported to control. Each
+// runs under the gate, so a drain in between keeps it drained.
+func (b *serviceBackend) readvertise(service string, gap time.Duration) error {
+	g := b.d.config.gate
+	err := g.change(b.d, func(ctx context.Context) error {
+		_, err := b.d.editAdvertised(ctx, func(s string) bool { return s != service })
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	if !ctxtime.Sleep(b.d.ctx, gap) {
+		return b.d.ctx.Err()
+	}
+	return g.change(b.d, func(ctx context.Context) error {
+		_, err := b.d.addAdvertised(ctx, service)
+		return err
+	})
 }

@@ -291,23 +291,23 @@ func (d *daemon) editServe(
 
 // addAdvertised adds service to the Services the node's prefs advertise, as
 // "tailscale serve advertise" does.
-func (d *daemon) addAdvertised(ctx context.Context, service string) error {
+func (d *daemon) addAdvertised(ctx context.Context, service string) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	prefs, err := d.lc.GetPrefs(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to advertise %s: %w", service, err)
+		return false, fmt.Errorf("failed to advertise %s: %w", service, err)
 	}
 	if slices.Contains(prefs.AdvertiseServices, service) {
-		return nil
+		return false, nil
 	}
 	if _, err := d.lc.EditPrefs(ctx, &ipn.MaskedPrefs{
 		AdvertiseServicesSet: true,
 		AdvertiseServices:    append(slices.Clone(prefs.AdvertiseServices), service),
 	}); err != nil {
-		return fmt.Errorf("failed to advertise %s: %w", service, err)
+		return false, fmt.Errorf("failed to advertise %s: %w", service, err)
 	}
-	return nil
+	return true, nil
 }
 
 // editAdvertised stops advertising every Service of the node's prefs keep
@@ -391,10 +391,16 @@ func (d *daemon) pruneServices() {
 // runAdvertise advertises the Service and notes that the backend was
 // advertised. The caller holds the gate's lock.
 func (b *serviceBackend) runAdvertise(ctx context.Context, service string) error {
-	if err := b.d.addAdvertised(ctx, service); err != nil {
+	fetches, _ := b.d.servicesFetches()
+	added, err := b.d.addAdvertised(ctx, service)
+	if err != nil {
 		return err
 	}
 	b.d.config.gate.advertised.Store(true)
+	if added {
+		// ctx ends with this change; the check runs on the daemon's
+		b.confirmAdvertisedLater(service, fetches) //nolint:contextcheck // see above
+	}
 	b.checkApprovalLater()
 	return nil
 }

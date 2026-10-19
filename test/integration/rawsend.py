@@ -64,13 +64,10 @@ def main() -> None:
     gw = bytes.fromhex(gw_mac.replace(":", ""))
     data = payload.encode()
     if ":" in dst:
-        frame = (
-            gw + src_mac + b"\x86\xdd" + ipv6_packet(src, dst, int(port), data, sport)
-        )
+        ethertype, packet = b"\x86\xdd", ipv6_packet(src, dst, int(port), data, sport)
     else:
-        frame = (
-            gw + src_mac + b"\x08\x00" + ipv4_packet(src, dst, int(port), data, sport)
-        )
+        ethertype, packet = b"\x08\x00", ipv4_packet(src, dst, int(port), data, sport)
+    frame = gw + src_mac + ethertype + packet
     with socket.socket(socket.AF_PACKET, socket.SOCK_RAW) as s:
         s.bind((iface, 0))
         s.send(frame)

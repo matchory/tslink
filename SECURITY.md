@@ -153,11 +153,17 @@ names a file outside the certificate directory.
 | E6 | The plugin is installed from a release image pinned by digest | operator | checks the digest pin |
 | E7 | The shared certificate directory is owned by root, mode 0700 or stricter, and reachable only by the cluster's hosts | operator | checks owner and mode, with `--shared-dir` |
 | E8 | The cluster credential owns only stack-prefixed tags, stack names follow tslink's rules, the plugin setting `TSLINK_TAG_SCOPE` is at its default, `exact`, and the policy auto-approves each Service only for the tag of the stack that owns it | operator, tailnet policy | checks the tag scope setting |
-| E9 | Tailnet Lock is on where peer identity must not depend on the control server | operator | reports whether it is on |
+| E9 | The identity of tslink's nodes depends on the control server, unless Tailnet Lock is on, which tslink is not tested with ([Limitations](docs/explanation/limitations.md#tailnet-lock)) | operator | reports whether it is on |
 
 Run `tslink diag --preflight` on each host, and on each node of a Swarm. It
 checks only the properties that it can see on the host where it runs.
 [tslink diag](docs/reference/diag.md) shows how.
+
+tslink is not tested with Tailnet Lock (E9). It is expected to work only with
+a reusable auth key pre-signed with `tailscale lock sign`, not with an OAuth
+client secret or the cluster credential, because tslink makes auth keys from
+them that are not signed. See
+[Limitations](docs/explanation/limitations.md#tailnet-lock).
 
 The range of `TSLINK_WIREGUARD_PORTS` is reserved: a host service listening
 in it gets no unsolicited UDP.

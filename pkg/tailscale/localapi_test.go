@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"tailscale.com/client/local"
 	"tailscale.com/ipn"
@@ -34,15 +35,17 @@ type fakeLocalAPI struct {
 	socket   string
 
 	// tailscaled's login, for what the replies do not answer
-	prefs     ipn.Prefs
-	state     ipn.State
-	nodeKey   key.NodePublic
-	authKeys  []string          // The keys Start got
-	startErr  string            // The error the next Start reports on the bus
-	failed    bool              // The last Start failed: no login follows
-	lastKey   string            // The key the last Start got
-	logoutErr string            // What a logout fails with
-	watchers  []chan ipn.Notify // The IPN bus watchers
+	prefs    ipn.Prefs
+	state    ipn.State
+	nodeKey  key.NodePublic
+	authKeys []string // The keys Start got
+	startErr string   // The error the next Start reports on the bus
+	failed   bool     // The last Start failed: no login follows
+	// How long control takes to answer a Start's registration; zero is at once
+	startDelay time.Duration
+	lastKey    string            // The key the last Start got
+	logoutErr  string            // What a logout fails with
+	watchers   []chan ipn.Notify // The IPN bus watchers
 
 	// cert answers a certificate request: an error fails it
 	cert func() error
@@ -156,7 +159,7 @@ func (f *fakeLocalAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// Without a key or a node key, a login needs a browser
 		if !f.failed && (f.lastKey != "" || !f.nodeKey.IsZero()) {
 			f.nodeKey = key.NewNode().Public()
-			f.setState(ipn.Running)
+			f.run()
 		}
 		f.mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
@@ -252,6 +255,21 @@ func (f *fakeLocalAPI) start(authKey string) {
 	}
 	if f.nodeKey.IsZero() {
 		f.nodeKey = key.NewNode().Public()
+	}
+	f.run()
+}
+
+// run gets the node running, startDelay later. The caller holds f.mu.
+func (f *fakeLocalAPI) run() {
+	if f.startDelay > 0 {
+		// Control answers the registration late
+		f.setState(ipn.Starting)
+		time.AfterFunc(f.startDelay, func() {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			f.setState(ipn.Running)
+		})
+		return
 	}
 	f.setState(ipn.Running)
 }

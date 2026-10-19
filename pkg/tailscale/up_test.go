@@ -171,10 +171,36 @@ func TestLogInTimesOut(t *testing.T) {
 	api := newFakeLocalAPI(t)
 	api.loggedOut()
 	d := loginDaemon(t, api, DaemonConfig{Hostname: "web"})
-	setTiming(&d.config, func(tm *timing) { tm.loginTimeout = time.Second })
+	setTiming(
+		&d.config,
+		func(tm *timing) { tm.loginTimeout, tm.loginGrace = 500*time.Millisecond, 500*time.Millisecond },
+	)
 	// Without a key or a node key, tailscaled keeps needing a login
 	if err := d.logIn(false, false); err == nil || !strings.Contains(err.Error(), "timeout") {
 		t.Errorf("err = %v, want a timeout", err)
+	}
+}
+
+// A registration control answers after loginTimeout is waited for, within
+// loginGrace, instead of restarting tailscaled: a retry would register a
+// second node, and control would name it <hostname>-1 while the first one
+// kept the name (#127).
+func TestLogInWaitsForSlowRegistration(t *testing.T) {
+	api := newFakeLocalAPI(t)
+	api.loggedOut()
+	api.startDelay = 400 * time.Millisecond
+	d := loginDaemon(t, api, DaemonConfig{Hostname: "web"})
+	setTiming(
+		&d.config,
+		func(tm *timing) { tm.loginTimeout, tm.loginGrace = 100*time.Millisecond, 5*time.Second },
+	)
+	if err := d.logIn(true, false); err != nil {
+		t.Fatalf("logIn = %v, want the slow registration to complete", err)
+	}
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	if len(api.authKeys) != 1 {
+		t.Errorf("Start called %d times, want once", len(api.authKeys))
 	}
 }
 

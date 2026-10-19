@@ -37,6 +37,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A login that control answered after more than 60 s, as during a rollout
+  of many tasks, restarted tailscaled, which then registered a second node:
+  control named it `<hostname>-1`, and the first, offline node kept the
+  name (#127). tslink now warns at 60 s and waits up to 4 more minutes for
+  the registration in progress.
 - The plugin binary, run with arguments it does not know, exits with usage
   instead of starting a plugin instance, which on the host could install
   isolation chains the host's settings turn off.

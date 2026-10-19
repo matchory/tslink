@@ -35,7 +35,8 @@ the other tests: [docs/testing.md](../../docs/testing.md).
     INFO, saying it did not check `/v0/env`
 - On every node, the cluster credential: `oauth-client.secret` in the plugin's data directory
   (`/var/lib/docker-plugins/tailscale`), an OAuth client that may mint `tag:tslink-test-callee`,
-  for the `tslink-test-*` stacks (`regress.sh` R11 and R12).
+  for the `tslink-test-*` stacks (`regress.sh` R11 and R12). The plugin creates the directory
+  when it first starts: on fresh nodes, copy the credential after `install-plugin.sh`.
 - In `~/.tslink-test/` (mode 600, never on a command line):
   - `tailscale-api.secret`: OAuth client with `auth_keys`, `oauth_keys`, `devices:core` and
     `services` write scopes and the test tags

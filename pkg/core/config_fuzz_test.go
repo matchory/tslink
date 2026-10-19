@@ -1,6 +1,7 @@
 package core
 
 import (
+	"net/netip"
 	"net/url"
 	"strings"
 	"testing"
@@ -10,8 +11,8 @@ import (
 // network options: the key and ephemeral setting unchanged, tags as single
 // non-empty elements of a comma-separated list, an MTU in range or an error,
 // a login server option marked as given whatever its value, and a login
-// server ValidateLoginServer accepts only if it is an http or https URL with
-// a host.
+// server ValidateLoginServer accepts only if it is an https URL with a host,
+// or an http URL with an IP address as its host, without userinfo.
 //
 // Guards: G3
 func FuzzParseNetworkOptions(f *testing.F) {
@@ -39,7 +40,11 @@ func FuzzParseNetworkOptions(f *testing.F) {
 		}
 		if login != "" && ValidateLoginServer(login) == nil {
 			u, err := url.Parse(login)
-			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			if err != nil || u.Host == "" || u.User != nil {
+				t.Fatalf("ValidateLoginServer accepted %q", login)
+			}
+			_, ipErr := netip.ParseAddr(u.Hostname())
+			if u.Scheme != "https" && (u.Scheme != "http" || ipErr != nil) {
 				t.Fatalf("ValidateLoginServer accepted %q", login)
 			}
 		}

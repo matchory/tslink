@@ -105,27 +105,48 @@ func TestRunTailscaleRefusesLoginServerOption(t *testing.T) {
 	}
 }
 
+// The control server URL uses https, or http with an IP literal: tailscaled
+// resolves the control server's name with the container's resolvers, which a
+// stack chooses, and plain http does not authenticate the server, so with a
+// name a stack could have its nodes send their keys to a server of its own.
+//
+// Guards: G4
 func TestValidateLoginServer(t *testing.T) {
-	valid := []string{
-		"",
-		"https://headscale.example.com",
-		"http://10.0.0.1:8080",
-		"https://hs.example.com/prefix",
-	}
-	for _, s := range valid {
-		if err := ValidateLoginServer(s); err != nil {
-			t.Errorf("ValidateLoginServer(%q) = %v, want nil", s, err)
+	for s, ok := range map[string]bool{
+		"":                              true,
+		"https://headscale.example.com": true,
+		"https://hs.example.com/prefix": true,
+		"https://hs.example.com:8443":   true,
+		"https://10.0.0.1":              true,
+		"http://10.0.0.1:8080":          true,
+		"http://10.0.0.1":               true,
+		"http://[::1]:8080":             true,
+		"http://[fd00::1]":              true,
+		"http://headscale.example.com":  false, // a name: the container's resolvers answer
+		"http://hs.example.com:8080":    false,
+		"http://localhost:8080":         false, // a name too
+		"http://localhost":              false,
+		"http://0x7f.1":                 false, // no IP literal
+		"http://010.0.0.1":              false,
+		"http://10.0.0.1@evil.example":  false, // userinfo; the host is evil.example
+		"https://user:pw@hs.example":    false,
+		"http://user@10.0.0.1:8080":     false,
+		"headscale.example.com":         false,
+		"ftp://headscale.example.com":   false,
+		"ws://10.0.0.1":                 false,
+		"https://":                      false,
+		"http://":                       false,
+		"http://[::1":                   false,
+		"http://::1":                    false,
+		"//10.0.0.1":                    false,
+	} {
+		err := ValidateLoginServer(s)
+		if (err == nil) != ok {
+			t.Errorf("ValidateLoginServer(%q) = %v, want ok %v", s, err, ok)
 		}
-	}
-	invalid := []string{
-		"headscale.example.com",
-		"ftp://headscale.example.com",
-		"https://",
-		"http://[::1",
-	}
-	for _, s := range invalid {
-		if err := ValidateLoginServer(s); err == nil {
-			t.Errorf("ValidateLoginServer(%q) = nil, want an error", s)
+		if err != nil && !strings.Contains(err.Error(), LoginServerSetting) {
+			t.Errorf("ValidateLoginServer(%q) = %v, want an error naming %s",
+				s, err, LoginServerSetting)
 		}
 	}
 }

@@ -198,7 +198,9 @@ func TestLoadConfigLoginServer(t *testing.T) {
 			t.Errorf("%s=%q: LoginServer = %q, want %q", LoginServerSetting, value, got, want)
 		}
 	}
-	for _, value := range []string{"hs.example", "ftp://hs.example", "https://"} {
+	for _, value := range []string{
+		"hs.example", "ftp://hs.example", "https://", "http://hs.example:8080",
+	} {
 		t.Setenv(LoginServerSetting, value)
 		if _, err := LoadConfig(); err == nil ||
 			!strings.Contains(err.Error(), LoginServerSetting) {

@@ -10,10 +10,11 @@ _here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # Tag prefix: tasks are tagged <prefix>-caller, -callee or -nogrant, host tailscaleds <prefix>-node
 : "${TSLINK_TEST_TAG:=tag:tslink-test}"
 # Service prefix: the callee and multi stacks host <prefix>-callee and <prefix>-other; mixed asks
-# for <prefix>-mixed, which tslink must refuse
+# for <prefix>-mixed, which tslink must refuse; manual hosts <prefix>-manual, which no autoApprovers
+# approve
 : "${TSLINK_TEST_SVC:=svc:tslink-test}"
 # The Services the tests use, which cleanup.sh deletes
-: "${TSLINK_TEST_SERVICES:=$TSLINK_TEST_SVC-callee $TSLINK_TEST_SVC-other $TSLINK_TEST_SVC-mixed}"
+: "${TSLINK_TEST_SERVICES:=$TSLINK_TEST_SVC-callee $TSLINK_TEST_SVC-other $TSLINK_TEST_SVC-mixed $TSLINK_TEST_SVC-manual}"
 # Tailscale API base URL and tailnet ("-" is the tailnet of the API client)
 : "${TSLINK_TEST_API:=https://api.tailscale.com/api/v2}"
 : "${TSLINK_TEST_TAILNET:=-}"

@@ -340,17 +340,47 @@ r7() {
 	r7_shared
 }
 
+# r7_cert_timeline <since> <domain> <dir>: INFO lines that order the certificate's issue, for each
+# node: its clock (all read within a second), tslink's plugin.log lines naming the domain since
+# then, the multi tasks' tailscaled.log lines of the domain (tailscaled logs cert("<domain>"):
+# "requesting cert..." before the ACME order and "got cert" before it writes the key, then the
+# certificate), and the node's view of the certificate's and key's mtimes in the shared directory
+# (NFS); then the certificate's notBefore
+r7_cert_timeline() {
+	local n
+	for n in $("$B/nodes"); do
+		echo "INFO  R7 shared: clock of $n: $("$B/s" "$n" 'date -u +%Y-%m-%dT%H:%M:%S.%NZ' </dev/null)" &
+	done
+	wait
+	for n in $("$B/nodes"); do
+		"$B/s" "$n" "grep -a -F '$2' $L" </dev/null | awk -v n="$n" -v since="time=$1" '$1 >= since { print "INFO  R7 shared: tslink@" n ": " $0 }'
+		# shellcheck disable=SC2016 # runs on the node
+		"$B/s" "$n" "DOM=$2 DIR=$3 sh -s" <<'EOF_NODE' | sed "s/^/INFO  R7 shared: $n: /"
+for f in /var/lib/docker-plugins/tailscale/by-stack/multi/*/tailscaled.log; do
+	[ -f "$f" ] || continue
+	grep -a -F "cert(\"$DOM\")" "$f" | sed "s|^|tailscaled@$(basename "$(dirname "$f")"): |"
+done
+for f in "$DIR/$DOM.crt" "$DIR/$DOM.key"; do
+	[ -e "$f" ] && echo "mtime $(stat -c '%y' "$f") $f"
+done
+EOF_NODE
+	done
+	echo "INFO  R7 shared: $("$B/s" "$M" "openssl x509 -noout -startdate -in '$3/$2.crt' 2>&1" </dev/null)"
+}
 # R7, shared variant: shared.source on an NFS directory every node mounts. One replica issues the
-# certificate; the other configures its Service only once the certificate exists.
+# certificate, in the stack's directory certs/by-stack/multi/; the other configures its Service
+# only once the certificate exists. The timeline lines explain the order of their log lines.
 r7_shared() {
-	local since dom n crt logs issuer it late configured
+	local since dom dir n crt logs issuer it late configured
 	stack_rm multi
 	"$B/shared-dir.sh" on >/dev/null
 	since=$(now)
 	if PLUGIN_SETTINGS='shared.source=/mnt/tslink' reinstall "R7 shared" "$REF" && up_multi; then
 		dom=${SVC_C#svc:}.$SUFFIX
-		crt=$("$B/s" "$M" "find /mnt/tslink -name '$dom.crt' | wc -l" | tr -d ' ')
-		check "R7 shared: one $dom.crt in the shared directory ($crt)" "$([ "$crt" = 1 ] && echo ok || echo "$crt")"
+		dir=/mnt/tslink/certs/by-stack/multi
+		crt=$("$B/s" "$M" "find /mnt/tslink -name '$dom.crt'" | tr '\n' ' ')
+		check "R7 shared: one $dom.crt in the shared directory, in $dir ($crt)" "$([ "$crt" = "$dir/$dom.crt " ] && echo ok || echo "want $dir/$dom.crt alone")"
+		r7_cert_timeline "$since" "$dom" "$dir"
 		logs=$(for n in $("$B/nodes"); do
 			"$B/s" "$n" "grep -a -E 'Certificate for $dom issued|with the certificate for $dom' $L" </dev/null |
 				awk -v n="$n" -v since="time=$since" '$1 >= since { print n, $0 }'

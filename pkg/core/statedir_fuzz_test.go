@@ -80,6 +80,51 @@ func TestStateDirForExhaustive(t *testing.T) {
 	}
 }
 
+// checkCertsDir fails t unless certsDirFor rejects stack, or returns
+// <shared>/certs for no stack and <shared>/certs/by-stack/<stack> for one.
+func checkCertsDir(t *testing.T, stack string) {
+	t.Helper()
+	const certs = "/shared/certs"
+	dir, err := certsDirFor("/shared", stack)
+	if err != nil {
+		return
+	}
+	if stack == "" {
+		if dir != certs {
+			t.Fatalf("certsDirFor(%q) = %q, want %s", stack, dir, certs)
+		}
+		return
+	}
+	rel, relErr := filepath.Rel(certs, dir)
+	parts := strings.Split(rel, string(filepath.Separator))
+	if relErr != nil || !slices.Equal(parts, []string{"by-stack", stack}) {
+		t.Fatalf("certsDirFor(%q) = %q, want %s/by-stack/%s", stack, dir, certs, stack)
+	}
+	if stack == "." || stack == ".." || strings.ContainsAny(stack, "\x00\n") {
+		t.Fatalf("certsDirFor(%q) = %q: stack accepted", stack, dir)
+	}
+}
+
+// FuzzCertsDirFor checks that a stack's certificate directory, which a label
+// names, is a directory of its own in <shared>/certs/by-stack.
+//
+// Guards: G4
+func FuzzCertsDirFor(f *testing.F) {
+	for _, s := range []string{"", ".", "..", "../x", "a/b", "/abs", "-x", "billing", "a\x00b", "a\nb"} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, stack string) {
+		checkCertsDir(t, stack)
+	})
+}
+
+// Guards: G4
+func TestCertsDirForExhaustive(t *testing.T) {
+	for _, s := range allStrings(hostileAlphabet, 4) {
+		checkCertsDir(t, s)
+	}
+}
+
 // TestCheckStackScopeOnStackNetworks checks that a stack's network takes
 // tasks of that stack only.
 //

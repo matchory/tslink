@@ -66,6 +66,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- With `TSLINK_LOG_LEVEL` at `warn` or `error`, the plugin still logged its
+  start line at info, before the setting applied.
 - A login that control answered after more than 60 s, as during a rollout
   of many tasks, restarted tailscaled, which then registered a second node:
   control named it `<hostname>-1`, and the first, offline node kept the

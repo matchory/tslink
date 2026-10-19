@@ -42,7 +42,7 @@ tslink keeps a result for 2 seconds. A request in this period gets the same resu
 | `logged-out` | The node must log in. |
 | `serving-pending` | The `tslink.serve.<port>` rules are not applied yet. |
 | `certificate-pending` | The Service waits for its HTTPS certificate. |
-| `ports-uncovered` | The Service defines ports that the container does not serve. The control server sends no traffic to such a backend. The status file names the ports. |
+| `ports-uncovered` | The Service defines ports that the container does not serve. The control server sends no traffic to such a backend. The status file lists the ports. |
 | `awaiting-approval` | The control server has not approved the container as a backend of the Service. |
 | `awaiting-control` | tslink advertised the Service, and the control server has not fetched the Service list of the node since. Until it does, it may send no traffic to the container. |
 | `drained` | The backend is drained, or the container is leaving the network. |

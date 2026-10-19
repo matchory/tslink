@@ -131,6 +131,18 @@ tslink recovers from these failures without help:
 | The control server does not know the node, for example because the device was deleted | It logs the node in again. |
 | The plugin restarts | It finds the running containers again. A node that is still logged in starts without the credential. Thus a rotated or revoked credential does not stop it. |
 | A container stops without a message to tslink, for example at a power loss | It logs out the ephemeral nodes that no container uses, and deletes their state. Thus a container with a fixed `tslink.hostname` gets its name back, and not `<hostname>-1`. |
+| The control server does not get the Services that a node advertises | It advertises the Service again, up to 3 times. See [Advertising](#advertising). |
+
+## Advertising
+
+When a node advertises a Service, tailscaled tells the control server, and the control server then fetches the
+Services of the node. `tailscaled.log` shows each fetch as `c2n: GET /vip-services received`. After a restart of the
+plugin, the control server sometimes did not fetch them. In the cluster test, this occurred on 2 of 5 hosts. The
+backends on these hosts got no traffic for more than 13 minutes, until the advertised Services changed again.
+
+This is a behavior of the Tailscale control server. tslink works around it: if the control server has not fetched the
+Services within 15 seconds after an advertisement, tslink stops the advertisement and advertises the Service again 2
+seconds later. It does this up to 3 times, with a warning in the plugin log each time.
 
 ## Draining
 

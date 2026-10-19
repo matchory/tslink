@@ -24,7 +24,7 @@ import (
 
 func TestLinkCertsDir(t *testing.T) {
 	stateDir, shared := t.TempDir(), filepath.Join(t.TempDir(), "certs")
-	if err := LinkCertsDir(stateDir, shared); err != nil {
+	if err := LinkCertsDir(stateDir, shared, ""); err != nil {
 		t.Fatal(err)
 	}
 	link := filepath.Join(stateDir, certsDirName)
@@ -44,7 +44,7 @@ func TestLinkCertsDir(t *testing.T) {
 	}
 
 	// Again: the link and the key stay
-	if err := LinkCertsDir(stateDir, shared); err != nil {
+	if err := LinkCertsDir(stateDir, shared, ""); err != nil {
 		t.Fatal(err)
 	}
 	if again, _ := os.ReadFile(
@@ -63,7 +63,7 @@ func TestLinkCertsDirKeepsDirectory(t *testing.T) {
 	if err := os.Mkdir(own, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := LinkCertsDir(stateDir, filepath.Join(t.TempDir(), "certs")); err != nil {
+	if err := LinkCertsDir(stateDir, filepath.Join(t.TempDir(), "certs"), ""); err != nil {
 		t.Fatal(err)
 	}
 	if st, err := os.Lstat(own); err != nil || !st.IsDir() {
@@ -73,7 +73,7 @@ func TestLinkCertsDirKeepsDirectory(t *testing.T) {
 
 func TestLinkCertsDirDisabled(t *testing.T) {
 	stateDir := t.TempDir()
-	if err := LinkCertsDir(stateDir, ""); err != nil {
+	if err := LinkCertsDir(stateDir, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Lstat(filepath.Join(stateDir, certsDirName)); !os.IsNotExist(err) {
@@ -86,7 +86,7 @@ func TestEnsureAccountKeyRace(t *testing.T) {
 	var wg sync.WaitGroup
 	for range 20 {
 		wg.Go(func() {
-			if err := ensureAccountKey(dir); err != nil {
+			if err := ensureAccountKey(dir, ""); err != nil {
 				t.Error(err)
 			}
 		})
@@ -98,6 +98,279 @@ func TestEnsureAccountKeyRace(t *testing.T) {
 	}
 	if len(entries) != 1 || entries[0].Name() != acmeAccountKeyFile {
 		t.Errorf("directory holds %v, want only the account key", entries)
+	}
+}
+
+// A state directory's link to the flat shared directory, as versions before
+// per-stack directories made it, is pointed at the stack's directory, which
+// is created.
+func TestLinkCertsDirRepointsToStack(t *testing.T) {
+	stateDir, parent := t.TempDir(), filepath.Join(t.TempDir(), "certs")
+	if err := LinkCertsDir(stateDir, parent, ""); err != nil {
+		t.Fatal(err)
+	}
+	stack := filepath.Join(parent, "by-stack", "billing")
+	if err := LinkCertsDir(stateDir, stack, parent); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(stateDir, certsDirName)
+	if target, err := os.Readlink(link); err != nil || target != stack {
+		t.Fatalf("Readlink = %q, %v; want %q", target, err, stack)
+	}
+	if st, err := os.Stat(stack); err != nil || !st.IsDir() {
+		t.Fatalf("stack directory not created: %v", err)
+	}
+}
+
+// A stack's directory gets the shared directory's ACME account key, so no
+// stack registers an ACME account of its own.
+func TestLinkCertsDirCopiesAccountKey(t *testing.T) {
+	parent := filepath.Join(t.TempDir(), "certs")
+	if err := LinkCertsDir(t.TempDir(), parent, ""); err != nil {
+		t.Fatal(err)
+	}
+	key, err := os.ReadFile(filepath.Join(parent, acmeAccountKeyFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stack := filepath.Join(parent, "by-stack", "billing")
+	if err := LinkCertsDir(t.TempDir(), stack, parent); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(filepath.Join(stack, acmeAccountKeyFile)); err != nil ||
+		!bytes.Equal(got, key) {
+		t.Errorf("stack's account key is not the shared directory's (%v)", err)
+	}
+}
+
+// Without an account key in the shared directory, a stack's directory gets
+// one of its own; the shared directory is left alone.
+func TestLinkCertsDirGeneratesStackAccountKey(t *testing.T) {
+	parent := filepath.Join(t.TempDir(), "certs")
+	stack := filepath.Join(parent, "by-stack", "billing")
+	if err := LinkCertsDir(t.TempDir(), stack, parent); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(stack, acmeAccountKeyFile)); err != nil {
+		t.Errorf("no account key in the stack's directory: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(parent, acmeAccountKeyFile)); !os.IsNotExist(err) {
+		t.Errorf("account key created in the shared directory: %v", err)
+	}
+}
+
+// Replicas copying the shared account key at once leave one copy of it.
+func TestEnsureAccountKeyCopyRace(t *testing.T) {
+	parent := t.TempDir()
+	if err := ensureAccountKey(parent, ""); err != nil {
+		t.Fatal(err)
+	}
+	key, err := os.ReadFile(filepath.Join(parent, acmeAccountKeyFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	var wg sync.WaitGroup
+	for range 20 {
+		wg.Go(func() {
+			if err := ensureAccountKey(dir, parent); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	wg.Wait()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != acmeAccountKeyFile {
+		t.Errorf("directory holds %v, want only the account key", entries)
+	}
+	if got, err := os.ReadFile(filepath.Join(dir, acmeAccountKeyFile)); err != nil ||
+		!bytes.Equal(got, key) {
+		t.Errorf("account key is not the shared directory's (%v)", err)
+	}
+}
+
+// A valid certificate in the shared directory, issued before stacks had
+// directories of their own, is linked into the stack's directory, key first;
+// an expired one, a name that is not a DNS name or an existing certificate
+// of the stack is not.
+func TestAdoptCert(t *testing.T) {
+	now := time.Now()
+	t.Run("valid", func(t *testing.T) {
+		dir, parent := t.TempDir(), t.TempDir()
+		writeCert(t, parent, webDomain, webDomain, now.Add(time.Hour))
+		adoptCert(dir, parent, webDomain, now)
+		if !validCert(dir, webDomain, now) {
+			t.Fatal("valid shared certificate not adopted")
+		}
+		for _, ext := range []string{".crt", ".key"} {
+			a, errA := os.Stat(filepath.Join(dir, webDomain+ext))
+			b, errB := os.Stat(filepath.Join(parent, webDomain+ext))
+			if errA != nil || errB != nil || !os.SameFile(a, b) {
+				t.Errorf("%s not linked (%v, %v)", ext, errA, errB)
+			}
+		}
+	})
+	t.Run("expired", func(t *testing.T) {
+		dir, parent := t.TempDir(), t.TempDir()
+		writeCert(t, parent, webDomain, webDomain, now.Add(-time.Hour))
+		adoptCert(dir, parent, webDomain, now)
+		if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+			t.Errorf("expired certificate adopted: %v", entries)
+		}
+	})
+	t.Run("stack has one", func(t *testing.T) {
+		dir, parent := t.TempDir(), t.TempDir()
+		writeCert(t, parent, webDomain, webDomain, now.Add(time.Hour))
+		writeCert(t, dir, webDomain, webDomain, now.Add(-time.Hour))
+		own, err := os.ReadFile(filepath.Join(dir, webDomain+".crt"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		adoptCert(dir, parent, webDomain, now)
+		if got, _ := os.ReadFile(filepath.Join(dir, webDomain+".crt")); !bytes.Equal(got, own) {
+			t.Error("stack's certificate overwritten")
+		}
+	})
+	t.Run("stack has a key only", func(t *testing.T) {
+		dir, parent := t.TempDir(), t.TempDir()
+		writeCert(t, parent, webDomain, webDomain, now.Add(time.Hour))
+		if err := os.WriteFile(
+			filepath.Join(dir, webDomain+".key"),
+			[]byte("k"),
+			0o600,
+		); err != nil {
+			t.Fatal(err)
+		}
+		adoptCert(dir, parent, webDomain, now)
+		if _, err := os.Stat(filepath.Join(dir, webDomain+".crt")); !os.IsNotExist(err) {
+			t.Errorf("certificate adopted beside the stack's own key: %v", err)
+		}
+	})
+	t.Run("not a DNS name", func(t *testing.T) {
+		root := t.TempDir()
+		dir, parent := filepath.Join(root, "a", "b"), filepath.Join(root, "a")
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		writeCert(t, root, "x", "x", now.Add(time.Hour))
+		adoptCert(dir, parent, "../x", now)
+		if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+			t.Errorf("certificate adopted for a path: %v", entries)
+		}
+	})
+	t.Run("no shared directory", func(t *testing.T) {
+		dir := t.TempDir()
+		adoptCert(dir, "", webDomain, now)
+		if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+			t.Errorf("adopted without a shared directory: %v", entries)
+		}
+	})
+}
+
+// A stack's Service with a valid certificate from before per-stack
+// directories is configured with it at once: nothing is issued.
+func TestConfigureAdoptsSharedCert(t *testing.T) {
+	d, dir, api := newDomainDaemon(t)
+	parent := t.TempDir()
+	d.config.ParentCertsDir = parent
+	writeCert(t, parent, webDomain, webDomain, time.Now().Add(90*24*time.Hour))
+	if err := d.only(t).configureServiceWhenCertified(); err != nil {
+		t.Fatal(err)
+	}
+	if !validCert(dir, webDomain, time.Now()) {
+		t.Error("shared certificate not adopted")
+	}
+	if !ran(api.operations(), "serve") {
+		t.Errorf("operations = %q, want the Service configured", api.operations())
+	}
+	for _, p := range api.paths() {
+		if strings.HasPrefix(p, "GET "+certPath) {
+			t.Errorf("certificate requested: %s", p)
+		}
+	}
+}
+
+// stackCertDaemon returns a daemon serving svc:web over HTTPS whose
+// certificate directory is stack's in the shared directory parent, with its
+// fake LocalAPI.
+func stackCertDaemon(t *testing.T, parent, stack string) (*daemon, string, *fakeLocalAPI) {
+	t.Helper()
+	d, api := newTestDaemon(t, "svc:web")
+	d.setEndpoints([]ServeEndpoint{{Proto: "https", Port: "443", Target: "8080"}}...)
+	dir := filepath.Join(parent, "by-stack", stack)
+	d.config.CertsDir, d.config.ParentCertsDir = dir, parent
+	if err := LinkCertsDir(d.config.StateDir, dir, parent); err != nil {
+		t.Fatal(err)
+	}
+	setTiming(&d.config, func(tm *timing) {
+		tm.certPollInterval = 10 * time.Millisecond
+		tm.certDomainGrace = time.Hour
+	})
+	return d, dir, api
+}
+
+// TestForeignLeaseDoesNotBlockStack checks that a stack naming another
+// stack's Service, whose certificate control never issues to it, holds the
+// lease in its own directory only: the other stack still issues the
+// certificate and serves the Service. A replica of the stack holding the
+// lease still waits for it.
+//
+// Guards: G4
+func TestForeignLeaseDoesNotBlockStack(t *testing.T) {
+	parent := filepath.Join(t.TempDir(), "certs")
+
+	attacker, attackerDir, attackerAPI := stackCertDaemon(t, parent, "attacker")
+	failCert(attackerAPI, certDomainError)
+	if err := attacker.only(t).configureServiceWhenCertified(); err != nil {
+		t.Fatal(err)
+	}
+	lease := filepath.Join(attackerDir, webDomain+".lease")
+	waitFor(t, "the attacker's lease", func() bool {
+		_, err := os.Stat(lease)
+		return err == nil
+	})
+
+	// Control: the attacker's lease holds up a replica of its own stack
+	sibling, _, siblingAPI := stackCertDaemon(t, parent, "attacker")
+	if err := sibling.only(t).configureServiceWithCert(attackerDir, webDomain); !errors.Is(
+		err, errLeaseHeld,
+	) {
+		t.Fatalf("attacker's replica: configureServiceWithCert = %v, want errLeaseHeld", err)
+	}
+	if ops := siblingAPI.operations(); len(ops) != 0 {
+		t.Errorf("attacker's replica ran %q while the lease was held", ops)
+	}
+
+	victim, victimDir, victimAPI := stackCertDaemon(t, parent, "victim")
+	issued := t.TempDir()
+	writeCert(t, issued, webDomain, webDomain, time.Now().Add(90*24*time.Hour))
+	victimAPI.mu.Lock()
+	victimAPI.cert = func() error {
+		for _, ext := range []string{".key", ".crt"} {
+			if err := os.Rename(
+				filepath.Join(issued, webDomain+ext),
+				filepath.Join(victimDir, webDomain+ext),
+			); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+		}
+		return nil
+	}
+	victimAPI.mu.Unlock()
+	if err := victim.only(t).configureServiceWhenCertified(); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the victim's Service advertised", func() bool {
+		return ran(victimAPI.operations(), "advertise", "svc:web")
+	})
+	if !validCert(victimDir, webDomain, time.Now()) {
+		t.Error("victim's certificate not in its directory")
+	}
+	if _, err := os.Stat(lease); err != nil {
+		t.Errorf("attacker's lease gone, the check proves nothing: %v", err)
 	}
 }
 

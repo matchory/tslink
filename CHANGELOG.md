@@ -34,6 +34,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   confinement, and E2 a container that mounts the shared certificate
   directory (the plugin's `shared.source`). A deployment that passed before
   may now report "violated".
+- With a shared certificate directory, stack tasks keep their certificates
+  in `certs/by-stack/<stack>/`, with a copy of the shared ACME account key;
+  other containers keep `certs/`. A stack takes over a valid certificate for
+  its Service from `certs/` instead of getting a new one, but a Service
+  moved to another stack, or a renamed stack, gets a new certificate, which
+  counts against Let's Encrypt's limit of 5 for each name in a week.
 - The documentation states that tslink is not tested with Tailnet Lock, and
   is expected to work under it only with a pre-signed auth key. It also
   describes failed DNS-01 validations of HTTPS certificates,
@@ -57,6 +63,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The plugin binary, run with arguments it does not know, exits with usage
   instead of starting a plugin instance, which on the host could install
   isolation chains the host's settings turn off.
+- With a shared certificate directory (`shared.source`), a stack that named
+  another stack's Service took its certificate lease, which control never
+  let it use, and the other stack's replicas waited for the lease: its
+  certificate was neither issued nor renewed while the first stack ran.
+  Each stack now keeps its certificates and leases in a directory of its
+  own.
 
 ## [0.3.4] - 2026-10-17
 

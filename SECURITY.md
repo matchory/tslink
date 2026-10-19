@@ -85,7 +85,7 @@ arguments.
 ### G4: A stack's nodes get only what its own network grants
 
 Attackers: the author of a stack file that passed review.
-Assumes: E1, E2, E3, E4, E8.
+Assumes: E1, E2, E3, E4, E7, E8.
 
 A network that belongs to a stack gives tailnet nodes only to that stack's
 tasks. With the cluster credential, a stack's nodes get only the tag
@@ -96,6 +96,10 @@ cluster credential.
 
 A stack can label any Service name; whether control makes its nodes backends
 depends on the tailnet policy's auto-approvers (E8).
+
+Each stack's certificates and certificate leases live in a directory of its
+own in the shared certificate directory, so naming another stack's Service
+does not delay or block that stack's certificates.
 
 ### G5: Credentials do not leak
 
@@ -198,8 +202,3 @@ finding:
   nodes with the tags of every stack. The shared certificate directory holds
   every Service's TLS private key and the ACME account key: anyone who can
   read it can impersonate those Services (E7).
-- **Known limitation**: A stack that names another stack's Service can hold
-  that Service's certificate lease in the shared directory, which blocks its
-  issuance and renewal for as long as that task runs, and after
-  `certDomainGrace` advertises the Service; operators who share a certificate
-  directory across stacks rely on E8 and stack review.

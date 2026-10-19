@@ -147,12 +147,19 @@ certificate lease and wait, and approval check. The backends share the superviso
 configuration fails is retried in place (`retryLater`), with a status warning until it succeeds; only tags and MagicDNS,
 which all need, fail the start. After advertising, a backend waits for control to fetch the node's Service list; control
 was seen to skip that fetch after a plugin restart, leaving the host inactive. Without a fetch within 15 s it
-unadvertises and advertises the Service again, up to 3 times (`confirmAdvertisedLater`).
+unadvertises and advertises the Service again, up to 3 times (`confirmAdvertisedLater`), and then warns in the status
+(`control/<svc>`) until a fetch. A backend notes the fetch count when tslink adds the Service to the prefs
+(`markAdvertised`; one already in them counts as fetched), and is `awaiting-control` until the count passes it, even
+with `service-host`. Control routes nothing to a host that does not serve every port of the Service's definition: from
+the node's `services/` capabilities (`tailcfg.ServiceDetails`), or else Tailscale's API when the credential is an OAuth
+client with `services:read` (`refreshDefinedPorts`, with each approval check), ports not served make it
+`ports-uncovered` with a `ports/<svc>` warning; unknown or `do-not-validate` ports are not checked.
 
 **Readiness endpoint**: with the label `tslink.health=<port>`, `Endpoint.startHealth` serves `GET /ready` on that port
 of the container's loopback, from a listener the plugin opens in the container's netns (`netutil.ListenInNetNS`).
 Readiness comes from tailscaled (`DaemonSupervisor.Readiness`: backend state, the serve config, the advertised
-Services in its prefs, and the `service-host` node capability for control's approval), cached for 2 s. Once ready, the
+Services in its prefs, the `service-host` node capability for control's approval, the Service's defined ports and
+control's fetch of the Service list, see Services), cached for 2 s. Once ready, the
 endpoint latches: `status/<endpoint-id[:12]>.ready` records it, so it answers 200 until the backend is drained or the
 container leaves, also after a plugin restart. A latched endpoint answers without waiting for tailscaled, from the cache,
 which the request refreshes in the background. Readiness is per Service (`ReadinessReport`); the container's state is

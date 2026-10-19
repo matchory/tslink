@@ -27,7 +27,9 @@ const (
 	ReadyLoggedOut          Readiness = "logged-out"          // the node needs a login
 	ReadyServingPending     Readiness = "serving-pending"     // the tslink.serve.* config is not applied
 	ReadyCertificatePending Readiness = "certificate-pending" // the Service waits for its certificate
+	ReadyPortsUncovered     Readiness = "ports-uncovered"     // the Service defines ports not served
 	ReadyAwaitingApproval   Readiness = "awaiting-approval"   // control has not approved the backend
+	ReadyAwaitingControl    Readiness = "awaiting-control"    // control has not fetched the Services
 	ReadyDrained            Readiness = "drained"             // the backend is drained, or the container leaving
 	Ready                   Readiness = "ready"
 )
@@ -48,8 +50,10 @@ type ReadinessReport struct {
 var readinessRank = map[Readiness]int{
 	ReadyCertificatePending: 0,
 	ReadyServingPending:     1,
-	ReadyAwaitingApproval:   2,
-	Ready:                   3,
+	ReadyPortsUncovered:     2,
+	ReadyAwaitingApproval:   3,
+	ReadyAwaitingControl:    4,
+	Ready:                   5,
 }
 
 // lessReady returns the less ready of a and b.
@@ -68,8 +72,9 @@ func (d *daemon) readiness(ctx context.Context) Readiness {
 
 // readinessReport asks tailscaled how far the node is from serving what its
 // container asks for: running, its serve config applied and, for each
-// Service, advertised and approved by control as a backend. The node is as
-// ready as its least ready Service. It reads the status, the serve config and
+// Service, serving every port the Service defines, advertised, approved by
+// control as a backend, and fetched by control. The node is as ready as its
+// least ready Service. It reads the status, the serve config and
 // the prefs once each.
 func (d *daemon) readinessReport(ctx context.Context) ReadinessReport {
 	if d.isDrained() {
@@ -119,7 +124,9 @@ func (d *daemon) readinessReport(ctx context.Context) ReadinessReport {
 }
 
 // readiness tells how far the backend is from serving its Service, from the
-// node's status, serve config and prefs.
+// node's status, serve config and prefs. Control routes nothing to a host
+// that does not serve every port the Service defines, which is checked only
+// when the defined ports are known; it reports them in a warning.
 func (b *serviceBackend) readiness(
 	status *ipnstate.Status,
 	config *ipn.ServeConfig,
@@ -129,16 +136,34 @@ func (b *serviceBackend) readiness(
 		prefs == nil || !slices.Contains(prefs.AdvertiseServices, b.name) {
 		return b.pendingService(magicDNSSuffix(status))
 	}
-	if status.Self == nil {
+	if uncovered, known := b.uncoveredPorts(status, config); known {
+		b.notePorts(uncovered)
+		if len(uncovered) > 0 {
+			return ReadyPortsUncovered
+		}
+	}
+	if !approved(status, b.name) {
 		return ReadyAwaitingApproval
+	}
+	if b.awaitingFetch() {
+		return ReadyAwaitingControl
+	}
+	return Ready
+}
+
+// approved reports whether control approved the node as a host of service:
+// its service-host capability gives it addresses for it.
+func approved(status *ipnstate.Status, service string) bool {
+	if status.Self == nil {
+		return false
 	}
 	for _, raw := range status.Self.CapMap[serviceHostCap] {
 		var services map[string]json.RawMessage
-		if json.Unmarshal([]byte(raw), &services) == nil && services[b.name] != nil {
-			return Ready
+		if json.Unmarshal([]byte(raw), &services) == nil && services[service] != nil {
+			return true
 		}
 	}
-	return ReadyAwaitingApproval
+	return false
 }
 
 // pendingService tells a Service waiting for its certificate from other

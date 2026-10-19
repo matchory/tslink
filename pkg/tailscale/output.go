@@ -110,6 +110,9 @@ func (d *daemon) handleLine(line string) {
 			d.fetched = nil
 		}
 		d.fetchMu.Unlock()
+		for _, b := range d.backends {
+			b.noteFetch()
+		}
 	case strings.Contains(line, `cert("`):
 		d.handleCertLine(line)
 	}

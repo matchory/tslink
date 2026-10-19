@@ -130,8 +130,10 @@ readylogs() {
 		  for c in \$(docker ps -q -f $f); do
 		    p=\$(docker inspect -f '{{index .Config.Labels \"tslink.health\"}}' \$c)
 		    s=\$(docker inspect -f '{{index .Config.Labels \"com.docker.swarm.service.name\"}}' \$c)
-		    docker cp /tmp/ready.sh \$c:/tmp/ready.sh &&
-		      nohup docker exec \$c sh /tmp/ready.sh \$p - >/tmp/tslink-ready/\${s:--}.\$c.log 2>/dev/null </dev/null &
+		    # The whole list in the background, its output away from SSH's: else the subshell
+		    # running it keeps the session open until ready.sh ends
+		    { docker cp /tmp/ready.sh \$c:/tmp/ready.sh &&
+		      nohup docker exec \$c sh /tmp/ready.sh \$p -; } >/tmp/tslink-ready/\${s:--}.\$c.log 2>/dev/null </dev/null &
 		  done" <"$B/ready.sh" ;;
 		stop) "$B/s" "$n" "for c in \$(docker ps -q -f $f); do docker exec \$c pkill -f '^python3 - [0-9]+ -\$'; done" </dev/null ;;
 		show) "$B/s" "$n" "for l in /tmp/tslink-ready/$g.*.log; do [ -f \"\$l\" ] || continue; c=\${l%.log}; c=\${c##*.}; sed \"s/^/$n \$c /\" \"\$l\"; done" </dev/null ;;

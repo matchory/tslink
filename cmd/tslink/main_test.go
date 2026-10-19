@@ -104,16 +104,23 @@ func TestBuildStampsVersion(t *testing.T) {
 }
 
 // TestUnknownCommandDoesNotStartThePlugin runs the binary with arguments it
-// does not know: it must exit 2 without starting a plugin instance.
+// does not know, and without arguments outside a Docker plugin, as on a host
+// or in a container: it must exit 2 without starting a plugin instance or
+// writing to the data directory.
 func TestUnknownCommandDoesNotStartThePlugin(t *testing.T) {
 	if arg, ok := os.LookupEnv("TSLINK_TEST_ARG"); ok {
-		os.Args = []string{"tslink", arg}
+		os.Args = []string{"tslink"}
+		if arg != "" {
+			os.Args = append(os.Args, arg)
+		}
 		main()
 		return
 	}
-	for _, arg := range []string{"--bogus", "start"} {
-		cmd := exec.Command(os.Args[0], "-test.run=^TestUnknownCommandDoesNotStartThePlugin$")
-		cmd.Env = append(os.Environ(), "TSLINK_TEST_ARG="+arg)
+	for _, arg := range []string{"--bogus", "start", ""} {
+		data := t.TempDir()
+		cmd := exec.CommandContext(t.Context(), os.Args[0],
+			"-test.run=^TestUnknownCommandDoesNotStartThePlugin$")
+		cmd.Env = append(os.Environ(), "TSLINK_TEST_ARG="+arg, "TS_DATA_DIR="+data)
 		out, err := cmd.CombinedOutput()
 		var exit *exec.ExitError
 		if !errors.As(err, &exit) || exit.ExitCode() != 2 {
@@ -121,6 +128,12 @@ func TestUnknownCommandDoesNotStartThePlugin(t *testing.T) {
 		}
 		if strings.Contains(string(out), "Starting") {
 			t.Errorf("tslink %s started the plugin:\n%s", arg, out)
+		}
+		if entries, err := os.ReadDir(data); err != nil || len(entries) > 0 {
+			t.Errorf("tslink %s wrote to the data directory: %v, %v", arg, entries, err)
+		}
+		if arg == "" && !strings.Contains(string(out), "not running as a Docker plugin") {
+			t.Errorf("tslink without arguments does not say why it exits:\n%s", out)
 		}
 	}
 }

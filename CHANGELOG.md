@@ -50,6 +50,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The plugin binary, run with arguments it does not know, exits with usage
   instead of starting a plugin instance, which on the host could install
   isolation chains the host's settings turn off.
+- Without arguments, the plugin binary starts a plugin instance only inside a
+  Docker plugin, which it recognizes by the plugin socket directory Docker
+  mounts. On a host or in a container, it exits with usage (#96).
 - Builds from a source tree without Git metadata, such as the cluster test
   bed's, reported `tslink (devel)`. The builds now stamp the version
   (`scripts/version.sh`) into the binary, and the plugin logs it at start.

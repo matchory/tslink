@@ -56,9 +56,6 @@ test:
 dev-build:
 	go build -ldflags "$(LDFLAGS)" -o tslink ./cmd/tslink
 
-dev-run: dev-build
-	./tslink
-
 # Full reinstall cycle for development
 reinstall: clean create enable
 	@echo "Plugin reinstalled successfully"

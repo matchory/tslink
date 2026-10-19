@@ -157,6 +157,20 @@ docker rm "$id" >/dev/null
 sudo mkdir -p "$DATA"
 # The CLI packs the rootfs, which is root's like in the image
 sudo docker plugin create "$PLUGIN" "$WORK/plugin"
+
+log "The plugin binary does not start outside a plugin"
+# mangle_rules: the host's mangle table, without counters and comments
+mangle_rules() { sudo iptables-save -t mangle | sed -e '/^#/d' -e 's/\[[0-9]*:[0-9]*\]//'; }
+mangle_before=$(mangle_rules)
+# A plugin instance on the host would serve until stopped
+rc=0
+# shellcheck disable=SC2024 # the log is ours
+sudo timeout 30 "$WORK/plugin/rootfs/tslink" >"$WORK/host-run.log" 2>&1 || rc=$?
+[ "$rc" = 2 ] || fail "tslink on the host: exit status $rc, want 2: $(cat "$WORK/host-run.log")"
+[ "$(mangle_rules)" = "$mangle_before" ] || fail "tslink on the host changed the mangle table"
+rc=0
+docker run --rm --entrypoint /tslink tslink:rootfs >/dev/null 2>&1 || rc=$?
+[ "$rc" = 2 ] || fail "tslink in a container: exit status $rc, want 2"
 # Docker creates /var/run/docker/netns with the first container
 docker run --rm "$ALPINE" true
 docker plugin enable "$PLUGIN"

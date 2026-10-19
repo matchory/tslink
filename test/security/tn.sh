@@ -40,10 +40,10 @@ tn_error() {
 
 # tn_on_exit CMD: runs CMD, a shell command, when the probe exits, after the
 # ones registered before it
-tn_on_exit() { TN_EXIT=("$1" "${TN_EXIT[@]}"); }
+tn_on_exit() { TN_EXIT=("$1" ${TN_EXIT[@]+"${TN_EXIT[@]}"}); }
 tn_down() {
 	local status=$? c
-	for c in "${TN_EXIT[@]}"; do eval "$c"; done
+	for c in ${TN_EXIT[@]+"${TN_EXIT[@]}"}; do eval "$c"; done
 	rm -rf "$TN_WORK"
 	exit "$status"
 }

@@ -18,6 +18,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/matchory/tslink/pkg/logger"
 )
 
 func TestLinkCertsDir(t *testing.T) {
@@ -641,6 +643,9 @@ func TestCertExpiryWatcherStartsOnce(t *testing.T) {
 // Configuring the Service again while it waits for its certificate starts
 // no second waiter.
 func TestCertWaiterStartsOnce(t *testing.T) {
+	var log lockedLog
+	logger.SetOutput(&log)
+	t.Cleanup(func() { logger.SetOutput(os.Stdout) })
 	d, dir, api := newDomainDaemon(t)
 	setTiming(&d.config, func(tm *timing) { tm.certPollInterval = 10 * time.Millisecond })
 	other, err := tryLease(dir, webDomain, "other")
@@ -653,11 +658,15 @@ func TestCertWaiterStartsOnce(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	time.Sleep(30 * time.Millisecond)
+	// Each waiter logs this as it starts, before configureServiceWhenCertified
+	// returns
+	if n := strings.Count(log.String(), "No certificate for "+webDomain+" yet"); n != 1 {
+		t.Errorf("%d certificate waiters started, want one", n)
+	}
 	writeCert(t, dir, webDomain, webDomain, time.Now().Add(90*24*time.Hour))
-	// Under -race, configuring takes about 100 ms
-	waitFor(t, "the waiter to end", func() bool { return !d.only(t).certWaiting.Load() })
-	time.Sleep(50 * time.Millisecond)
+	waitFor(t, "the Service configured with the certificate", func() bool {
+		return ran(api.operations(), "serve")
+	})
 	if err := d.Stop(); err != nil {
 		t.Fatal(err)
 	}

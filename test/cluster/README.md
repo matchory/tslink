@@ -84,9 +84,15 @@ Services, so they do not run against headscale.
 ./cleanup.sh                       # delete the test devices, Services and keys
 ```
 
-Let's Encrypt issues at most 5 certificates a week for one name. Each deployment of the multi stack
-is new ephemeral nodes, each replica issuing its own certificate for `$TSLINK_TEST_SVC-callee`, so
-R7, R8, R10 and R11 together issue about 12. Run each of them with a `TSLINK_TEST_SVC` of its own,
+Let's Encrypt issues at most 5 certificates a week for one name. tslink keeps a Service's certificate
+in the host's certificate directory, not in the node's state
+([HTTPS certificates](../../docs/explanation/https-certificates.md)), so new ephemeral nodes reuse it.
+On fresh hosts, a run issues one certificate for `$TSLINK_TEST_SVC-callee` on each host that runs one
+of its backends, and one more in R7's shared variant, which starts with an empty shared directory. The
+callee stack's plain-HTTP backends count too (tailscaled fetches certificates for plain HTTP,
+tailscale/tailscale#21693), and two of them that start together on one host can each issue one. A run
+on five fresh nodes can thus exceed the limit, and runs on new beds in one week add up. Run R7, R8,
+R10 and R11 each with a `TSLINK_TEST_SVC` of its own,
 whose Services, grants and autoApprovers exist (`deploy` renames the Services in the multi stack's
 label keys after it), e.g.
 `TSLINK_TEST_SVC=svc:tslink-r7 TSLINK_TEST_SERVICES="svc:tslink-r7-callee svc:tslink-r7-other"

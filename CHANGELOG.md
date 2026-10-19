@@ -40,6 +40,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its Service from `certs/` instead of getting a new one, but a Service
   moved to another stack, or a renamed stack, gets a new certificate, which
   counts against Let's Encrypt's limit of 5 for each name in a week.
+- The documentation states that tslink is not tested with Tailnet Lock, and
+  is expected to work under it only with a pre-signed auth key. It also
+  describes failed DNS-01 validations of HTTPS certificates,
+  Services that control does not fetch, and drains that control fetches
+  after tslink's 10 s limit.
 
 ### Fixed
 

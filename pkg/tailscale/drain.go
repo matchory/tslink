@@ -230,7 +230,8 @@ const advertiseNudges = 3
 // not to, for good: the host stayed configured but inactive, and no caller
 // reached it. Without a fetch after more than after within
 // advertiseAckTimeout, the Service is advertised anew, which made control
-// fetch the list, up to advertiseNudges times. A drained backend is left
+// fetch the list, up to advertiseNudges times, and then warns in the
+// endpoint's status until control fetches it. A drained backend is left
 // drained.
 func (b *serviceBackend) confirmAdvertisedLater(service string, after int64) {
 	tm := b.d.config.times()
@@ -242,12 +243,11 @@ func (b *serviceBackend) confirmAdvertisedLater(service string, after int64) {
 				return
 			}
 			if attempt > advertiseNudges {
-				logger.Warnf(
-					"Endpoint %s: control has not fetched the advertised %s after %d attempts",
-					id,
-					service,
-					advertiseNudges,
-				)
+				b.warnUnfetched(fmt.Sprintf(
+					"Endpoint %s: control has not fetched the advertised %s after %d attempts: "+
+						"it may route no traffic to this host until the next change",
+					id, service, advertiseNudges,
+				))
 				return
 			}
 			logger.Warnf(
@@ -283,7 +283,11 @@ func (b *serviceBackend) readvertise(service string, gap time.Duration) error {
 		return b.d.ctx.Err()
 	}
 	return g.change(b.d, func(ctx context.Context) error {
-		_, err := b.d.addAdvertised(ctx, service)
+		fetches, _ := b.d.servicesFetches()
+		added, err := b.d.addAdvertised(ctx, service)
+		if added {
+			b.markAdvertised(fetches)
+		}
 		return err
 	})
 }

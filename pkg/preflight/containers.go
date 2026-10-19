@@ -313,10 +313,16 @@ func (p protected) exposes(source string) bool {
 	return false
 }
 
+// defaultSharedSource is the default of the plugin's shared.source, the
+// host's /var/lib (see docker/config.json).
+const defaultSharedSource = "/var/lib"
+
 // sharedDirsOf returns the host paths E2 protects as the shared certificate
 // directory: each enabled tslink plugin's own shared.source setting (docker
 // plugin set tslink shared.source=...). --shared-dir is not one of them: it
-// names the directory as mounted where the preflight runs, for E7.
+// names the directory as mounted where the preflight runs, for E7. Nor is
+// the default, defaultSharedSource: with it, the plugin keeps certificates in
+// its data directory.
 func sharedDirsOf(ctx context.Context, d DockerAPI) ([]string, error) {
 	plugins, err := tslinkPlugins(ctx, d)
 	if err != nil {
@@ -325,7 +331,8 @@ func sharedDirsOf(ctx context.Context, d DockerAPI) ([]string, error) {
 	var dirs []string
 	for _, p := range plugins {
 		for _, m := range p.Settings.Mounts {
-			if m.Name == "shared" && m.Source != nil && *m.Source != "" {
+			if m.Name == "shared" && m.Source != nil && *m.Source != "" &&
+				filepath.Clean(*m.Source) != defaultSharedSource {
 				dirs = append(dirs, *m.Source)
 			}
 		}

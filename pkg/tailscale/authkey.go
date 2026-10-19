@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 
 	tsapi "tailscale.com/client/tailscale/v2"
+	"tailscale.com/tailcfg"
 )
 
 // resolveAuthKey turns an OAuth client secret into a single-use auth key for
@@ -24,19 +26,9 @@ func resolveAuthKey(ctx context.Context, authKey string, tags []string) (string,
 	if len(tags) == 0 {
 		return "", errors.New("an OAuth client secret needs tags")
 	}
-	secret, attrs, err := parseClientSecret(authKey)
+	client, attrs, err := oauthClient(authKey)
 	if err != nil {
 		return "", err
-	}
-	baseURL, err := url.Parse(attrs.baseURL)
-	if err != nil {
-		return "", errors.New("invalid OAuth client secret attribute baseURL")
-	}
-	client := &tsapi.Client{
-		BaseURL:   baseURL,
-		UserAgent: "tslink",
-		// The client ID is ignored: the secret names the client
-		Auth: &tsapi.OAuth{ClientID: "tslink", ClientSecret: secret},
 	}
 	var caps tsapi.KeyCapabilities
 	caps.Devices.Create.Ephemeral = attrs.ephemeral
@@ -47,6 +39,58 @@ func resolveAuthKey(ctx context.Context, authKey string, tags []string) (string,
 		return "", fmt.Errorf("failed to create an auth key with the OAuth client: %w", err)
 	}
 	return key.Key, nil
+}
+
+// oauthClient returns a client of Tailscale's API for an OAuth client secret,
+// and the secret's attributes.
+func oauthClient(authKey string) (*tsapi.Client, clientSecretAttrs, error) {
+	secret, attrs, err := parseClientSecret(authKey)
+	if err != nil {
+		return nil, attrs, err
+	}
+	baseURL, err := url.Parse(attrs.baseURL)
+	if err != nil {
+		return nil, attrs, errors.New("invalid OAuth client secret attribute baseURL")
+	}
+	return &tsapi.Client{
+		BaseURL:   baseURL,
+		UserAgent: "tslink",
+		// The client ID is ignored: the secret names the client
+		Auth: &tsapi.OAuth{ClientID: "tslink", ClientSecret: secret},
+	}, attrs, nil
+}
+
+// errNotOAuthClient is what reading Tailscale's API fails with when the
+// credential is not an OAuth client secret.
+var errNotOAuthClient = errors.New("the credential is not an OAuth client secret")
+
+// doNotValidate is what a Service's definition lists as its ports when
+// control does not check the ports its hosts serve, as for the Services of
+// the Kubernetes operator.
+const doNotValidate = "do-not-validate"
+
+// servicePorts reads the ports of service's definition from Tailscale's API,
+// with the OAuth client secret authKey, which needs the services:read scope.
+// It returns nil if the definition lists none, or doNotValidate.
+func servicePorts(
+	ctx context.Context,
+	authKey, service string,
+) ([]tailcfg.ProtoPortRange, error) {
+	if !strings.HasPrefix(authKey, "tskey-client-") {
+		return nil, errNotOAuthClient
+	}
+	client, _, err := oauthClient(authKey)
+	if err != nil {
+		return nil, err
+	}
+	svc, err := client.Services().Get(ctx, service)
+	if err != nil {
+		return nil, err
+	}
+	if slices.Contains(svc.Ports, doNotValidate) {
+		return nil, nil
+	}
+	return tailcfg.ParseProtoPortRanges(svc.Ports)
 }
 
 // clientSecretAttrs are the attributes an OAuth client secret may carry.

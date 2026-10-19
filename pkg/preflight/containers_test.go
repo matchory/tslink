@@ -174,6 +174,9 @@ func TestSharedDirMount(t *testing.T) {
 		{"mounts an ancestor of it", "/shared/certs", "/shared", Violated},
 		{"mounts something else", "/shared/certs", "/srv/app", OK},
 		{"no shared.source configured", "", "/shared/certs", OK},
+		// The default: the plugin uses its data directory, not the host's /var/lib
+		{"default shared.source", "/var/lib", "/var/lib/app", OK},
+		{"default shared.source with a slash", "/var/lib/", "/var/lib/app", OK},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newFakeDocker()

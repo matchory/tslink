@@ -98,6 +98,11 @@ jobs:
             --raw-command -- go tool test2json -t -p github.com/matchory/tslink/pkg/tailscale \
             sudo "${RUNNER_TEMP}/tailscale.test" -test.v=test2json -test.count=1 \
             -test.run 'OverStale|SystemBus|Taildrop' -test.gocoverdir="${RUNNER_TEMP}/cover/netns"
+          go test -c -cover -covermode=atomic -o "${RUNNER_TEMP}/tslink.test" ./cmd/tslink
+          go tool gotestsum --format github-actions --junitfile "${RUNNER_TEMP}/junit/datadir.xml" \
+            --raw-command -- go tool test2json -t -p github.com/matchory/tslink/cmd/tslink \
+            sudo "${RUNNER_TEMP}/tslink.test" -test.v=test2json -test.count=1 \
+            -test.run 'PrepareDataDir' -test.gocoverdir="${RUNNER_TEMP}/cover/netns"
 
       # The same network namespace tests against iptables-legacy: tslink writes
       # isolation chains with the iptables-restore of whichever backend

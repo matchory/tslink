@@ -75,7 +75,7 @@ processes)
 	done
 	;;
 diag)
-	tar -C /root/plugin/rootfs -c . | docker import -q - tslink:redteam >/dev/null &&
+	tar -C /root/plugin/rootfs -c . | docker import - tslink:redteam >/dev/null &&
 		docker run --rm -v "$D:/data:ro" --entrypoint /tslink tslink:redteam diag 2>&1 | hit && echo "tslink diag"
 	docker image rm -f tslink:redteam >/dev/null 2>&1
 	;;

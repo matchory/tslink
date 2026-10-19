@@ -67,7 +67,7 @@ CI runs the test on each pull request. It does not test Tailscale Services, beca
 
 `test/cluster` installs tslink on a Docker Swarm of three or more nodes, and tests it against a real tailnet,
 with Tailscale Services. See [test/cluster/README.md](../test/cluster/README.md). Its regression suite, `regress.sh`,
-checks these properties, as the cases R1 to R17 (`regress.sh --list` prints them):
+checks these properties, as the cases R1 to R18 (`regress.sh --list` prints them):
 
 1. The tailscaled of each task runs.
 2. A task reaches only what the policy permits, and no traffic leaves through the Tailscale of the host.
@@ -83,21 +83,27 @@ checks these properties, as the cases R1 to R17 (`regress.sh --list` prints them
    node is logged out, and the other Service fails no request.
 9. Labels that conflict, legacy and named Service labels or a named one with `tslink.direct=true`, fail the endpoint
    with an error that names them, and no device comes up. Legacy labels cleared to `""` do not conflict.
-10. `/ready` reports each Service. It stays 200 when one Service loses its approval, is 200 within 1 s after a
-    plugin restart, and answers 503 `drained` while the task stops.
+10. `/ready` reports each Service. A host of a Service that no autoApprovers approve answers 503
+    `awaiting-approval` until it is approved through the API, then 200, and stays 200 when the approval is revoked,
+    listing the Service as `awaiting-approval`. `/ready` is 200 within 1 s after a plugin restart, and answers 503
+    `drained` while the task stops.
 11. An upgrade from v0.3.2 keeps what 6 checks, with legacy HTTPS tasks, and named labels work after it. A
     downgrade, which is not supported, advertises none of the named labels' Services.
 12. Each task device has exactly the tag of its network and is ephemeral, and no test key outlives its expiry. With
     the cluster credential, a network without `tslink.tags` is refused, and a tag outside the stack's scope never
     starts tailscaled.
 13. A node whose device was deleted comes back as a new device after a restart, and callers reach it.
-14. A task without `dns:` resolves through the resolver of Docker's `daemon.json`. A task with
-    `dns: [100.100.100.100, <resolver>]` resolves both tailnet names and the resolver's names.
+14. A task with `dns: [100.100.100.100, <resolver>]` resolves tailnet names, the resolver's names and public
+    names, and its tailscaled forwards to that resolver alone, whose names a task without `dns:` does not resolve.
+    Once Docker's `daemon.json` names the resolver, a task without `dns:` resolves through it.
 15. At `TSLINK_LOG_LEVEL=warn`, the plugin logs no info lines.
 16. `tslink diag --preflight` finds no violated property on any node, except E6 for a plugin created from a
     directory.
 17. Nodes on different hosts reach each other directly over the hosts' network, not through DERP, also after the
     filter table of one host is flushed and the watchdog restored tslink's rules.
+18. A backend that serves only some ports of its Service's definition answers `/ready` with 503
+    `ports-uncovered` while tslink knows the ports. The case records whether callers reach such a backend, whether a
+    host's capabilities give its own Service's ports, and what the API returns for the ports and each host.
 
 `disrupt` does one of these actions to a node, a manager included, while callers send requests to a Tailscale
 Service. It then measures the recovery time.

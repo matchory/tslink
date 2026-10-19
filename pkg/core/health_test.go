@@ -72,6 +72,23 @@ func get(t *testing.T, method, url string) (int, string) {
 	return resp.StatusCode, r.State
 }
 
+// tryGet sends a GET to url and returns the status code, or the error of a
+// request that got no response.
+func tryGet(t *testing.T, url string) (int, error) {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return resp.StatusCode, nil
+}
+
 // /ready answers 503 until the node is ready, then 200, and stays 200 once
 // it was: a plugin restart or a briefly lost connection to control must not
 // make Swarm replace the task. Draining and leaving end it.
@@ -249,17 +266,19 @@ func TestHealthLimitsConnections(t *testing.T) {
 	}
 	conns = nil
 
+	// While the server drains the flood's closed connections from the
+	// listen backlog, a new connection can be reset: retry until the deadline
 	deadline := time.Now().Add(1 * time.Second)
 	var code int
+	var err error
 	for time.Now().Before(deadline) {
-		code, _ = get(t, http.MethodGet, url+"/ready")
-		if code == http.StatusOK {
+		if code, err = tryGet(t, url+"/ready"); code == http.StatusOK {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	if code != http.StatusOK {
-		t.Errorf("GET after flood closed: %d, want 200", code)
+		t.Errorf("GET after flood closed: %d (%v), want 200", code, err)
 	}
 }
 
@@ -391,6 +410,61 @@ func TestServeReadyKeepsServiceField(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Errorf("after the latch, body = %s, want %s", body, want)
+}
+
+// Before the latch, a Service control has not fetched or whose ports the
+// node does not all serve keeps the endpoint unready; after it, the endpoint
+// stays ready and shows the state under services only.
+func TestHealthLatchKeepsControlStates(t *testing.T) {
+	for _, state := range []tailscale.Readiness{
+		tailscale.ReadyAwaitingControl, tailscale.ReadyPortsUncovered,
+	} {
+		t.Run(string(state), func(t *testing.T) {
+			var unused atomic.Value
+			var calls atomic.Int32
+			unused.Store(tailscale.Ready)
+			e, url := healthEndpoint(t, &unused, &calls)
+			var report atomic.Value
+			report.Store(tailscale.ReadinessReport{
+				State:    state,
+				Services: map[string]tailscale.Readiness{"svc:ai": state},
+			})
+			e.mu.Lock()
+			e.readinessFn = func(context.Context) tailscale.ReadinessReport {
+				return report.Load().(tailscale.ReadinessReport)
+			}
+			e.mu.Unlock()
+			if code, got := get(t, http.MethodGet, url+"/ready"); code != 503 ||
+				got != string(state) {
+				t.Errorf("before the latch: %d %q, want 503 %q", code, got, state)
+			}
+
+			report.Store(tailscale.ReadinessReport{
+				State:    tailscale.Ready,
+				Services: map[string]tailscale.Readiness{"svc:ai": tailscale.Ready},
+			})
+			e.clearReadinessCache()
+			if code, _ := get(t, http.MethodGet, url+"/ready"); code != 200 {
+				t.Fatalf("ready: %d, want 200", code)
+			}
+
+			report.Store(tailscale.ReadinessReport{
+				State:    state,
+				Services: map[string]tailscale.Readiness{"svc:ai": state},
+			})
+			e.clearReadinessCache()
+			want := `{"state":"ready","service":"svc:ai","services":{"svc:ai":"` +
+				string(state) + `"}}`
+			var body string
+			for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
+				if body = getBody(t, url+"/ready"); body == want {
+					return
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			t.Errorf("after the latch, body = %s, want %s", body, want)
+		})
+	}
 }
 
 // A latched endpoint answers at once, without waiting for tailscaled: a

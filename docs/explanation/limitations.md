@@ -51,6 +51,14 @@ After a power loss or a crash of dockerd, ephemeral nodes stay in the tailnet, o
 removes them. In the cluster test, this took one hour. When tslink starts again, it logs out the ephemeral nodes
 that no container uses.
 
+## Slow registrations
+
+When a node registers, tslink waits up to 5 minutes for the control server to answer. If the answer comes later,
+tslink restarts tailscaled, which registers a second node. The first node stays in the tailnet, offline, and holds the
+hostname, so the control server names the second node `<hostname>-1`. tslink cannot remove the first node: it has no
+key for it. tslink reports the name as a `node-name` warning in the status file and in the plugin log. Remove the
+first node in the admin console. See [Troubleshooting](../guides/troubleshoot.md#the-node-gets-the-name-hostname-1).
+
 ## headscale
 
 tslink is built and tested for the control server of Tailscale. It also works with
@@ -60,6 +68,16 @@ end-to-end test runs against headscale. Support for headscale is best-effort:
 - Features that headscale does not have, such as Tailscale Services, are not available.
 - A change does not make tslink worse with Tailscale to make it better with headscale.
 - Issues that occur only with headscale are fixed when possible.
+
+## Tailnet Lock
+
+tslink is not tested with [Tailnet Lock](https://tailscale.com/docs/features/tailnet-lock). The tailscaled of each
+container is a node of its own, and an ephemeral container is a new node each time it starts. With Tailnet Lock, a
+trusted signing key must sign each new node before it can connect to other nodes.
+
+tslink is expected to work only with a reusable auth key that is pre-signed with `tailscale lock sign`. With such a
+key, each node signs its own node key when it registers. tslink is not expected to work with an OAuth client secret
+or the cluster credential: tslink makes auth keys from them, and these keys are not signed.
 
 ## Workload identity federation
 

@@ -23,9 +23,11 @@ the other tests: [docs/testing.md](../../docs/testing.md).
     (tcp:80), node → callee (tcp:80, the leak path) and node → node (tcp:5201, icmp)
   - `autoApprovers.services` letting `tag:tslink-test-callee` host `svc:tslink-test-callee` and
     `svc:tslink-test-other`; `svc:tslink-test-mixed` needs none, tslink must refuse to host it.
-    With autoApprovers, R10 skips its check of a revoked approval: revoking does not undo them
+    No autoApprovers for `svc:tslink-test-manual`: R10 approves and revokes its host through the
+    API, and revoking does not undo an approval autoApprovers gave
   - the Services `svc:tslink-test-callee` with the ports tcp:80 and tcp:443, and
-    `svc:tslink-test-other` with tcp:80
+    `svc:tslink-test-other` with tcp:80; R10 creates `svc:tslink-test-manual` (tcp:80) if it is
+    missing
   - optional, for the red team's `test/security/redteam/G5-canaries.sh` to read the task nodes'
     peerapi `/v0/env`: a grant node → callee with `"ip": ["tcp:*"]` and
     `"app": {"https://tailscale.com/cap/debug-peer": [{}]}`, and `nodeAttrs` giving
@@ -33,12 +35,14 @@ the other tests: [docs/testing.md](../../docs/testing.md).
     INFO, saying it did not check `/v0/env`
 - On every node, the cluster credential: `oauth-client.secret` in the plugin's data directory
   (`/var/lib/docker-plugins/tailscale`), an OAuth client that may mint `tag:tslink-test-callee`,
-  for the `tslink-test-*` stacks (`regress.sh` R11 and R12).
+  for the `tslink-test-*` stacks (`regress.sh` R11 and R12). The plugin creates the directory
+  when it first starts: on fresh nodes, copy the credential after `install-plugin.sh`.
 - In `~/.tslink-test/` (mode 600, never on a command line):
   - `tailscale-api.secret`: OAuth client with `auth_keys`, `oauth_keys`, `devices:core` and
     `services` write scopes and the test tags
   - `caller.secret`, `callee.secret`, `nogrant.secret`: OAuth clients for the stacks, tagged
-    `tag:tslink-test-caller`, `-callee` and `-nogrant`
+    `tag:tslink-test-caller`, `-callee` and `-nogrant`; `callee.secret` also with `services:read`,
+    so tslink reads the Services' ports from the API where the node's capabilities lack them (R18)
   - `node.authkey`: auth key for the host `tailscaled`s, tagged `tag:tslink-test-node`
 
 ## Configuration
@@ -50,8 +54,8 @@ the other tests: [docs/testing.md](../../docs/testing.md).
 | `TSLINK_TEST_SSH_CONFIG` | `test/cluster/ssh_config` | SSH config whose hosts are the nodes |
 | `TSLINK_TEST_DIR` | `~/.tslink-test` | credentials, API token cache, SSH state |
 | `TSLINK_TEST_TAG` | `tag:tslink-test` | tag prefix: `-caller`, `-callee`, `-nogrant`, `-node` |
-| `TSLINK_TEST_SVC` | `svc:tslink-test` | Service prefix: `-callee`, `-other`, `-mixed` |
-| `TSLINK_TEST_SERVICES` | the three of `TSLINK_TEST_SVC` | the Services `cleanup.sh` deletes |
+| `TSLINK_TEST_SVC` | `svc:tslink-test` | Service prefix: `-callee`, `-other`, `-mixed`, `-manual` |
+| `TSLINK_TEST_SERVICES` | the four of `TSLINK_TEST_SVC` | the Services `cleanup.sh` deletes |
 | `TSLINK_TEST_API` | `https://api.tailscale.com/api/v2` | Tailscale API |
 | `TSLINK_TEST_TAILNET` | `-` | tailnet; `-` is the API client's |
 | `TSLINK_TEST_MTU` | `1450` | MTU of the stacks' tslink networks (suits the Hetzner provisioner) |
@@ -80,18 +84,25 @@ Services, so they do not run against headscale (a plugin with `TSLINK_LOGIN_SERV
 ./install-plugin.sh WT             # or a git ref; installs it as tslink on every node
 ./deploy callee && ./deploy caller && ./deploy nogrant
 ./regress.sh --upgrade             # exits non-zero if a check fails
-./regress.sh --list                # the cases R1 to R17; --cases R7,R8 runs only those
+./regress.sh --list                # the cases R1 to R18; --cases R7,R8 runs only those
 ./cleanup.sh                       # delete the test devices, Services and keys
 ```
 
-Let's Encrypt issues at most 5 certificates a week for one name. Each deployment of the multi stack
-is new ephemeral nodes, each replica issuing its own certificate for `$TSLINK_TEST_SVC-callee`, so
-R7, R8, R10 and R11 together issue about 12. Run each of them with a `TSLINK_TEST_SVC` of its own,
+Let's Encrypt issues at most 5 certificates a week for one name. tslink keeps a Service's certificate
+in the host's certificate directory, not in the node's state
+([HTTPS certificates](../../docs/explanation/https-certificates.md)), so new ephemeral nodes reuse it.
+On fresh hosts, a run issues one certificate for `$TSLINK_TEST_SVC-callee` on each host that runs one
+of its backends, and one more in R7's shared variant, which starts with an empty shared directory. The
+callee stack's plain-HTTP backends count too (tailscaled fetches certificates for plain HTTP,
+tailscale/tailscale#21693), and two of them that start together on one host can each issue one. A run
+on five fresh nodes can thus exceed the limit, and runs on new beds in one week add up. Run R7, R8,
+R10 and R11 each with a `TSLINK_TEST_SVC` of its own,
 whose Services, grants and autoApprovers exist (`deploy` renames the Services in the multi stack's
 label keys after it), e.g.
 `TSLINK_TEST_SVC=svc:tslink-r7 TSLINK_TEST_SERVICES="svc:tslink-r7-callee svc:tslink-r7-other"
 ./regress.sh --cases R7`. A Service whose name is over the limit does not start: its replicas wait
-for their certificate (`429 ... rateLimited` in `tailscaled.log`).
+for their certificate (`429 ... rateLimited` in `tailscaled.log`). R10 creates its
+`<prefix>-manual` Service itself; no autoApprovers may cover it.
 
 R6 and R11 upgrade the plugin one node at a time (`ONE_BY_ONE=1 ./install-plugin.sh`), as the
 upgrade guide does: each node's endpoints run again before the next node's plugin stops, which
@@ -141,6 +152,7 @@ another provider, point `TSLINK_TEST_POWER` at a script with the same arguments.
 | `install-drain.sh [--remove]` | install `deploy/systemd`'s drain drop-in on every node |
 | `endpoints.sh` | on a node (`s <node> sh -s <endpoints.sh`): each endpoint's state and advertised Services |
 | `lib.sh` | sourced by `regress.sh` and `test/security/tn.sh`: `wait_for`, `eps`, `stack_rm`, `scale` and the like |
+| `vip-hits.sh <url> <count>` | in a caller: requests to a VIP, counting R18's partial backend's answers |
 | `ready.sh <port> [log]` | in a container: `GET /ready` of the readiness endpoint, once or into a log |
 | `shared-dir.sh on\|off` | an NFS directory from `mgr` at `/mnt/tslink` on every node, for `shared.source` |
 | `cleanup.sh` | delete the test devices, Services and the keys created through `tsapi` |

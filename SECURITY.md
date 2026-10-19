@@ -85,7 +85,7 @@ arguments.
 ### G4: A stack's nodes get only what its own network grants
 
 Attackers: the author of a stack file that passed review.
-Assumes: E1, E2, E3, E4, E8.
+Assumes: E1, E2, E3, E4, E7, E8.
 
 A network that belongs to a stack gives tailnet nodes only to that stack's
 tasks. With the cluster credential, a stack's nodes get only the tag
@@ -99,6 +99,10 @@ which a stack sets, and plain http does not authenticate the server.
 
 A stack can label any Service name; whether control makes its nodes backends
 depends on the tailnet policy's auto-approvers (E8).
+
+Each stack's certificates and certificate leases live in a directory of its
+own in the shared certificate directory, so naming another stack's Service
+does not delay or block that stack's certificates.
 
 ### G5: Credentials do not leak
 
@@ -156,11 +160,17 @@ names a file outside the certificate directory.
 | E6 | The plugin is installed from a release image pinned by digest | operator | checks the digest pin |
 | E7 | The shared certificate directory is owned by root, mode 0700 or stricter, and reachable only by the cluster's hosts | operator | checks owner and mode, with `--shared-dir` |
 | E8 | The cluster credential owns only stack-prefixed tags, stack names follow tslink's rules, the plugin setting `TSLINK_TAG_SCOPE` is at its default, `exact`, and the policy auto-approves each Service only for the tag of the stack that owns it | operator, tailnet policy | checks the tag scope setting |
-| E9 | Tailnet Lock is on where peer identity must not depend on the control server | operator | reports whether it is on |
+| E9 | The identity of tslink's nodes depends on the control server, unless Tailnet Lock is on, which tslink is not tested with ([Limitations](docs/explanation/limitations.md#tailnet-lock)) | operator | reports whether it is on |
 
 Run `tslink diag --preflight` on each host, and on each node of a Swarm. It
 checks only the properties that it can see on the host where it runs.
 [tslink diag](docs/reference/diag.md) shows how.
+
+tslink is not tested with Tailnet Lock (E9). It is expected to work only with
+a reusable auth key pre-signed with `tailscale lock sign`, not with an OAuth
+client secret or the cluster credential, because tslink makes auth keys from
+them that are not signed. See
+[Limitations](docs/explanation/limitations.md#tailnet-lock).
 
 The range of `TSLINK_WIREGUARD_PORTS` is reserved: a host service listening
 in it gets no unsolicited UDP.
@@ -172,10 +182,15 @@ finding:
 
 - **The plugin runs as root on the host** with host networking,
   `CAP_NET_ADMIN`, `CAP_SYS_ADMIN`, `/dev/net/tun`, the Docker socket, the
-  host's `/run` and `/var/lib/docker-plugins/tailscale`. It enters container
-  network namespaces and changes interfaces, routes and firewall rules. A flaw
-  that lets a container or a tailnet peer influence what the plugin does on
-  the host is in scope.
+  host's `/run` and `/var/lib/docker-plugins/tailscale`. Docker mounts the
+  host's whole `/var/lib` into the plugin, read-write; the plugin uses it
+  only as it starts, to create `/var/lib/docker-plugins/tailscale` and mount
+  that at `/data`, and unmounts it before it opens its socket. Thus it
+  serves no request while it sees the host's `/var/lib`, and refuses to
+  start if it cannot unmount it. It enters container network namespaces and
+  changes interfaces, routes and firewall rules. A flaw that lets a container
+  or a tailnet peer influence what the plugin does on the host is in scope,
+  and so is a way to make it keep the host's `/var/lib` past its start.
 - **Credentials are visible to persons with access to the Docker API.**
   `docker network inspect` shows the network option `tslink.authkey`, and
   `docker plugin inspect` shows the plugin setting `TS_AUTHKEY`. On a Swarm,
@@ -195,8 +210,3 @@ finding:
   nodes with the tags of every stack. The shared certificate directory holds
   every Service's TLS private key and the ACME account key: anyone who can
   read it can impersonate those Services (E7).
-- **Known limitation**: A stack that names another stack's Service can hold
-  that Service's certificate lease in the shared directory, which blocks its
-  issuance and renewal for as long as that task runs, and after
-  `certDomainGrace` advertises the Service; operators who share a certificate
-  directory across stacks rely on E8 and stack review.

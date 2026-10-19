@@ -6,7 +6,7 @@ is disabled. See [Change a setting](../guides/install-and-upgrade.md#change-a-se
 | Setting | Values | Default |
 | --- | --- | --- |
 | [`TS_AUTHKEY`](#ts_authkey) | A credential | None |
-| [`shared.source`](#sharedsource) | A directory on the host | The data directory |
+| [`shared.source`](#sharedsource) | A directory on the host | `/var/lib`, which sets none |
 | [`TSLINK_ISOLATE_HOST_TAILNET`](#tslink_isolate_host_tailnet) | `true` or `false` | `true` |
 | [`TSLINK_TAG_SCOPE`](#tslink_tag_scope) | `exact` or `prefix` | `exact` |
 | [`TSLINK_LOGIN_SERVER`](#tslink_login_server) | An `https` URL, or `http` with an IP address | Tailscale's control server |
@@ -32,8 +32,9 @@ in `certs/`, and gets a certificate again if it is not there.
 
 To check which source the plugin uses, read `.Config.Mounts` in `docker plugin inspect tslink`. `docker plugin set`
 changes the source there, and the plugin runs with it. `.Settings.Mounts` can still show the source from the install.
-`docker plugin upgrade` resets the source to the data directory: set it again after an upgrade, before you enable the
-plugin.
+Its default, `/var/lib`, sets no shared directory: tslink keeps the certificates in `certs/` in the data directory,
+and does not keep the mount. `docker plugin upgrade` resets the source to the default: set it again after an upgrade,
+before you enable the plugin.
 
 > [!WARNING]
 > The directory holds the private key of each Service. Restrict access to the hosts of the cluster.

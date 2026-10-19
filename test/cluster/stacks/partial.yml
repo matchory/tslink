@@ -1,0 +1,20 @@
+# A backend of <prefix>-callee, whose definition has tcp:80 and tcp:443, that serves only port 80
+# (regress.sh R18): control should route it nothing, and /ready should answer 503
+# ports-uncovered. Its page starts with "partial", so a caller sees which backend answered.
+# Compose does not interpolate label keys: deploy renames tslink-test- in them after
+# TSLINK_TEST_SVC.
+services:
+  web:
+    image: python:3.13-alpine
+    command: ["sh","-c","mkdir -p /w && printf 'partial %s\n' $$(hostname) > /w/index.html && exec python -m http.server 80 -d /w >/dev/null 2>&1"]
+    networks: [tailnet]
+    labels:
+      tslink.service.tslink-test-callee.serve.80: http:80
+      tslink.health: "9003"
+networks:
+  tailnet:
+    driver: tslink:latest
+    driver_opts:
+      tslink.authkey: ${TSLINK_OAUTH_SECRET}?ephemeral=true&preauthorized=true
+      com.docker.network.driver.mtu: "${TSLINK_TEST_MTU:-1450}"
+      tslink.tags: ${TSLINK_TEST_TAG:-tag:tslink-test}-callee

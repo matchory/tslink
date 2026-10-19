@@ -1,6 +1,6 @@
 #!/bin/bash
 # regress.sh [--upgrade [ref]] [--cases R1,R2,...] [--list]: cluster regression checks for tslink
-# on the test swarm, the cases R1 to R17 in this order (--list prints them). --upgrade also runs
+# on the test swarm, the cases R1 to R18 in this order (--list prints them). --upgrade also runs
 # R6, which installs tslink from ref (default WT, the working tree) with install-plugin.sh and
 # checks that every identity survives, and R11, the upgrade from v0.3.2. The cases that reinstall
 # the plugin install ref too; each install is checked (it succeeded and every node runs the plugin
@@ -20,6 +20,7 @@ M=${MGR:-mgr}
 TN=$TSLINK_TEST_TAILNET
 SVC_C=$TSLINK_TEST_SVC-callee
 SVC_O=$TSLINK_TEST_SVC-other
+SVC_M=$TSLINK_TEST_SVC-manual
 L=/var/lib/docker-plugins/tailscale/plugin.log
 FAILS=0
 UPGRADE=
@@ -35,14 +36,15 @@ CASES=(
 	"R7 several named Services per task: both VIPs answer, HTTPS has the Service's certificate, both replicas approved; with a shared directory, one certificate, advertised only once it exists"
 	"R8 removing a Service's label drains it from the old tasks before their logout, without failing the other Service"
 	"R9 refused label combinations fail their endpoint, naming the labels, without a device; legacy labels cleared next to a named one serve it"
-	"R10 /ready reports each Service, keeps ready while one loses its approval, answers 200 at once after a plugin restart and 503 drained while stopping"
+	"R10 /ready reports each Service; a host of a Service without autoApprovers answers 503 awaiting-approval until approved through the API, then 200, and keeps 200 once the approval is revoked, its services showing it; 200 at once after a plugin restart and 503 drained while stopping"
 	"R11 an upgrade from v0.3.2 passes R6's checks with legacy HTTPS tasks, named labels work after it, and a downgrade advertises none of them (--upgrade only)"
 	"R12 each task device has exactly its network's tag and is ephemeral, no test key outlives its expiry, the cluster credential refuses a network without tags and a tag outside the stack's scope"
 	"R13 a non-ephemeral task whose device was deleted comes back after a restart as a new device the caller reaches"
-	"R14 a task without dns: resolves through daemon.json's resolver; one with dns: [100.100.100.100, <resolver>] resolves tailnet and site names"
+	"R14 a task with dns: [100.100.100.100, <site resolver>] resolves tailnet, site and public names through tailscaled, which forwards to the site resolver alone, where a task without dns: does not resolve the site name; once daemon.json names the resolver, a task without dns: resolves through it, and the mixed list still resolves tailnet and site names"
 	"R15 at TSLINK_LOG_LEVEL=warn on one node, the restarted plugin logs nothing at info"
 	"R16 tslink diag --preflight on every node finds nothing violated but E6, which a plugin built from a directory violates"
 	"R17 callers on different nodes ping each other directly, over the node's address and its mapped port, not DERP, also after iptables -F on one node and one watchdog run"
+	"R18 a backend serving only port 80 of $TSLINK_TEST_SVC-callee (tcp:80, tcp:443) answers /ready 503 ports-uncovered where its ports are known; records the API's ports and per-host configured value, the hosts' services/ capabilities, and whether callers reach it with and without fully configured hosts"
 )
 while [ $# -gt 0 ]; do
 	case $1 in
@@ -88,6 +90,12 @@ orphans() {
 probe_fails() {
 	"$B/cx" "$1" caller_client "awk \"\\\$3!=200\" ${2:-/tmp/probe.log} | wc -l" | tr -d ' '
 }
+# probe_fails_outside <node> <from> <to>: probe_fails, but not counting requests between the epoch
+# seconds from and to, while the caller's own node was reinstalled: its tailscaled, a child of the
+# plugin, stops with it, as the upgrade guide says
+probe_fails_outside() {
+	"$B/cx" "$1" caller_client "awk -v f=$2 -v t=$3 \"\\\$3!=200 && (\\\$1<f || \\\$1>t)\" /tmp/probe.log | wc -l" | tr -d ' '
+}
 # in_caller <cmd>: run a command in the caller task on $M
 in_caller() { "$B/cx" "$M" caller_client "$1"; }
 # multi_ready: both multi tasks run and advertise both Services
@@ -122,8 +130,10 @@ readylogs() {
 		  for c in \$(docker ps -q -f $f); do
 		    p=\$(docker inspect -f '{{index .Config.Labels \"tslink.health\"}}' \$c)
 		    s=\$(docker inspect -f '{{index .Config.Labels \"com.docker.swarm.service.name\"}}' \$c)
-		    docker cp /tmp/ready.sh \$c:/tmp/ready.sh &&
-		      nohup docker exec \$c sh /tmp/ready.sh \$p - >/tmp/tslink-ready/\${s:--}.\$c.log 2>/dev/null </dev/null &
+		    # The whole list in the background, its output away from SSH's: else the subshell
+		    # running it keeps the session open until ready.sh ends
+		    { docker cp /tmp/ready.sh \$c:/tmp/ready.sh &&
+		      nohup docker exec \$c sh /tmp/ready.sh \$p -; } >/tmp/tslink-ready/\${s:--}.\$c.log 2>/dev/null </dev/null &
 		  done" <"$B/ready.sh" ;;
 		stop) "$B/s" "$n" "for c in \$(docker ps -q -f $f); do docker exec \$c pkill -f '^python3 - [0-9]+ -\$'; done" </dev/null ;;
 		show) "$B/s" "$n" "for l in /tmp/tslink-ready/$g.*.log; do [ -f \"\$l\" ] || continue; c=\${l%.log}; c=\${c##*.}; sed \"s/^/$n \$c /\" \"\$l\"; done" </dev/null ;;
@@ -149,7 +159,7 @@ since_log() {
 # each device's advertised Services survive, that at most 3 VIP requests per caller fail (as in
 # R4) and that /ready answers 200 or, while the plugin stops or is down, 503 drained or nothing
 upgrade() {
-	local devs adv n f v
+	local devs adv n f v times from to
 	devs=$(test_devices)
 	adv=$(advertised)
 	"$B/probes" stop >/dev/null 2>&1
@@ -158,7 +168,8 @@ upgrade() {
 	sleep 5
 	# One node at a time, as the upgrade guide does: replacing every node at once drains every
 	# replica of a Service together
-	if ! ONE_BY_ONE=1 reinstall "$1" "$REF"; then
+	times=$(mktemp)
+	if ! INSTALL_TIMES=$times ONE_BY_ONE=1 reinstall "$1" "$REF"; then
 		"$B/probes" stop >/dev/null 2>&1
 		readylogs stop
 		return 1
@@ -172,11 +183,17 @@ upgrade() {
 	"$B/probes" stop >/dev/null 2>&1
 	readylogs stop
 	for n in $("$B/nodes"); do
-		f=$(probe_fails "$n")
-		check "$1: caller@$n failed VIP requests ($f)" "$([ "$f" -le 3 ] && echo ok || echo "$f failed")"
+		read -r _ from to < <(grep "^$n " "$times" || echo "$n 0 0")
+		echo "INFO  $1: caller@$n failed $(probe_fails "$n") VIP requests in all, while its own node was reinstalled too"
+		f=$(probe_fails_outside "$n" "$from" "$to")
+		check "$1: caller@$n failed VIP requests while other nodes were reinstalled ($f)" "$([ "$f" -le 3 ] && echo ok || echo "$f failed")"
 	done
+	rm -f "$times"
 	v=$(readylogs show)
-	[ -n "$v" ] || echo "NOTE  $1: no task with tslink.health to watch /ready on"
+	if [ -z "$v" ]; then
+		echo "NOTE  $1: no task with tslink.health to watch /ready on"
+		return 0
+	fi
 	echo "INFO  $1: /ready unanswered $(awk '$4 == "000"' <<<"$v" | grep -c .) times (5 a second)"
 	echo "INFO  $1: /ready answered 503 drained $(awk '$4 == "503" && $6 == "drained"' <<<"$v" | grep -c .) times"
 	# A stopping plugin drains its Service backends, so /ready answers 503 drained meanwhile
@@ -310,16 +327,23 @@ r6() {
 
 # R7. Several named Services per task (multi.yml), then again with a shared certificate directory
 r7() {
-	local r ro v code dom ids id svc
+	local r ro v code dom ids id svc t
 	# The callee stack's backends serve no HTTPS: let only the multi tasks host the Services
 	r=$(replicas callee_whoami)
 	ro=$(replicas callee_whoami-other)
 	scale callee_whoami 0
 	scale callee_whoami-other 0
 	if up_multi; then
+		# Control routes a VIP to callers some seconds after the host advertised it
 		for v in "$VIP" "$VIP_O"; do
-			code=$(in_caller "curl -s -m5 -o /dev/null -w %{http_code} http://$v/")
-			check "R7 VIP $v answers over HTTP ($code)" "$([ "$code" = 200 ] && echo ok || echo "$code")"
+			t=0
+			until code=$(in_caller "curl -s -m5 -o /dev/null -w %{http_code} http://$v/") && [ "$code" = 200 ] ||
+				[ "$t" -ge 30 ]; do
+				sleep 5
+				t=$((t + 5))
+			done
+			echo "INFO  R7 VIP $v answered $code after about $t s"
+			check "R7 VIP $v answers over HTTP within 30 s ($code)" "$([ "$code" = 200 ] && echo ok || echo "$code")"
 		done
 		# curl checks the certificate against the name: a success means its SAN is the Service's
 		dom=${SVC_C#svc:}.$SUFFIX
@@ -339,17 +363,47 @@ r7() {
 	r7_shared
 }
 
+# r7_cert_timeline <since> <domain> <dir>: INFO lines that order the certificate's issue, for each
+# node: its clock (all read within a second), tslink's plugin.log lines naming the domain since
+# then, the multi tasks' tailscaled.log lines of the domain (tailscaled logs cert("<domain>"):
+# "requesting cert..." before the ACME order and "got cert" before it writes the key, then the
+# certificate), and the node's view of the certificate's and key's mtimes in the shared directory
+# (NFS); then the certificate's notBefore
+r7_cert_timeline() {
+	local n
+	for n in $("$B/nodes"); do
+		echo "INFO  R7 shared: clock of $n: $("$B/s" "$n" 'date -u +%Y-%m-%dT%H:%M:%S.%NZ' </dev/null)" &
+	done
+	wait
+	for n in $("$B/nodes"); do
+		"$B/s" "$n" "grep -a -F '$2' $L" </dev/null | awk -v n="$n" -v since="time=$1" '$1 >= since { print "INFO  R7 shared: tslink@" n ": " $0 }'
+		# shellcheck disable=SC2016 # runs on the node
+		"$B/s" "$n" "DOM=$2 DIR=$3 sh -s" <<'EOF_NODE' | sed "s/^/INFO  R7 shared: $n: /"
+for f in /var/lib/docker-plugins/tailscale/by-stack/multi/*/tailscaled.log; do
+	[ -f "$f" ] || continue
+	grep -a -F "cert(\"$DOM\")" "$f" | sed "s|^|tailscaled@$(basename "$(dirname "$f")"): |"
+done
+for f in "$DIR/$DOM.crt" "$DIR/$DOM.key"; do
+	[ -e "$f" ] && echo "mtime $(stat -c '%y' "$f") $f"
+done
+EOF_NODE
+	done
+	echo "INFO  R7 shared: $("$B/s" "$M" "openssl x509 -noout -startdate -in '$3/$2.crt' 2>&1" </dev/null)"
+}
 # R7, shared variant: shared.source on an NFS directory every node mounts. One replica issues the
-# certificate; the other configures its Service only once the certificate exists.
+# certificate, in the stack's directory certs/by-stack/multi/; the other configures its Service
+# only once the certificate exists. The timeline lines explain the order of their log lines.
 r7_shared() {
-	local since dom n crt logs issuer it late configured
+	local since dom dir n crt logs issuer it late configured
 	stack_rm multi
 	"$B/shared-dir.sh" on >/dev/null
 	since=$(now)
 	if PLUGIN_SETTINGS='shared.source=/mnt/tslink' reinstall "R7 shared" "$REF" && up_multi; then
 		dom=${SVC_C#svc:}.$SUFFIX
-		crt=$("$B/s" "$M" "find /mnt/tslink -name '$dom.crt' | wc -l" | tr -d ' ')
-		check "R7 shared: one $dom.crt in the shared directory ($crt)" "$([ "$crt" = 1 ] && echo ok || echo "$crt")"
+		dir=/mnt/tslink/certs/by-stack/multi
+		crt=$("$B/s" "$M" "find /mnt/tslink -name '$dom.crt'" | tr '\n' ' ')
+		check "R7 shared: one $dom.crt in the shared directory, in $dir ($crt)" "$([ "$crt" = "$dir/$dom.crt " ] && echo ok || echo "want $dir/$dom.crt alone")"
+		r7_cert_timeline "$since" "$dom" "$dir"
 		logs=$(for n in $("$B/nodes"); do
 			"$B/s" "$n" "grep -a -E 'Certificate for $dom issued|with the certificate for $dom' $L" </dev/null |
 				awk -v n="$n" -v since="time=$since" '$1 >= since { print n, $0 }'
@@ -438,27 +492,67 @@ r9() {
 	stack_rm mixed
 }
 
-# R10. /ready per Service and the latch (multi.yml): 200 with both Services ready; with one
-#      Service's approval revoked, services shows it while state stays ready; after a plugin
-#      restart, each task's first answer is 200 within 1 s; a stopping task answers 503 drained
-# r10_unapproved <node> <host> <node ID>: with $SVC_O's approval of the host revoked, /ready shows
-# it in services and stays ready, as the container's other Service is
-r10_unapproved() {
-	local line v
-	"$B/tsapi" POST "/tailnet/$TN/services/$SVC_O/device/$3/approved" '{"approved":false}' >/dev/null
-	sleep 5
-	# a latched endpoint answers from its cache, refreshed in the background: the second answer is current
-	"$B/cxs" "$1" multi_web "$B/ready.sh" 9002 >/dev/null
+# R10. /ready per Service and the latch: 200 with both of multi.yml's Services ready; on
+#      manual.yml's task, whose Service $SVC_M no autoApprovers approve (revoking an approval does
+#      not undo theirs), 503 awaiting-approval, 200 once approved through the API, and, latched,
+#      200 ready with services showing it awaiting-approval once the approval is revoked; after a
+#      plugin restart, each multi task's first answer is 200 within 1 s; a stopping task answers
+#      503 drained
+manual_up() { [ "$(running manual | grep -c " $SVC_M\$")" = 1 ]; }
+# manual_ready <node>: the manual task's /ready answers 200 ready
+manual_ready() { [ "$("$B/cxs" "$1" manual_web "$B/ready.sh" 9002 | awk '{ print $2, $4 }')" = "200 ready" ]; }
+# manual_ready_line <node>: a current /ready line of the manual task: a latched endpoint answers
+# from its cache, refreshed in the background, so the second answer is current
+manual_ready_line() {
+	"$B/cxs" "$1" manual_web "$B/ready.sh" 9002 >/dev/null
 	sleep 1
-	line=$("$B/cxs" "$1" multi_web "$B/ready.sh" 9002)
+	"$B/cxs" "$1" manual_web "$B/ready.sh" 9002
+}
+# approve <svc> <node ID> true|false: approve the node as the Service's host, or revoke that
+approve() { "$B/tsapi" POST "/tailnet/$TN/services/$1/device/$2/approved" "{\"approved\":$3}"; }
+r10_manual() {
+	local n host id line v
+	# PUT creates a Service that does not exist; the name in the body must match the path's
+	if [ "$("$B/tsapi" GET "/tailnet/$TN/services/$SVC_M" | jq -r '.name // empty')" != "$SVC_M" ]; then
+		"$B/tsapi" PUT "/tailnet/$TN/services/$SVC_M" "$(jq -nc --arg s "$SVC_M" \
+			'{name: $s, ports: ["tcp:80"], comment: "tslink regress.sh R10: approved by hand only"}')" >/dev/null
+	fi
+	v=$("$B/tsapi" GET "/tailnet/$TN/services/$SVC_M" | jq -c '{name, ports}')
+	check "R10 $SVC_M exists ($v)" "$([ "$(jq -r .name <<<"$v")" = "$SVC_M" ] && echo ok || echo "not created")"
+	"$B/deploy" manual callee >/dev/null
+	if ! wait_for 300 manual_up; then
+		check "R10 the manual task advertises $SVC_M" "not within 300 s: $(running manual | tr '\n' ';')"
+		stack_rm manual
+		return
+	fi
+	read -r n _ host _ <<<"$(running manual | head -1)"
+	id=$(node_id_of "$host")
+	v=$("$B/tsapi" GET "/tailnet/$TN/services/$SVC_M/device/$id/approved" | jq -c .)
+	echo "INFO  R10 approval of $host ($id) for $SVC_M before the case approves it: $v"
+	if [ "$(jq -r .autoApproved <<<"$v")" = true ]; then
+		check "R10 $SVC_M is not auto-approved" "autoApprovers approve it: remove them from the policy"
+		stack_rm manual
+		return
+	fi
+	[ "$(jq -r .approved <<<"$v")" != true ] || approve "$SVC_M" "$id" false >/dev/null
+	sleep 10
+	line=$(manual_ready_line "$n")
+	check "R10 $SVC_M unapproved on $host: 503 awaiting-approval ($line)" "$([ "$(awk '{ print $2, $4 }' <<<"$line")" = "503 awaiting-approval" ] && echo ok || echo "want 503 awaiting-approval")"
+	echo "INFO  R10 approved $host for $SVC_M through the API: $(approve "$SVC_M" "$id" true | jq -c .)"
+	wait_for 120 manual_ready "$n"
+	line=$(manual_ready_line "$n")
+	check "R10 $SVC_M approved on $host: 200 ready ($line)" "$([ "$(awk '{ print $2, $4 }' <<<"$line")" = "200 ready" ] && echo ok || echo "want 200 ready within 120 s")"
+	echo "INFO  R10 revoked $host's approval for $SVC_M through the API: $(approve "$SVC_M" "$id" false | jq -c .)"
+	sleep 10
+	line=$(manual_ready_line "$n")
 	v=ok
-	if [ "$(awk '{ print $2, $4 }' <<<"$line")" != "200 ready" ] || [ "$(svc_state "$line" "$SVC_O")" = ready ] ||
-		[ "$(svc_state "$line" "$SVC_C")" != ready ]; then v=$line; fi
-	check "R10 $SVC_O unapproved on $2: services shows it, state stays ready" "$v"
-	"$B/tsapi" POST "/tailnet/$TN/services/$SVC_O/device/$3/approved" '{"approved":true}' >/dev/null
+	if [ "$(awk '{ print $2, $4 }' <<<"$line")" != "200 ready" ] ||
+		[ "$(svc_state "$line" "$SVC_M")" != awaiting-approval ]; then v="want 200 ready, services $SVC_M awaiting-approval"; fi
+	check "R10 $SVC_M revoked on $host: latched 200 ready, services shows it awaiting-approval ($line)" "$v"
+	stack_rm manual
 }
 r10() {
-	local n host id line v c code t
+	local n host line v c code t
 	up_multi || return
 	read -r n _ host _ <<<"$(running multi | head -1)"
 	line=$("$B/cxs" "$n" multi_web "$B/ready.sh" 9002)
@@ -467,13 +561,7 @@ r10() {
 		[ "$(svc_state "$line" "$SVC_O")" != ready ]; then v=$line; fi
 	check "R10 /ready on $host: 200 with both Services ready" "$v"
 
-	id=$(node_id_of "$host")
-	# Revoking an approval the policy's autoApprovers gave changes nothing
-	if [ "$("$B/tsapi" GET "/tailnet/$TN/services/$SVC_O/device/$id/approved" | jq -r '.autoApproved')" = true ]; then
-		echo "SKIP  R10 $SVC_O unapproved on $host: autoApprovers approve it, and revoking does not undo that"
-	else
-		r10_unapproved "$n" "$host" "$id"
-	fi
+	r10_manual
 
 	readylogs start multi_web
 	sleep 2
@@ -494,7 +582,10 @@ r10() {
 	readylogs start multi_web
 	scale multi_web 0
 	sleep 30
-	v=$(readylogs show multi_web | awk '$4 == "503" && $6 == "drained" { print $1 }' | sort -u | grep -c .)
+	# readylogs keeps its lines on the node: Swarm removes the containers of a scaled-down service
+	line=$(readylogs show multi_web)
+	echo "INFO  R10 /ready lines while stopping, per container: $(awk '{ n[$1 " " $2]++ } END { for (k in n) printf "%s=%d;", k, n[k] }' <<<"$line")"
+	v=$(awk '$4 == "503" && $6 == "drained" { print $1 " " $2 }' <<<"$line" | sort -u | grep -c .)
 	check "R10 both stopping tasks answered 503 drained ($v)" "$([ "$v" = 2 ] && echo ok || echo "$v")"
 	stack_rm multi
 }
@@ -552,7 +643,9 @@ r12() {
 		| "\(.hostname) tags=\(.tags // []|join(",")) ephemeral=\(.isEphemeral)"' | tr '\n' ';')
 	check "R12 $n task devices: exactly their network's tag, ephemeral" "$([ -z "$v" ] && [ "$n" -gt 0 ] && echo ok || echo "${v:-no devices}")"
 	# all=true: the keys of every OAuth client, not only tsapi's own
-	ids=$("$B/tsapi" GET "/tailnet/$TN/keys?all=true" | jq -r --arg d "${T#tag:}" '.keys[]|select((.description // "")|startswith($d))|.id')
+	# tslink's keys carry no description: find them by their tags
+	ids=$("$B/tsapi" GET "/tailnet/$TN/keys?all=true" |
+		jq -r --arg t "$T" '.keys[]|select(any(.capabilities.devices.create.tags[]?; startswith($t)))|.id')
 	check "R12 test keys examined ($(grep -c . <<<"$ids"))" "$(grep -q . <<<"$ids" && echo ok || echo "none listed")"
 	v=$(for id in $ids; do
 		"$B/tsapi" GET "/tailnet/$TN/keys/$id"
@@ -611,11 +704,36 @@ docker rm -f tslink-test-dns >/dev/null
 systemctl restart docker
 EOF_NODE
 }
-# R14. DNS (T8): on one worker, daemon.json's dns names a resolver (dnsmasq on docker0's address)
-#      that alone knows a site name; a task without dns: resolves it through Docker, and a task
-#      with dns: [100.100.100.100, <resolver>] resolves it and a tailnet name
+# r14_ts_resolv <node> <swarm-service>: the resolv.conf tslink wrote for the tailscaled of the
+# service's task on the node (<state dir>/resolv.pre-tailscale-backup.conf, which tailscaled
+# reads its upstreams from after replacing <state dir>/resolv.conf), and the task's own ExtServers line
+r14_ts_resolv() {
+	# shellcheck disable=SC2016 # runs on the node
+	"$B/s" "$1" "SVC=$2 sh -s" <<'EOF_NODE'
+D=/var/lib/docker-plugins/tailscale
+c=$(docker ps -q -f label=com.docker.swarm.service.name=$SVC | head -1)
+for e in $(docker inspect -f '{{range .NetworkSettings.Networks}}{{.EndpointID}} {{end}}' "$c"); do
+	f=$D/status/$(echo "$e" | cut -c1-12).json
+	[ -f "$f" ] || continue
+	cat "$D/by-stack/$(jq -r .stack "$f")/$(jq -r .hostname "$f")/resolv.pre-tailscale-backup.conf"
+done
+docker exec "$c" grep -h 'ExtServers' /etc/resolv.conf
+EOF_NODE
+}
+# R14. DNS (T8). Expected, per docs/explanation/architecture.md#dns and tailscaledResolvConf: a
+#      container's own dns: list is tailscaled's first source of upstreams, without Tailscale's
+#      100.100.100.100 and Docker's 127.0.0.11. Docker's embedded resolver sends each query to the
+#      first server, 100.100.100.100, and accepts its answer; so with dns: [100.100.100.100,
+#      <site resolver>], tailscaled answers tailnet names and forwards every other name to the
+#      site resolver alone, not to the host's or daemon.json's resolvers. On one worker, a resolver
+#      (dnsmasq on docker0's address) alone knows a site name and forwards the rest to 1.1.1.1.
+#      First, with daemon.json as it is: the mixed task resolves the site, a tailnet and a public
+#      name, tailscaled's resolv.conf names only the site resolver, and the task without dns:
+#      does not resolve the site name (the control: only the site resolver knows it). Then with
+#      daemon.json's dns naming the resolver: the task without dns: resolves the site name through
+#      Docker, and the mixed one the site and tailnet names
 r14() {
-	local n h r k site=site.tslink-test.internal
+	local n h r k v site=site.tslink-test.internal
 	n=$("$B/nodes" | grep -vx "$M" | tail -1)
 	h=$("$B/s" "$n" hostname)
 	k=$(running_on "$n")
@@ -630,6 +748,14 @@ docker run -d -q --name tslink-test-dns --restart unless-stopped --network host 
 f=/etc/docker/daemon.json b=/root/daemon.json.tslink-test
 rm -f "$b"
 [ ! -f "$f" ] || cp "$f" "$b"
+EOF_NODE
+	TSLINK_TEST_PIN=$h TSLINK_TEST_DNS=$r "$B/deploy" dnsmix caller >/dev/null
+	wait_for 300 same "$((k + 2))" running_on "$n"
+	r14_mixed_first "$n" "$r" "$site"
+	stack_rm dnsmix
+	"$B/s" "$n" "R=$r sh -s" <<'EOF_NODE'
+set -e
+f=/etc/docker/daemon.json b=/root/daemon.json.tslink-test
 { cat "$b" 2>/dev/null || echo '{}'; } | jq --arg r "$R" '.dns = [$r]' >"$f.new"
 mv "$f.new" "$f"
 systemctl restart docker
@@ -637,14 +763,26 @@ EOF_NODE
 	wait_for 300 same "$k" running_on "$n" || echo "NOTE  R14 $n: $(running_on "$n") of $k endpoints running after the Docker restart"
 	TSLINK_TEST_PIN=$h TSLINK_TEST_DNS=$r "$B/deploy" dnsmix caller >/dev/null
 	wait_for 300 same "$((k + 2))" running_on "$n"
-	r=$("$B/cxs" "$n" dnsmix_plain "$B/dns.sh" "$site")
-	check "R14 without dns:, $site through daemon.json's resolver ($r)" "$([ "$r" = "ok " ] && echo ok || echo "$r")"
-	r=$("$B/cxs" "$n" dnsmix_mixed "$B/dns.sh" "$site" "${SVC_C#svc:}.$SUFFIX")
-	check "R14 with dns: [100.100.100.100, resolver], the site and tailnet names ($r)" "$([ "$r" = "ok ok " ] && echo ok || echo "$r")"
+	v=$("$B/cxs" "$n" dnsmix_plain "$B/dns.sh" "$site")
+	check "R14 without dns:, $site through daemon.json's resolver ($v)" "$([ "$v" = "ok " ] && echo ok || echo "$v")"
+	v=$("$B/cxs" "$n" dnsmix_mixed "$B/dns.sh" "$site" "${SVC_C#svc:}.$SUFFIX")
+	check "R14 with dns: [100.100.100.100, resolver], the site and tailnet names ($v)" "$([ "$v" = "ok ok " ] && echo ok || echo "$v")"
 	stack_rm dnsmix
 	r14_restore "$n"
 	trap - EXIT
 	wait_for 300 same "$k" running_on "$n" || echo "NOTE  R14 $n: $(running_on "$n") of $k endpoints running after the Docker restart"
+}
+# r14_mixed_first <node> <resolver> <site>: R14's checks before daemon.json names the resolver
+r14_mixed_first() {
+	local v
+	v=$("$B/cxs" "$1" dnsmix_plain "$B/dns.sh" "$3")
+	check "R14 control: without dns: and the resolver in daemon.json, $3 does not resolve ($v)" "$([ "$v" = "FAIL($3) " ] && echo ok || echo "want FAIL($3)")"
+	v=$("$B/cxs" "$1" dnsmix_mixed "$B/dns.sh" "$3" "${SVC_C#svc:}.$SUFFIX" example.com)
+	check "R14 with dns: [100.100.100.100, $2] alone, the site, tailnet and public names ($v)" "$([ "$v" = "ok ok ok " ] && echo ok || echo "$v")"
+	v=$(r14_ts_resolv "$1" dnsmix_mixed)
+	echo "INFO  R14 the mixed task: $(tr '\n' ';' <<<"$v")"
+	v=$(grep '^nameserver' <<<"$v" | tr '\n' ';')
+	check "R14 the mixed task's tailscaled forwards to $2 alone ($v)" "$([ "$v" = "nameserver $2;" ] && echo ok || echo "want nameserver $2")"
 }
 
 # R15. TSLINK_LOG_LEVEL=warn on one worker: the plugin, restarted with it, logs no info line,
@@ -668,7 +806,7 @@ r15() {
 r16() {
 	local n out v
 	for n in $("$B/nodes"); do
-		out=$("$B/s" "$n" "tar -C /root/plugin/rootfs -c . | docker import -q - tslink:preflight >/dev/null &&
+		out=$("$B/s" "$n" "tar -C /root/plugin/rootfs -c . | docker import - tslink:preflight >/dev/null &&
 			docker run --rm --network host --cap-add NET_ADMIN -v /var/run/docker.sock:/var/run/docker.sock \
 			-v /var/lib/docker-plugins/tailscale:/data --entrypoint /tslink tslink:preflight diag --preflight 2>&1
 			echo exit=\$?; docker image rm -f tslink:preflight >/dev/null")
@@ -717,6 +855,75 @@ r17() {
 	trap - EXIT
 }
 r17_restore() { "$B/s" "$1" "iptables-restore </root/filter.tslink-test && rm /root/filter.tslink-test"; }
+
+# R18. Partially configured hosts (Z5). The partial stack's task serves only port 80 of $SVC_C,
+#      whose definition has tcp:80 and tcp:443; the callee stack's tasks serve both. Expected, per
+#      docs/reference/readiness-endpoint.md: /ready answers 503 ports-uncovered while tslink knows
+#      the Service's ports (from the node's services/ capabilities, or from the API with the
+#      callee credential's services:read scope), and control routes the task nothing. Checked:
+#      the 503. Recorded, as "INFO  R18 answer:" lines: whether callers reach the partial host
+#      beside the fully configured ones and alone, whether a host's capabilities give its own
+#      Service's ports, and what the API returns for the ports and each host's configured value
+partial_up() { [ "$(running partial | grep -c " $SVC_C\$")" = 1 ]; }
+# partial_ready <node>: the partial task's /ready line
+partial_ready() { "$B/cxs" "$1" partial_web "$B/ready.sh" 9003; }
+# own_ports <node> <endpoint>: the ports of $SVC_C in the endpoint's services/ capabilities
+own_ports() {
+	localapi "$1" "$2" 'status?peers=false' | jq -c --arg s "$SVC_C" \
+		'[(.Self.CapMap // {}) | to_entries[] | select(.key | startswith("services/")) | .value[]? | select(.Name? == $s) | .Ports] | first // empty'
+}
+# r18_ready <node> <endpoint> <when>: /ready answers 503 ports-uncovered, unless tslink does not
+# know the ports, which it logs
+r18_ready() {
+	local line v
+	line=$(partial_ready "$1")
+	v=ok
+	if [ "$(awk '{ print $2, $4 }' <<<"$line")" != "503 ports-uncovered" ]; then
+		v="want 503 ports-uncovered"
+		if [ -z "$(own_ports "$1" "$2")" ] &&
+			"$B/s" "$1" "grep -a -F 'Cannot read the ports of $SVC_C' $L | grep -q -F 'endpoint $2 '" </dev/null; then
+			echo "NOTE  R18 $3: tslink knows no ports of $SVC_C (no services/ capability, no services:read): not checked ($line)"
+			return
+		fi
+	fi
+	check "R18 $3: the partial task's /ready is 503 ports-uncovered ($line)" "$v"
+}
+r18() {
+	local n id host nid r v line
+	"$B/deploy" partial callee >/dev/null
+	if ! wait_for 300 partial_up; then
+		check "R18 the partial task advertises $SVC_C" "not within 300 s: $(running partial | tr '\n' ';')"
+		stack_rm partial
+		return
+	fi
+	read -r n id host _ <<<"$(running partial | head -1)"
+	nid=$(node_id_of "$host")
+	sleep 30
+	r18_ready "$n" "$id" "after 30 s"
+	echo "INFO  R18 the partial task's status warnings: $("$B/s" "$n" "jq -c '[.warnings[]? | {key, message}]' /var/lib/docker-plugins/tailscale/status/$id.json" </dev/null)"
+	echo "INFO  R18 the API's definition of $SVC_C: $("$B/tsapi" GET "/tailnet/$TN/services/$SVC_C" | jq -c '{name, ports}')"
+	v=$("$B/tsapi" GET "/tailnet/$TN/services/$SVC_C/devices")
+	echo "INFO  R18 the API's hosts of $SVC_C: $(jq -c '.hosts // .' <<<"$v")"
+	echo "INFO  R18 answer: the API's configured value for the partial host $host ($nid): $(jq -c --arg id "$nid" '[.hosts[]? | select(.stableNodeID == $id) | {configured, approvalLevel}]' <<<"$v")"
+	v=$(own_ports "$n" "$id")
+	echo "INFO  R18 the partial host's services/ capabilities: $(localapi "$n" "$id" 'status?peers=false' | jq -c '(.Self.CapMap // {}) | with_entries(select(.key | startswith("services/")))')"
+	echo "INFO  R18 answer: the partial host sees its own Service's ports: ${v:-no}"
+	read -r r v <<<"$(running callee | awk -v s="$SVC_C" '$4 == s { print $1, $2; exit }')"
+	[ -z "$v" ] || echo "INFO  R18 answer: a fully configured host ($r) sees its own Service's ports: $(own_ports "$r" "$v" | grep . || echo no)"
+	read -r r v <<<"$(running caller | awk -v m="$M" '$1 == m { print $1, $2; exit }')"
+	[ -z "$v" ] || echo "INFO  R18 the caller on $r: its services/ capabilities: $(localapi "$r" "$v" 'status?peers=false' | jq -c '(.Self.CapMap // {}) | with_entries(select(.key | startswith("services/")))')"
+	echo "INFO  R18 answer: 50 VIP requests with fully configured hosts beside the partial one: $("$B/cxs" "$M" caller_client "$B/vip-hits.sh" "http://$VIP/" 50)"
+	r=$(replicas callee_whoami)
+	scale callee_whoami 0
+	"$B/await" callee_whoami >/dev/null
+	sleep 30
+	echo "INFO  R18 the API's hosts of $SVC_C, the partial one alone: $("$B/tsapi" GET "/tailnet/$TN/services/$SVC_C/devices" | jq -c '.hosts // .')"
+	echo "INFO  R18 answer: 50 VIP requests with the partial host alone: $("$B/cxs" "$M" caller_client "$B/vip-hits.sh" "http://$VIP/" 50)"
+	r18_ready "$n" "$id" "alone"
+	scale callee_whoami "$r"
+	"$B/await" callee_whoami >/dev/null
+	stack_rm partial
+}
 
 # An interrupt exits, so the EXIT trap a case set restores what it changed
 trap 'exit 130' INT

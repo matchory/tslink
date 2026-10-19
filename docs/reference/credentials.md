@@ -49,6 +49,18 @@ If the network has `tslink.ephemeral`, its value decides. Otherwise the credenti
 | OAuth client secret | The secret has no `ephemeral` parameter, or it has `?ephemeral=true` |
 | Auth key | Never. An auth key does not tell tslink if it creates ephemeral nodes. |
 
+## Optional API scopes
+
+tslink uses an OAuth client secret to create auth keys through the Tailscale API. If the OAuth client also has this
+scope, tslink uses it for one more task:
+
+| Scope | Use |
+| --- | --- |
+| `services:read` | tslink reads the ports of each Service of a container, and reports `ports-uncovered` if the container does not serve all of them. See [Readiness endpoint](readiness-endpoint.md#conditions-for-ready). |
+
+Without the scope, tslink logs once per Service that it cannot read the ports. It then checks the ports only if the
+capabilities of the node give them. An auth key does not give access to the API.
+
 ## Cluster credential
 
 The cluster credential is one OAuth client secret for all stacks of a Swarm.

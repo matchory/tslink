@@ -1,0 +1,18 @@
+# One task hosting the Service <prefix>-manual, which no autoApprovers approve (regress.sh R10):
+# the case approves and revokes the host through the API. Compose does not interpolate label keys:
+# deploy renames tslink-test- in them after TSLINK_TEST_SVC.
+services:
+  web:
+    image: python:3.13-alpine
+    command: ["sh","-c","mkdir -p /w && printf 'Hostname: %s\n' $$(hostname) > /w/index.html && exec python -m http.server 80 -d /w >/dev/null 2>&1"]
+    networks: [tailnet]
+    labels:
+      tslink.service.tslink-test-manual.serve.80: http:80
+      tslink.health: "9002"
+networks:
+  tailnet:
+    driver: tslink:latest
+    driver_opts:
+      tslink.authkey: ${TSLINK_OAUTH_SECRET}?ephemeral=true&preauthorized=true
+      com.docker.network.driver.mtu: "${TSLINK_TEST_MTU:-1450}"
+      tslink.tags: ${TSLINK_TEST_TAG:-tag:tslink-test}-callee

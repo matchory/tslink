@@ -136,7 +136,10 @@ runs no `tailscale` CLI: serve configs are built with `ipn.ServeConfig`'s helper
 applied as the prefs edit tailscaled would make of it, minus Services: the config file would set those on every start.
 The tags go in the same edit, and the auth key only into the LocalAPI's start request, never into arguments, the
 environment or a file. An OAuth client secret first becomes a single-use key with the tags (`resolveAuthKey`, Tailscale's
-API). The login waits on the IPN bus for Running, and when logging in as a new device for a new node key.
+API). The login waits on the IPN bus for Running, and when logging in as a new device for a new node key. After it,
+and when a node still logged in comes up, a DNS name `<hostname>-N` gets a `node-name` status warning
+(`checkNodeName`): another node holds the name, as the orphan of a registration control answered after the login's
+60 s and 4 min grace, once tailscaled restarted and registered a new node key.
 
 **Services**: a container's Services (`tslink.service.<name>.serve.<port>`, or `tslink.service` with
 `tslink.serve.<port>`) each get a `serviceBackend` (`pkg/tailscale/backend.go`): its serve config, advertisement,
@@ -144,12 +147,19 @@ certificate lease and wait, and approval check. The backends share the superviso
 configuration fails is retried in place (`retryLater`), with a status warning until it succeeds; only tags and MagicDNS,
 which all need, fail the start. After advertising, a backend waits for control to fetch the node's Service list; control
 was seen to skip that fetch after a plugin restart, leaving the host inactive. Without a fetch within 15 s it
-unadvertises and advertises the Service again, up to 3 times (`confirmAdvertisedLater`).
+unadvertises and advertises the Service again, up to 3 times (`confirmAdvertisedLater`), and then warns in the status
+(`control/<svc>`) until a fetch. A backend notes the fetch count when tslink adds the Service to the prefs
+(`markAdvertised`; one already in them counts as fetched), and is `awaiting-control` until the count passes it, even
+with `service-host`. Control routes nothing to a host that does not serve every port of the Service's definition: from
+the node's `services/` capabilities (`tailcfg.ServiceDetails`), or else Tailscale's API when the credential is an OAuth
+client with `services:read` (`refreshDefinedPorts`, with each approval check), ports not served make it
+`ports-uncovered` with a `ports/<svc>` warning; unknown or `do-not-validate` ports are not checked.
 
 **Readiness endpoint**: with the label `tslink.health=<port>`, `Endpoint.startHealth` serves `GET /ready` on that port
 of the container's loopback, from a listener the plugin opens in the container's netns (`netutil.ListenInNetNS`).
 Readiness comes from tailscaled (`DaemonSupervisor.Readiness`: backend state, the serve config, the advertised
-Services in its prefs, and the `service-host` node capability for control's approval), cached for 2 s. Once ready, the
+Services in its prefs, the `service-host` node capability for control's approval, the Service's defined ports and
+control's fetch of the Service list, see Services), cached for 2 s. Once ready, the
 endpoint latches: `status/<endpoint-id[:12]>.ready` records it, so it answers 200 until the backend is drained or the
 container leaves, also after a plugin restart. A latched endpoint answers without waiting for tailscaled, from the cache,
 which the request refreshes in the background. Readiness is per Service (`ReadinessReport`); the container's state is
@@ -217,6 +227,8 @@ profile after the tests: goroutines blocked forever on a channel or lock nothing
   from `<state dir>/tailscaled.sock`
 - Logs: `<state dir>/tailscaled.log` (rotated at 10 MB), `/data/plugin.log` (rotated at 50 MB)
 - Status: `/data/status/<endpoint-id[:12]>.json` while the endpoint exists
+- Certificates (with `shared.source`): `<shared>/certs/by-stack/<stack>/` for stack tasks, `<shared>/certs/` for
+  other containers, linked from `<state dir>/certs`
 
 ## Code Style
 
@@ -315,12 +327,8 @@ bed (`tn.sh`, through `redteam-tn.sh`), and report INFO when their control viola
 
 ### Plugin won't enable
 
-Check that the state directory exists:
-
-```bash
-docker run --rm --privileged -v /var/lib:/var/lib alpine \
-  mkdir -p /var/lib/docker-plugins/tailscale
-```
+The plugin creates `/var/lib/docker-plugins/tailscale` itself as it starts (`prepareDataDir`); a failure is in the
+Docker daemon's log as `tslink: ...`, and the plugin does not start.
 
 ### Options not being passed
 

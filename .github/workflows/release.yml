@@ -44,6 +44,8 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: "false"
+          # The tags, for scripts/version.sh
+          fetch-depth: 0
 
       - name: Log in to GHCR
         id: login
@@ -55,8 +57,21 @@ jobs:
 
       - name: Build plugin rootfs
         id: rootfs
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          docker build -t tslink:rootfs -f docker/Dockerfile .
+          VERSION=$(scripts/version.sh)
+          if [ "$REF_TYPE" = "tag" ] && [ "$VERSION" != "$REF_NAME" ]; then
+            echo "::error::scripts/version.sh says ${VERSION}, not the tag ${REF_NAME}"
+            exit 1
+          fi
+          docker build --build-arg TSLINK_VERSION="$VERSION" -t tslink:rootfs -f docker/Dockerfile .
+          reported=$(docker run --rm --entrypoint /tslink tslink:rootfs version | sed -n 1p)
+          if [ "$reported" != "tslink $VERSION" ]; then
+            echo "::error::the plugin reports \"${reported}\", not \"tslink ${VERSION}\""
+            exit 1
+          fi
           mkdir -p docker/rootfs
           docker create --name tslink-rootfs tslink:rootfs
           docker export tslink-rootfs | tar -x -C docker/rootfs

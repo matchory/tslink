@@ -63,13 +63,16 @@ nat_off() {
 }
 
 # forwarded PREFIX: sends for 20 seconds until the peer has a payload unique
-# to this call
+# to this call. Each call sends from a source port of its own: the attack's
+# frames, forwarded without NAT, leave a conntrack entry that would keep the
+# control's MASQUERADE from applying to the same flow
 forwarded() {
 	local p="$1-$SECONDS-$RANDOM"
+	local sport=$((20000 + RANDOM % 20000))
 	local deadline=$((SECONDS + 20))
 	until got "$p"; do
 		[ "$SECONDS" -lt "$deadline" ] || return 1
-		docker exec rt-neighbour python3 /rawsend.py eth0 "$neighbour_ip" "$victim_mac" "$target" 9999 "$p"
+		docker exec rt-neighbour python3 /rawsend.py eth0 "$neighbour_ip" "$victim_mac" "$target" 9999 "$p" "$sport"
 		sleep 2
 	done
 }

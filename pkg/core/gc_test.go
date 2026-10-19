@@ -521,6 +521,57 @@ func TestCollectCertificates(t *testing.T) {
 	}
 }
 
+// Each stack's certificate directory is collected like the shared one: its
+// expired certificates, orphaned keys, temporary files and stale leases go,
+// its ACME account key and the directories stay.
+func TestCollectCertificatesPerStack(t *testing.T) {
+	shared := t.TempDir()
+	now := time.Now()
+	day := 24 * time.Hour
+	issued := now.Add(-100 * day)
+	var removed, kept []string
+	for _, stack := range []string{"billing", "shop"} {
+		dir := filepath.Join(shared, "certs", "by-stack", stack)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		c := certFiles{t, dir}
+		expiredCrt, expiredKey := c.cert("web.example.ts.net", now.Add(-10*day), issued)
+		validCrt, validKey := c.cert("api.example.ts.net", now.Add(60*day), issued)
+		removed = append(removed,
+			expiredCrt, expiredKey,
+			c.write("gone.example.ts.net.key", []byte("key"), now.Add(-2*day)),
+			c.write(".tmp-123", []byte("x"), now.Add(-2*day)),
+			c.write("old.example.ts.net.lease", []byte("ep\n"), now.Add(-2*time.Hour)),
+		)
+		kept = append(kept,
+			validCrt, validKey, dir,
+			c.write(acmeAccountKey, []byte("account"), now.Add(-400*day)),
+			c.write("svc.example.ts.net.lease", []byte("ep\n"), now.Add(-30*time.Second)),
+		)
+	}
+
+	CollectGarbage(
+		context.Background(),
+		&Config{DataDir: t.TempDir(), SharedDir: shared},
+		NewStateClaims(),
+		nil,
+		nil,
+		time.Minute,
+	)
+
+	for _, p := range removed {
+		if _, err := os.Stat(p); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s should be removed (err=%v)", p, err)
+		}
+	}
+	for _, p := range kept {
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("%s should be kept: %v", p, err)
+		}
+	}
+}
+
 // Hosts sharing the directory collect it at the same time: another may have
 // removed a file first.
 func TestCollectCertificatesRemovedElsewhere(t *testing.T) {

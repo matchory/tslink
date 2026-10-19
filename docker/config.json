@@ -25,17 +25,17 @@
 	},
 	"mounts": [
 		{
-			"name": "tsdata",
-			"description": "Tailscale state directory",
-			"source": "/var/lib/docker-plugins/tailscale",
-			"destination": "/data",
+			"name": "varlib",
+			"description": "Host /var/lib, only while the plugin starts: it creates its data directory, docker-plugins/tailscale, mounts it at /data and unmounts this",
+			"source": "/var/lib",
+			"destination": "/host/var/lib",
 			"type": "bind",
-			"options": ["rbind", "rw"]
+			"options": ["rbind", "rslave", "rw"]
 		},
 		{
 			"name": "shared",
-			"description": "Directory shared between hosts, holding HTTPS certificates; set its source to a shared volume to share them across the cluster",
-			"source": "/var/lib/docker-plugins/tailscale",
+			"description": "Directory shared between hosts, holding HTTPS certificates; set its source to a shared volume to share them across the cluster. The default, /var/lib, sets none: the certificates stay in the data directory",
+			"source": "/var/lib",
 			"destination": "/shared",
 			"type": "bind",
 			"settable": ["source"],
@@ -148,6 +148,5 @@
 			"description": "Docker socket path",
 			"value": "unix:///var/run/docker.sock"
 		}
-	],
-	"propagatedMount": "/data"
+	]
 }

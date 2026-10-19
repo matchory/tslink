@@ -655,7 +655,9 @@ func TestCertWaiterStartsOnce(t *testing.T) {
 	}
 	time.Sleep(30 * time.Millisecond)
 	writeCert(t, dir, webDomain, webDomain, time.Now().Add(90*24*time.Hour))
-	time.Sleep(100 * time.Millisecond)
+	// Under -race, configuring takes about 100 ms
+	waitFor(t, "the waiter to end", func() bool { return !d.only(t).certWaiting.Load() })
+	time.Sleep(50 * time.Millisecond)
 	if err := d.Stop(); err != nil {
 		t.Fatal(err)
 	}

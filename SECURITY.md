@@ -159,6 +159,9 @@ Run `tslink diag --preflight` on each host, and on each node of a Swarm. It
 checks only the properties that it can see on the host where it runs.
 [tslink diag](docs/reference/diag.md) shows how.
 
+tslink is not tested with Tailnet Lock (E9), and does not support it. See
+[Limitations](docs/explanation/limitations.md#tailnet-lock).
+
 The range of `TSLINK_WIREGUARD_PORTS` is reserved: a host service listening
 in it gets no unsolicited UDP.
 

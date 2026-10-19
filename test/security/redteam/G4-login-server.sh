@@ -10,7 +10,7 @@
 #   task (an endpoint of the stack appears), and the task's tailscaled connects to the
 #   listener. The listener only logs requests: a control server of the attacker's would answer
 #   the first one and receive the key the credential minted in the next.
-# Control: v0.3.2, which takes tslink.loginserver from any network, on every node. Teardown: the
+# Control: v0.3.4, which takes tslink.loginserver from any network, on every node. Teardown: the
 #   tree under test (TSLINK_REDTEAM_REF, default WT, the working tree) on every node. In every
 #   run, the keys with the stack's tag minted since the probe started are revoked as soon as
 #   the listener hears from the task, and after each attempt.
@@ -103,7 +103,7 @@ EOF
 legacy() {
 	LEGACY=1
 	REVOKED=0
-	"$C/install-plugin.sh" v0.3.2 >/dev/null 2>&1 || echo "NOTE: could not install v0.3.2"
+	"$C/install-plugin.sh" v0.3.4 >/dev/null 2>&1 || echo "NOTE: could not install v0.3.4"
 }
 current() {
 	[ -z "$LEGACY" ] || [ "$REVOKED" -gt 0 ] ||

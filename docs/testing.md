@@ -67,7 +67,7 @@ CI runs the test on each pull request. It does not test Tailscale Services, beca
 
 `test/cluster` installs tslink on a Docker Swarm of three or more nodes, and tests it against a real tailnet,
 with Tailscale Services. See [test/cluster/README.md](../test/cluster/README.md). Its regression suite, `regress.sh`,
-checks these properties, as the cases R1 to R17 (`regress.sh --list` prints them):
+checks these properties, as the cases R1 to R18 (`regress.sh --list` prints them):
 
 1. The tailscaled of each task runs.
 2. A task reaches only what the policy permits, and no traffic leaves through the Tailscale of the host.
@@ -101,6 +101,9 @@ checks these properties, as the cases R1 to R17 (`regress.sh --list` prints them
     directory.
 17. Nodes on different hosts reach each other directly over the hosts' network, not through DERP, also after the
     filter table of one host is flushed and the watchdog restored tslink's rules.
+18. A backend that serves only some ports of its Service's definition answers `/ready` with 503
+    `ports-uncovered` while tslink knows the ports. The case records whether callers reach such a backend, whether a
+    host's capabilities give its own Service's ports, and what the API returns for the ports and each host.
 
 `disrupt` does one of these actions to a node, a manager included, while callers send requests to a Tailscale
 Service. It then measures the recovery time.

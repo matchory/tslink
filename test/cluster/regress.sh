@@ -1,6 +1,6 @@
 #!/bin/bash
 # regress.sh [--upgrade [ref]] [--cases R1,R2,...] [--list]: cluster regression checks for tslink
-# on the test swarm, the cases R1 to R17 in this order (--list prints them). --upgrade also runs
+# on the test swarm, the cases R1 to R18 in this order (--list prints them). --upgrade also runs
 # R6, which installs tslink from ref (default WT, the working tree) with install-plugin.sh and
 # checks that every identity survives, and R11, the upgrade from v0.3.2. The cases that reinstall
 # the plugin install ref too; each install is checked (it succeeded and every node runs the plugin
@@ -44,6 +44,7 @@ CASES=(
 	"R15 at TSLINK_LOG_LEVEL=warn on one node, the restarted plugin logs nothing at info"
 	"R16 tslink diag --preflight on every node finds nothing violated but E6, which a plugin built from a directory violates"
 	"R17 callers on different nodes ping each other directly, over the node's address and its mapped port, not DERP, also after iptables -F on one node and one watchdog run"
+	"R18 a backend serving only port 80 of $TSLINK_TEST_SVC-callee (tcp:80, tcp:443) answers /ready 503 ports-uncovered where its ports are known; records the API's ports and per-host configured value, the hosts' services/ capabilities, and whether callers reach it with and without fully configured hosts"
 )
 while [ $# -gt 0 ]; do
 	case $1 in
@@ -829,6 +830,75 @@ r17() {
 	trap - EXIT
 }
 r17_restore() { "$B/s" "$1" "iptables-restore </root/filter.tslink-test && rm /root/filter.tslink-test"; }
+
+# R18. Partially configured hosts (Z5). The partial stack's task serves only port 80 of $SVC_C,
+#      whose definition has tcp:80 and tcp:443; the callee stack's tasks serve both. Expected, per
+#      docs/reference/readiness-endpoint.md: /ready answers 503 ports-uncovered while tslink knows
+#      the Service's ports (from the node's services/ capabilities, or from the API with the
+#      callee credential's services:read scope), and control routes the task nothing. Checked:
+#      the 503. Recorded, as "INFO  R18 answer:" lines: whether callers reach the partial host
+#      beside the fully configured ones and alone, whether a host's capabilities give its own
+#      Service's ports, and what the API returns for the ports and each host's configured value
+partial_up() { [ "$(running partial | grep -c " $SVC_C\$")" = 1 ]; }
+# partial_ready <node>: the partial task's /ready line
+partial_ready() { "$B/cxs" "$1" partial_web "$B/ready.sh" 9003; }
+# own_ports <node> <endpoint>: the ports of $SVC_C in the endpoint's services/ capabilities
+own_ports() {
+	localapi "$1" "$2" 'status?peers=false' | jq -c --arg s "$SVC_C" \
+		'[(.Self.CapMap // {}) | to_entries[] | select(.key | startswith("services/")) | .value[]? | select(.Name? == $s) | .Ports] | first // empty'
+}
+# r18_ready <node> <endpoint> <when>: /ready answers 503 ports-uncovered, unless tslink does not
+# know the ports, which it logs
+r18_ready() {
+	local line v
+	line=$(partial_ready "$1")
+	v=ok
+	if [ "$(awk '{ print $2, $4 }' <<<"$line")" != "503 ports-uncovered" ]; then
+		v="want 503 ports-uncovered"
+		if [ -z "$(own_ports "$1" "$2")" ] &&
+			"$B/s" "$1" "grep -a -F 'Cannot read the ports of $SVC_C' $L | grep -q -F 'endpoint $2 '" </dev/null; then
+			echo "NOTE  R18 $3: tslink knows no ports of $SVC_C (no services/ capability, no services:read): not checked ($line)"
+			return
+		fi
+	fi
+	check "R18 $3: the partial task's /ready is 503 ports-uncovered ($line)" "$v"
+}
+r18() {
+	local n id host nid r v line
+	"$B/deploy" partial callee >/dev/null
+	if ! wait_for 300 partial_up; then
+		check "R18 the partial task advertises $SVC_C" "not within 300 s: $(running partial | tr '\n' ';')"
+		stack_rm partial
+		return
+	fi
+	read -r n id host _ <<<"$(running partial | head -1)"
+	nid=$(node_id_of "$host")
+	sleep 30
+	r18_ready "$n" "$id" "after 30 s"
+	echo "INFO  R18 the partial task's status warnings: $("$B/s" "$n" "jq -c '[.warnings[]? | {key, message}]' /var/lib/docker-plugins/tailscale/status/$id.json" </dev/null)"
+	echo "INFO  R18 the API's definition of $SVC_C: $("$B/tsapi" GET "/tailnet/$TN/services/$SVC_C" | jq -c '{name, ports}')"
+	v=$("$B/tsapi" GET "/tailnet/$TN/services/$SVC_C/devices")
+	echo "INFO  R18 the API's hosts of $SVC_C: $(jq -c '.hosts // .' <<<"$v")"
+	echo "INFO  R18 answer: the API's configured value for the partial host $host ($nid): $(jq -c --arg id "$nid" '[.hosts[]? | select(.stableNodeID == $id) | {configured, approvalLevel}]' <<<"$v")"
+	v=$(own_ports "$n" "$id")
+	echo "INFO  R18 the partial host's services/ capabilities: $(localapi "$n" "$id" 'status?peers=false' | jq -c '(.Self.CapMap // {}) | with_entries(select(.key | startswith("services/")))')"
+	echo "INFO  R18 answer: the partial host sees its own Service's ports: ${v:-no}"
+	read -r r v <<<"$(running callee | awk -v s="$SVC_C" '$4 == s { print $1, $2; exit }')"
+	[ -z "$v" ] || echo "INFO  R18 answer: a fully configured host ($r) sees its own Service's ports: $(own_ports "$r" "$v" | grep . || echo no)"
+	read -r r v <<<"$(running caller | awk -v m="$M" '$1 == m { print $1, $2; exit }')"
+	[ -z "$v" ] || echo "INFO  R18 the caller on $r: its services/ capabilities: $(localapi "$r" "$v" 'status?peers=false' | jq -c '(.Self.CapMap // {}) | with_entries(select(.key | startswith("services/")))')"
+	echo "INFO  R18 answer: 50 VIP requests with fully configured hosts beside the partial one: $("$B/cxs" "$M" caller_client "$B/vip-hits.sh" "http://$VIP/" 50)"
+	r=$(replicas callee_whoami)
+	scale callee_whoami 0
+	"$B/await" callee_whoami >/dev/null
+	sleep 30
+	echo "INFO  R18 the API's hosts of $SVC_C, the partial one alone: $("$B/tsapi" GET "/tailnet/$TN/services/$SVC_C/devices" | jq -c '.hosts // .')"
+	echo "INFO  R18 answer: 50 VIP requests with the partial host alone: $("$B/cxs" "$M" caller_client "$B/vip-hits.sh" "http://$VIP/" 50)"
+	r18_ready "$n" "$id" "alone"
+	scale callee_whoami "$r"
+	"$B/await" callee_whoami >/dev/null
+	stack_rm partial
+}
 
 # An interrupt exits, so the EXIT trap a case set restores what it changed
 trap 'exit 130' INT

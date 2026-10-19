@@ -40,7 +40,8 @@ the other tests: [docs/testing.md](../../docs/testing.md).
   - `tailscale-api.secret`: OAuth client with `auth_keys`, `oauth_keys`, `devices:core` and
     `services` write scopes and the test tags
   - `caller.secret`, `callee.secret`, `nogrant.secret`: OAuth clients for the stacks, tagged
-    `tag:tslink-test-caller`, `-callee` and `-nogrant`
+    `tag:tslink-test-caller`, `-callee` and `-nogrant`; `callee.secret` also with `services:read`,
+    so tslink reads the Services' ports from the API where the node's capabilities lack them (R18)
   - `node.authkey`: auth key for the host `tailscaled`s, tagged `tag:tslink-test-node`
 
 ## Configuration
@@ -82,7 +83,7 @@ Services, so they do not run against headscale.
 ./install-plugin.sh WT             # or a git ref; installs it as tslink on every node
 ./deploy callee && ./deploy caller && ./deploy nogrant
 ./regress.sh --upgrade             # exits non-zero if a check fails
-./regress.sh --list                # the cases R1 to R17; --cases R7,R8 runs only those
+./regress.sh --list                # the cases R1 to R18; --cases R7,R8 runs only those
 ./cleanup.sh                       # delete the test devices, Services and keys
 ```
 
@@ -150,6 +151,7 @@ another provider, point `TSLINK_TEST_POWER` at a script with the same arguments.
 | `install-drain.sh [--remove]` | install `deploy/systemd`'s drain drop-in on every node |
 | `endpoints.sh` | on a node (`s <node> sh -s <endpoints.sh`): each endpoint's state and advertised Services |
 | `lib.sh` | sourced by `regress.sh` and `test/security/tn.sh`: `wait_for`, `eps`, `stack_rm`, `scale` and the like |
+| `vip-hits.sh <url> <count>` | in a caller: requests to a VIP, counting R18's partial backend's answers |
 | `ready.sh <port> [log]` | in a container: `GET /ready` of the readiness endpoint, once or into a log |
 | `shared-dir.sh on\|off` | an NFS directory from `mgr` at `/mnt/tslink` on every node, for `shared.source` |
 | `cleanup.sh` | delete the test devices, Services and the keys created through `tsapi` |

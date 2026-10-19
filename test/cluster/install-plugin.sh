@@ -44,6 +44,7 @@ rc=0
 settled() { ! "$S" "$1" sh -s <"$B/endpoints.sh" | awk -F'\t' '$4 != "running"' | grep -q .; }
 pids=()
 for h in $("$B/nodes"); do
+	t0=$(date +%s)
 	"$S" "$h" "set -e
     if docker plugin inspect $P >/dev/null 2>&1; then docker plugin disable -f $P >/dev/null || true; docker plugin rm -f $P >/dev/null; fi
     docker plugin create $P /root/plugin >/dev/null
@@ -61,6 +62,8 @@ for h in $("$B/nodes"); do
 			t=$((t + 5))
 		done
 		settled "$h" || echo "$h: endpoints not running 180 s after the install" >&2
+		# INSTALL_TIMES: a file to note each node's reinstall in, "<node> <start> <settled>"
+		[ -z "${INSTALL_TIMES:-}" ] || echo "$h $t0 $(date +%s)" >>"$INSTALL_TIMES"
 		sleep "${ONE_BY_ONE_SETTLE:-15}"
 	fi
 done

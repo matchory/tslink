@@ -90,6 +90,12 @@ orphans() {
 probe_fails() {
 	"$B/cx" "$1" caller_client "awk \"\\\$3!=200\" ${2:-/tmp/probe.log} | wc -l" | tr -d ' '
 }
+# probe_fails_outside <node> <from> <to>: probe_fails, but not counting requests between the epoch
+# seconds from and to, while the caller's own node was reinstalled: its tailscaled, a child of the
+# plugin, stops with it, as the upgrade guide says
+probe_fails_outside() {
+	"$B/cx" "$1" caller_client "awk -v f=$2 -v t=$3 \"\\\$3!=200 && (\\\$1<f || \\\$1>t)\" /tmp/probe.log | wc -l" | tr -d ' '
+}
 # in_caller <cmd>: run a command in the caller task on $M
 in_caller() { "$B/cx" "$M" caller_client "$1"; }
 # multi_ready: both multi tasks run and advertise both Services
@@ -151,7 +157,7 @@ since_log() {
 # each device's advertised Services survive, that at most 3 VIP requests per caller fail (as in
 # R4) and that /ready answers 200 or, while the plugin stops or is down, 503 drained or nothing
 upgrade() {
-	local devs adv n f v
+	local devs adv n f v times from to
 	devs=$(test_devices)
 	adv=$(advertised)
 	"$B/probes" stop >/dev/null 2>&1
@@ -160,7 +166,8 @@ upgrade() {
 	sleep 5
 	# One node at a time, as the upgrade guide does: replacing every node at once drains every
 	# replica of a Service together
-	if ! ONE_BY_ONE=1 reinstall "$1" "$REF"; then
+	times=$(mktemp)
+	if ! INSTALL_TIMES=$times ONE_BY_ONE=1 reinstall "$1" "$REF"; then
 		"$B/probes" stop >/dev/null 2>&1
 		readylogs stop
 		return 1
@@ -174,11 +181,17 @@ upgrade() {
 	"$B/probes" stop >/dev/null 2>&1
 	readylogs stop
 	for n in $("$B/nodes"); do
-		f=$(probe_fails "$n")
-		check "$1: caller@$n failed VIP requests ($f)" "$([ "$f" -le 3 ] && echo ok || echo "$f failed")"
+		read -r _ from to < <(grep "^$n " "$times" || echo "$n 0 0")
+		echo "INFO  $1: caller@$n failed $(probe_fails "$n") VIP requests in all, while its own node was reinstalled too"
+		f=$(probe_fails_outside "$n" "$from" "$to")
+		check "$1: caller@$n failed VIP requests while other nodes were reinstalled ($f)" "$([ "$f" -le 3 ] && echo ok || echo "$f failed")"
 	done
+	rm -f "$times"
 	v=$(readylogs show)
-	[ -n "$v" ] || echo "NOTE  $1: no task with tslink.health to watch /ready on"
+	if [ -z "$v" ]; then
+		echo "NOTE  $1: no task with tslink.health to watch /ready on"
+		return 0
+	fi
 	echo "INFO  $1: /ready unanswered $(awk '$4 == "000"' <<<"$v" | grep -c .) times (5 a second)"
 	echo "INFO  $1: /ready answered 503 drained $(awk '$4 == "503" && $6 == "drained"' <<<"$v" | grep -c .) times"
 	# A stopping plugin drains its Service backends, so /ready answers 503 drained meanwhile
@@ -621,7 +634,9 @@ r12() {
 		| "\(.hostname) tags=\(.tags // []|join(",")) ephemeral=\(.isEphemeral)"' | tr '\n' ';')
 	check "R12 $n task devices: exactly their network's tag, ephemeral" "$([ -z "$v" ] && [ "$n" -gt 0 ] && echo ok || echo "${v:-no devices}")"
 	# all=true: the keys of every OAuth client, not only tsapi's own
-	ids=$("$B/tsapi" GET "/tailnet/$TN/keys?all=true" | jq -r --arg d "${T#tag:}" '.keys[]|select((.description // "")|startswith($d))|.id')
+	# tslink's keys carry no description: find them by their tags
+	ids=$("$B/tsapi" GET "/tailnet/$TN/keys?all=true" |
+		jq -r --arg t "$T" '.keys[]|select(any(.capabilities.devices.create.tags[]?; startswith($t)))|.id')
 	check "R12 test keys examined ($(grep -c . <<<"$ids"))" "$(grep -q . <<<"$ids" && echo ok || echo "none listed")"
 	v=$(for id in $ids; do
 		"$B/tsapi" GET "/tailnet/$TN/keys/$id"
@@ -681,7 +696,8 @@ systemctl restart docker
 EOF_NODE
 }
 # r14_ts_resolv <node> <swarm-service>: the resolv.conf tslink wrote for the tailscaled of the
-# service's task on the node (<state dir>/resolv.conf), and the task's own ExtServers line
+# service's task on the node (<state dir>/resolv.pre-tailscale-backup.conf, which tailscaled
+# reads its upstreams from after replacing <state dir>/resolv.conf), and the task's own ExtServers line
 r14_ts_resolv() {
 	# shellcheck disable=SC2016 # runs on the node
 	"$B/s" "$1" "SVC=$2 sh -s" <<'EOF_NODE'
@@ -690,7 +706,7 @@ c=$(docker ps -q -f label=com.docker.swarm.service.name=$SVC | head -1)
 for e in $(docker inspect -f '{{range .NetworkSettings.Networks}}{{.EndpointID}} {{end}}' "$c"); do
 	f=$D/status/$(echo "$e" | cut -c1-12).json
 	[ -f "$f" ] || continue
-	cat "$D/by-stack/$(jq -r .stack "$f")/$(jq -r .hostname "$f")/resolv.conf"
+	cat "$D/by-stack/$(jq -r .stack "$f")/$(jq -r .hostname "$f")/resolv.pre-tailscale-backup.conf"
 done
 docker exec "$c" grep -h 'ExtServers' /etc/resolv.conf
 EOF_NODE
@@ -781,7 +797,7 @@ r15() {
 r16() {
 	local n out v
 	for n in $("$B/nodes"); do
-		out=$("$B/s" "$n" "tar -C /root/plugin/rootfs -c . | docker import -q - tslink:preflight >/dev/null &&
+		out=$("$B/s" "$n" "tar -C /root/plugin/rootfs -c . | docker import - tslink:preflight >/dev/null &&
 			docker run --rm --network host --cap-add NET_ADMIN -v /var/run/docker.sock:/var/run/docker.sock \
 			-v /var/lib/docker-plugins/tailscale:/data --entrypoint /tslink tslink:preflight diag --preflight 2>&1
 			echo exit=\$?; docker image rm -f tslink:preflight >/dev/null")

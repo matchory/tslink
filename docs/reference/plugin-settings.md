@@ -69,7 +69,7 @@ Sets which tags a stack can use with the cluster credential: `exact` or `prefix`
 The URL of the control server that all nodes of the plugin log in to, for example a
 [headscale](https://github.com/juanfont/headscale) server. Leave it empty for the control server of Tailscale. The URL
 must use `https` with a hostname or IP address, or `http` with an IP address, such as `http://10.0.0.5:8080` or
-`http://[fd00::5]:8080`, and must not contain a user name or password. For other values, including `http` with a
+`http://[fd00::5]:8080`, and must not contain a username or password. For other values, including `http` with a
 hostname such as `localhost`, the plugin does not start.
 
 > [!NOTE]

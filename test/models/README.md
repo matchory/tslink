@@ -47,19 +47,26 @@ Bounds: two Services, one tailscaled restart. Properties:
 
 | Property | | Result |
 | --- | --- | --- |
-| S1 `DrainedStaysDrained` | a drain that took effect is never undone | violated: I4 |
-| S2 `DrainedFlagHoldsBack` | no change begun once drained adds a Service | holds |
+| S1 `DrainedStaysDrained` | once a drain is recorded (external included), no Service is advertised again | violated: I4 |
+| S2 `DrainedFlagHoldsBack` | no change that took the lock once drained was set adds a Service | holds |
 | S2b `NoDaemonAdvertisesDrained` | a daemon started once drained advertises nothing | violated: I1 |
 | S3 `LeaveWaitsForDrain` | Leave returns before its timeout only after control fetched the drained list | violated: I2, I5, I6, I7 |
 | S4 `NoWaitForNothing` | no wait if no Service was ever advertised | holds |
 | S7 `AckEndsWait` | a counted fetch of the drained list ends the wait | holds |
+| S8 `NoLeaveWhileAdvertising` | Leave stops tailscaled only once no running daemon advertises a Service, or after a drain took effect and Leave waited for its fetch or timeout | violated: I8, I9 |
 | L1 `LeaveTerminates` | DrainAndWait returns, also if control never fetches | holds |
 | L2 `DrainGetsLock` | a drain gets the gate's lock | holds |
 
+S2 as formalised covers the drained check a change makes once it holds the
+lock. A change already past that check when the drain comes sends its edit
+anyway; the cancel stops the call, not the request, and that window is
+judged by S1 (I4).
+
 S3 is split by how DrainAndWait returned (`S3Acked`, `S3Ctx`,
-`S3NoRecord`, `S3External`, `S3NoDaemon`, `S3Unadvertised`), so that each
-known violation's cfg finds its own trace. Known violations, each with its
-trace in its cfg:
+`S3NoRecord`, `S3External`, `S3NoDaemon`, `S3Unadvertised`), and S8 by
+whether Leave ran DrainAndWait (`S8Drained`), so that each known
+violation's cfg finds its own trace. Known violations, each with its trace
+in its cfg:
 
 | Id | Interleaving |
 | --- | --- |
@@ -69,3 +76,5 @@ trace in its cfg:
 | I5 | a drain edit that timed out still takes effect: no drain record, no wait |
 | I6 | tailscaled exits between the drain and control's fetch: the wait ends with it |
 | I7 | a cancelled advertisement applied before the drain: the backend counts as never advertised, no wait |
+| I8 | Leave while a restarted tailscaled is not yet published: the drain finds no daemon, and the endpoint stops one that advertises |
+| I9 | Leave during the first start: the start is aborted with no drain while tailscaled advertises from its state |

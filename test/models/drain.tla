@@ -11,8 +11,10 @@
 \*                (noteSurvivingState, configureServing: each backend's
 \*                serviceBackend.start in turn), waitForExit, stopDaemon
 \*   retry        serviceBackend.retryLater, of every backend
-\*   stop         the stop signal: DaemonSupervisor.Drain (or none)
-\*   leave        DaemonSupervisor.DrainAndWait, then the endpoint's Stop
+\*   stop         the stop signal: DaemonSupervisor.Drain (or none), once
+\*                the endpoint has its supervisor
+\*   leave        DaemonSupervisor.DrainAndWait, then the endpoint's Stop;
+\*                during the first start, aborting it without a drain
 \*   tailscaled   applies a LocalAPI prefs edit, or refuses one adding a
 \*                Service
 \*   control      fetches the node's Service list after a change, or never
@@ -25,9 +27,7 @@
 \*
 \* Labels name the point reached, <Function>_<step>: a process at
 \* Drain_marked has marked the gate drained and is to take its lock. They
-\* are the Go test hook points (drain:marked, ...). Change_fnReturned is
-\* where fn returned without adding the Service; where it added it, fn
-\* returns at Advertise_added.
+\* are the Go test hook points (drain:marked, ...).
 \*
 \* Abstractions (each also at the step it concerns):
 \* - Time is abstract. A LocalAPI call's timeout, DrainAndWait's timeout and
@@ -134,7 +134,9 @@ variables
     \* control fetched the drained list since (none if advertised again)
     ackMade = FALSE,
     ackCounted = [g \in Gens |-> FALSE], \* tslink counted such a fetch
-    ackTimedOut = FALSE;            \* Leave timed out with one counted
+    ackTimedOut = FALSE,            \* Leave timed out with one counted
+    published = FALSE,              \* the first daemon was published
+    leftAdvertising = FALSE;        \* Leave stopped a daemon advertising
 
 define
     \* A LocalAPI call of a's daemon reaches tailscaled
@@ -158,9 +160,9 @@ define
         \/ pc["leave"] \in {"Wait_check", "Wait_block"} /\ leaveD = g
         \/ \E p \in Drainers : pc[p] = "Drain_marked" /\ supDaemon = g
 
-    \* S1: once a drain took effect, no Service is advertised again
-    DrainedStaysDrained ==
-        drainRec.set /\ ~drainRec.external => prefs = {}
+    \* S1: once a drain is recorded (it took effect, or found nothing
+    \* advertised), no Service is advertised again
+    DrainedStaysDrained == drainRec.set => prefs = {}
     \* S2: no change that began once drained was set adds a Service
     DrainedFlagHoldsBack == ~addAfterDrained
     \* S2b: a daemon started once drained was set runs without the Services
@@ -169,7 +171,8 @@ define
     \* drained Service list, once a drain's edit took effect. leaveEnd is
     \* how DrainAndWait returned: acked (a fetch was counted), ctx (the
     \* daemon stopped), timeout, or without a wait: norecord (no drain took
-    \* effect), external, nodaemon, unadvertised.
+    \* effect), external, nodaemon, unadvertised; aborted is a Leave during
+    \* the first start, which runs no DrainAndWait.
     LeaveReturnedEarly(how) ==
         pc["leave"] = "Done" /\ leaveEnd \in how /\ drainApplied => ackMade
     LeaveWaitsForDrain ==
@@ -182,6 +185,13 @@ define
     S3External == LeaveReturnedEarly({"external"})
     S3NoDaemon == LeaveReturnedEarly({"nodaemon"})
     S3Unadvertised == LeaveReturnedEarly({"unadvertised"})
+    \* S8: Leave stops tailscaled only once no running daemon advertises a
+    \* Service of the container, or after a drain took effect and Leave
+    \* waited for its fetch or its timeout
+    NoLeaveWhileAdvertising == ~leftAdvertising
+    \* S8 for a Leave that ran DrainAndWait (not one aborting the first
+    \* start), to tell the violations apart
+    S8Drained == leftAdvertising => leaveEnd = "aborted"
     \* S4: no wait if no Service was ever in the prefs
     NoWaitForNothing ==
         pc["leave"] \in {"Wait_check", "Wait_block"} => everInPrefs
@@ -253,21 +263,13 @@ Advertise_sent:
     end either;
 Advertise_added:
     \* runAdvertise: gate.advertised.Store(true) (markAdvertised and the
-    \* confirmer: Task 3); fn returns nil: change: setCancel(nil),
-    \* g.mu.Unlock()
+    \* confirmer: Task 3); fn returns nil
     advertised := TRUE;
-    lock := None;
-    cancelReg := None;
-    cctx[self] := FALSE;
-    lockedDrained[self] := FALSE;
-    if self = "retry" then
-        retryGen[svc] := 0;
-    end if;
-    return;
 Change_fnReturned:
-    \* change: fn failed: if g.drained.Load() { return errDrained }, which
-    \* ignoreDrained makes nil; setCancel(nil), g.mu.Unlock().
-    \* serviceBackend.start: retryLater; a retry polls again
+    \* change: fn returned; if it failed: if g.drained.Load() { return
+    \* errDrained }, which ignoreDrained makes nil; setCancel(nil),
+    \* g.mu.Unlock(). serviceBackend.start: retryLater on an error; a retry
+    \* polls again, or ends
     lock := None;
     cancelReg := None;
     cctx[self] := FALSE;
@@ -298,8 +300,14 @@ Drain_begin:
 Drain_marked:
     \* s.getDaemon(): nil is "tailscaled is not running"; else daemon.Drain:
     \* markDrained again, g.mu.Lock(), if !g.drain.at.IsZero() { return nil },
-    \* fetches, _ := d.servicesFetches(). (getDaemon is read once the lock
-    \* is free: a daemon gone meanwhile fails the drain as nil does.)
+    \* fetches, _ := d.servicesFetches(). Abstraction: getDaemon is read
+    \* once the lock is free. In Go a daemon replaced while the drainer
+    \* waits for the lock is drained as the stale d, which fails (its context
+    \* is done) and records nothing; here the drainer drains the new daemon.
+    \* The Go outcome is the one the model reaches when getDaemon finds nil
+    \* during the restart (drained set, no record, nothing pending), and the
+    \* new daemon started drained is judged by S2b either way, so no
+    \* property sees the difference.
     if supDaemon = 0 then
         return;
     else
@@ -394,6 +402,7 @@ Start_backends:
             call Configure(cur);
         end while;
         supDaemon := gen["sup"];
+        published := TRUE;
         cur := None;
 Daemon_started:
         \* waitForExit: tailscaled exited, or the supervisor stopped;
@@ -431,11 +440,13 @@ Retry_poll:
     end while;
 end process;
 
-\* The stop signal: DaemonSupervisor.Drain, or none
+\* The stop signal: Endpoint.DrainService, which reaches the supervisor only
+\* once startSupervisor returned (the first daemon was published), or none
 fair process StopSignal = "stop"
 begin
 Stop_signal:
     either
+        await published;
         call DrainProc();
     or
         skip;
@@ -446,7 +457,15 @@ end process;
 fair process Leave = "leave"
 begin
 Leave_begin:
-    call DrainProc();
+    \* Endpoint.stopTailscale: with the supervisor, DrainAndWait; during the
+    \* first start (no supervisor yet) RunTailscale aborts the start, with
+    \* no drain
+    if published then
+        call DrainProc();
+    else
+        leaveEnd := "aborted";
+        goto Leave_done;
+    end if;
 Wait_lock:
     \* DrainAndWait: g.mu.Lock(); drain := g.drain; g.mu.Unlock()
     await lock = None;
@@ -496,6 +515,9 @@ Wait_block:
 Leave_done:
     \* DrainAndWait sleeps out its floor and returns; the endpoint stops the
     \* supervisor: tailscaled stops, and its pending requests with it
+    leftAdvertising :=
+        daemonUp /\ prefs # {}
+        /\ ~(drainApplied /\ leaveEnd \in {"acked", "timeout"});
     stopped := TRUE;
     daemonUp := FALSE;
     supDaemon := 0;
@@ -555,13 +577,16 @@ end process;
 \* handleLine counts a fetch from tailscaled's log, after control made it
 process Counter = "counter"
 begin
-Fetch_counted:
+Counter_count:
     while ~stopped do
         with g \in {x \in Gens : fetchQ[x] # <<>> /\ Reads(x)} do
             fetchCount[g] := fetchCount[g] + 1;
             ackCounted[g] := ackCounted[g] \/ Head(fetchQ[g]);
             fetchQ[g] := Tail(fetchQ[g]);
         end with;
+Fetch_counted:
+        \* handleLine: d.fetches++ done, next closed
+        skip;
     end while;
 end process;
 
@@ -586,7 +611,8 @@ VARIABLES stateExists, prefs, daemonGen, daemonUp, ctxDone, crashes, pending,
           retryGen, drained, advertised, lock, cancelReg, cctx, drainRec, gen, 
           res, cnt, leaveRec, leaveD, after, seen, leaveEnd, everInPrefs, 
           lockedDrained, addAfterDrained, startedDrained, drainApplied, 
-          ackMade, ackCounted, ackTimedOut, pc, stack
+          ackMade, ackCounted, ackTimedOut, published, leftAdvertising, pc, 
+          stack
 
 (* define statement *)
 Live(a) == daemonUp /\ daemonGen = gen[a] /\ ~ctxDone[gen[a]]
@@ -610,12 +636,13 @@ Reads(g) ==
     \/ \E p \in Drainers : pc[p] = "Drain_marked" /\ supDaemon = g
 
 
-DrainedStaysDrained ==
-    drainRec.set /\ ~drainRec.external => prefs = {}
+
+DrainedStaysDrained == drainRec.set => prefs = {}
 
 DrainedFlagHoldsBack == ~addAfterDrained
 
 NoDaemonAdvertisesDrained == daemonUp /\ startedDrained => prefs = {}
+
 
 
 
@@ -634,6 +661,13 @@ S3External == LeaveReturnedEarly({"external"})
 S3NoDaemon == LeaveReturnedEarly({"nodaemon"})
 S3Unadvertised == LeaveReturnedEarly({"unadvertised"})
 
+
+
+NoLeaveWhileAdvertising == ~leftAdvertising
+
+
+S8Drained == leftAdvertising => leaveEnd = "aborted"
+
 NoWaitForNothing ==
     pc["leave"] \in {"Wait_check", "Wait_block"} => everInPrefs
 
@@ -651,8 +685,8 @@ vars == << stateExists, prefs, daemonGen, daemonUp, ctxDone, crashes, pending,
            retryGen, drained, advertised, lock, cancelReg, cctx, drainRec, 
            gen, res, cnt, leaveRec, leaveD, after, seen, leaveEnd, 
            everInPrefs, lockedDrained, addAfterDrained, startedDrained, 
-           drainApplied, ackMade, ackCounted, ackTimedOut, pc, stack, svc, 
-           todo, cur >>
+           drainApplied, ackMade, ackCounted, ackTimedOut, published, 
+           leftAdvertising, pc, stack, svc, todo, cur >>
 
 ProcSet == {"sup"} \cup {"retry"} \cup {"stop"} \cup {"leave"} \cup {"tailscaled"} \cup {"control"} \cup {"counter"} \cup {"crash"}
 
@@ -694,6 +728,8 @@ Init == (* Global variables *)
         /\ ackMade = FALSE
         /\ ackCounted = [g \in Gens |-> FALSE]
         /\ ackTimedOut = FALSE
+        /\ published = FALSE
+        /\ leftAdvertising = FALSE
         (* Procedure Configure *)
         /\ svc = [ self \in ProcSet |-> defaultInitValue]
         (* Process Supervisor *)
@@ -706,7 +742,7 @@ Init == (* Global variables *)
                                         [] self = "leave" -> "Leave_begin"
                                         [] self = "tailscaled" -> "Tailscaled_answer"
                                         [] self = "control" -> "Control_fetch"
-                                        [] self = "counter" -> "Fetch_counted"
+                                        [] self = "counter" -> "Counter_count"
                                         [] self = "crash" -> "Crash_exit"]
 
 Change_lock(self) == /\ pc[self] = "Change_lock"
@@ -733,7 +769,8 @@ Change_lock(self) == /\ pc[self] = "Change_lock"
                                      leaveD, after, seen, leaveEnd, 
                                      everInPrefs, addAfterDrained, 
                                      startedDrained, drainApplied, ackMade, 
-                                     ackCounted, ackTimedOut, todo, cur >>
+                                     ackCounted, ackTimedOut, published, 
+                                     leftAdvertising, todo, cur >>
 
 Change_locked(self) == /\ pc[self] = "Change_locked"
                        /\ IF drained /\ Checks
@@ -768,8 +805,8 @@ Change_locked(self) == /\ pc[self] = "Change_locked"
                                        leaveD, after, seen, leaveEnd, 
                                        everInPrefs, lockedDrained, 
                                        startedDrained, drainApplied, ackMade, 
-                                       ackCounted, ackTimedOut, stack, svc, 
-                                       todo, cur >>
+                                       ackCounted, ackTimedOut, published, 
+                                       leftAdvertising, stack, svc, todo, cur >>
 
 Advertise_sent(self) == /\ pc[self] = "Advertise_sent"
                         /\ \/ /\ Applied(self)
@@ -790,31 +827,25 @@ Advertise_sent(self) == /\ pc[self] = "Advertise_sent"
                                         leaveEnd, everInPrefs, lockedDrained, 
                                         addAfterDrained, startedDrained, 
                                         drainApplied, ackMade, ackCounted, 
-                                        ackTimedOut, stack, svc, todo, cur >>
+                                        ackTimedOut, published, 
+                                        leftAdvertising, stack, svc, todo, cur >>
 
 Advertise_added(self) == /\ pc[self] = "Advertise_added"
                          /\ advertised' = TRUE
-                         /\ lock' = None
-                         /\ cancelReg' = None
-                         /\ cctx' = [cctx EXCEPT ![self] = FALSE]
-                         /\ lockedDrained' = [lockedDrained EXCEPT ![self] = FALSE]
-                         /\ IF self = "retry"
-                               THEN /\ retryGen' = [retryGen EXCEPT ![svc[self]] = 0]
-                               ELSE /\ TRUE
-                                    /\ UNCHANGED retryGen
-                         /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
-                         /\ svc' = [svc EXCEPT ![self] = Head(stack[self]).svc]
-                         /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
+                         /\ pc' = [pc EXCEPT ![self] = "Change_fnReturned"]
                          /\ UNCHANGED << stateExists, prefs, daemonGen, 
                                          daemonUp, ctxDone, crashes, pending, 
                                          waitOn, refused, dirty, fetchQ, 
                                          fetchCount, supDaemon, stopped, 
-                                         drained, drainRec, gen, res, cnt, 
+                                         retryGen, drained, lock, cancelReg, 
+                                         cctx, drainRec, gen, res, cnt, 
                                          leaveRec, leaveD, after, seen, 
-                                         leaveEnd, everInPrefs, 
+                                         leaveEnd, everInPrefs, lockedDrained, 
                                          addAfterDrained, startedDrained, 
                                          drainApplied, ackMade, ackCounted, 
-                                         ackTimedOut, todo, cur >>
+                                         ackTimedOut, published, 
+                                         leftAdvertising, stack, svc, todo, 
+                                         cur >>
 
 Change_fnReturned(self) == /\ pc[self] = "Change_fnReturned"
                            /\ lock' = None
@@ -843,7 +874,8 @@ Change_fnReturned(self) == /\ pc[self] = "Change_fnReturned"
                                            leaveEnd, everInPrefs, 
                                            addAfterDrained, startedDrained, 
                                            drainApplied, ackMade, ackCounted, 
-                                           ackTimedOut, todo, cur >>
+                                           ackTimedOut, published, 
+                                           leftAdvertising, todo, cur >>
 
 Configure(self) == Change_lock(self) \/ Change_locked(self)
                       \/ Advertise_sent(self) \/ Advertise_added(self)
@@ -865,7 +897,8 @@ Drain_begin(self) == /\ pc[self] = "Drain_begin"
                                      everInPrefs, lockedDrained, 
                                      addAfterDrained, startedDrained, 
                                      drainApplied, ackMade, ackCounted, 
-                                     ackTimedOut, stack, svc, todo, cur >>
+                                     ackTimedOut, published, leftAdvertising, 
+                                     stack, svc, todo, cur >>
 
 Drain_marked(self) == /\ pc[self] = "Drain_marked"
                       /\ IF supDaemon = 0
@@ -894,7 +927,8 @@ Drain_marked(self) == /\ pc[self] = "Drain_marked"
                                       everInPrefs, lockedDrained, 
                                       addAfterDrained, startedDrained, 
                                       drainApplied, ackMade, ackCounted, 
-                                      ackTimedOut, svc, todo, cur >>
+                                      ackTimedOut, published, leftAdvertising, 
+                                      svc, todo, cur >>
 
 Drain_countRead(self) == /\ pc[self] = "Drain_countRead"
                          /\ IF ~Live(self)
@@ -920,8 +954,9 @@ Drain_countRead(self) == /\ pc[self] = "Drain_countRead"
                                          after, seen, leaveEnd, everInPrefs, 
                                          lockedDrained, addAfterDrained, 
                                          startedDrained, drainApplied, ackMade, 
-                                         ackCounted, ackTimedOut, stack, svc, 
-                                         todo, cur >>
+                                         ackCounted, ackTimedOut, published, 
+                                         leftAdvertising, stack, svc, todo, 
+                                         cur >>
 
 Drain_sent(self) == /\ pc[self] = "Drain_sent"
                     /\ \/ /\ Applied(self)
@@ -941,7 +976,8 @@ Drain_sent(self) == /\ pc[self] = "Drain_sent"
                                     everInPrefs, lockedDrained, 
                                     addAfterDrained, startedDrained, 
                                     drainApplied, ackMade, ackCounted, 
-                                    ackTimedOut, stack, svc, todo, cur >>
+                                    ackTimedOut, published, leftAdvertising, 
+                                    stack, svc, todo, cur >>
 
 Drain_edited(self) == /\ pc[self] = "Drain_edited"
                       /\ drainRec' = [set |-> TRUE, gen |-> gen[self], fetches |-> cnt[self],
@@ -963,7 +999,8 @@ Drain_edited(self) == /\ pc[self] = "Drain_edited"
                                       everInPrefs, lockedDrained, 
                                       addAfterDrained, startedDrained, 
                                       drainApplied, ackMade, ackCounted, 
-                                      ackTimedOut, svc, todo, cur >>
+                                      ackTimedOut, published, leftAdvertising, 
+                                      svc, todo, cur >>
 
 Drain_release(self) == /\ pc[self] = "Drain_release"
                        /\ IF lock = self
@@ -983,7 +1020,8 @@ Drain_release(self) == /\ pc[self] = "Drain_release"
                                        leaveEnd, everInPrefs, lockedDrained, 
                                        addAfterDrained, startedDrained, 
                                        drainApplied, ackMade, ackCounted, 
-                                       ackTimedOut, svc, todo, cur >>
+                                       ackTimedOut, published, leftAdvertising, 
+                                       svc, todo, cur >>
 
 DrainProc(self) == Drain_begin(self) \/ Drain_marked(self)
                       \/ Drain_countRead(self) \/ Drain_sent(self)
@@ -1012,7 +1050,7 @@ Sup_loop == /\ pc["sup"] = "Sup_loop"
                             leaveRec, leaveD, after, seen, leaveEnd, 
                             everInPrefs, lockedDrained, addAfterDrained, 
                             drainApplied, ackMade, ackCounted, ackTimedOut, 
-                            stack, svc, cur >>
+                            published, leftAdvertising, stack, svc, cur >>
 
 Start_backends == /\ pc["sup"] = "Start_backends"
                   /\ IF todo # {}
@@ -1024,8 +1062,9 @@ Start_backends == /\ pc["sup"] = "Start_backends"
                                                                       \o stack["sup"]]
                                 /\ svc' = [svc EXCEPT !["sup"] = cur']
                              /\ pc' = [pc EXCEPT !["sup"] = "Change_lock"]
-                             /\ UNCHANGED supDaemon
+                             /\ UNCHANGED << supDaemon, published >>
                         ELSE /\ supDaemon' = gen["sup"]
+                             /\ published' = TRUE
                              /\ cur' = None
                              /\ pc' = [pc EXCEPT !["sup"] = "Daemon_started"]
                              /\ UNCHANGED << stack, svc, todo >>
@@ -1037,7 +1076,7 @@ Start_backends == /\ pc["sup"] = "Start_backends"
                                   after, seen, leaveEnd, everInPrefs, 
                                   lockedDrained, addAfterDrained, 
                                   startedDrained, drainApplied, ackMade, 
-                                  ackCounted, ackTimedOut >>
+                                  ackCounted, ackTimedOut, leftAdvertising >>
 
 Daemon_started == /\ pc["sup"] = "Daemon_started"
                   /\ ~daemonUp \/ stopped
@@ -1055,8 +1094,8 @@ Daemon_started == /\ pc["sup"] = "Daemon_started"
                                   after, seen, leaveEnd, everInPrefs, 
                                   lockedDrained, addAfterDrained, 
                                   startedDrained, drainApplied, ackMade, 
-                                  ackCounted, ackTimedOut, stack, svc, todo, 
-                                  cur >>
+                                  ackCounted, ackTimedOut, published, 
+                                  leftAdvertising, stack, svc, todo, cur >>
 
 Supervisor == Sup_loop \/ Start_backends \/ Daemon_started
 
@@ -1089,12 +1128,14 @@ Retry_poll == /\ pc["retry"] = "Retry_poll"
                               cnt, leaveRec, leaveD, after, seen, leaveEnd, 
                               everInPrefs, lockedDrained, addAfterDrained, 
                               startedDrained, drainApplied, ackMade, 
-                              ackCounted, ackTimedOut, todo, cur >>
+                              ackCounted, ackTimedOut, published, 
+                              leftAdvertising, todo, cur >>
 
 Retry == Retry_poll
 
 Stop_signal == /\ pc["stop"] = "Stop_signal"
-               /\ \/ /\ stack' = [stack EXCEPT !["stop"] = << [ procedure |->  "DrainProc",
+               /\ \/ /\ published
+                     /\ stack' = [stack EXCEPT !["stop"] = << [ procedure |->  "DrainProc",
                                                                 pc        |->  "Done" ] >>
                                                             \o stack["stop"]]
                      /\ pc' = [pc EXCEPT !["stop"] = "Drain_begin"]
@@ -1109,24 +1150,29 @@ Stop_signal == /\ pc["stop"] = "Stop_signal"
                                after, seen, leaveEnd, everInPrefs, 
                                lockedDrained, addAfterDrained, startedDrained, 
                                drainApplied, ackMade, ackCounted, ackTimedOut, 
-                               svc, todo, cur >>
+                               published, leftAdvertising, svc, todo, cur >>
 
 StopSignal == Stop_signal
 
 Leave_begin == /\ pc["leave"] = "Leave_begin"
-               /\ stack' = [stack EXCEPT !["leave"] = << [ procedure |->  "DrainProc",
-                                                           pc        |->  "Wait_lock" ] >>
-                                                       \o stack["leave"]]
-               /\ pc' = [pc EXCEPT !["leave"] = "Drain_begin"]
+               /\ IF published
+                     THEN /\ stack' = [stack EXCEPT !["leave"] = << [ procedure |->  "DrainProc",
+                                                                      pc        |->  "Wait_lock" ] >>
+                                                                  \o stack["leave"]]
+                          /\ pc' = [pc EXCEPT !["leave"] = "Drain_begin"]
+                          /\ UNCHANGED leaveEnd
+                     ELSE /\ leaveEnd' = "aborted"
+                          /\ pc' = [pc EXCEPT !["leave"] = "Leave_done"]
+                          /\ stack' = stack
                /\ UNCHANGED << stateExists, prefs, daemonGen, daemonUp, 
                                ctxDone, crashes, pending, waitOn, refused, 
                                dirty, fetchQ, fetchCount, supDaemon, stopped, 
                                retryGen, drained, advertised, lock, cancelReg, 
                                cctx, drainRec, gen, res, cnt, leaveRec, leaveD, 
-                               after, seen, leaveEnd, everInPrefs, 
-                               lockedDrained, addAfterDrained, startedDrained, 
-                               drainApplied, ackMade, ackCounted, ackTimedOut, 
-                               svc, todo, cur >>
+                               after, seen, everInPrefs, lockedDrained, 
+                               addAfterDrained, startedDrained, drainApplied, 
+                               ackMade, ackCounted, ackTimedOut, published, 
+                               leftAdvertising, svc, todo, cur >>
 
 Wait_lock == /\ pc["leave"] = "Wait_lock"
              /\ lock = None
@@ -1139,7 +1185,8 @@ Wait_lock == /\ pc["leave"] = "Wait_lock"
                              res, cnt, leaveD, after, seen, leaveEnd, 
                              everInPrefs, lockedDrained, addAfterDrained, 
                              startedDrained, drainApplied, ackMade, ackCounted, 
-                             ackTimedOut, stack, svc, todo, cur >>
+                             ackTimedOut, published, leftAdvertising, stack, 
+                             svc, todo, cur >>
 
 Wait_recordRead == /\ pc["leave"] = "Wait_recordRead"
                    /\ leaveD' = supDaemon
@@ -1171,8 +1218,8 @@ Wait_recordRead == /\ pc["leave"] = "Wait_recordRead"
                                    cnt, leaveRec, seen, everInPrefs, 
                                    lockedDrained, addAfterDrained, 
                                    startedDrained, drainApplied, ackMade, 
-                                   ackCounted, ackTimedOut, stack, svc, todo, 
-                                   cur >>
+                                   ackCounted, ackTimedOut, published, 
+                                   leftAdvertising, stack, svc, todo, cur >>
 
 Wait_check == /\ pc["leave"] = "Wait_check"
               /\ IF fetchCount[leaveD] > after
@@ -1189,7 +1236,8 @@ Wait_check == /\ pc["leave"] = "Wait_check"
                               drainRec, gen, res, cnt, leaveRec, leaveD, after, 
                               everInPrefs, lockedDrained, addAfterDrained, 
                               startedDrained, drainApplied, ackMade, 
-                              ackCounted, ackTimedOut, stack, svc, todo, cur >>
+                              ackCounted, ackTimedOut, published, 
+                              leftAdvertising, stack, svc, todo, cur >>
 
 Wait_block == /\ pc["leave"] = "Wait_block"
               /\ \/ /\ fetchCount[leaveD] # seen
@@ -1210,9 +1258,12 @@ Wait_block == /\ pc["leave"] = "Wait_block"
                               drainRec, gen, res, cnt, leaveRec, leaveD, after, 
                               seen, everInPrefs, lockedDrained, 
                               addAfterDrained, startedDrained, drainApplied, 
-                              ackMade, ackCounted, stack, svc, todo, cur >>
+                              ackMade, ackCounted, published, leftAdvertising, 
+                              stack, svc, todo, cur >>
 
 Leave_done == /\ pc["leave"] = "Leave_done"
+              /\ leftAdvertising' = (daemonUp /\ prefs # {}
+                                     /\ ~(drainApplied /\ leaveEnd \in {"acked", "timeout"}))
               /\ stopped' = TRUE
               /\ daemonUp' = FALSE
               /\ supDaemon' = 0
@@ -1225,8 +1276,8 @@ Leave_done == /\ pc["leave"] = "Leave_done"
                               drainRec, gen, res, cnt, leaveRec, leaveD, after, 
                               seen, leaveEnd, everInPrefs, lockedDrained, 
                               addAfterDrained, startedDrained, drainApplied, 
-                              ackMade, ackCounted, ackTimedOut, stack, svc, 
-                              todo, cur >>
+                              ackMade, ackCounted, ackTimedOut, published, 
+                              stack, svc, todo, cur >>
 
 Leave == Leave_begin \/ Wait_lock \/ Wait_recordRead \/ Wait_check
             \/ Wait_block \/ Leave_done
@@ -1272,8 +1323,8 @@ Tailscaled_answer == /\ pc["tailscaled"] = "Tailscaled_answer"
                                      lock, cancelReg, cctx, drainRec, gen, res, 
                                      cnt, leaveRec, leaveD, after, seen, 
                                      leaveEnd, lockedDrained, addAfterDrained, 
-                                     startedDrained, ackTimedOut, stack, svc, 
-                                     todo, cur >>
+                                     startedDrained, ackTimedOut, published, 
+                                     leftAdvertising, stack, svc, todo, cur >>
 
 Tailscaled == Tailscaled_answer
 
@@ -1294,11 +1345,12 @@ Control_fetch == /\ pc["control"] = "Control_fetch"
                                  after, seen, leaveEnd, everInPrefs, 
                                  lockedDrained, addAfterDrained, 
                                  startedDrained, drainApplied, ackCounted, 
-                                 ackTimedOut, stack, svc, todo, cur >>
+                                 ackTimedOut, published, leftAdvertising, 
+                                 stack, svc, todo, cur >>
 
 Control == Control_fetch
 
-Fetch_counted == /\ pc["counter"] = "Fetch_counted"
+Counter_count == /\ pc["counter"] = "Counter_count"
                  /\ IF ~stopped
                        THEN /\ \E g \in {x \in Gens : fetchQ[x] # <<>> /\ Reads(x)}:
                                  /\ fetchCount' = [fetchCount EXCEPT ![g] = fetchCount[g] + 1]
@@ -1314,9 +1366,24 @@ Fetch_counted == /\ pc["counter"] = "Fetch_counted"
                                  gen, res, cnt, leaveRec, leaveD, after, seen, 
                                  leaveEnd, everInPrefs, lockedDrained, 
                                  addAfterDrained, startedDrained, drainApplied, 
-                                 ackMade, ackTimedOut, stack, svc, todo, cur >>
+                                 ackMade, ackTimedOut, published, 
+                                 leftAdvertising, stack, svc, todo, cur >>
 
-Counter == Fetch_counted
+Fetch_counted == /\ pc["counter"] = "Fetch_counted"
+                 /\ TRUE
+                 /\ pc' = [pc EXCEPT !["counter"] = "Counter_count"]
+                 /\ UNCHANGED << stateExists, prefs, daemonGen, daemonUp, 
+                                 ctxDone, crashes, pending, waitOn, refused, 
+                                 dirty, fetchQ, fetchCount, supDaemon, stopped, 
+                                 retryGen, drained, advertised, lock, 
+                                 cancelReg, cctx, drainRec, gen, res, cnt, 
+                                 leaveRec, leaveD, after, seen, leaveEnd, 
+                                 everInPrefs, lockedDrained, addAfterDrained, 
+                                 startedDrained, drainApplied, ackMade, 
+                                 ackCounted, ackTimedOut, published, 
+                                 leftAdvertising, stack, svc, todo, cur >>
+
+Counter == Counter_count \/ Fetch_counted
 
 Crash_exit == /\ pc["crash"] = "Crash_exit"
               /\ IF ~stopped /\ crashes < MaxRestarts
@@ -1335,7 +1402,8 @@ Crash_exit == /\ pc["crash"] = "Crash_exit"
                               after, seen, leaveEnd, everInPrefs, 
                               lockedDrained, addAfterDrained, startedDrained, 
                               drainApplied, ackMade, ackCounted, ackTimedOut, 
-                              stack, svc, todo, cur >>
+                              published, leftAdvertising, stack, svc, todo, 
+                              cur >>
 
 Crash == Crash_exit
 

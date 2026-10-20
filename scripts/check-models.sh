@@ -145,10 +145,16 @@ check_known_test() {
 	if [ "$(echo "$header_id" | tr '[:upper:]' '[:lower:]')" != "$id" ]; then
 		fail "$(basename "$cfgfile"): \"\\* Known: $header_id\" does not match its file name"
 	fi
-	if [ "${CHECK_MODELS_SKIP_GO:-}" = 1 ] || [ "$(basename "$DIR")" = fixture ]; then
+	if [ "$(basename "$DIR")" = fixture ]; then
+		echo "SKIPPED the Go test check of $id (fixture directory)"
 		return
 	fi
-	if ! grep -rqF --include='*_test.go' "knownViolation(t, \"$id\")" "$ROOT"; then
+	if [ "${CHECK_MODELS_SKIP_GO:-}" = 1 ]; then
+		return
+	fi
+	# Only files tracked in this tree count, and a commented-out call does not.
+	if ! git -C "$ROOT" grep -hF -e "knownViolation(t, \"$id\")" -- '*_test.go' |
+		grep -qv '^[[:space:]]*//'; then
 		fail "$id: no Go test calls knownViolation(t, \"$id\")"
 	fi
 }

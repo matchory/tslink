@@ -8,7 +8,7 @@ GOARCH ?= $(shell go env GOARCH)
 VERSION ?= $(shell scripts/version.sh 2>/dev/null)
 LDFLAGS = -X main.version=$(VERSION)
 
-.PHONY: all build clean create enable disable test reinstall
+.PHONY: all build clean create enable disable test reinstall check-models check-models-selftest
 
 # The default target only builds; reinstall replaces the local plugin.
 all: build
@@ -87,3 +87,11 @@ test-container:
 # Full test cycle: reinstall plugin, create network, run container
 test-full: reinstall test-network test-container test-network-rm
 	@echo "Full test cycle complete"
+
+# Model-check the TLA+ models (needs Docker)
+check-models:
+	scripts/check-models.sh test/models
+
+# Check the model runner itself on its fixture
+check-models-selftest:
+	scripts/check-models.sh test/models/fixture

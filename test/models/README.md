@@ -77,4 +77,4 @@ in its cfg:
 | I6 | tailscaled exits between the drain and control's fetch: the wait ends with it |
 | I7 | a cancelled advertisement applied before the drain: the backend counts as never advertised, no wait |
 | I8 | Leave while a restarted tailscaled is not yet published: the drain finds no daemon, and the endpoint stops one that advertises |
-| I9 | Leave during the first start: the start is aborted with no drain while tailscaled advertises from its state |
+| I9 | Leave during the first start: the start is aborted with no drain while tailscaled advertises Services from its state or added during the start |

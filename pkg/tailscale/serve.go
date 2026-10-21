@@ -332,7 +332,7 @@ func (d *daemon) editAdvertised(ctx context.Context, keep func(string) bool) ([]
 	if len(removed) == 0 {
 		return nil, nil
 	}
-	d.config.gate.noteRemoval(d, false)
+	d.config.gate.noteRemoval(d, kept, false)
 	if _, err := d.lc.EditPrefs(ctx, &ipn.MaskedPrefs{
 		AdvertiseServicesSet: true,
 		AdvertiseServices:    kept,

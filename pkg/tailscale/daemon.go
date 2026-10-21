@@ -88,10 +88,12 @@ type daemon struct {
 	fetched chan struct{}
 	// What tailscaled logged of the edits of the advertised Services it
 	// applied: how many removed a Service, the fetches before the last of
-	// them, the Services the last edit left (unknown before the first), and
-	// whether that edit advertises a Service though the node is drained
+	// them and the Services it left, the Services the last edit left
+	// (unknown before the first), and whether that edit advertises a Service
+	// though the node is drained
 	removals  int64
 	removedAt int64
+	removedTo []string // nil before the first
 	listed    []string
 	listKnown bool
 	relisted  bool
@@ -424,6 +426,20 @@ func (d *daemon) exitedChan() <-chan struct{} {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	return d.exited
+}
+
+// hasExited reports whether tailscaled was started and has exited.
+func (d *daemon) hasExited() bool {
+	exited := d.exitedChan()
+	if exited == nil {
+		return false
+	}
+	select {
+	case <-exited:
+		return true
+	default:
+		return false
+	}
 }
 
 // killProcess stops tailscaled: SIGTERM, then SIGKILL if it is still running

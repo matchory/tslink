@@ -158,6 +158,12 @@ If tslink stopped the node before the control server knew about the drain, calle
 for some minutes. A drain is final: tslink does not make the container a backend again, also after a restart of
 tailscaled.
 
+tslink learns from `tailscaled.log` when the control server has the drained list: tailscaled logs each change of the
+advertised Services before it makes it, and each fetch before it reads them. tslink waits for a fetch after its last
+change, also a change whose request timed out. If tailscaled restarts while tslink waits, the new tailscaled removes
+the Services before anything else, and tslink waits for the control server to fetch them from it. If the container
+leaves the network while its node is still starting, tslink lets the start finish, drains the node, and then stops it.
+
 If the control server has not fetched the drained list after 10 seconds, tslink logs a warning and stops the node
 anyway. Callers can then send traffic to the stopped node until the control server removes it. In the cluster test,
 this occurred once, and no request failed.

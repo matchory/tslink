@@ -1115,3 +1115,178 @@ func TestFetchBeforePruneEditIsNoAck(t *testing.T) {
 	d.handleLine(servicesFetchLine)
 	assertLeft(t, done)
 }
+
+// A removal tailscaled logged before pruneServices' own, read only after
+// the prune was recorded, is not the prune's: a fetch after it saw the
+// Services that edit left, which may include the one pruned.
+//
+// Guards: G7
+func TestEarlierRemovalLineIsNotThePrunes(t *testing.T) {
+	s, d, api := newPruningSupervisor(t)
+	var held []string
+	var mu sync.Mutex
+	api.setBefore(func(_ context.Context, op string) {
+		if op == "prefs" {
+			// An earlier edit, which left svc:keep, and a fetch after it,
+			// read late
+			d.handleLine(
+				`2026/10/21 12:00:00 EditPrefs: MaskedPrefs{AdvertiseServices=["svc:keep"]}`,
+			)
+			d.handleLine(servicesFetchLine)
+		}
+	})
+	// The prune's own line is read later still
+	api.log = func(line string) {
+		mu.Lock()
+		defer mu.Unlock()
+		held = append(held, line)
+	}
+	d.pruneServices()
+	api.setBefore(nil)
+	done := leaveAsync(s)
+	assertWaiting(t, done, "the removal")
+	mu.Lock()
+	lines := held
+	mu.Unlock()
+	for _, line := range lines {
+		d.handleLine(line)
+	}
+	assertWaiting(t, done, "the removal")
+	d.handleLine(servicesFetchLine)
+	assertLeft(t, done)
+}
+
+// A cancelled advertisement carried out while Leave sleeps out its floor
+// after control's fetch is drained again, and Leave waits for that drain.
+//
+// Guards: G7
+func TestLateAdvertisementDuringFloorWaited(t *testing.T) {
+	s, d, api := newPlainSupervisor(t, "svc:web")
+	setTiming(&s.cfg, func(tm *timing) { tm.drainAckFloor = 300 * time.Millisecond })
+	done := leaveAsync(s)
+	waitFor(t, "the drain", func() bool { return ran(api.operations(), "unadvertise", "svc:web") })
+	d.handleLine(servicesFetchLine)
+	if _, err := d.lc.EditPrefs(t.Context(), &ipn.MaskedPrefs{
+		AdvertiseServicesSet: true,
+		AdvertiseServices:    []string{"svc:web"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	assertWaiting(t, done, "the second drain")
+	d.handleLine(servicesFetchLine)
+	assertLeft(t, done)
+}
+
+// Leave just after tailscaled crashed, before the supervisor replaced it:
+// the drain fails, and the restarted tailscaled would advertise the Service
+// from its state. Leave waits for it to drain as it starts, and for
+// control's fetch (NoLeaveWhileAdvertising, S8).
+//
+// Guards: G7
+func TestLeaveAfterCrashWaitsForNextDaemon(t *testing.T) {
+	s, d, api := newPlainSupervisor(t, "svc:web")
+	s.cfg.StateDir = d.config.StateDir
+	if err := os.WriteFile(
+		filepath.Join(s.cfg.StateDir, "tailscaled.state"), []byte("{}"), 0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	// tailscaled exited: its socket is gone
+	exited := make(chan struct{})
+	close(exited)
+	d.mu.Lock()
+	d.exited = exited
+	d.mu.Unlock()
+	api.mu.Lock()
+	api.state = ipn.NoState
+	api.mu.Unlock()
+	done := leaveAsync(s)
+	assertWaiting(t, done, "the drain")
+	next, nextAPI := newTestDaemon(t, "svc:web")
+	nextAPI.serviceHost(ipn.Prefs{AdvertiseServices: []string{"svc:web"}})
+	next.config.gate = s.cfg.gate
+	next.drainAtStart()
+	if !ran(nextAPI.operations(), "unadvertise", "svc:web") {
+		t.Fatalf("operations = %q, want svc:web unadvertised as tailscaled starts",
+			nextAPI.operations())
+	}
+	s.mu.Lock()
+	s.daemon = next
+	s.mu.Unlock()
+	assertWaiting(t, done, "the drain")
+	next.handleLine(servicesFetchLine)
+	assertLeft(t, done)
+}
+
+// A drain that cancelled an advertisement and found nothing advertised
+// looks again once the cancelled call would have been carried out: one
+// carried out late is drained again, and Leave waits for that drain
+// (NoLeaveWhileAdvertising, S8).
+//
+// Guards: G7
+func TestCancelledAdvertisementSettledBeforeLeaving(t *testing.T) {
+	s, d, api := newPlainSupervisor(t)
+	setTiming(&s.cfg, func(tm *timing) { tm.drainAckFloor = 300 * time.Millisecond })
+	inCall := make(chan struct{})
+	var once sync.Once
+	api.setBefore(func(ctx context.Context, op string) {
+		if op != "prefs" {
+			return
+		}
+		once.Do(func() { close(inCall) })
+		select {
+		case <-ctx.Done():
+		case <-t.Context().Done():
+		}
+	})
+	configured := make(chan error, 1)
+	go func() { configured <- d.only(t).configureService() }()
+	<-inCall
+	done := leaveAsync(s)
+	if err := <-configured; !errors.Is(err, errDrained) {
+		t.Fatalf("configureService = %v, want errDrained", err)
+	}
+	// tailscaled carries out the cancelled advertisement after all
+	api.setBefore(nil)
+	if _, err := d.lc.EditPrefs(t.Context(), &ipn.MaskedPrefs{
+		AdvertiseServicesSet: true,
+		AdvertiseServices:    []string{"svc:web"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(
+		t,
+		"the drain again",
+		func() bool { return ran(api.operations(), "unadvertise", "svc:web") },
+	)
+	assertWaiting(t, done, "the drain again")
+	d.handleLine(servicesFetchLine)
+	assertLeft(t, done)
+}
+
+// Leave during a restart whose tailscaled started before the node was
+// drained, and was published after Leave's drain found no daemon: Leave
+// drains it, and waits for control's fetch (NoLeaveWhileAdvertising, S8).
+//
+// Guards: G7
+func TestLeaveDrainsDaemonPublishedAfterItsDrain(t *testing.T) {
+	s, d, api := newPlainSupervisor(t, "svc:web")
+	s.cfg.StateDir = d.config.StateDir
+	if err := os.WriteFile(
+		filepath.Join(s.cfg.StateDir, "tailscaled.state"), []byte("{}"), 0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	s.daemon = nil
+	done := leaveAsync(s)
+	assertWaiting(t, done, "the drain")
+	// Started before the drain: it did not drain itself
+	s.mu.Lock()
+	s.daemon = d
+	s.mu.Unlock()
+	waitFor(t, "the drain", func() bool { return ran(api.operations(), "unadvertise", "svc:web") })
+	assertWaiting(t, done, "the drain")
+	d.handleLine(servicesFetchLine)
+	assertLeft(t, done)
+}

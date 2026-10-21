@@ -62,9 +62,11 @@ type serviceGate struct {
 	unpruned atomic.Bool
 
 	// Cancels the LocalAPI calls of the change holding mu, so a drain need not
-	// wait for them; nil while no change runs
-	cancelMu sync.Mutex
-	cancel   context.CancelFunc
+	// wait for them; nil while no change runs. cancelledAt is when a drain
+	// last cancelled one: tailscaled may still carry its call out.
+	cancelMu    sync.Mutex
+	cancel      context.CancelFunc
+	cancelledAt time.Time
 }
 
 // change runs fn, a change of d's Service, under the gate's lock, with the
@@ -106,7 +108,16 @@ func (g *serviceGate) markDrained() {
 	defer g.cancelMu.Unlock()
 	if g.cancel != nil {
 		g.cancel()
+		g.cancelledAt = time.Now()
 	}
+}
+
+// lastCancel returns when a drain last cancelled a change in progress, zero
+// if none did.
+func (g *serviceGate) lastCancel() time.Time {
+	g.cancelMu.Lock()
+	defer g.cancelMu.Unlock()
+	return g.cancelledAt
 }
 
 // removalRecord is an edit of tslink's that removed Services from a daemon's
@@ -117,25 +128,40 @@ type removalRecord struct {
 	at     time.Time
 	daemon *daemon // the daemon edited; nil if there was none
 	// The daemon's removals as tailscaled logged them before this one was
-	// sent: the edit took effect once there are more
+	// sent, and the Services the edit leaves: it took effect once a later
+	// removal left no more than those. One logged before it but read after
+	// the record was made, from a call carried out late, may leave more.
 	removals int64
+	leaves   []string
 	// No edit: the daemon started drained, with nothing to remove, after a
 	// removal on an earlier daemon. Any fetch of it is after the removal.
 	start bool
 }
 
-// noteRemoval records that d is about to be sent an edit removing Services, or
-// with start that d started drained after an earlier removal. The caller
-// holds mu.
-func (g *serviceGate) noteRemoval(d *daemon, start bool) {
+// noteRemoval records that d is about to be sent an edit that leaves the
+// Services leaves, or with start that d started drained after an earlier
+// removal. The caller holds mu.
+func (g *serviceGate) noteRemoval(d *daemon, leaves []string, start bool) {
 	d.fetchMu.Lock()
 	removals := d.removals
 	d.fetchMu.Unlock()
-	g.removal = removalRecord{at: time.Now(), daemon: d, removals: removals, start: start}
+	g.removal = removalRecord{
+		at:       time.Now(),
+		daemon:   d,
+		removals: removals,
+		leaves:   slices.Clone(leaves),
+		start:    start,
+	}
 	if g.changed != nil {
 		close(g.changed)
 		g.changed = nil
 	}
+}
+
+// same reports whether r and o are the same record.
+func (r removalRecord) same(o removalRecord) bool {
+	return r.at.Equal(o.at) && r.daemon == o.daemon && r.removals == o.removals &&
+		r.start == o.start
 }
 
 // lastRemoval returns the removal record and a channel closed when it changes.
@@ -187,6 +213,7 @@ func (d *daemon) noteAdvertisedEdit(services []string) {
 	if !d.listKnown || slices.ContainsFunc(d.listed, dropped) {
 		d.removals++
 		d.removedAt = d.fetches
+		d.removedTo = services
 	}
 	d.listed, d.listKnown = services, true
 	d.relisted = d.isDrained() && len(services) > 0
@@ -204,8 +231,13 @@ func (d *daemon) noteAdvertisedEdit(services []string) {
 func (d *daemon) removalFetched(rec removalRecord) (bool, <-chan struct{}) {
 	d.fetchMu.Lock()
 	defer d.fetchMu.Unlock()
-	applied := rec.start || d.removals > rec.removals
+	applied := rec.start || d.removals > rec.removals && within(d.removedTo, rec.leaves)
 	return applied && !d.relisted && d.fetches > d.removedAt, d.nextLocked()
+}
+
+// within reports whether every Service of services is one of set.
+func within(services, set []string) bool {
+	return !slices.ContainsFunc(services, func(s string) bool { return !slices.Contains(set, s) })
 }
 
 // Drain stops new connections to the node's backends for all its Tailscale
@@ -272,7 +304,7 @@ func (d *daemon) drainAtStart() {
 		return
 	}
 	if len(removed) == 0 && pending {
-		g.noteRemoval(d, true)
+		g.noteRemoval(d, nil, true)
 	}
 }
 
@@ -334,62 +366,97 @@ func (d *daemon) waitServicesFetch(after int64, deadline time.Time) bool {
 func (s *DaemonSupervisor) DrainAndWait() {
 	id := stringid.TruncateID(s.cfg.EndpointID)
 	service := fmt.Sprintf("%q", ServiceNames(s.cfg.Services))
-	if err := s.Drain(); err != nil {
+	drained, err := s.drain()
+	if err != nil {
 		logger.Warnf("Endpoint %s: failed to drain %s before leaving: %v", id, service, err)
 	}
 
-	g := s.cfg.gate
 	tm := s.cfg.times()
-	deadline := time.Now().Add(tm.drainAckTimeout)
-	if rec, _ := g.lastRemoval(); rec.daemon != nil {
-		deadline = rec.at.Add(tm.drainAckTimeout)
+	w := drainWait{s: s, drained: drained, deadline: time.Now().Add(tm.drainAckTimeout)}
+	if rec, _ := s.cfg.gate.lastRemoval(); rec.daemon != nil {
+		w.deadline = rec.at.Add(tm.drainAckTimeout)
 	}
-	waiting := false
-	for {
-		rec, changed := g.lastRemoval()
-		switch {
-		case rec.daemon != nil && rec.daemon.ctx.Err() == nil:
-			if !waiting {
-				logger.Infof(
-					"Endpoint %s: %s drained, waiting for control to fetch it",
-					id,
-					service,
-				)
-				waiting = true
-			}
-			if s.waitFetched(rec, changed, deadline) {
-				return
-			}
-		case s.ctx.Err() != nil:
-			return
-		case s.restarting(rec):
-			if !waiting {
-				logger.Infof("Endpoint %s: tailscaled is restarting, waiting for it to drain %s",
-					id, service)
-				waiting = true
-			}
-			s.waitNextDaemon(changed, deadline)
-		default:
-			// Nothing tslink removed is left for control to fetch
-			return
-		}
-		if !time.Now().Before(deadline) {
+	for !w.step() {
+		if !time.Now().Before(w.deadline) {
 			logger.Warnf(
 				"Endpoint %s: control did not fetch the drained %s within %v, leaving anyway",
-				id,
-				service,
-				tm.drainAckTimeout,
-			)
+				id, service, tm.drainAckTimeout)
 			return
 		}
 	}
 }
 
-// restarting reports whether tailscaled is restarting and may advertise the
+// drainWait is DrainAndWait's wait for control.
+type drainWait struct {
+	s        *DaemonSupervisor
+	drained  *daemon // the daemon drained last
+	deadline time.Time
+	waiting  bool // the wait was logged
+	settled  bool // a call the drain cancelled was waited out
+}
+
+// step waits for what the last removal record calls for, and reports
+// whether nothing is left to wait for.
+func (w *drainWait) step() bool {
+	s, g := w.s, w.s.cfg.gate
+	rec, changed := g.lastRemoval()
+	switch {
+	case rec.daemon != nil && rec.daemon.ctx.Err() == nil:
+		w.log("%s drained, waiting for control to fetch it")
+		return s.waitFetched(rec, changed, w.deadline)
+	case s.ctx.Err() != nil:
+		return true
+	case s.restarting(rec):
+		w.log("tailscaled is restarting, waiting for it to drain %s")
+		s.waitNextDaemon(changed, w.deadline)
+		return false
+	case s.getDaemon() != w.drained:
+		// Published since the drain, as a tailscaled restarted before the
+		// node was drained: drain it
+		d, err := s.drain()
+		w.drained = d
+		if err != nil {
+			logger.Warnf("Endpoint %s: failed to drain the restarted tailscaled: %v",
+				stringid.TruncateID(s.cfg.EndpointID), err)
+		}
+		return false
+	case !w.settled && !g.lastCancel().IsZero():
+		// A call the drain cancelled may still be carried out, and advertise
+		// a Service again: look again once it would have been
+		w.settled = true
+		if wait := time.Until(g.lastCancel().Add(s.cfg.times().drainAckFloor)); wait > 0 {
+			ctxtime.Sleep(s.ctx, wait)
+		}
+		return false
+	default:
+		// Nothing tslink removed is left for control to fetch
+		return true
+	}
+}
+
+// log logs what the wait waits for, once; format takes the Services.
+func (w *drainWait) log(format string) {
+	if w.waiting {
+		return
+	}
+	w.waiting = true
+	logger.Infof("Endpoint %s: "+format, stringid.TruncateID(w.s.cfg.EndpointID),
+		fmt.Sprintf("%q", ServiceNames(w.s.cfg.Services)))
+}
+
+// restarting reports whether tailscaled is restarting, none being
+// published or the one published having exited, and may advertise the
 // Services from its state, given the last removal rec: the next one drains
 // them as it starts.
 func (s *DaemonSupervisor) restarting(rec removalRecord) bool {
-	return s.getDaemon() == nil && (rec.daemon != nil || StateExists(s.cfg.StateDir))
+	return !s.running() && (rec.daemon != nil || StateExists(s.cfg.StateDir))
+}
+
+// running reports whether a daemon is published whose tailscaled has not
+// exited.
+func (s *DaemonSupervisor) running() bool {
+	d := s.getDaemon()
+	return d != nil && !d.hasExited()
 }
 
 // waitFetched waits until control fetched the Service list after rec's edit,
@@ -406,20 +473,28 @@ func (s *DaemonSupervisor) waitFetched(
 	if wait := time.Until(rec.at.Add(s.cfg.times().drainAckFloor)); wait > 0 {
 		ctxtime.Sleep(rec.daemon.ctx, wait)
 	}
+	// A call the drain cancelled may have advertised a Service meanwhile,
+	// which a new removal undoes: wait for that one
+	if again, _ := s.cfg.gate.lastRemoval(); !again.same(rec) {
+		return false
+	}
+	if fetched, _ := rec.daemon.removalFetched(rec); !fetched {
+		return false
+	}
 	logger.Infof("Endpoint %s: control fetched the drained %q, %v after the drain",
 		stringid.TruncateID(s.cfg.EndpointID), ServiceNames(s.cfg.Services),
 		time.Since(rec.at).Round(time.Millisecond))
 	return true
 }
 
-// waitNextDaemon waits until the supervisor published a daemon, the removal
-// record changes, the supervisor stops or deadline passes.
+// waitNextDaemon waits until the supervisor published a daemon that runs,
+// the removal record changes, the supervisor stops or deadline passes.
 func (s *DaemonSupervisor) waitNextDaemon(changed <-chan struct{}, deadline time.Time) {
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 	timer := time.NewTimer(time.Until(deadline))
 	defer timer.Stop()
-	for s.getDaemon() == nil {
+	for !s.running() {
 		select {
 		case <-changed:
 			return

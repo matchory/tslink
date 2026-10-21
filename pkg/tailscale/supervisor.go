@@ -226,12 +226,8 @@ func (s *DaemonSupervisor) Logout() error {
 // drained, even if tailscaled is down and the drain fails: a daemon the
 // supervisor starts later does not advertise them.
 func (s *DaemonSupervisor) Drain() error {
-	s.cfg.gate.markDrained()
-	d := s.getDaemon()
-	if d == nil {
-		return errors.New("tailscaled is not running")
-	}
-	return d.Drain()
+	_, err := s.drain()
+	return err
 }
 
 // Status returns the current supervisor status and restart count.
@@ -306,6 +302,16 @@ func (s *DaemonSupervisor) drainIfLeaving() {
 	if s.leaving.Load() && s.ctx.Err() == nil && s.NeedsDrain() {
 		s.DrainAndWait()
 	}
+}
+
+// drain is Drain, and returns the daemon it drained, nil if none.
+func (s *DaemonSupervisor) drain() (*daemon, error) {
+	s.cfg.gate.markDrained()
+	d := s.getDaemon()
+	if d == nil {
+		return nil, errors.New("tailscaled is not running")
+	}
+	return d, d.Drain()
 }
 
 // getDaemon returns the current daemon (may be nil if not running).

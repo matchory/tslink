@@ -7,11 +7,15 @@
 # For each <module>.tla in dir (PlusCal translated in the file), the script
 # checks that the committed translation is current, then runs TLC on:
 #   <module>.cfg              must pass
+#   <module>-pass-<name>.cfg  must pass as well: the model at other bounds or
+#                             with other paths enabled
 #   <module>-mut-<name>.cfg   must fail on the property of its "\* Expect: <P>" line
 #   <module>-known-<id>.cfg   like a mutation, plus "\* Known: <id>": a violation
 #                             the code still has, which needs a Go test that
 #                             calls knownViolation(t, "<id>")
-# Every INVARIANT/PROPERTY of <module>.cfg must be the Expect of some -mut- cfg.
+# Every INVARIANT/PROPERTY of <module>.cfg and of its -pass- cfgs must be the
+# Expect of some -mut- cfg. A temporal Expect needs a cfg whose one PROPERTY
+# it is; TLC reports the violation of a [] conjunct of it as an invariant.
 #
 # Exits 0 only if every rule holds.
 #
@@ -120,7 +124,8 @@ check_failing() {
 	run_tlc "$module" "$cfgfile"
 	if grep -q "^Error: Invariant $expect is violated" "$work/tlc.out"; then
 		:
-	elif grep -q '^Error: Temporal properties were violated' "$work/tlc.out" &&
+	elif grep -qE '^Error: (Temporal properties were violated|Invariant line [0-9]+, col [0-9]+ to line [0-9]+, col [0-9]+ of module [A-Za-z0-9_]+ is violated)' "$work/tlc.out" &&
+		[ -z "$(cfg_names INVARIANT "$cfgfile")" ] &&
 		[ "$(cfg_names PROPERTY "$cfgfile" | tr '\n' ' ')" = "$expect " ]; then
 		:
 	elif grep -q '^Model checking completed. No error has been found' "$work/tlc.out"; then
@@ -159,18 +164,30 @@ check_known_test() {
 	fi
 }
 
-check_module() {
-	local module=$1 start states cfgfile name p
-	check_translation "$module"
-
+# check_passing checks a cfg that must pass, and prints its states and time.
+check_passing() {
+	local module=$1 cfgfile=$2 name=$3 start states
 	start=$SECONDS
-	run_tlc "$module" "$DIR/$module.cfg"
+	run_tlc "$module" "$cfgfile"
 	if grep -q '^Model checking completed. No error has been found' "$work/tlc.out"; then
 		states="$(sed -n 's/^\([0-9]*\) states generated, \([0-9]*\) distinct states found.*/\2/p' "$work/tlc.out" | tail -n 1)"
-		echo "PASS $module ($states states found, $((SECONDS - start)) s)"
+		echo "PASS $name ($states states found, $((SECONDS - start)) s)"
 	else
-		fail "$module: $(grep -m1 '^Error:' "$work/tlc.out" || tail -n 1 "$work/tlc.out")"
+		fail "$name: $(grep -m1 '^Error:' "$work/tlc.out" || tail -n 1 "$work/tlc.out")"
 	fi
+}
+
+check_module() {
+	local module=$1 cfgfile name p checked
+	check_translation "$module"
+
+	check_passing "$module" "$DIR/$module.cfg" "$module"
+	checked="$(cfg_names INVARIANT "$DIR/$module.cfg") $(cfg_names PROPERTY "$DIR/$module.cfg")"
+	for cfgfile in "$DIR/$module"-pass-*.cfg; do
+		[ -e "$cfgfile" ] || continue
+		check_passing "$module" "$cfgfile" "$(basename "$cfgfile" .cfg)"
+		checked="$checked $(cfg_names INVARIANT "$cfgfile") $(cfg_names PROPERTY "$cfgfile")"
+	done
 
 	local expects=""
 	for cfgfile in "$DIR/$module"-mut-*.cfg; do
@@ -188,7 +205,7 @@ check_module() {
 		check_known_test "$cfgfile" "$name"
 	done
 
-	for p in $(cfg_names INVARIANT "$DIR/$module.cfg") $(cfg_names PROPERTY "$DIR/$module.cfg"); do
+	for p in $(echo "$checked" | tr ' ' '\n' | sort -u); do
 		case " $expects " in
 		*" $p "*) ;;
 		*) fail "$module: $p has no -mut- cfg that expects it" ;;

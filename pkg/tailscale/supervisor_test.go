@@ -539,3 +539,57 @@ func TestSupervisorStoppedStartLogsNoError(t *testing.T) {
 		t.Errorf("logged an error: %s", log.String())
 	}
 }
+
+// I9 of the drain gate model: Leave during the first start aborted it with
+// no drain, though tailscaled ran and advertised the Service from the node's
+// state (NoLeaveWhileAdvertising, S8). A start whose tailscaled runs goes on
+// drained, and StartContext drains and waits for control before it returns.
+//
+// Guards: G7
+func TestLeaveDuringFirstStartDrains(t *testing.T) {
+	s, f, _ := newFakeSupervisor(t)
+	s.cfg.Services = []Service{{Name: "svc:web"}}
+	setTiming(&s.cfg, func(tm *timing) {
+		tm.drainAckFloor = 10 * time.Millisecond
+		tm.drainAckTimeout = 5 * time.Second
+	})
+	f.api.serviceHost(ipn.Prefs{AdvertiseServices: []string{"svc:web"}})
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	started, release := make(chan *daemon, 1), make(chan struct{})
+	s.start = func(d *daemon) error {
+		if err := f.start(d); err != nil {
+			return err
+		}
+		f.api.log = d.handleLine
+		started <- d
+		<-release
+		return nil
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- s.StartContext(ctx) }()
+	d := <-started
+	s.Leaving()
+	cancel()
+	close(release)
+	waitFor(
+		t,
+		"the drain",
+		func() bool { return ran(f.api.operations(), "unadvertise", "svc:web") },
+	)
+	select {
+	case err := <-done:
+		t.Fatalf("StartContext returned %v before control fetched the drain", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	d.handleLine(servicesFetchLine)
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Error("StartContext succeeded although the endpoint left")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("StartContext did not return after control fetched the drain")
+	}
+}

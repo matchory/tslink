@@ -48,12 +48,14 @@ type Endpoint struct {
 	tailscaleStarted bool // Whether Tailscale setup has been completed
 	startRequested   bool // Whether the driver has asked to start Tailscale
 
-	running bool                       // Whether RunTailscale is active
-	leaving bool                       // Leave or Stop began: RunTailscale starts nothing until a Join
-	left    bool                       // Leave began: the container is gone, not just the plugin
-	runCtx  context.Context            //nolint:containedctx // Cancelled on Leave, Stop or by the run's caller
-	stopRun context.CancelFunc         // Cancels runCtx
-	startFn func(*ContainerInfo) error // Replaces StartTailscale in tests
+	running  bool                        // Whether RunTailscale is active
+	runDone  chan struct{}               // Closed when the active RunTailscale returned
+	starting *tailscale.DaemonSupervisor // The supervisor a start is starting, before it is stored
+	leaving  bool                        // Leave or Stop began: RunTailscale starts nothing until a Join
+	left     bool                        // Leave began: the container is gone, not just the plugin
+	runCtx   context.Context             //nolint:containedctx // Cancelled on Leave, Stop or by the run's caller
+	stopRun  context.CancelFunc          // Cancels runCtx
+	startFn  func(*ContainerInfo) error  // Replaces StartTailscale in tests
 
 	health      *health                                         // Readiness endpoint; nil without tslink.health
 	readinessFn func(context.Context) tailscale.ReadinessReport // Replaces the supervisor's readiness in tests
@@ -425,7 +427,13 @@ func (e *Endpoint) StartTailscale(info *ContainerInfo) error {
 		Warn:           e.setWarning,
 	})
 
+	e.mu.Lock()
+	e.starting = supervisor
+	e.mu.Unlock()
 	tailscaleIP, err := e.startSupervisor(supervisor)
+	e.mu.Lock()
+	e.starting = nil
+	e.mu.Unlock()
 	if err != nil {
 		return err
 	}
@@ -483,8 +491,9 @@ func (e *Endpoint) RunTailscale(ctx context.Context, info *ContainerInfo) {
 	defer func() {
 		e.mu.Lock()
 		e.running = false
-		left, leaving := e.left, e.leaving
+		left, leaving, runDone := e.left, e.leaving, e.runDone
 		e.mu.Unlock()
+		defer close(runDone)
 		switch {
 		case ctx.Err() == nil:
 		case left:
@@ -653,8 +662,14 @@ func (e *Endpoint) Leave() {
 	e.left = true
 	vethName := e.vethName
 	sandboxKey := e.sandboxKey
+	starting := e.starting
 	e.mu.Unlock()
 
+	// A start whose tailscaled runs goes on drained, rather than leaving a
+	// node that may advertise Services from its state
+	if starting != nil {
+		starting.Leaving()
+	}
 	e.cancelRun()
 
 	logger.Infof("Endpoint %s leaving", e.ID)
@@ -785,6 +800,10 @@ func (e *Endpoint) startSupervisor(supervisor *tailscale.DaemonSupervisor) (stri
 	// Wait for Tailscale to connect and get IP (can take up to 60s!)
 	status, err := supervisor.WaitForIP(ctx)
 	if err != nil {
+		// Left once the start succeeded: it drains as after a start
+		if e.hasLeft() && supervisor.NeedsDrain() {
+			supervisor.DrainAndWait()
+		}
 		stopSupervisor(supervisor)
 		return "", fmt.Errorf("failed to get Tailscale IP: %w", err)
 	}
@@ -923,6 +942,7 @@ func (e *Endpoint) beginRun(
 		start = e.StartTailscale
 	}
 	e.running = true
+	e.runDone = make(chan struct{})
 	return e.runCtx, start, true
 }
 
@@ -936,6 +956,13 @@ func (e *Endpoint) takeSupervisorLocked() (*tailscale.DaemonSupervisor, bool) {
 	e.supervisor = nil
 	e.tailscaleStarted = false
 	return supervisor, inFlight
+}
+
+// hasLeft reports whether Leave began.
+func (e *Endpoint) hasLeft() bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.left
 }
 
 // releaseStateDir gives up the endpoint's claim on its state directory.
@@ -1003,12 +1030,18 @@ func (e *Endpoint) stopTailscale() {
 	stateDir := e.stateDir
 	ephemeral := e.Network != nil && e.Network.Ephemeral()
 	supervisor, inFlight := e.takeSupervisorLocked()
+	draining := e.left && e.starting != nil
+	runDone := e.runDone
 	e.mu.Unlock()
 
 	if inFlight {
 		// A start in flight may still create the state directory and register
 		// the node: RunTailscale stops it once the start returns, and the
-		// directory stays claimed until then
+		// directory stays claimed until then. A start Leave found starting a
+		// supervisor drains and stops its node first: wait for it.
+		if draining {
+			<-runDone
+		}
 		return
 	}
 	defer e.releaseStateDir()

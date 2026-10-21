@@ -457,3 +457,36 @@ func TestRunTailscaleRefusesCancelledContext(t *testing.T) {
 		t.Errorf("start called %d times with a cancelled context, want 0", got)
 	}
 }
+
+// Leave during a start that is starting a supervisor drains it rather than
+// abort it, and returns only once the start returned: the start drains and
+// stops the node first (I9 of the drain gate model).
+//
+// Guards: G7
+func TestLeaveWaitsForStartingSupervisor(t *testing.T) {
+	supervisor := tailscale.NewDaemonSupervisor(
+		tailscale.DaemonConfig{EndpointID: "0123456789abcdef"},
+	)
+	runDone := make(chan struct{})
+	e := &Endpoint{ID: "0123456789abcdef", dataDir: t.TempDir()}
+	e.running, e.runDone, e.starting = true, runDone, supervisor
+	left := make(chan struct{})
+	go func() {
+		e.Leave()
+		close(left)
+	}()
+	select {
+	case <-left:
+		t.Fatal("Leave returned while the start ran")
+	case <-time.After(100 * time.Millisecond):
+	}
+	if !supervisor.Drained() {
+		t.Error("the starting supervisor was not drained")
+	}
+	close(runDone)
+	select {
+	case <-left:
+	case <-time.After(time.Second):
+		t.Fatal("Leave did not return once the start returned")
+	}
+}

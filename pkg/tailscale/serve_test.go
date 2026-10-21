@@ -43,6 +43,7 @@ func newTestDaemon(
 		d.config.Services = []Service{{Name: service, Endpoints: endpoints}}
 	}
 	d.backends = newBackends(d)
+	api.log = d.handleLine
 	// Registered after t.TempDir, so it runs first: the daemon's goroutines
 	// write certificate leases into the state directory until they end
 	t.Cleanup(func() {
@@ -377,9 +378,6 @@ func TestConfigureServiceAdvertiseError(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "failed to advertise svc:web") ||
 		!strings.Contains(err.Error(), "not allowed") {
 		t.Errorf("error = %v", err)
-	}
-	if d.config.gate.advertised.Load() {
-		t.Error("failed advertisement marked the backend advertised")
 	}
 }
 

@@ -232,7 +232,7 @@ func (s *DaemonSupervisor) NeedsDrain() bool {
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	return !g.prune.at.IsZero()
+	return g.removal.daemon != nil
 }
 
 // Drained reports whether the node's Service backend has been drained.

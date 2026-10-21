@@ -66,6 +66,12 @@ type fakeLocalAPI struct {
 
 	// What a serve config set adding that Service fails with
 	failSvc map[string]string
+
+	// Gets the lines tailscaled logs of the prefs edits it applies, unless nil
+	log func(line string)
+	// What a prefs edit fails with after it was applied, as a call that
+	// timed out while tailscaled carried it out
+	failApplied string
 }
 
 func newFakeLocalAPI(t *testing.T) *fakeLocalAPI {
@@ -143,8 +149,16 @@ func (f *fakeLocalAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		before := f.prefs.AdvertiseServices
 		f.prefs.ApplyEdits(&mp)
 		f.noteAdvertised(before, f.prefs.AdvertiseServices)
-		prefs := f.prefs
+		prefs, log, failApplied := f.prefs, f.log, f.failApplied
 		f.mu.Unlock()
+		// tailscaled logs an edit that changes the prefs before it answers
+		if log != nil && !slices.Equal(before, prefs.AdvertiseServices) {
+			log("2026/10/21 12:00:00 EditPrefs: " + mp.Pretty())
+		}
+		if failApplied != "" {
+			http.Error(w, failApplied, http.StatusServiceUnavailable)
+			return
+		}
 		f.reply(w, &prefs)
 	case "POST /localapi/v0/start":
 		var opts ipn.Options
@@ -423,6 +437,14 @@ func (f *fakeLocalAPI) failOp(op, msg string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	mak.Set(&f.fail, op, msg)
+}
+
+// failAfterApplying makes a prefs edit fail with msg once it was applied; an
+// empty msg ends that.
+func (f *fakeLocalAPI) failAfterApplying(msg string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.failApplied = msg
 }
 
 // failService makes a serve config set that adds the Service name fail with

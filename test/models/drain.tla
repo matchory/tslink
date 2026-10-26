@@ -2,23 +2,28 @@
 \* Guards: G7
 \*
 \* The drain gate of a container's Service backends (pkg/tailscale/drain.go):
-\* a drained backend is never advertised again, and a node leaves only once
-\* control has fetched its drained Service list. The model describes the code
-\* as it is; it verifies the design, not the Go code.
+\* a drained backend is not advertised again, and a node leaves only once
+\* control has fetched its Service list since tslink's last removal of a
+\* Service took effect. The model describes the code as it is; it verifies
+\* the design, not the Go code.
 \*
 \* Actors (PlusCal processes), each step naming the Go function it models:
 \*   sup          DaemonSupervisor.supervisionLoop, startDaemon, daemon.Start
-\*                (noteSurvivingState, configureServing: each backend's
+\*                (drainAtStart, configureServing: each backend's
 \*                serviceBackend.start in turn), waitForExit, stopDaemon
 \*   retry        serviceBackend.retryLater, of every backend
 \*   stop         the stop signal: DaemonSupervisor.Drain (or none), once
 \*                the endpoint has its supervisor
 \*   leave        DaemonSupervisor.DrainAndWait, then the endpoint's Stop;
-\*                during the first start, aborting it without a drain
+\*                during the first start, Leaving and the start's end
+\*   redrain      daemon.drainAgain, started by an edit advertising a
+\*                Service once drained
 \*   tailscaled   applies a LocalAPI prefs edit, or refuses one adding a
 \*                Service
+\*   orphans      tailscaled drops a request a cancelled call left
 \*   control      fetches the node's Service list after a change, or never
-\*   counter      handleLine: tslink counts a fetch, later
+\*   counter      handleLine: tslink reads tailscaled's log in order, later:
+\*                fetches and applied edits of the advertised Services
 \*   crash        tailscaled exits
 \*   conf_<s>     confirmAdvertisedLater(s) and readvertise (Confirmer)
 \*   lease_<s>    configureServiceAfterCert(s): configureServiceWithCert,
@@ -39,18 +44,27 @@
 \*
 \* Abstractions (each also at the step it concerns):
 \* - Time is abstract. A LocalAPI call's timeout, DrainAndWait's timeout and
-\*   floor are events, not durations. The floor's sleep is part of Leave's
-\*   last step. The deadline does not fire in the same instant as a fetch is
-\*   counted (Go's select would pick either): Wait_block times out only if
-\*   no fetch was counted since Wait_check read the count.
+\*   floor are events, not durations. The deadline does not fire in the
+\*   same instant as the wait's condition holds (Go's select would pick
+\*   either): Wait_block times out only while it does not.
+\* - The floor's sleep (Leave_floor, Wait_settle) outlasts what takes
+\*   milliseconds (Settled, an environment assumption): a call a drain
+\*   cancelled was carried out by then, if at all; tslink read the log line
+\*   of any edit advertising a Service; the drainAgain it started recorded
+\*   its removal.
 \* - A change's calls have no timeout here: tailscaled may hold an edit
 \*   until the change's context is cancelled, so liveness cannot rest on
 \*   their 10 s timeouts (DrainGetsLock). The drain's own edit, on the
 \*   daemon's context, times out: a fair step.
 \* - A cancelled or timed-out call returns, and its request stays pending:
 \*   tailscaled may apply it later, after other edits (the design's
-\*   conservative assumption). tailscaled's exit drops its pending requests
-\*   (it may have applied them before).
+\*   conservative assumption), or drop it (orphans). tailscaled's exit
+\*   drops its pending requests (it may have applied them before).
+\* - tailscaled's log is one queue per daemon, read in order: an applied
+\*   edit of the advertised Services is logged in the step that applies it
+\*   (editPrefsLocked logs it under the lock it sets the prefs with), a
+\*   fetch in the step that reads them (handleC2NVIPServicesGet logs before
+\*   it takes that lock).
 \* - editServe is not modelled: it is taken to succeed at once. Failures
 \*   that make the start retry are tailscaled refusing an add instead.
 \* - GetPrefs and the EditPrefs built from it are one step. An edit applied
@@ -58,11 +72,12 @@
 \*   before ours: EditPrefs writes the whole list.
 \* - Steps are merged where no other actor can tell them apart: the outer
 \*   isDrained checks with change's lock, markDrained's store with its
-\*   cancel, getDaemon with daemon.Drain's lock and count read (see each).
+\*   cancel, getDaemon with daemon.Drain's lock (see each).
 \* - Control may fetch once after any change of the advertised Services and
-\*   after tailscaled starts, later, or never. tslink counts a fetch later,
-\*   in the model only when an actor is to read the count: nothing else
-\*   reads it, so an earlier count is the same.
+\*   after tailscaled starts, later, or never. tslink reads a log line
+\*   later, in the model only when an actor is to read its state or the
+\*   line advertises a Service once drained (Reads, RelistLine): nothing
+\*   else depends on it, so an earlier read is the same.
 \* - Restarts are tailscaled exits, at most MaxRestarts; a start that fails
 \*   (checkServiceHost, socket) is the same as an exit during the start.
 \*   The restart for new host endpoints (hostEndpointsChanged) is one too.
@@ -76,8 +91,8 @@
 \*   constants Confirmer, Prune and Lease: drain.cfg runs the core actors,
 \*   drain-pass-*.cfg each path (bounds and cost in each cfg's header).
 \* - A fetch count is only compared with later counts of the same daemon:
-\*   the pass cfgs with a path enabled use VIEW CountView, which keeps of
-\*   each count read only whether a fetch was counted since (see there).
+\*   the cfgs use VIEW CountView, which keeps of each count read only
+\*   whether a fetch was counted since (see there).
 \* - markAdvertised and fetchMark are not modelled: they feed the status
 \*   warning and readiness, which no property reads. readvertise's count
 \*   read is therefore no reader of the count (Reads).
@@ -100,15 +115,21 @@
 \* drain-pass-<path>.cfg one Service, as each cfg's header says.
 \*
 \* Mutations (drain-mut-<name>.cfg, each must break its property):
-\*   no-drained-check  no isDrained/drained check on the configure path
-\*   always-wait       DrainAndWait ignores external and advertised
-\*   ignore-restart    DrainAndWait keeps drain.fetches after a restart
-\*   wait-no-timeout   waitServicesFetch has no deadline
-\*   no-cancel         markDrained cancels nothing
-\*   drain-records-external-always  daemon.Drain records every drain
-\*                     external
-\*   prune-no-record   pruneServices records no removal in g.prune
-\*   unbounded-nudges  the confirmer does not stop after advertiseNudges
+\*   no-drained-check   no isDrained/drained check on the configure path
+\*   always-wait        DrainAndWait waits without a removal to wait for
+\*   off-by-one         DrainAndWait waits for a second fetch
+\*   count-before-edit  the wait compares with a count read before the edit
+\*   record-on-return   a removal is recorded only once its call returned
+\*   drain-only-record  only drains record their removals
+\*   no-follow-restart  DrainAndWait ends with its daemon
+\*   no-drain-at-start  a daemon started drained keeps what its state
+\*                      advertises
+\*   no-redrain         an edit advertising a Service once drained stays
+\*   abort-first-start  Leave during the first start aborts it
+\*   no-settle          DrainAndWait does not look again after a cancel
+\*   wait-no-timeout    the wait has no deadline
+\*   no-cancel          markDrained cancels nothing
+\*   unbounded-nudges   the confirmer does not stop after advertiseNudges
 EXTENDS Naturals, Sequences, TLC
 
 CONSTANTS
@@ -130,10 +151,19 @@ LeaseOf(s) == "lease_" \o s         \* the certificate lease holder of s
 Confs == {ConfOf(s) : s \in Services}
 Leases == {LeaseOf(s) : s \in Services}
 SvcOf(p) == CHOOSE s \in Services : p \in {ConfOf(s), LeaseOf(s)}
-Actors == Changers \cup Drainers \cup Confs \cup Leases
+Actors == Changers \cup Drainers \cup Confs \cup Leases \cup {"redrain"}
 Gens == 1..(MaxRestarts + 1)        \* tailscaled processes, by start
 NoReq == [from |-> None, gen |-> 0, val |-> {}, kind |-> None]
-NoRec == [set |-> FALSE, gen |-> 0, fetches |-> 0, external |-> FALSE]
+\* serviceGate.removal: the last edit of tslink's removing Services, sent
+\* to daemon gen when it had logged removals removals, leaving leaves; or a
+\* start record (start); fetches is the count then, which only the
+\* count-before-edit mutation compares with
+NoRm == [set |-> FALSE, gen |-> 0, removals |-> 0, leaves |-> {},
+         start |-> FALSE, fetches |-> 0]
+\* A line of tailscaled's log: a fetch (ack: of the drained list) or an
+\* applied edit of the advertised Services (val)
+FetchLine(a) == [k |-> "fetch", val |-> {}, ack |-> a]
+EditLine(v) == [k |-> "edit", val |-> v, ack |-> FALSE]
 NoConf == [gen |-> 0, after |-> 0]
 
 (*--algorithm drain
@@ -154,23 +184,33 @@ variables
     waitOn = [a \in Actors |-> NoReq], \* the request a's call waits for
     refused = [a \in Actors |-> FALSE], \* tailscaled refused a's edit
     dirty = FALSE,                  \* control has something to fetch
-    fetchQ = [g \in Gens |-> <<>>], \* fetches made, not yet counted
-    fetchCount = [g \in Gens |-> 0], \* d.fetches, per daemon from 0
+    logQ = [g \in Gens |-> <<>>],   \* daemon g's log lines, not yet read
+    \* handleLine, per daemon: d.fetches, d.removals, d.removedAt,
+    \* d.removedTo, d.listed and d.listKnown, d.relisted; and the
+    \* drainAgain it starts
+    fetchCount = [g \in Gens |-> 0],
+    removals = [g \in Gens |-> 0],
+    removedAt = [g \in Gens |-> 0],
+    removedTo = [g \in Gens |-> {}],
+    listed = [g \in Gens |-> {}],
+    listKnown = [g \in Gens |-> FALSE],
+    relisted = [g \in Gens |-> FALSE],
+    redrainReq = [g \in Gens |-> FALSE],
     certIssued = [s \in Services |-> FALSE], \* s's certificate exists
     \* the supervisor
     supDaemon = 0,                  \* s.daemon; 0 is nil
     stopped = FALSE,                \* the endpoint stopped the supervisor
+    leaving = FALSE,                \* s.leaving: Leave during the first start
     retryGen = [s \in Services |-> 0], \* retryLater runs, for daemon g
     confReq = [s \in Services |-> NoConf], \* confirmAdvertisedLater(s) asked
     leaseReq = [s \in Services |-> 0], \* configureServiceAfterCert(s) asked
     \* the gate (serviceGate)
     drained = FALSE,
-    advertised = FALSE,
     lock = None,                    \* g.mu's holder
     cancelReg = None,               \* g.cancel: whose change it cancels
     cctx = [a \in Actors |-> FALSE], \* a's change context is cancelled
-    drainRec = NoRec,               \* g.drain
-    pruneRec = NoRec,               \* g.prune
+    cancelled = FALSE,              \* g.cancelledAt: a drain cancelled one
+    rmRec = NoRm,                   \* g.removal
     unpruned = FALSE,               \* g.unpruned
     \* per actor
     gen = [a \in Actors |-> 0],     \* the daemon a works on (b.d, d)
@@ -178,14 +218,15 @@ variables
     out = [a \in Actors |-> "ok"],  \* what Configure returned to a lease
                                     \* holder: ok, err, drained
     mark = [a \in Actors |-> 0],    \* fetches read by runAdvertise
-    cnt = [a \in Actors |-> 0],     \* fetches read by daemon.Drain, prune
-    \* DrainAndWait
-    leaveRec = NoRec, leaveD = 0, after = 0, seen = 0, leaveEnd = None,
+    \* DrainAndWait: the record it waits on, and that record's daemon
+    lrec = NoRm, leaveD = 0, leaveEnd = None, settled = FALSE,
+    drainedGen = 0,                 \* drainWait.drained: the daemon it drained
     \* history, for the properties
     everInPrefs = (prefs # {}),     \* a Service was ever in the prefs
     lockedDrained = [a \in Actors |-> FALSE], \* a's change began drained
     addAfterDrained = FALSE,        \* such a change sent an add
     startedDrained = FALSE,         \* the running daemon started drained
+    startDrainFailed = [g \in Gens |-> FALSE], \* its drainAtStart failed
     drainApplied = FALSE,           \* daemon.Drain's edit took effect
     \* control fetched the drained list since (none if advertised again)
     ackMade = FALSE,
@@ -193,15 +234,12 @@ variables
     ackTimedOut = FALSE,            \* Leave timed out with one counted
     published = FALSE,              \* the first daemon was published
     leftAdvertising = FALSE,        \* Leave stopped a daemon advertising
+    upAtLeave = FALSE,              \* tailscaled ran when Leave stopped it
     pruneApplied = FALSE,           \* a prune's edit took effect
     pruneFetched = FALSE,           \* control fetched the list since
-    pruneOK = FALSE,                \* a prune's edit returned: removed
     \* actors whose edit removed a Service of the container since control
     \* last fetched the list
-    unfetched = {},
-    \* the actors whose removal a drain recorded external hid, and where
-    \* they were then
-    hiddenAt = {};
+    unfetched = {};
 
 define
     \* A LocalAPI call of a's daemon reaches tailscaled
@@ -218,97 +256,102 @@ define
     Checks == Mutation # "no-drained-check"
     Cancels == Mutation # "no-cancel"
     Ack == drainApplied /\ prefs = {}
-    \* NeedsDrain: the container names a Service, or a prune removed one or
-    \* failed to. It takes g.mu to read g.prune: NeedsDrainRead is when that
-    \* read can happen
-    NeedsDrain == Services # {} \/ unpruned \/ pruneRec.set
+    \* NeedsDrain: the container names a Service, a prune failed, or tslink
+    \* removed one. It takes g.mu to read g.removal: NeedsDrainRead is when
+    \* that read can happen
+    NeedsDrain == Services # {} \/ unpruned \/ rmRec.set
     NeedsDrainRead == Services # {} \/ unpruned \/ lock = None
-    \* An actor reads daemon g's fetch count in its next step. Counting a
-    \* fetch changes nothing else, so the model counts only then: an
-    \* earlier count is the same as one just before the read.
+    \* Whether actor a's edit removing Services records itself in the gate
+    \* before it is sent (editAdvertised); the mutations record only a
+    \* drain's, or only once the call returned
+    RecordsAtSend(a) ==
+        /\ Mutation # "record-on-return"
+        /\ Mutation = "drain-only-record" => a \in Drainers \cup {"redrain", "sup"}
+    \* removalFetched: control fetched the Service list after rec's edit
+    \* took effect, nothing being advertised again since, on daemon g
+    RemovalFetched(rec, g) ==
+        IF Mutation = "count-before-edit"
+        THEN fetchCount[g] > rec.fetches
+        ELSE /\ \/ rec.start
+                \/ removals[g] > rec.removals /\ removedTo[g] \subseteq rec.leaves
+             /\ ~relisted[g]
+             /\ fetchCount[g] > removedAt[g] + (IF Mutation = "off-by-one" THEN 1 ELSE 0)
+    \* The labels at which an actor reads daemon g's log state to record a
+    \* removal (noteRemoval reads d.removals)
+    SendLabels == {"Drain_countRead", "Prune_begin", "Readvertise_begin",
+                   "Lease_unadvertise", "Start_drain", "Redrain_lock"}
+    \* An actor reads daemon g's log state in its next step. Reading a line
+    \* changes nothing else, but for an edit advertising a Service once
+    \* drained (RelistLine), so the model reads the others only then: an
+    \* earlier read is the same as one just before.
     Reads(g) ==
-        \/ pc["leave"] \in {"Wait_check", "Wait_block"} /\ leaveD = g
-        \/ \E p \in Drainers : pc[p] = "Drain_marked" /\ supDaemon = g
+        \/ pc["leave"] \in {"Wait_block", "Leave_floor"} /\ leaveD = g
+        \/ \E p \in Actors : pc[p] \in SendLabels /\ gen[p] = g
         \* runAdvertise's read, the confirmer's after
         \/ Confirmer /\ \E p \in Changers \cup Leases :
                pc[p] = "Change_locked" /\ gen[p] = g
         \* waitServicesFetch and the next after, of a confirmer
         \/ \E c \in Confs : pc[c] = "Confirm_wait" /\ gen[c] = g
-        \* pruneServices' read
-        \/ pc["sup"] = "Prune_begin" /\ gen["sup"] = g
+    RelistLine(g) ==
+        drained /\ \E i \in DOMAIN logQ[g] :
+                       logQ[g][i].k = "edit" /\ logQ[g][i].val # {}
+    \* s.running(): a daemon is published, and its tailscaled runs
+    PublishedRuns == supDaemon # 0 /\ daemonUp /\ supDaemon = daemonGen
+    \* A request a call returned without, which tailscaled may still carry
+    \* out: one the drain's cancel left behind
+    Orphan(r) == waitOn[r.from] # r
+    \* What the floor's sleep settles (environment assumption): a call the
+    \* drain cancelled was carried out, if at all, tslink read the log line
+    \* of any edit advertising a Service, also of a tailscaled that stopped
+    \* (its output is read to the end), and the drainAgain it started
+    \* recorded its removal
+    Settled ==
+        /\ \A r \in pending : r.kind = "add" => ~Orphan(r)
+        /\ \A g \in Gens : ~RelistLine(g)
+        /\ \A g \in Gens : ~redrainReq[g]
+        /\ pc["redrain"] # "Redrain_lock"
 
-    \* S1: once a drain is recorded (it took effect, or found nothing
-    \* advertised), no Service is advertised again
-    DrainedStaysDrained == drainRec.set => prefs = {}
+    \* S1: an edit advertising a Service of a running daemon once drained,
+    \* as a cancelled call carried out late, is undone: once read, a drain
+    \* again is requested, runs, or its edit is pending
+    ReadvertisedDrainedAgain ==
+        \A g \in Gens :
+            relisted[g] /\ ~ctxDone[g] /\ logQ[g] = <<>>
+            /\ daemonUp /\ g = daemonGen
+            => \/ redrainReq[g] \/ pc["redrain"] # "Redrain_idle" \/ prefs = {}
+               \/ \E r \in pending : r.gen = g /\ r.val = {}
     \* S2: no change that began once drained was set adds a Service
     DrainedFlagHoldsBack == ~addAfterDrained
-    \* S2b: a daemon started once drained was set runs without the Services
-    NoDaemonAdvertisesDrained == daemonUp /\ startedDrained => prefs = {}
+    \* S2b: a daemon started once drained was set is published without the
+    \* Services, unless removing them failed or is still in flight
+    NoDaemonAdvertisesDrained ==
+        daemonUp /\ startedDrained /\ supDaemon = daemonGen
+        => \/ prefs = {}
+           \/ startDrainFailed[daemonGen]
+           \/ \E r \in pending : r.gen = daemonGen /\ r.val = {}
     \* S3: Leave returns before its timeout only after control fetched the
-    \* drained Service list, once a drain's edit took effect. leaveEnd is
-    \* how DrainAndWait returned: acked (a fetch was counted), ctx (the
-    \* daemon stopped), timeout, or without a wait: norecord (no drain took
-    \* effect), external, nodaemon, unadvertised; aborted is a Leave during
-    \* the first start, which runs no DrainAndWait, and nodrain one that
-    \* NeedsDrain spared it.
-    LeaveReturnedEarly(how) ==
-        pc["leave"] = "Done" /\ leaveEnd \in how /\ drainApplied => ackMade
+    \* Service list since every removal of tslink's that took effect: the
+    \* drain's (ackMade), a prune's (pruneFetched), any other (unfetched).
+    \* leaveEnd is how DrainAndWait returned: acked (a fetch after the
+    \* last removal), timeout, nothing (no removal to wait for), stopped
+    \* (its daemon gone, not followed: no-follow-restart), or aborted, a
+    \* Leave during the first start with no tailscaled running. A Leave
+    \* that stops no running tailscaled is not judged: nothing would
+    \* answer control's fetch
     LeaveWaitsForDrain ==
-        LeaveReturnedEarly({"acked", "ctx", "norecord", "external",
-                            "nodaemon", "unadvertised"})
-    \* S3 for one way of returning, to tell the violations apart
-    S3Acked == LeaveReturnedEarly({"acked"})
-    S3Ctx == LeaveReturnedEarly({"ctx"})
-    S3NoRecord == LeaveReturnedEarly({"norecord"})
-    S3External == LeaveReturnedEarly({"external"})
-    S3NoDaemon == LeaveReturnedEarly({"nodaemon"})
-    S3Unadvertised == LeaveReturnedEarly({"unadvertised"})
-    \* S8: Leave stops tailscaled only once no running daemon advertises a
-    \* Service of the container, or after a drain took effect and Leave
-    \* waited for its fetch or its timeout
+        pc["leave"] = "Done" /\ leaveEnd \notin {"timeout", "aborted"}
+        /\ upAtLeave
+        => /\ drainApplied => ackMade
+           /\ pruneApplied => pruneFetched
+           /\ unfetched = {}
+    \* S8: Leave stops tailscaled only once it advertises no Service, or
+    \* after its wait timed out
     NoLeaveWhileAdvertising == ~leftAdvertising
-    \* S8 for a Leave that ran DrainAndWait (not one aborting the first
-    \* start), to tell the violations apart
-    S8Drained == leftAdvertising => leaveEnd = "aborted"
-    \* S4: no wait if no Service was ever in the prefs
+    \* S4: no wait for a fetch if no Service was ever in the prefs
     NoWaitForNothing ==
-        pc["leave"] \in {"Wait_check", "Wait_block"} => everInPrefs
-    \* S5: once a prune's edit took effect, Leave drains the node and
-    \* returns before its timeout only after control fetched the list since.
-    \* The returns S3 and S8 judge for the drain itself (ctx, norecord,
-    \* nodaemon: I5, I6, I8; aborted: I9) are left to them.
-    PrunedWaitedFor ==
-        pc["leave"] = "Done" /\ pruneApplied
-        /\ leaveEnd \in {"acked", "external", "unadvertised", "nodrain"}
-        => pruneFetched
-    \* S5 for a prune whose edit returned, so pruneServices noted it, and a
-    \* Leave that did not wait (acked is S3's I2, or S5Acked)
-    S5Recorded ==
-        pc["leave"] = "Done" /\ pruneOK
-        /\ leaveEnd \in {"external", "unadvertised", "nodrain"}
-        => pruneFetched
-    \* S5 for a prune edit that took effect without returning (no record)
-    S5Unrecorded ==
-        pc["leave"] = "Done" /\ pruneApplied /\ ~pruneOK
-        /\ leaveEnd \in {"external", "unadvertised", "nodrain"}
-        => pruneFetched
-    \* S5 for a Leave acked on the prune's count (its drain found nothing)
-    S5Acked ==
-        pc["leave"] = "Done" /\ pruneApplied /\ leaveEnd = "acked"
-        /\ drainRec.external => pruneFetched
-    \* S6: a drain is recorded external only if no edit of tslink's removed a
-    \* Service of the container since control last fetched the list. An
-    \* edit of the other drainer is left out: one that took effect without
-    \* a record is I5 (S3)
-    NoHiddenDrain == hiddenAt = {}
-    \* The removals a drain by p recording itself external hides: those
-    \* control has not fetched, but for the other drainer's (I5's)
-    Hidden(p) == {<<a, pc[a]>> : a \in unfetched \ (Drainers \ {p})}
-    \* S6 for a removal by readvertise with the drain in its gap (I3), and
-    \* for a removal by the lease holder (I10)
-    S6Gap == \A h \in hiddenAt : h[2] # "Readvertise_gap"
-    S6Lease == \A h \in hiddenAt : h[1] \notin Leases
-    \* S7: a counted fetch after the drain ends the wait before its timeout
+        pc["leave"] = "Wait_block" => everInPrefs
+    \* S7: a counted fetch of the drained list ends the wait before its
+    \* timeout
     AckEndsWait == ~ackTimedOut
     \* L1: DrainAndWait returns, also if control never fetches
     LeaveTerminates == <>(pc["leave"] = "Done")
@@ -316,6 +359,25 @@ define
     DrainGetsLock ==
         \A p \in Drainers : pc[p] = "Drain_marked" ~> pc[p] # "Drain_marked"
 end define;
+
+\* editAdvertised: serviceGate.noteRemoval(d, kept), before the EditPrefs
+\* removing Services is sent to daemon g, leaving leaves
+macro NoteRemoval(g, leaves) begin
+    rmRec := [set |-> TRUE, gen |-> g, removals |-> removals[g],
+              leaves |-> leaves, start |-> FALSE, fetches |-> fetchCount[g]];
+end macro;
+
+\* The endpoint stops the supervisor once DrainAndWait returned: tailscaled
+\* stops, and its pending requests with it
+macro StopSupervisor() begin
+    leftAdvertising := daemonUp /\ prefs # {} /\ leaveEnd # "timeout";
+    upAtLeave := daemonUp;
+    stopped := TRUE;
+    daemonUp := FALSE;
+    supDaemon := 0;
+    pending := {};
+    ctxDone := [g \in Gens |-> TRUE];
+end macro;
 
 \* configureServiceWhenCertified and configureServiceBackend(true) for svc,
 \* by the supervisor's start (serviceBackend.start, which asks for
@@ -354,8 +416,7 @@ Change_locked:
         res[self] := "err";
         goto Change_fnReturned;
     elsif svc \in prefs then
-        \* runAdvertise: not added, gate.advertised.Store(true)
-        advertised := TRUE;
+        \* runAdvertise: not added
         goto Change_fnReturned;
     else
         with r = [from |-> self, gen |-> gen[self],
@@ -390,12 +451,10 @@ Change_fnReturned:
     \* errDrained }, which ignoreDrained makes nil; setCancel(nil),
     \* g.mu.Unlock(). serviceBackend.start: retryLater on an error; a retry
     \* polls again, or ends
-    \* On the add path first runAdvertise: gate.advertised.Store(true),
-    \* markAdvertised (not modelled: nothing here reads fetchMark) and
-    \* confirmAdvertisedLater(svc, fetches); Leave's read of advertised
-    \* (after the lock) cannot tell it from before the unlock
+    \* On the add path first runAdvertise: markAdvertised (not modelled:
+    \* nothing here reads fetchMark) and confirmAdvertisedLater(svc,
+    \* fetches)
     if res[self] = "added" then
-        advertised := TRUE;
         if Confirmer then
             confReq[svc] := [gen |-> gen[self], after |-> mark[self]];
         end if;
@@ -430,18 +489,18 @@ Drain_begin:
     drained := TRUE;
     if cancelReg # None /\ Cancels then
         cctx[cancelReg] := TRUE;
+        cancelled := TRUE;
     end if;
 Drain_marked:
     \* s.getDaemon(): nil is "tailscaled is not running"; else daemon.Drain:
-    \* markDrained again, g.mu.Lock(), if !g.drain.at.IsZero() { return nil },
-    \* fetches, _ := d.servicesFetches(). Abstraction: getDaemon is read
-    \* once the lock is free. In Go a daemon replaced while the drainer
-    \* waits for the lock is drained as the stale d, which fails (its context
-    \* is done) and records nothing; here the drainer drains the new daemon.
-    \* The Go outcome is the one the model reaches when getDaemon finds nil
-    \* during the restart (drained set, no record, nothing pending), and the
-    \* new daemon started drained is judged by S2b either way, so no
-    \* property sees the difference.
+    \* markDrained again, g.mu.Lock(). Abstraction: getDaemon is read once
+    \* the lock is free. In Go a daemon replaced while the drainer waits for
+    \* the lock is drained as the stale d, which fails (its context is done);
+    \* here the drainer drains the new daemon, which drained itself as it
+    \* started (drainAtStart): no property sees the difference.
+    if self = "leave" then
+        drainedGen := supDaemon;
+    end if;
     if supDaemon = 0 then
         return;
     else
@@ -450,24 +509,18 @@ Drain_marked:
         gen[self] := supDaemon;
         if cancelReg # None /\ Cancels then
             cctx[cancelReg] := TRUE;
-        end if;
-        if drainRec.set then
-            goto Drain_release;
-        else
-            cnt[self] := fetchCount[supDaemon];
+            cancelled := TRUE;
         end if;
     end if;
 Drain_countRead:
-    \* editAdvertised(d.ctx, keep nothing): GetPrefs, EditPrefs; nothing to
-    \* remove is a drain outside tslink (external)
-    if ~Live(self) then
-        goto Drain_release;
-    elsif prefs = {} then
-        drainRec := [set |-> TRUE, gen |-> gen[self], fetches |-> 0,
-                     external |-> TRUE];
-        hiddenAt := hiddenAt \cup Hidden(self);
+    \* unadvertiseAll: editAdvertised(d.ctx, keep nothing): GetPrefs;
+    \* nothing to remove is left as it is; else noteRemoval, EditPrefs
+    if ~Live(self) \/ prefs = {} then
         goto Drain_release;
     else
+        if RecordsAtSend(self) then
+            NoteRemoval(gen[self], {});
+        end if;
         with r = [from |-> self, gen |-> gen[self], val |-> {},
                   kind |-> "drain"] do
             pending := pending \cup {r};
@@ -476,37 +529,23 @@ Drain_countRead:
     end if;
 Drain_sent:
     \* EditPrefs returns: applied, tailscaled gone, or its 10 s timeout
-    \* (the request stays pending)
+    \* (the request stays pending: tailscaled may carry it out)
     either
         await Applied(self);
-        waitOn[self] := NoReq;
+        if Mutation = "record-on-return" then
+            NoteRemoval(gen[self], {});
+        end if;
     or
         await ~Live(self);
-        waitOn[self] := NoReq;
-        goto Drain_release;
     or
-        waitOn[self] := NoReq;
-        goto Drain_release;
+        skip;
     end either;
-Drain_edited:
-    \* daemon.Drain: g.drain = drainRecord{daemon: d, fetches: fetches};
-    \* g.mu.Unlock() (deferred)
-    drainRec := [set |-> TRUE, gen |-> gen[self], fetches |-> cnt[self],
-                 external |-> Mutation = "drain-records-external-always"];
-    if Mutation = "drain-records-external-always" then
-        hiddenAt := hiddenAt \cup Hidden(self);
-    end if;
-    if lock = self then
-        lock := None;
-    end if;
-    cnt[self] := 0;
-    gen[self] := 0;
-    return;
+    waitOn[self] := NoReq;
 Drain_release:
+    \* g.mu.Unlock() (deferred)
     if lock = self then
         lock := None;
     end if;
-    cnt[self] := 0;
     gen[self] := 0;
     return;
 end procedure;
@@ -517,28 +556,68 @@ variables todo = {}, cur = None;
 begin
 Sup_loop:
     while ~stopped do
-        \* startDaemon: newDaemon; daemon.Start: noteSurvivingState;
-        \* startProcess: tailscaled runs on the node's state, and control
-        \* may fetch its Service list. (An assignment's new value is what
-        \* later reads of the same step see.)
+        \* startDaemon: newDaemon; daemon.Start: startProcess: tailscaled
+        \* runs on the node's state, and control may fetch its Service
+        \* list. (An assignment's new value is what later reads of the
+        \* same step see.)
         daemonGen := daemonGen + 1;
         gen["sup"] := daemonGen;
-        if stateExists then
-            advertised := TRUE;
-        end if;
         daemonUp := TRUE;
         stateExists := TRUE;
         startedDrained := drained;
         dirty := TRUE;
         todo := Services;
+Start_drain:
+        \* daemon.Start: drainAtStart, once the socket is up: if drained,
+        \* g.mu.Lock(); editAdvertised(keep nothing), recorded; with nothing
+        \* to remove, a start record if an earlier daemon's removal is in
+        \* the gate
+        if drained /\ Mutation # "no-drain-at-start" then
+            await lock = None;
+            if ~CallOK("sup") then
+                startDrainFailed[gen["sup"]] := TRUE;
+            elsif prefs = {} then
+                if rmRec.set /\ rmRec.gen # gen["sup"] then
+                    rmRec := [rmRec EXCEPT !.gen = gen["sup"], !.start = TRUE];
+                end if;
+            else
+                lock := "sup";
+                NoteRemoval(gen["sup"], {});
+                with r = [from |-> "sup", gen |-> gen["sup"], val |-> {},
+                          kind |-> "drain"] do
+                    pending := pending \cup {r};
+                    waitOn["sup"] := r;
+                end with;
+                goto Start_drainSent;
+            end if;
+        end if;
+Start_next:
+        if Prune then
+            goto Prune_begin;
+        else
+            goto Start_backends;
+        end if;
+Start_drainSent:
+        \* EditPrefs returns: applied, failed (tailscaled gone) or timed out
+        \* (pending); g.mu.Unlock()
+        either
+            await Applied("sup");
+        or
+            await ~Live("sup");
+            startDrainFailed[gen["sup"]] := TRUE;
+        or
+            startDrainFailed[gen["sup"]] := TRUE;
+        end either;
+        waitOn["sup"] := NoReq;
+        lock := None;
         if ~Prune then
             goto Start_backends;
         end if;
 Prune_begin:
         \* configureServing: pruneServices: change: g.mu.Lock(),
         \* setCancel, if g.drained { return errDrained }; fn: editServe
-        \* (instant), fetches := servicesFetches(), editAdvertised(ctx,
-        \* keep): GetPrefs, EditPrefs unless nothing is to be removed. Then
+        \* (instant), editAdvertised(ctx, keep): GetPrefs, noteRemoval and
+        \* EditPrefs unless nothing is to be removed. Then
         \* g.unpruned.Store(err != nil && !errDrained). (The lock and the
         \* send are one step: a drain between them makes the change return
         \* errDrained before the send, as a drain before the lock does.)
@@ -555,7 +634,9 @@ Prune_begin:
         else
             lock := "sup";
             cancelReg := "sup";
-            cnt["sup"] := fetchCount[gen["sup"]];
+            if RecordsAtSend("sup") then
+                NoteRemoval(gen["sup"], prefs \ {Stale});
+            end if;
             with r = [from |-> "sup", gen |-> gen["sup"],
                       val |-> prefs \ {Stale}, kind |-> "prune"] do
                 pending := pending \cup {r};
@@ -570,6 +651,9 @@ Prune_sent:
         either
             await Applied("sup");
             res["sup"] := "added";
+            if Mutation = "record-on-return" then
+                NoteRemoval(gen["sup"], prefs);
+            end if;
         or
             await ~CallOK("sup");
             res["sup"] := "err";
@@ -578,24 +662,14 @@ Prune_sent:
         end either;
         waitOn["sup"] := NoReq;
 Prune_edited:
-        \* editAdvertised returned; removed: g.prune = drainRecord{daemon:
-        \* d, fetches: fetches}, g.advertised.Store(true); change: if fn
-        \* failed and g.drained { errDrained }; setCancel(nil), Unlock;
-        \* g.unpruned.Store(err != nil && !errDrained)
-        if res["sup"] = "added" then
-            pruneOK := TRUE;
-            if Mutation # "prune-no-record" then
-                pruneRec := [set |-> TRUE, gen |-> gen["sup"],
-                             fetches |-> cnt["sup"], external |-> FALSE];
-            end if;
-            advertised := TRUE;
-        end if;
+        \* editAdvertised returned; change: if fn failed and g.drained {
+        \* errDrained }; setCancel(nil), Unlock; g.unpruned.Store(err !=
+        \* nil && !errDrained)
         unpruned := res["sup"] = "err" /\ ~drained;
         lock := None;
         cancelReg := None;
         cctx["sup"] := FALSE;
         res["sup"] := "ok";
-        cnt["sup"] := 0;
 Start_backends:
         \* configureServing: serviceBackend.start for each backend in turn;
         \* then startDaemon: s.daemon = d
@@ -706,6 +780,9 @@ Readvertise_begin:
         else
             lock := self;
             cancelReg := self;
+            if RecordsAtSend(self) then
+                NoteRemoval(gen[self], prefs \ {SvcOf(self)});
+            end if;
             with r = [from |-> self, gen |-> gen[self],
                       val |-> prefs \ {SvcOf(self)}, kind |-> "remove"] do
                 pending := pending \cup {r};
@@ -720,6 +797,9 @@ Readvertise_removed:
         \* between them, and it cancels a change whose call returned.)
         either
             await Applied(self);
+            if Mutation = "record-on-return" then
+                NoteRemoval(gen[self], prefs);
+            end if;
             waitOn[self] := NoReq;
             lock := None;
             cancelReg := None;
@@ -822,6 +902,9 @@ Lease_unadvertise:
         else
             lock := self;
             cancelReg := self;
+            if RecordsAtSend(self) then
+                NoteRemoval(gen[self], prefs \ {SvcOf(self)});
+            end if;
             with r = [from |-> self, gen |-> gen[self],
                       val |-> prefs \ {SvcOf(self)}, kind |-> "remove"] do
                 pending := pending \cup {r};
@@ -833,6 +916,9 @@ Lease_unadvertiseSent:
         \* returns: errDrained ends the poll, another error polls again
         either
             await Applied(self);
+            if Mutation = "record-on-return" then
+                NoteRemoval(gen[self], prefs);
+            end if;
             waitOn[self] := NoReq;
             lock := None;
             cancelReg := None;
@@ -913,83 +999,171 @@ end process;
 fair process Leave = "leave"
 begin
 Leave_begin:
-    \* Endpoint.stopTailscale: with the supervisor, DrainAndWait if
-    \* NeedsDrain; during the first start (no supervisor yet) RunTailscale
-    \* aborts the start, with no drain. Go sets e.supervisor only after
-    \* WaitForIP returns, so a Leave in that window aborts with no drain too
-    \* (I9's class)
+    \* Endpoint.Leave: with the supervisor, stopTailscale: DrainAndWait if
+    \* NeedsDrain. During the first start (no supervisor stored yet) a
+    \* tailscaled that runs makes the start go on drained
+    \* (DaemonSupervisor.Leaving, abortStart), and Leave waits for it;
+    \* with none running yet the start is aborted, in one step with its
+    \* stop: a tailscaled the start runs later is killed by the cancelled
+    \* context (abort-first-start: aborted whatever runs)
     await ~published \/ NeedsDrainRead;
     if ~published then
-        leaveEnd := "aborted";
+        if daemonUp /\ Mutation # "abort-first-start" then
+            leaving := TRUE;
+            drained := TRUE;
+            if cancelReg # None /\ Cancels then
+                cctx[cancelReg] := TRUE;
+                cancelled := TRUE;
+            end if;
+        else
+            leaveEnd := "aborted";
+            StopSupervisor();
+            goto Done;
+        end if;
+    elsif ~NeedsDrain then
+        leaveEnd := "nodrain";
         goto Leave_done;
+    else
+        call DrainProc();
+        goto Wait_loop;
+    end if;
+Leave_started:
+    \* StartContext: the first start returns; drainIfLeaving: DrainAndWait
+    \* if NeedsDrain. A start that failed (tailscaled exited) stops the
+    \* supervisor
+    await published \/ ~daemonUp;
+    if ~published then
+        leaveEnd := "aborted";
+        StopSupervisor();
+        goto Done;
     elsif ~NeedsDrain then
         leaveEnd := "nodrain";
         goto Leave_done;
     else
         call DrainProc();
     end if;
-Wait_lock:
-    \* DrainAndWait: g.mu.Lock(); drain, prune := g.drain, g.prune;
-    \* g.mu.Unlock(); a drain that removed nothing waits for the prune
+Wait_loop:
+    \* DrainAndWait: g.lastRemoval(), under g.mu: a record of a live daemon
+    \* is waited on; with tailscaled restarting (none published, or the one
+    \* published exited) and a record or node state, the next daemon is
+    \* waited for; else nothing is left to wait for
     await lock = None;
-    leaveRec := IF drainRec.external /\ pruneRec.set THEN pruneRec
-                ELSE drainRec;
-Wait_recordRead:
-    \* d := s.getDaemon(); no wait if no drain took effect, the drain was
-    \* external, there is no daemon, or the backend was never advertised;
-    \* a restarted tailscaled counts its fetches from 0
-    leaveD := supDaemon;
-    if ~leaveRec.set then
-        leaveEnd := "norecord";
-        goto Leave_done;
-    elsif leaveRec.external /\ Mutation # "always-wait" then
-        leaveEnd := "external";
-        goto Leave_done;
-    elsif supDaemon = 0 then
-        leaveEnd := "nodaemon";
-        goto Leave_done;
-    elsif ~advertised /\ Mutation # "always-wait" then
-        leaveEnd := "unadvertised";
-        goto Leave_done;
+    lrec := rmRec;
+    if rmRec.set /\ ~ctxDone[rmRec.gen] then
+        leaveD := rmRec.gen;
+    elsif Mutation = "always-wait" /\ PublishedRuns then
+        leaveD := supDaemon;
+    elsif ~PublishedRuns /\ (rmRec.set \/ stateExists)
+          /\ Mutation # "no-follow-restart" then
+        goto Wait_restart;
+    elsif PublishedRuns /\ supDaemon # drainedGen then
+        \* published since the drain, which did not reach it: drain it
+        call DrainProc();
+        goto Wait_loop;
+    elsif cancelled /\ ~settled /\ Mutation # "no-settle" then
+        goto Wait_settle;
     else
-        after := IF supDaemon # leaveRec.gen /\ Mutation # "ignore-restart"
-                 THEN 0 ELSE leaveRec.fetches;
+        leaveEnd := IF rmRec.set THEN "stopped" ELSE "nothing";
+        goto Leave_done;
     end if;
-Wait_check:
-    \* waitServicesFetch: fetches, next := d.servicesFetches()
-    if fetchCount[leaveD] > after then
+Wait_block:
+    \* waitRemovalFetched: control fetched the list after the record's edit
+    \* took effect, the record changed, its daemon stopped, or the deadline
+    either
+        await RemovalFetched(lrec, leaveD);
+    or
+        await rmRec # lrec;
+        goto Wait_loop;
+    or
+        await ctxDone[leaveD];
+        if Mutation = "no-follow-restart" then
+            leaveEnd := "stopped";
+            goto Leave_done;
+        else
+            goto Wait_loop;
+        end if;
+    or
+        await Mutation # "wait-no-timeout" /\ ~RemovalFetched(lrec, leaveD);
+        leaveEnd := "timeout";
+        ackTimedOut := ackCounted[leaveD];
+        goto Leave_done;
+    end either;
+Leave_floor:
+    \* waitFetched: the floor's sleep, after which a call the drain
+    \* cancelled was carried out, if at all (environment assumption); then
+    \* the record and its fetch are checked again
+    await Settled;
+    if rmRec = lrec /\ RemovalFetched(lrec, leaveD) then
         leaveEnd := "acked";
         goto Leave_done;
     else
-        seen := fetchCount[leaveD];
+        goto Wait_loop;
     end if;
-Wait_block:
-    \* waitServicesFetch: select on the next fetch, the deadline, d.ctx
+Wait_settle:
+    \* A call the drain cancelled may still be carried out: the floor's
+    \* sleep, after which it was, if at all; then look again
+    await Settled;
+    settled := TRUE;
+    goto Wait_loop;
+Wait_restart:
+    \* waitNextDaemon: a daemon published that runs, the record changed, or
+    \* the deadline
     either
-        await fetchCount[leaveD] # seen;
-        goto Wait_check;
+        await PublishedRuns \/ rmRec # lrec;
+        goto Wait_loop;
     or
-        await ctxDone[leaveD];
-        leaveEnd := "ctx";
-    or
-        await Mutation # "wait-no-timeout" /\ fetchCount[leaveD] = seen;
+        await Mutation # "wait-no-timeout";
         leaveEnd := "timeout";
-        ackTimedOut := ackCounted[leaveD];
     end either;
 Leave_done:
-    \* DrainAndWait sleeps out its floor and returns; the endpoint stops the
-    \* supervisor: tailscaled stops, and its pending requests with it
-    leftAdvertising :=
-        daemonUp /\ prefs # {}
-        /\ ~(drainApplied /\ leaveEnd \in {"acked", "timeout"});
-    stopped := TRUE;
-    daemonUp := FALSE;
-    supDaemon := 0;
-    pending := {};
-    ctxDone := [g \in Gens |-> TRUE];
+    \* DrainAndWait returns; the endpoint stops the supervisor
+    StopSupervisor();
 end process;
 
-\* tailscaled applies a pending prefs edit, or refuses one
+\* drainAgain: the drain again an edit advertising a Service once drained
+\* starts (handleLine, noteAdvertisedEdit), on that edit's daemon
+fair process Redrain = "redrain"
+begin
+Redrain_idle:
+    while ~stopped do
+        await \E g \in Gens : redrainReq[g];
+        with g \in {x \in Gens : redrainReq[x]} do
+            redrainReq[g] := FALSE;
+            gen["redrain"] := g;
+        end with;
+Redrain_lock:
+        \* g.mu.Lock(); unadvertiseAll: editAdvertised(d.ctx, keep
+        \* nothing): GetPrefs, noteRemoval, EditPrefs unless nothing is left
+        await lock = None;
+        if ~Live("redrain") \/ prefs = {} then
+            goto Redrain_idle;
+        else
+            lock := "redrain";
+            NoteRemoval(gen["redrain"], {});
+            with r = [from |-> "redrain", gen |-> gen["redrain"], val |-> {},
+                      kind |-> "drain"] do
+                pending := pending \cup {r};
+                waitOn["redrain"] := r;
+            end with;
+        end if;
+Redrain_sent:
+        \* EditPrefs returns: applied, tailscaled gone, or timed out;
+        \* g.mu.Unlock()
+        either
+            await Applied("redrain");
+        or
+            await ~Live("redrain");
+        or
+            skip;
+        end either;
+        waitOn["redrain"] := NoReq;
+        lock := None;
+    end while;
+end process;
+
+\* tailscaled applies a pending prefs edit, or refuses one. It logs an
+\* edit that changes the advertised Services before it sets them
+\* (editPrefsLocked)
 process Tailscaled = "tailscaled"
 begin
 Tailscaled_answer:
@@ -998,6 +1172,12 @@ Tailscaled_answer:
             with r \in {q \in pending : daemonUp /\ q.gen = daemonGen} do
                 if r.val # prefs then
                     dirty := TRUE;
+                    logQ[r.gen] := Append(
+                        IF r.val # {}
+                        THEN [i \in DOMAIN logQ[r.gen] |->
+                                [logQ[r.gen][i] EXCEPT !.ack = FALSE]]
+                        ELSE logQ[r.gen],
+                        EditLine(r.val));
                 end if;
                 if (prefs \ r.val) \cap Services # {} then
                     unfetched := unfetched \cup {r.from};
@@ -1017,7 +1197,6 @@ Tailscaled_answer:
                     \* list are out of date
                     ackMade := FALSE;
                     ackCounted := [g \in Gens |-> FALSE];
-                    fetchQ := [g \in Gens |-> [i \in DOMAIN fetchQ[g] |-> FALSE]];
                 end if;
             end with;
         or
@@ -1033,30 +1212,62 @@ Tailscaled_answer:
     end while;
 end process;
 
-\* control fetches the node's Service list (c2n GET /vip-services)
+\* A request the call returned without (Orphan) is carried out within the
+\* drain's floor, if at all: tailscaled drops one it has not carried out
+\* (environment assumption; Leave_floor relies on it)
+fair process Orphans = "orphans"
+begin
+Orphans_drop:
+    while ~stopped do
+        await \E r \in pending : r.kind = "add" /\ Orphan(r);
+        with r \in {q \in pending : q.kind = "add" /\ Orphan(q)} do
+            pending := pending \ {r};
+        end with;
+    end while;
+end process;
+
+\* control fetches the node's Service list (c2n GET /vip-services), and
+\* tailscaled logs it before it reads the Services
 process Control = "control"
 begin
 Control_fetch:
     while ~stopped do
         await daemonUp /\ dirty;
         dirty := FALSE;
-        fetchQ[daemonGen] := Append(fetchQ[daemonGen], Ack);
+        logQ[daemonGen] := Append(logQ[daemonGen], FetchLine(Ack));
         ackMade := ackMade \/ Ack;
         pruneFetched := pruneFetched \/ pruneApplied;
         unfetched := {};
     end while;
 end process;
 
-\* handleLine counts a fetch from tailscaled's log, after control made it
-process Counter = "counter"
+\* handleLine reads tailscaled's log in order, later: a fetch is counted;
+\* an edit that removed a Service, or the first, is a removal; an edit
+\* advertising a Service once drained starts drainAgain
+fair process Counter = "counter"
 begin
 Counter_count:
     while ~stopped do
-        with g \in {x \in Gens : fetchQ[x] # <<>> /\ Reads(x)} do
-            fetchCount[g] := fetchCount[g] + 1;
-            ackCounted[g] := ackCounted[g] \/ Head(fetchQ[g]);
-            fetchQ[g] := Tail(fetchQ[g]);
-            \* hook: fetch:counted (handleLine: d.fetches++, next closed)
+        with g \in {x \in Gens : logQ[x] # <<>> /\ (Reads(x) \/ RelistLine(x))},
+             e = Head(logQ[g]) do
+            if e.k = "fetch" then
+                fetchCount[g] := fetchCount[g] + 1;
+                ackCounted[g] := ackCounted[g] \/ e.ack;
+            else
+                if ~listKnown[g] \/ listed[g] \ e.val # {} then
+                    removals[g] := removals[g] + 1;
+                    removedAt[g] := fetchCount[g];
+                    removedTo[g] := e.val;
+                end if;
+                listed[g] := e.val;
+                listKnown[g] := TRUE;
+                relisted[g] := drained /\ e.val # {};
+                if drained /\ e.val # {} /\ ~ctxDone[g]
+                   /\ Mutation # "no-redrain" then
+                    redrainReq[g] := TRUE;
+                end if;
+            end if;
+            logQ[g] := Tail(logQ[g]);
         end with;
     end while;
 end process;
@@ -1090,13 +1301,15 @@ end algorithm; *)
 \* BEGIN TRANSLATION
 CONSTANT defaultInitValue
 VARIABLES stateExists, prefs, daemonGen, daemonUp, ctxDone, crashes, pending, 
-          waitOn, refused, dirty, fetchQ, fetchCount, certIssued, supDaemon, 
-          stopped, retryGen, confReq, leaseReq, drained, advertised, lock, 
-          cancelReg, cctx, drainRec, pruneRec, unpruned, gen, res, out, mark, 
-          cnt, leaveRec, leaveD, after, seen, leaveEnd, everInPrefs, 
-          lockedDrained, addAfterDrained, startedDrained, drainApplied, 
-          ackMade, ackCounted, ackTimedOut, published, leftAdvertising, 
-          pruneApplied, pruneFetched, pruneOK, unfetched, hiddenAt, pc, stack
+          waitOn, refused, dirty, logQ, fetchCount, removals, removedAt, 
+          removedTo, listed, listKnown, relisted, redrainReq, certIssued, 
+          supDaemon, stopped, leaving, retryGen, confReq, leaseReq, drained, 
+          lock, cancelReg, cctx, cancelled, rmRec, unpruned, gen, res, out, 
+          mark, lrec, leaveD, leaveEnd, settled, drainedGen, everInPrefs, 
+          lockedDrained, addAfterDrained, startedDrained, startDrainFailed, 
+          drainApplied, ackMade, ackCounted, ackTimedOut, published, 
+          leftAdvertising, upAtLeave, pruneApplied, pruneFetched, unfetched, 
+          pc, stack
 
 (* define statement *)
 Live(a) == daemonUp /\ daemonGen = gen[a] /\ ~ctxDone[gen[a]]
@@ -1115,29 +1328,76 @@ Ack == drainApplied /\ prefs = {}
 
 
 
-NeedsDrain == Services # {} \/ unpruned \/ pruneRec.set
+NeedsDrain == Services # {} \/ unpruned \/ rmRec.set
 NeedsDrainRead == Services # {} \/ unpruned \/ lock = None
 
 
 
+RecordsAtSend(a) ==
+    /\ Mutation # "record-on-return"
+    /\ Mutation = "drain-only-record" => a \in Drainers \cup {"redrain", "sup"}
+
+
+RemovalFetched(rec, g) ==
+    IF Mutation = "count-before-edit"
+    THEN fetchCount[g] > rec.fetches
+    ELSE /\ \/ rec.start
+            \/ removals[g] > rec.removals /\ removedTo[g] \subseteq rec.leaves
+         /\ ~relisted[g]
+         /\ fetchCount[g] > removedAt[g] + (IF Mutation = "off-by-one" THEN 1 ELSE 0)
+
+
+SendLabels == {"Drain_countRead", "Prune_begin", "Readvertise_begin",
+               "Lease_unadvertise", "Start_drain", "Redrain_lock"}
+
+
+
+
 Reads(g) ==
-    \/ pc["leave"] \in {"Wait_check", "Wait_block"} /\ leaveD = g
-    \/ \E p \in Drainers : pc[p] = "Drain_marked" /\ supDaemon = g
+    \/ pc["leave"] \in {"Wait_block", "Leave_floor"} /\ leaveD = g
+    \/ \E p \in Actors : pc[p] \in SendLabels /\ gen[p] = g
 
     \/ Confirmer /\ \E p \in Changers \cup Leases :
            pc[p] = "Change_locked" /\ gen[p] = g
 
     \/ \E c \in Confs : pc[c] = "Confirm_wait" /\ gen[c] = g
+RelistLine(g) ==
+    drained /\ \E i \in DOMAIN logQ[g] :
+                   logQ[g][i].k = "edit" /\ logQ[g][i].val # {}
 
-    \/ pc["sup"] = "Prune_begin" /\ gen["sup"] = g
+PublishedRuns == supDaemon # 0 /\ daemonUp /\ supDaemon = daemonGen
+
+
+Orphan(r) == waitOn[r.from] # r
 
 
 
-DrainedStaysDrained == drainRec.set => prefs = {}
+
+
+Settled ==
+    /\ \A r \in pending : r.kind = "add" => ~Orphan(r)
+    /\ \A g \in Gens : ~RelistLine(g)
+    /\ \A g \in Gens : ~redrainReq[g]
+    /\ pc["redrain"] # "Redrain_lock"
+
+
+
+
+ReadvertisedDrainedAgain ==
+    \A g \in Gens :
+        relisted[g] /\ ~ctxDone[g] /\ logQ[g] = <<>>
+        /\ daemonUp /\ g = daemonGen
+        => \/ redrainReq[g] \/ pc["redrain"] # "Redrain_idle" \/ prefs = {}
+           \/ \E r \in pending : r.gen = g /\ r.val = {}
 
 DrainedFlagHoldsBack == ~addAfterDrained
 
-NoDaemonAdvertisesDrained == daemonUp /\ startedDrained => prefs = {}
+
+NoDaemonAdvertisesDrained ==
+    daemonUp /\ startedDrained /\ supDaemon = daemonGen
+    => \/ prefs = {}
+       \/ startDrainFailed[daemonGen]
+       \/ \E r \in pending : r.gen = daemonGen /\ r.val = {}
 
 
 
@@ -1145,63 +1405,21 @@ NoDaemonAdvertisesDrained == daemonUp /\ startedDrained => prefs = {}
 
 
 
-LeaveReturnedEarly(how) ==
-    pc["leave"] = "Done" /\ leaveEnd \in how /\ drainApplied => ackMade
+
+
 LeaveWaitsForDrain ==
-    LeaveReturnedEarly({"acked", "ctx", "norecord", "external",
-                        "nodaemon", "unadvertised"})
-
-S3Acked == LeaveReturnedEarly({"acked"})
-S3Ctx == LeaveReturnedEarly({"ctx"})
-S3NoRecord == LeaveReturnedEarly({"norecord"})
-S3External == LeaveReturnedEarly({"external"})
-S3NoDaemon == LeaveReturnedEarly({"nodaemon"})
-S3Unadvertised == LeaveReturnedEarly({"unadvertised"})
-
+    pc["leave"] = "Done" /\ leaveEnd \notin {"timeout", "aborted"}
+    /\ upAtLeave
+    => /\ drainApplied => ackMade
+       /\ pruneApplied => pruneFetched
+       /\ unfetched = {}
 
 
 NoLeaveWhileAdvertising == ~leftAdvertising
 
-
-S8Drained == leftAdvertising => leaveEnd = "aborted"
-
 NoWaitForNothing ==
-    pc["leave"] \in {"Wait_check", "Wait_block"} => everInPrefs
+    pc["leave"] = "Wait_block" => everInPrefs
 
-
-
-
-PrunedWaitedFor ==
-    pc["leave"] = "Done" /\ pruneApplied
-    /\ leaveEnd \in {"acked", "external", "unadvertised", "nodrain"}
-    => pruneFetched
-
-
-S5Recorded ==
-    pc["leave"] = "Done" /\ pruneOK
-    /\ leaveEnd \in {"external", "unadvertised", "nodrain"}
-    => pruneFetched
-
-S5Unrecorded ==
-    pc["leave"] = "Done" /\ pruneApplied /\ ~pruneOK
-    /\ leaveEnd \in {"external", "unadvertised", "nodrain"}
-    => pruneFetched
-
-S5Acked ==
-    pc["leave"] = "Done" /\ pruneApplied /\ leaveEnd = "acked"
-    /\ drainRec.external => pruneFetched
-
-
-
-
-NoHiddenDrain == hiddenAt = {}
-
-
-Hidden(p) == {<<a, pc[a]>> : a \in unfetched \ (Drainers \ {p})}
-
-
-S6Gap == \A h \in hiddenAt : h[2] # "Readvertise_gap"
-S6Lease == \A h \in hiddenAt : h[1] \notin Leases
 
 AckEndsWait == ~ackTimedOut
 
@@ -1213,16 +1431,17 @@ DrainGetsLock ==
 VARIABLES svc, todo, cur, nudges, cafter, early
 
 vars == << stateExists, prefs, daemonGen, daemonUp, ctxDone, crashes, pending, 
-           waitOn, refused, dirty, fetchQ, fetchCount, certIssued, supDaemon, 
-           stopped, retryGen, confReq, leaseReq, drained, advertised, lock, 
-           cancelReg, cctx, drainRec, pruneRec, unpruned, gen, res, out, mark, 
-           cnt, leaveRec, leaveD, after, seen, leaveEnd, everInPrefs, 
-           lockedDrained, addAfterDrained, startedDrained, drainApplied, 
-           ackMade, ackCounted, ackTimedOut, published, leftAdvertising, 
-           pruneApplied, pruneFetched, pruneOK, unfetched, hiddenAt, pc, 
-           stack, svc, todo, cur, nudges, cafter, early >>
+           waitOn, refused, dirty, logQ, fetchCount, removals, removedAt, 
+           removedTo, listed, listKnown, relisted, redrainReq, certIssued, 
+           supDaemon, stopped, leaving, retryGen, confReq, leaseReq, drained, 
+           lock, cancelReg, cctx, cancelled, rmRec, unpruned, gen, res, out, 
+           mark, lrec, leaveD, leaveEnd, settled, drainedGen, everInPrefs, 
+           lockedDrained, addAfterDrained, startedDrained, startDrainFailed, 
+           drainApplied, ackMade, ackCounted, ackTimedOut, published, 
+           leftAdvertising, upAtLeave, pruneApplied, pruneFetched, unfetched, 
+           pc, stack, svc, todo, cur, nudges, cafter, early >>
 
-ProcSet == {"sup"} \cup {"retry"} \cup (Confs) \cup (Leases) \cup {"stop"} \cup {"leave"} \cup {"tailscaled"} \cup {"control"} \cup {"counter"} \cup {"crash"} \cup {"issuer"}
+ProcSet == {"sup"} \cup {"retry"} \cup (Confs) \cup (Leases) \cup {"stop"} \cup {"leave"} \cup {"redrain"} \cup {"tailscaled"} \cup {"orphans"} \cup {"control"} \cup {"counter"} \cup {"crash"} \cup {"issuer"}
 
 Init == (* Global variables *)
         /\ stateExists \in BOOLEAN
@@ -1238,47 +1457,53 @@ Init == (* Global variables *)
         /\ waitOn = [a \in Actors |-> NoReq]
         /\ refused = [a \in Actors |-> FALSE]
         /\ dirty = FALSE
-        /\ fetchQ = [g \in Gens |-> <<>>]
+        /\ logQ = [g \in Gens |-> <<>>]
         /\ fetchCount = [g \in Gens |-> 0]
+        /\ removals = [g \in Gens |-> 0]
+        /\ removedAt = [g \in Gens |-> 0]
+        /\ removedTo = [g \in Gens |-> {}]
+        /\ listed = [g \in Gens |-> {}]
+        /\ listKnown = [g \in Gens |-> FALSE]
+        /\ relisted = [g \in Gens |-> FALSE]
+        /\ redrainReq = [g \in Gens |-> FALSE]
         /\ certIssued = [s \in Services |-> FALSE]
         /\ supDaemon = 0
         /\ stopped = FALSE
+        /\ leaving = FALSE
         /\ retryGen = [s \in Services |-> 0]
         /\ confReq = [s \in Services |-> NoConf]
         /\ leaseReq = [s \in Services |-> 0]
         /\ drained = FALSE
-        /\ advertised = FALSE
         /\ lock = None
         /\ cancelReg = None
         /\ cctx = [a \in Actors |-> FALSE]
-        /\ drainRec = NoRec
-        /\ pruneRec = NoRec
+        /\ cancelled = FALSE
+        /\ rmRec = NoRm
         /\ unpruned = FALSE
         /\ gen = [a \in Actors |-> 0]
         /\ res = [a \in Actors |-> "ok"]
         /\ out = [a \in Actors |-> "ok"]
         /\ mark = [a \in Actors |-> 0]
-        /\ cnt = [a \in Actors |-> 0]
-        /\ leaveRec = NoRec
+        /\ lrec = NoRm
         /\ leaveD = 0
-        /\ after = 0
-        /\ seen = 0
         /\ leaveEnd = None
+        /\ settled = FALSE
+        /\ drainedGen = 0
         /\ everInPrefs = (prefs # {})
         /\ lockedDrained = [a \in Actors |-> FALSE]
         /\ addAfterDrained = FALSE
         /\ startedDrained = FALSE
+        /\ startDrainFailed = [g \in Gens |-> FALSE]
         /\ drainApplied = FALSE
         /\ ackMade = FALSE
         /\ ackCounted = [g \in Gens |-> FALSE]
         /\ ackTimedOut = FALSE
         /\ published = FALSE
         /\ leftAdvertising = FALSE
+        /\ upAtLeave = FALSE
         /\ pruneApplied = FALSE
         /\ pruneFetched = FALSE
-        /\ pruneOK = FALSE
         /\ unfetched = {}
-        /\ hiddenAt = {}
         (* Procedure Configure *)
         /\ svc = [ self \in ProcSet |-> defaultInitValue]
         (* Process Supervisor *)
@@ -1296,7 +1521,9 @@ Init == (* Global variables *)
                                         [] self \in Leases -> "Lease_idle"
                                         [] self = "stop" -> "Stop_signal"
                                         [] self = "leave" -> "Leave_begin"
+                                        [] self = "redrain" -> "Redrain_idle"
                                         [] self = "tailscaled" -> "Tailscaled_answer"
+                                        [] self = "orphans" -> "Orphans_drop"
                                         [] self = "control" -> "Control_fetch"
                                         [] self = "counter" -> "Counter_count"
                                         [] self = "crash" -> "Crash_exit"
@@ -1324,33 +1551,34 @@ Change_lock(self) == /\ pc[self] = "Change_lock"
                                 /\ UNCHANGED << retryGen, out, stack, svc >>
                      /\ UNCHANGED << stateExists, prefs, daemonGen, daemonUp, 
                                      ctxDone, crashes, pending, waitOn, 
-                                     refused, dirty, fetchQ, fetchCount, 
-                                     certIssued, supDaemon, stopped, confReq, 
-                                     leaseReq, drained, advertised, cctx, 
-                                     drainRec, pruneRec, unpruned, gen, res, 
-                                     mark, cnt, leaveRec, leaveD, after, seen, 
-                                     leaveEnd, everInPrefs, addAfterDrained, 
-                                     startedDrained, drainApplied, ackMade, 
-                                     ackCounted, ackTimedOut, published, 
-                                     leftAdvertising, pruneApplied, 
-                                     pruneFetched, pruneOK, unfetched, 
-                                     hiddenAt, todo, cur, nudges, cafter, 
+                                     refused, dirty, logQ, fetchCount, 
+                                     removals, removedAt, removedTo, listed, 
+                                     listKnown, relisted, redrainReq, 
+                                     certIssued, supDaemon, stopped, leaving, 
+                                     confReq, leaseReq, drained, cctx, 
+                                     cancelled, rmRec, unpruned, gen, res, 
+                                     mark, lrec, leaveD, leaveEnd, settled, 
+                                     drainedGen, everInPrefs, addAfterDrained, 
+                                     startedDrained, startDrainFailed, 
+                                     drainApplied, ackMade, ackCounted, 
+                                     ackTimedOut, published, leftAdvertising, 
+                                     upAtLeave, pruneApplied, pruneFetched, 
+                                     unfetched, todo, cur, nudges, cafter, 
                                      early >>
 
 Change_locked(self) == /\ pc[self] = "Change_locked"
                        /\ IF drained /\ Checks
                              THEN /\ pc' = [pc EXCEPT ![self] = "Change_fnReturned"]
-                                  /\ UNCHANGED << pending, waitOn, advertised, 
-                                                  res, mark, addAfterDrained >>
+                                  /\ UNCHANGED << pending, waitOn, res, mark, 
+                                                  addAfterDrained >>
                              ELSE /\ IF ~CallOK(self)
                                         THEN /\ res' = [res EXCEPT ![self] = "err"]
                                              /\ pc' = [pc EXCEPT ![self] = "Change_fnReturned"]
                                              /\ UNCHANGED << pending, waitOn, 
-                                                             advertised, mark, 
+                                                             mark, 
                                                              addAfterDrained >>
                                         ELSE /\ IF svc[self] \in prefs
-                                                   THEN /\ advertised' = TRUE
-                                                        /\ pc' = [pc EXCEPT ![self] = "Change_fnReturned"]
+                                                   THEN /\ pc' = [pc EXCEPT ![self] = "Change_fnReturned"]
                                                         /\ UNCHANGED << pending, 
                                                                         waitOn, 
                                                                         mark, 
@@ -1365,22 +1593,23 @@ Change_locked(self) == /\ pc[self] = "Change_locked"
                                                                    /\ mark' = mark
                                                         /\ addAfterDrained' = (addAfterDrained \/ lockedDrained[self])
                                                         /\ pc' = [pc EXCEPT ![self] = "Advertise_sent"]
-                                                        /\ UNCHANGED advertised
                                              /\ res' = res
                        /\ UNCHANGED << stateExists, prefs, daemonGen, daemonUp, 
-                                       ctxDone, crashes, refused, dirty, 
-                                       fetchQ, fetchCount, certIssued, 
-                                       supDaemon, stopped, retryGen, confReq, 
+                                       ctxDone, crashes, refused, dirty, logQ, 
+                                       fetchCount, removals, removedAt, 
+                                       removedTo, listed, listKnown, relisted, 
+                                       redrainReq, certIssued, supDaemon, 
+                                       stopped, leaving, retryGen, confReq, 
                                        leaseReq, drained, lock, cancelReg, 
-                                       cctx, drainRec, pruneRec, unpruned, gen, 
-                                       out, cnt, leaveRec, leaveD, after, seen, 
-                                       leaveEnd, everInPrefs, lockedDrained, 
-                                       startedDrained, drainApplied, ackMade, 
-                                       ackCounted, ackTimedOut, published, 
-                                       leftAdvertising, pruneApplied, 
-                                       pruneFetched, pruneOK, unfetched, 
-                                       hiddenAt, stack, svc, todo, cur, nudges, 
-                                       cafter, early >>
+                                       cctx, cancelled, rmRec, unpruned, gen, 
+                                       out, lrec, leaveD, leaveEnd, settled, 
+                                       drainedGen, everInPrefs, lockedDrained, 
+                                       startedDrained, startDrainFailed, 
+                                       drainApplied, ackMade, ackCounted, 
+                                       ackTimedOut, published, leftAdvertising, 
+                                       upAtLeave, pruneApplied, pruneFetched, 
+                                       unfetched, stack, svc, todo, cur, 
+                                       nudges, cafter, early >>
 
 Advertise_sent(self) == /\ pc[self] = "Advertise_sent"
                         /\ \/ /\ Applied(self)
@@ -1395,30 +1624,31 @@ Advertise_sent(self) == /\ pc[self] = "Advertise_sent"
                               /\ pc' = [pc EXCEPT ![self] = "Change_fnReturned"]
                         /\ UNCHANGED << stateExists, prefs, daemonGen, 
                                         daemonUp, ctxDone, crashes, pending, 
-                                        dirty, fetchQ, fetchCount, certIssued, 
-                                        supDaemon, stopped, retryGen, confReq, 
-                                        leaseReq, drained, advertised, lock, 
-                                        cancelReg, cctx, drainRec, pruneRec, 
-                                        unpruned, gen, out, mark, cnt, 
-                                        leaveRec, leaveD, after, seen, 
-                                        leaveEnd, everInPrefs, lockedDrained, 
+                                        dirty, logQ, fetchCount, removals, 
+                                        removedAt, removedTo, listed, 
+                                        listKnown, relisted, redrainReq, 
+                                        certIssued, supDaemon, stopped, 
+                                        leaving, retryGen, confReq, leaseReq, 
+                                        drained, lock, cancelReg, cctx, 
+                                        cancelled, rmRec, unpruned, gen, out, 
+                                        mark, lrec, leaveD, leaveEnd, settled, 
+                                        drainedGen, everInPrefs, lockedDrained, 
                                         addAfterDrained, startedDrained, 
-                                        drainApplied, ackMade, ackCounted, 
-                                        ackTimedOut, published, 
-                                        leftAdvertising, pruneApplied, 
-                                        pruneFetched, pruneOK, unfetched, 
-                                        hiddenAt, stack, svc, todo, cur, 
-                                        nudges, cafter, early >>
+                                        startDrainFailed, drainApplied, 
+                                        ackMade, ackCounted, ackTimedOut, 
+                                        published, leftAdvertising, upAtLeave, 
+                                        pruneApplied, pruneFetched, unfetched, 
+                                        stack, svc, todo, cur, nudges, cafter, 
+                                        early >>
 
 Change_fnReturned(self) == /\ pc[self] = "Change_fnReturned"
                            /\ IF res[self] = "added"
-                                 THEN /\ advertised' = TRUE
-                                      /\ IF Confirmer
+                                 THEN /\ IF Confirmer
                                             THEN /\ confReq' = [confReq EXCEPT ![svc[self]] = [gen |-> gen[self], after |-> mark[self]]]
                                             ELSE /\ TRUE
                                                  /\ UNCHANGED confReq
                                  ELSE /\ TRUE
-                                      /\ UNCHANGED << confReq, advertised >>
+                                      /\ UNCHANGED confReq
                            /\ lock' = None
                            /\ cancelReg' = None
                            /\ cctx' = [cctx EXCEPT ![self] = FALSE]
@@ -1444,19 +1674,22 @@ Change_fnReturned(self) == /\ pc[self] = "Change_fnReturned"
                            /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
                            /\ UNCHANGED << stateExists, prefs, daemonGen, 
                                            daemonUp, ctxDone, crashes, pending, 
-                                           waitOn, refused, dirty, fetchQ, 
-                                           fetchCount, certIssued, supDaemon, 
-                                           stopped, leaseReq, drained, 
-                                           drainRec, pruneRec, unpruned, gen, 
-                                           cnt, leaveRec, leaveD, after, seen, 
-                                           leaveEnd, everInPrefs, 
-                                           addAfterDrained, startedDrained, 
+                                           waitOn, refused, dirty, logQ, 
+                                           fetchCount, removals, removedAt, 
+                                           removedTo, listed, listKnown, 
+                                           relisted, redrainReq, certIssued, 
+                                           supDaemon, stopped, leaving, 
+                                           leaseReq, drained, cancelled, rmRec, 
+                                           unpruned, gen, lrec, leaveD, 
+                                           leaveEnd, settled, drainedGen, 
+                                           everInPrefs, addAfterDrained, 
+                                           startedDrained, startDrainFailed, 
                                            drainApplied, ackMade, ackCounted, 
                                            ackTimedOut, published, 
-                                           leftAdvertising, pruneApplied, 
-                                           pruneFetched, pruneOK, unfetched, 
-                                           hiddenAt, todo, cur, nudges, cafter, 
-                                           early >>
+                                           leftAdvertising, upAtLeave, 
+                                           pruneApplied, pruneFetched, 
+                                           unfetched, todo, cur, nudges, 
+                                           cafter, early >>
 
 Configure(self) == Change_lock(self) \/ Change_locked(self)
                       \/ Advertise_sent(self) \/ Change_fnReturned(self)
@@ -1465,206 +1698,272 @@ Drain_begin(self) == /\ pc[self] = "Drain_begin"
                      /\ drained' = TRUE
                      /\ IF cancelReg # None /\ Cancels
                            THEN /\ cctx' = [cctx EXCEPT ![cancelReg] = TRUE]
+                                /\ cancelled' = TRUE
                            ELSE /\ TRUE
-                                /\ cctx' = cctx
+                                /\ UNCHANGED << cctx, cancelled >>
                      /\ pc' = [pc EXCEPT ![self] = "Drain_marked"]
                      /\ UNCHANGED << stateExists, prefs, daemonGen, daemonUp, 
                                      ctxDone, crashes, pending, waitOn, 
-                                     refused, dirty, fetchQ, fetchCount, 
-                                     certIssued, supDaemon, stopped, retryGen, 
-                                     confReq, leaseReq, advertised, lock, 
-                                     cancelReg, drainRec, pruneRec, unpruned, 
-                                     gen, res, out, mark, cnt, leaveRec, 
-                                     leaveD, after, seen, leaveEnd, 
-                                     everInPrefs, lockedDrained, 
+                                     refused, dirty, logQ, fetchCount, 
+                                     removals, removedAt, removedTo, listed, 
+                                     listKnown, relisted, redrainReq, 
+                                     certIssued, supDaemon, stopped, leaving, 
+                                     retryGen, confReq, leaseReq, lock, 
+                                     cancelReg, rmRec, unpruned, gen, res, out, 
+                                     mark, lrec, leaveD, leaveEnd, settled, 
+                                     drainedGen, everInPrefs, lockedDrained, 
                                      addAfterDrained, startedDrained, 
-                                     drainApplied, ackMade, ackCounted, 
-                                     ackTimedOut, published, leftAdvertising, 
-                                     pruneApplied, pruneFetched, pruneOK, 
-                                     unfetched, hiddenAt, stack, svc, todo, 
+                                     startDrainFailed, drainApplied, ackMade, 
+                                     ackCounted, ackTimedOut, published, 
+                                     leftAdvertising, upAtLeave, pruneApplied, 
+                                     pruneFetched, unfetched, stack, svc, todo, 
                                      cur, nudges, cafter, early >>
 
 Drain_marked(self) == /\ pc[self] = "Drain_marked"
+                      /\ IF self = "leave"
+                            THEN /\ drainedGen' = supDaemon
+                            ELSE /\ TRUE
+                                 /\ UNCHANGED drainedGen
                       /\ IF supDaemon = 0
                             THEN /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
                                  /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
-                                 /\ UNCHANGED << lock, cctx, gen, cnt >>
+                                 /\ UNCHANGED << lock, cctx, cancelled, gen >>
                             ELSE /\ lock = None
                                  /\ lock' = self
                                  /\ gen' = [gen EXCEPT ![self] = supDaemon]
                                  /\ IF cancelReg # None /\ Cancels
                                        THEN /\ cctx' = [cctx EXCEPT ![cancelReg] = TRUE]
+                                            /\ cancelled' = TRUE
                                        ELSE /\ TRUE
-                                            /\ cctx' = cctx
-                                 /\ IF drainRec.set
-                                       THEN /\ pc' = [pc EXCEPT ![self] = "Drain_release"]
-                                            /\ cnt' = cnt
-                                       ELSE /\ cnt' = [cnt EXCEPT ![self] = fetchCount[supDaemon]]
-                                            /\ pc' = [pc EXCEPT ![self] = "Drain_countRead"]
+                                            /\ UNCHANGED << cctx, cancelled >>
+                                 /\ pc' = [pc EXCEPT ![self] = "Drain_countRead"]
                                  /\ stack' = stack
                       /\ UNCHANGED << stateExists, prefs, daemonGen, daemonUp, 
                                       ctxDone, crashes, pending, waitOn, 
-                                      refused, dirty, fetchQ, fetchCount, 
-                                      certIssued, supDaemon, stopped, retryGen, 
-                                      confReq, leaseReq, drained, advertised, 
-                                      cancelReg, drainRec, pruneRec, unpruned, 
-                                      res, out, mark, leaveRec, leaveD, after, 
-                                      seen, leaveEnd, everInPrefs, 
-                                      lockedDrained, addAfterDrained, 
-                                      startedDrained, drainApplied, ackMade, 
+                                      refused, dirty, logQ, fetchCount, 
+                                      removals, removedAt, removedTo, listed, 
+                                      listKnown, relisted, redrainReq, 
+                                      certIssued, supDaemon, stopped, leaving, 
+                                      retryGen, confReq, leaseReq, drained, 
+                                      cancelReg, rmRec, unpruned, res, out, 
+                                      mark, lrec, leaveD, leaveEnd, settled, 
+                                      everInPrefs, lockedDrained, 
+                                      addAfterDrained, startedDrained, 
+                                      startDrainFailed, drainApplied, ackMade, 
                                       ackCounted, ackTimedOut, published, 
-                                      leftAdvertising, pruneApplied, 
-                                      pruneFetched, pruneOK, unfetched, 
-                                      hiddenAt, svc, todo, cur, nudges, cafter, 
-                                      early >>
+                                      leftAdvertising, upAtLeave, pruneApplied, 
+                                      pruneFetched, unfetched, svc, todo, cur, 
+                                      nudges, cafter, early >>
 
 Drain_countRead(self) == /\ pc[self] = "Drain_countRead"
-                         /\ IF ~Live(self)
+                         /\ IF ~Live(self) \/ prefs = {}
                                THEN /\ pc' = [pc EXCEPT ![self] = "Drain_release"]
-                                    /\ UNCHANGED << pending, waitOn, drainRec, 
-                                                    hiddenAt >>
-                               ELSE /\ IF prefs = {}
-                                          THEN /\ drainRec' = [set |-> TRUE, gen |-> gen[self], fetches |-> 0,
-                                                               external |-> TRUE]
-                                               /\ hiddenAt' = (hiddenAt \cup Hidden(self))
-                                               /\ pc' = [pc EXCEPT ![self] = "Drain_release"]
-                                               /\ UNCHANGED << pending, waitOn >>
-                                          ELSE /\ LET r == [from |-> self, gen |-> gen[self], val |-> {},
-                                                            kind |-> "drain"] IN
-                                                    /\ pending' = (pending \cup {r})
-                                                    /\ waitOn' = [waitOn EXCEPT ![self] = r]
-                                               /\ pc' = [pc EXCEPT ![self] = "Drain_sent"]
-                                               /\ UNCHANGED << drainRec, 
-                                                               hiddenAt >>
+                                    /\ UNCHANGED << pending, waitOn, rmRec >>
+                               ELSE /\ IF RecordsAtSend(self)
+                                          THEN /\ rmRec' = [set |-> TRUE, gen |-> (gen[self]), removals |-> removals[(gen[self])],
+                                                            leaves |-> ({}), start |-> FALSE, fetches |-> fetchCount[(gen[self])]]
+                                          ELSE /\ TRUE
+                                               /\ rmRec' = rmRec
+                                    /\ LET r == [from |-> self, gen |-> gen[self], val |-> {},
+                                                 kind |-> "drain"] IN
+                                         /\ pending' = (pending \cup {r})
+                                         /\ waitOn' = [waitOn EXCEPT ![self] = r]
+                                    /\ pc' = [pc EXCEPT ![self] = "Drain_sent"]
                          /\ UNCHANGED << stateExists, prefs, daemonGen, 
                                          daemonUp, ctxDone, crashes, refused, 
-                                         dirty, fetchQ, fetchCount, certIssued, 
-                                         supDaemon, stopped, retryGen, confReq, 
-                                         leaseReq, drained, advertised, lock, 
-                                         cancelReg, cctx, pruneRec, unpruned, 
-                                         gen, res, out, mark, cnt, leaveRec, 
-                                         leaveD, after, seen, leaveEnd, 
-                                         everInPrefs, lockedDrained, 
-                                         addAfterDrained, startedDrained, 
+                                         dirty, logQ, fetchCount, removals, 
+                                         removedAt, removedTo, listed, 
+                                         listKnown, relisted, redrainReq, 
+                                         certIssued, supDaemon, stopped, 
+                                         leaving, retryGen, confReq, leaseReq, 
+                                         drained, lock, cancelReg, cctx, 
+                                         cancelled, unpruned, gen, res, out, 
+                                         mark, lrec, leaveD, leaveEnd, settled, 
+                                         drainedGen, everInPrefs, 
+                                         lockedDrained, addAfterDrained, 
+                                         startedDrained, startDrainFailed, 
                                          drainApplied, ackMade, ackCounted, 
                                          ackTimedOut, published, 
-                                         leftAdvertising, pruneApplied, 
-                                         pruneFetched, pruneOK, unfetched, 
+                                         leftAdvertising, upAtLeave, 
+                                         pruneApplied, pruneFetched, unfetched, 
                                          stack, svc, todo, cur, nudges, cafter, 
                                          early >>
 
 Drain_sent(self) == /\ pc[self] = "Drain_sent"
                     /\ \/ /\ Applied(self)
-                          /\ waitOn' = [waitOn EXCEPT ![self] = NoReq]
-                          /\ pc' = [pc EXCEPT ![self] = "Drain_edited"]
+                          /\ IF Mutation = "record-on-return"
+                                THEN /\ rmRec' = [set |-> TRUE, gen |-> (gen[self]), removals |-> removals[(gen[self])],
+                                                  leaves |-> ({}), start |-> FALSE, fetches |-> fetchCount[(gen[self])]]
+                                ELSE /\ TRUE
+                                     /\ rmRec' = rmRec
                        \/ /\ ~Live(self)
-                          /\ waitOn' = [waitOn EXCEPT ![self] = NoReq]
-                          /\ pc' = [pc EXCEPT ![self] = "Drain_release"]
-                       \/ /\ waitOn' = [waitOn EXCEPT ![self] = NoReq]
-                          /\ pc' = [pc EXCEPT ![self] = "Drain_release"]
+                          /\ rmRec' = rmRec
+                       \/ /\ TRUE
+                          /\ rmRec' = rmRec
+                    /\ waitOn' = [waitOn EXCEPT ![self] = NoReq]
+                    /\ pc' = [pc EXCEPT ![self] = "Drain_release"]
                     /\ UNCHANGED << stateExists, prefs, daemonGen, daemonUp, 
                                     ctxDone, crashes, pending, refused, dirty, 
-                                    fetchQ, fetchCount, certIssued, supDaemon, 
-                                    stopped, retryGen, confReq, leaseReq, 
-                                    drained, advertised, lock, cancelReg, cctx, 
-                                    drainRec, pruneRec, unpruned, gen, res, 
-                                    out, mark, cnt, leaveRec, leaveD, after, 
-                                    seen, leaveEnd, everInPrefs, lockedDrained, 
+                                    logQ, fetchCount, removals, removedAt, 
+                                    removedTo, listed, listKnown, relisted, 
+                                    redrainReq, certIssued, supDaemon, stopped, 
+                                    leaving, retryGen, confReq, leaseReq, 
+                                    drained, lock, cancelReg, cctx, cancelled, 
+                                    unpruned, gen, res, out, mark, lrec, 
+                                    leaveD, leaveEnd, settled, drainedGen, 
+                                    everInPrefs, lockedDrained, 
                                     addAfterDrained, startedDrained, 
-                                    drainApplied, ackMade, ackCounted, 
-                                    ackTimedOut, published, leftAdvertising, 
-                                    pruneApplied, pruneFetched, pruneOK, 
-                                    unfetched, hiddenAt, stack, svc, todo, cur, 
-                                    nudges, cafter, early >>
-
-Drain_edited(self) == /\ pc[self] = "Drain_edited"
-                      /\ drainRec' = [set |-> TRUE, gen |-> gen[self], fetches |-> cnt[self],
-                                      external |-> Mutation = "drain-records-external-always"]
-                      /\ IF Mutation = "drain-records-external-always"
-                            THEN /\ hiddenAt' = (hiddenAt \cup Hidden(self))
-                            ELSE /\ TRUE
-                                 /\ UNCHANGED hiddenAt
-                      /\ IF lock = self
-                            THEN /\ lock' = None
-                            ELSE /\ TRUE
-                                 /\ lock' = lock
-                      /\ cnt' = [cnt EXCEPT ![self] = 0]
-                      /\ gen' = [gen EXCEPT ![self] = 0]
-                      /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
-                      /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
-                      /\ UNCHANGED << stateExists, prefs, daemonGen, daemonUp, 
-                                      ctxDone, crashes, pending, waitOn, 
-                                      refused, dirty, fetchQ, fetchCount, 
-                                      certIssued, supDaemon, stopped, retryGen, 
-                                      confReq, leaseReq, drained, advertised, 
-                                      cancelReg, cctx, pruneRec, unpruned, res, 
-                                      out, mark, leaveRec, leaveD, after, seen, 
-                                      leaveEnd, everInPrefs, lockedDrained, 
-                                      addAfterDrained, startedDrained, 
-                                      drainApplied, ackMade, ackCounted, 
-                                      ackTimedOut, published, leftAdvertising, 
-                                      pruneApplied, pruneFetched, pruneOK, 
-                                      unfetched, svc, todo, cur, nudges, 
-                                      cafter, early >>
+                                    startDrainFailed, drainApplied, ackMade, 
+                                    ackCounted, ackTimedOut, published, 
+                                    leftAdvertising, upAtLeave, pruneApplied, 
+                                    pruneFetched, unfetched, stack, svc, todo, 
+                                    cur, nudges, cafter, early >>
 
 Drain_release(self) == /\ pc[self] = "Drain_release"
                        /\ IF lock = self
                              THEN /\ lock' = None
                              ELSE /\ TRUE
                                   /\ lock' = lock
-                       /\ cnt' = [cnt EXCEPT ![self] = 0]
                        /\ gen' = [gen EXCEPT ![self] = 0]
                        /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
                        /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
                        /\ UNCHANGED << stateExists, prefs, daemonGen, daemonUp, 
                                        ctxDone, crashes, pending, waitOn, 
-                                       refused, dirty, fetchQ, fetchCount, 
-                                       certIssued, supDaemon, stopped, 
+                                       refused, dirty, logQ, fetchCount, 
+                                       removals, removedAt, removedTo, listed, 
+                                       listKnown, relisted, redrainReq, 
+                                       certIssued, supDaemon, stopped, leaving, 
                                        retryGen, confReq, leaseReq, drained, 
-                                       advertised, cancelReg, cctx, drainRec, 
-                                       pruneRec, unpruned, res, out, mark, 
-                                       leaveRec, leaveD, after, seen, leaveEnd, 
+                                       cancelReg, cctx, cancelled, rmRec, 
+                                       unpruned, res, out, mark, lrec, leaveD, 
+                                       leaveEnd, settled, drainedGen, 
                                        everInPrefs, lockedDrained, 
                                        addAfterDrained, startedDrained, 
-                                       drainApplied, ackMade, ackCounted, 
-                                       ackTimedOut, published, leftAdvertising, 
-                                       pruneApplied, pruneFetched, pruneOK, 
-                                       unfetched, hiddenAt, svc, todo, cur, 
-                                       nudges, cafter, early >>
+                                       startDrainFailed, drainApplied, ackMade, 
+                                       ackCounted, ackTimedOut, published, 
+                                       leftAdvertising, upAtLeave, 
+                                       pruneApplied, pruneFetched, unfetched, 
+                                       svc, todo, cur, nudges, cafter, early >>
 
 DrainProc(self) == Drain_begin(self) \/ Drain_marked(self)
                       \/ Drain_countRead(self) \/ Drain_sent(self)
-                      \/ Drain_edited(self) \/ Drain_release(self)
+                      \/ Drain_release(self)
 
 Sup_loop == /\ pc["sup"] = "Sup_loop"
             /\ IF ~stopped
                   THEN /\ daemonGen' = daemonGen + 1
                        /\ gen' = [gen EXCEPT !["sup"] = daemonGen']
-                       /\ IF stateExists
-                             THEN /\ advertised' = TRUE
-                             ELSE /\ TRUE
-                                  /\ UNCHANGED advertised
                        /\ daemonUp' = TRUE
                        /\ stateExists' = TRUE
                        /\ startedDrained' = drained
                        /\ dirty' = TRUE
                        /\ todo' = Services
-                       /\ IF ~Prune
-                             THEN /\ pc' = [pc EXCEPT !["sup"] = "Start_backends"]
-                             ELSE /\ pc' = [pc EXCEPT !["sup"] = "Prune_begin"]
+                       /\ pc' = [pc EXCEPT !["sup"] = "Start_drain"]
                   ELSE /\ pc' = [pc EXCEPT !["sup"] = "Done"]
                        /\ UNCHANGED << stateExists, daemonGen, daemonUp, dirty, 
-                                       advertised, gen, startedDrained, todo >>
+                                       gen, startedDrained, todo >>
             /\ UNCHANGED << prefs, ctxDone, crashes, pending, waitOn, refused, 
-                            fetchQ, fetchCount, certIssued, supDaemon, stopped, 
-                            retryGen, confReq, leaseReq, drained, lock, 
-                            cancelReg, cctx, drainRec, pruneRec, unpruned, res, 
-                            out, mark, cnt, leaveRec, leaveD, after, seen, 
-                            leaveEnd, everInPrefs, lockedDrained, 
-                            addAfterDrained, drainApplied, ackMade, ackCounted, 
-                            ackTimedOut, published, leftAdvertising, 
-                            pruneApplied, pruneFetched, pruneOK, unfetched, 
-                            hiddenAt, stack, svc, cur, nudges, cafter, early >>
+                            logQ, fetchCount, removals, removedAt, removedTo, 
+                            listed, listKnown, relisted, redrainReq, 
+                            certIssued, supDaemon, stopped, leaving, retryGen, 
+                            confReq, leaseReq, drained, lock, cancelReg, cctx, 
+                            cancelled, rmRec, unpruned, res, out, mark, lrec, 
+                            leaveD, leaveEnd, settled, drainedGen, everInPrefs, 
+                            lockedDrained, addAfterDrained, startDrainFailed, 
+                            drainApplied, ackMade, ackCounted, ackTimedOut, 
+                            published, leftAdvertising, upAtLeave, 
+                            pruneApplied, pruneFetched, unfetched, stack, svc, 
+                            cur, nudges, cafter, early >>
+
+Start_drain == /\ pc["sup"] = "Start_drain"
+               /\ IF drained /\ Mutation # "no-drain-at-start"
+                     THEN /\ lock = None
+                          /\ IF ~CallOK("sup")
+                                THEN /\ startDrainFailed' = [startDrainFailed EXCEPT ![gen["sup"]] = TRUE]
+                                     /\ pc' = [pc EXCEPT !["sup"] = "Start_next"]
+                                     /\ UNCHANGED << pending, waitOn, lock, 
+                                                     rmRec >>
+                                ELSE /\ IF prefs = {}
+                                           THEN /\ IF rmRec.set /\ rmRec.gen # gen["sup"]
+                                                      THEN /\ rmRec' = [rmRec EXCEPT !.gen = gen["sup"], !.start = TRUE]
+                                                      ELSE /\ TRUE
+                                                           /\ rmRec' = rmRec
+                                                /\ pc' = [pc EXCEPT !["sup"] = "Start_next"]
+                                                /\ UNCHANGED << pending, 
+                                                                waitOn, lock >>
+                                           ELSE /\ lock' = "sup"
+                                                /\ rmRec' = [set |-> TRUE, gen |-> (gen["sup"]), removals |-> removals[(gen["sup"])],
+                                                             leaves |-> ({}), start |-> FALSE, fetches |-> fetchCount[(gen["sup"])]]
+                                                /\ LET r == [from |-> "sup", gen |-> gen["sup"], val |-> {},
+                                                             kind |-> "drain"] IN
+                                                     /\ pending' = (pending \cup {r})
+                                                     /\ waitOn' = [waitOn EXCEPT !["sup"] = r]
+                                                /\ pc' = [pc EXCEPT !["sup"] = "Start_drainSent"]
+                                     /\ UNCHANGED startDrainFailed
+                     ELSE /\ pc' = [pc EXCEPT !["sup"] = "Start_next"]
+                          /\ UNCHANGED << pending, waitOn, lock, rmRec, 
+                                          startDrainFailed >>
+               /\ UNCHANGED << stateExists, prefs, daemonGen, daemonUp, 
+                               ctxDone, crashes, refused, dirty, logQ, 
+                               fetchCount, removals, removedAt, removedTo, 
+                               listed, listKnown, relisted, redrainReq, 
+                               certIssued, supDaemon, stopped, leaving, 
+                               retryGen, confReq, leaseReq, drained, cancelReg, 
+                               cctx, cancelled, unpruned, gen, res, out, mark, 
+                               lrec, leaveD, leaveEnd, settled, drainedGen, 
+                               everInPrefs, lockedDrained, addAfterDrained, 
+                               startedDrained, drainApplied, ackMade, 
+                               ackCounted, ackTimedOut, published, 
+                               leftAdvertising, upAtLeave, pruneApplied, 
+                               pruneFetched, unfetched, stack, svc, todo, cur, 
+                               nudges, cafter, early >>
+
+Start_next == /\ pc["sup"] = "Start_next"
+              /\ IF Prune
+                    THEN /\ pc' = [pc EXCEPT !["sup"] = "Prune_begin"]
+                    ELSE /\ pc' = [pc EXCEPT !["sup"] = "Start_backends"]
+              /\ UNCHANGED << stateExists, prefs, daemonGen, daemonUp, ctxDone, 
+                              crashes, pending, waitOn, refused, dirty, logQ, 
+                              fetchCount, removals, removedAt, removedTo, 
+                              listed, listKnown, relisted, redrainReq, 
+                              certIssued, supDaemon, stopped, leaving, 
+                              retryGen, confReq, leaseReq, drained, lock, 
+                              cancelReg, cctx, cancelled, rmRec, unpruned, gen, 
+                              res, out, mark, lrec, leaveD, leaveEnd, settled, 
+                              drainedGen, everInPrefs, lockedDrained, 
+                              addAfterDrained, startedDrained, 
+                              startDrainFailed, drainApplied, ackMade, 
+                              ackCounted, ackTimedOut, published, 
+                              leftAdvertising, upAtLeave, pruneApplied, 
+                              pruneFetched, unfetched, stack, svc, todo, cur, 
+                              nudges, cafter, early >>
+
+Start_drainSent == /\ pc["sup"] = "Start_drainSent"
+                   /\ \/ /\ Applied("sup")
+                         /\ UNCHANGED startDrainFailed
+                      \/ /\ ~Live("sup")
+                         /\ startDrainFailed' = [startDrainFailed EXCEPT ![gen["sup"]] = TRUE]
+                      \/ /\ startDrainFailed' = [startDrainFailed EXCEPT ![gen["sup"]] = TRUE]
+                   /\ waitOn' = [waitOn EXCEPT !["sup"] = NoReq]
+                   /\ lock' = None
+                   /\ IF ~Prune
+                         THEN /\ pc' = [pc EXCEPT !["sup"] = "Start_backends"]
+                         ELSE /\ pc' = [pc EXCEPT !["sup"] = "Prune_begin"]
+                   /\ UNCHANGED << stateExists, prefs, daemonGen, daemonUp, 
+                                   ctxDone, crashes, pending, refused, dirty, 
+                                   logQ, fetchCount, removals, removedAt, 
+                                   removedTo, listed, listKnown, relisted, 
+                                   redrainReq, certIssued, supDaemon, stopped, 
+                                   leaving, retryGen, confReq, leaseReq, 
+                                   drained, cancelReg, cctx, cancelled, rmRec, 
+                                   unpruned, gen, res, out, mark, lrec, leaveD, 
+                                   leaveEnd, settled, drainedGen, everInPrefs, 
+                                   lockedDrained, addAfterDrained, 
+                                   startedDrained, drainApplied, ackMade, 
+                                   ackCounted, ackTimedOut, published, 
+                                   leftAdvertising, upAtLeave, pruneApplied, 
+                                   pruneFetched, unfetched, stack, svc, todo, 
+                                   cur, nudges, cafter, early >>
 
 Prune_begin == /\ pc["sup"] = "Prune_begin"
                /\ lock = None
@@ -1672,21 +1971,26 @@ Prune_begin == /\ pc["sup"] = "Prune_begin"
                      THEN /\ unpruned' = FALSE
                           /\ pc' = [pc EXCEPT !["sup"] = "Start_backends"]
                           /\ UNCHANGED << pending, waitOn, lock, cancelReg, 
-                                          cnt >>
+                                          rmRec >>
                      ELSE /\ IF ~CallOK("sup")
                                 THEN /\ unpruned' = TRUE
                                      /\ pc' = [pc EXCEPT !["sup"] = "Start_backends"]
                                      /\ UNCHANGED << pending, waitOn, lock, 
-                                                     cancelReg, cnt >>
+                                                     cancelReg, rmRec >>
                                 ELSE /\ IF Stale \notin prefs
                                            THEN /\ unpruned' = FALSE
                                                 /\ pc' = [pc EXCEPT !["sup"] = "Start_backends"]
                                                 /\ UNCHANGED << pending, 
                                                                 waitOn, lock, 
-                                                                cancelReg, cnt >>
+                                                                cancelReg, 
+                                                                rmRec >>
                                            ELSE /\ lock' = "sup"
                                                 /\ cancelReg' = "sup"
-                                                /\ cnt' = [cnt EXCEPT !["sup"] = fetchCount[gen["sup"]]]
+                                                /\ IF RecordsAtSend("sup")
+                                                      THEN /\ rmRec' = [set |-> TRUE, gen |-> (gen["sup"]), removals |-> removals[(gen["sup"])],
+                                                                        leaves |-> (prefs \ {Stale}), start |-> FALSE, fetches |-> fetchCount[(gen["sup"])]]
+                                                      ELSE /\ TRUE
+                                                           /\ rmRec' = rmRec
                                                 /\ LET r == [from |-> "sup", gen |-> gen["sup"],
                                                              val |-> prefs \ {Stale}, kind |-> "prune"] IN
                                                      /\ pending' = (pending \cup {r})
@@ -1694,68 +1998,71 @@ Prune_begin == /\ pc["sup"] = "Prune_begin"
                                                 /\ pc' = [pc EXCEPT !["sup"] = "Prune_sent"]
                                                 /\ UNCHANGED unpruned
                /\ UNCHANGED << stateExists, prefs, daemonGen, daemonUp, 
-                               ctxDone, crashes, refused, dirty, fetchQ, 
-                               fetchCount, certIssued, supDaemon, stopped, 
-                               retryGen, confReq, leaseReq, drained, 
-                               advertised, cctx, drainRec, pruneRec, gen, res, 
-                               out, mark, leaveRec, leaveD, after, seen, 
-                               leaveEnd, everInPrefs, lockedDrained, 
-                               addAfterDrained, startedDrained, drainApplied, 
-                               ackMade, ackCounted, ackTimedOut, published, 
-                               leftAdvertising, pruneApplied, pruneFetched, 
-                               pruneOK, unfetched, hiddenAt, stack, svc, todo, 
-                               cur, nudges, cafter, early >>
+                               ctxDone, crashes, refused, dirty, logQ, 
+                               fetchCount, removals, removedAt, removedTo, 
+                               listed, listKnown, relisted, redrainReq, 
+                               certIssued, supDaemon, stopped, leaving, 
+                               retryGen, confReq, leaseReq, drained, cctx, 
+                               cancelled, gen, res, out, mark, lrec, leaveD, 
+                               leaveEnd, settled, drainedGen, everInPrefs, 
+                               lockedDrained, addAfterDrained, startedDrained, 
+                               startDrainFailed, drainApplied, ackMade, 
+                               ackCounted, ackTimedOut, published, 
+                               leftAdvertising, upAtLeave, pruneApplied, 
+                               pruneFetched, unfetched, stack, svc, todo, cur, 
+                               nudges, cafter, early >>
 
 Prune_sent == /\ pc["sup"] = "Prune_sent"
               /\ \/ /\ Applied("sup")
                     /\ res' = [res EXCEPT !["sup"] = "added"]
+                    /\ IF Mutation = "record-on-return"
+                          THEN /\ rmRec' = [set |-> TRUE, gen |-> (gen["sup"]), removals |-> removals[(gen["sup"])],
+                                            leaves |-> prefs, start |-> FALSE, fetches |-> fetchCount[(gen["sup"])]]
+                          ELSE /\ TRUE
+                               /\ rmRec' = rmRec
                  \/ /\ ~CallOK("sup")
                     /\ res' = [res EXCEPT !["sup"] = "err"]
+                    /\ rmRec' = rmRec
                  \/ /\ res' = [res EXCEPT !["sup"] = "err"]
+                    /\ rmRec' = rmRec
               /\ waitOn' = [waitOn EXCEPT !["sup"] = NoReq]
               /\ pc' = [pc EXCEPT !["sup"] = "Prune_edited"]
               /\ UNCHANGED << stateExists, prefs, daemonGen, daemonUp, ctxDone, 
-                              crashes, pending, refused, dirty, fetchQ, 
-                              fetchCount, certIssued, supDaemon, stopped, 
-                              retryGen, confReq, leaseReq, drained, advertised, 
-                              lock, cancelReg, cctx, drainRec, pruneRec, 
-                              unpruned, gen, out, mark, cnt, leaveRec, leaveD, 
-                              after, seen, leaveEnd, everInPrefs, 
-                              lockedDrained, addAfterDrained, startedDrained, 
-                              drainApplied, ackMade, ackCounted, ackTimedOut, 
-                              published, leftAdvertising, pruneApplied, 
-                              pruneFetched, pruneOK, unfetched, hiddenAt, 
-                              stack, svc, todo, cur, nudges, cafter, early >>
+                              crashes, pending, refused, dirty, logQ, 
+                              fetchCount, removals, removedAt, removedTo, 
+                              listed, listKnown, relisted, redrainReq, 
+                              certIssued, supDaemon, stopped, leaving, 
+                              retryGen, confReq, leaseReq, drained, lock, 
+                              cancelReg, cctx, cancelled, unpruned, gen, out, 
+                              mark, lrec, leaveD, leaveEnd, settled, 
+                              drainedGen, everInPrefs, lockedDrained, 
+                              addAfterDrained, startedDrained, 
+                              startDrainFailed, drainApplied, ackMade, 
+                              ackCounted, ackTimedOut, published, 
+                              leftAdvertising, upAtLeave, pruneApplied, 
+                              pruneFetched, unfetched, stack, svc, todo, cur, 
+                              nudges, cafter, early >>
 
 Prune_edited == /\ pc["sup"] = "Prune_edited"
-                /\ IF res["sup"] = "added"
-                      THEN /\ pruneOK' = TRUE
-                           /\ IF Mutation # "prune-no-record"
-                                 THEN /\ pruneRec' = [set |-> TRUE, gen |-> gen["sup"],
-                                                      fetches |-> cnt["sup"], external |-> FALSE]
-                                 ELSE /\ TRUE
-                                      /\ UNCHANGED pruneRec
-                           /\ advertised' = TRUE
-                      ELSE /\ TRUE
-                           /\ UNCHANGED << advertised, pruneRec, pruneOK >>
                 /\ unpruned' = (res["sup"] = "err" /\ ~drained)
                 /\ lock' = None
                 /\ cancelReg' = None
                 /\ cctx' = [cctx EXCEPT !["sup"] = FALSE]
                 /\ res' = [res EXCEPT !["sup"] = "ok"]
-                /\ cnt' = [cnt EXCEPT !["sup"] = 0]
                 /\ pc' = [pc EXCEPT !["sup"] = "Start_backends"]
                 /\ UNCHANGED << stateExists, prefs, daemonGen, daemonUp, 
                                 ctxDone, crashes, pending, waitOn, refused, 
-                                dirty, fetchQ, fetchCount, certIssued, 
-                                supDaemon, stopped, retryGen, confReq, 
-                                leaseReq, drained, drainRec, gen, out, mark, 
-                                leaveRec, leaveD, after, seen, leaveEnd, 
-                                everInPrefs, lockedDrained, addAfterDrained, 
-                                startedDrained, drainApplied, ackMade, 
+                                dirty, logQ, fetchCount, removals, removedAt, 
+                                removedTo, listed, listKnown, relisted, 
+                                redrainReq, certIssued, supDaemon, stopped, 
+                                leaving, retryGen, confReq, leaseReq, drained, 
+                                cancelled, rmRec, gen, out, mark, lrec, leaveD, 
+                                leaveEnd, settled, drainedGen, everInPrefs, 
+                                lockedDrained, addAfterDrained, startedDrained, 
+                                startDrainFailed, drainApplied, ackMade, 
                                 ackCounted, ackTimedOut, published, 
-                                leftAdvertising, pruneApplied, pruneFetched, 
-                                unfetched, hiddenAt, stack, svc, todo, cur, 
+                                leftAdvertising, upAtLeave, pruneApplied, 
+                                pruneFetched, unfetched, stack, svc, todo, cur, 
                                 nudges, cafter, early >>
 
 Start_backends == /\ pc["sup"] = "Start_backends"
@@ -1784,16 +2091,18 @@ Start_backends == /\ pc["sup"] = "Start_backends"
                              /\ UNCHANGED << leaseReq, stack, svc, todo >>
                   /\ UNCHANGED << stateExists, prefs, daemonGen, daemonUp, 
                                   ctxDone, crashes, pending, waitOn, refused, 
-                                  dirty, fetchQ, fetchCount, certIssued, 
-                                  stopped, retryGen, confReq, drained, 
-                                  advertised, lock, cancelReg, cctx, drainRec, 
-                                  pruneRec, unpruned, gen, res, out, mark, cnt, 
-                                  leaveRec, leaveD, after, seen, leaveEnd, 
-                                  everInPrefs, lockedDrained, addAfterDrained, 
-                                  startedDrained, drainApplied, ackMade, 
+                                  dirty, logQ, fetchCount, removals, removedAt, 
+                                  removedTo, listed, listKnown, relisted, 
+                                  redrainReq, certIssued, stopped, leaving, 
+                                  retryGen, confReq, drained, lock, cancelReg, 
+                                  cctx, cancelled, rmRec, unpruned, gen, res, 
+                                  out, mark, lrec, leaveD, leaveEnd, settled, 
+                                  drainedGen, everInPrefs, lockedDrained, 
+                                  addAfterDrained, startedDrained, 
+                                  startDrainFailed, drainApplied, ackMade, 
                                   ackCounted, ackTimedOut, leftAdvertising, 
-                                  pruneApplied, pruneFetched, pruneOK, 
-                                  unfetched, hiddenAt, nudges, cafter, early >>
+                                  upAtLeave, pruneApplied, pruneFetched, 
+                                  unfetched, nudges, cafter, early >>
 
 Daemon_started == /\ pc["sup"] = "Daemon_started"
                   /\ ~daemonUp \/ stopped
@@ -1805,19 +2114,23 @@ Daemon_started == /\ pc["sup"] = "Daemon_started"
                   /\ pc' = [pc EXCEPT !["sup"] = "Sup_loop"]
                   /\ UNCHANGED << stateExists, prefs, daemonGen, daemonUp, 
                                   crashes, pending, waitOn, refused, dirty, 
-                                  fetchQ, fetchCount, certIssued, stopped, 
-                                  retryGen, confReq, leaseReq, drained, 
-                                  advertised, lock, cancelReg, cctx, drainRec, 
-                                  pruneRec, unpruned, gen, res, out, mark, cnt, 
-                                  leaveRec, leaveD, after, seen, leaveEnd, 
-                                  everInPrefs, lockedDrained, addAfterDrained, 
-                                  startedDrained, drainApplied, ackMade, 
-                                  ackCounted, ackTimedOut, published, 
-                                  leftAdvertising, pruneApplied, pruneFetched, 
-                                  pruneOK, unfetched, hiddenAt, stack, svc, 
-                                  todo, cur, nudges, cafter, early >>
+                                  logQ, fetchCount, removals, removedAt, 
+                                  removedTo, listed, listKnown, relisted, 
+                                  redrainReq, certIssued, stopped, leaving, 
+                                  retryGen, confReq, leaseReq, drained, lock, 
+                                  cancelReg, cctx, cancelled, rmRec, unpruned, 
+                                  gen, res, out, mark, lrec, leaveD, leaveEnd, 
+                                  settled, drainedGen, everInPrefs, 
+                                  lockedDrained, addAfterDrained, 
+                                  startedDrained, startDrainFailed, 
+                                  drainApplied, ackMade, ackCounted, 
+                                  ackTimedOut, published, leftAdvertising, 
+                                  upAtLeave, pruneApplied, pruneFetched, 
+                                  unfetched, stack, svc, todo, cur, nudges, 
+                                  cafter, early >>
 
-Supervisor == Sup_loop \/ Prune_begin \/ Prune_sent \/ Prune_edited
+Supervisor == Sup_loop \/ Start_drain \/ Start_next \/ Start_drainSent
+                 \/ Prune_begin \/ Prune_sent \/ Prune_edited
                  \/ Start_backends \/ Daemon_started
 
 Retry_poll == /\ pc["retry"] = "Retry_poll"
@@ -1843,16 +2156,18 @@ Retry_poll == /\ pc["retry"] = "Retry_poll"
                     ELSE /\ pc' = [pc EXCEPT !["retry"] = "Done"]
                          /\ UNCHANGED << retryGen, gen, stack, svc >>
               /\ UNCHANGED << stateExists, prefs, daemonGen, daemonUp, ctxDone, 
-                              crashes, pending, waitOn, refused, dirty, fetchQ, 
-                              fetchCount, certIssued, supDaemon, stopped, 
-                              confReq, leaseReq, drained, advertised, lock, 
-                              cancelReg, cctx, drainRec, pruneRec, unpruned, 
-                              res, out, mark, cnt, leaveRec, leaveD, after, 
-                              seen, leaveEnd, everInPrefs, lockedDrained, 
-                              addAfterDrained, startedDrained, drainApplied, 
+                              crashes, pending, waitOn, refused, dirty, logQ, 
+                              fetchCount, removals, removedAt, removedTo, 
+                              listed, listKnown, relisted, redrainReq, 
+                              certIssued, supDaemon, stopped, leaving, confReq, 
+                              leaseReq, drained, lock, cancelReg, cctx, 
+                              cancelled, rmRec, unpruned, res, out, mark, lrec, 
+                              leaveD, leaveEnd, settled, drainedGen, 
+                              everInPrefs, lockedDrained, addAfterDrained, 
+                              startedDrained, startDrainFailed, drainApplied, 
                               ackMade, ackCounted, ackTimedOut, published, 
-                              leftAdvertising, pruneApplied, pruneFetched, 
-                              pruneOK, unfetched, hiddenAt, todo, cur, nudges, 
+                              leftAdvertising, upAtLeave, pruneApplied, 
+                              pruneFetched, unfetched, todo, cur, nudges, 
                               cafter, early >>
 
 Retry == Retry_poll
@@ -1869,19 +2184,21 @@ Confirm_idle(self) == /\ pc[self] = "Confirm_idle"
                                  /\ UNCHANGED << confReq, gen, nudges, cafter >>
                       /\ UNCHANGED << stateExists, prefs, daemonGen, daemonUp, 
                                       ctxDone, crashes, pending, waitOn, 
-                                      refused, dirty, fetchQ, fetchCount, 
-                                      certIssued, supDaemon, stopped, retryGen, 
-                                      leaseReq, drained, advertised, lock, 
-                                      cancelReg, cctx, drainRec, pruneRec, 
-                                      unpruned, res, out, mark, cnt, leaveRec, 
-                                      leaveD, after, seen, leaveEnd, 
+                                      refused, dirty, logQ, fetchCount, 
+                                      removals, removedAt, removedTo, listed, 
+                                      listKnown, relisted, redrainReq, 
+                                      certIssued, supDaemon, stopped, leaving, 
+                                      retryGen, leaseReq, drained, lock, 
+                                      cancelReg, cctx, cancelled, rmRec, 
+                                      unpruned, res, out, mark, lrec, leaveD, 
+                                      leaveEnd, settled, drainedGen, 
                                       everInPrefs, lockedDrained, 
                                       addAfterDrained, startedDrained, 
-                                      drainApplied, ackMade, ackCounted, 
-                                      ackTimedOut, published, leftAdvertising, 
-                                      pruneApplied, pruneFetched, pruneOK, 
-                                      unfetched, hiddenAt, stack, svc, todo, 
-                                      cur, early >>
+                                      startDrainFailed, drainApplied, ackMade, 
+                                      ackCounted, ackTimedOut, published, 
+                                      leftAdvertising, upAtLeave, pruneApplied, 
+                                      pruneFetched, unfetched, stack, svc, 
+                                      todo, cur, early >>
 
 Confirm_wait(self) == /\ pc[self] = "Confirm_wait"
                       /\ \/ /\ fetchCount[gen[self]] > cafter[self] \/ ctxDone[gen[self]]
@@ -1900,39 +2217,48 @@ Confirm_wait(self) == /\ pc[self] = "Confirm_wait"
                                                   /\ pc' = [pc EXCEPT ![self] = "Readvertise_begin"]
                       /\ UNCHANGED << stateExists, prefs, daemonGen, daemonUp, 
                                       ctxDone, crashes, pending, waitOn, 
-                                      refused, dirty, fetchQ, fetchCount, 
-                                      certIssued, supDaemon, stopped, retryGen, 
-                                      confReq, leaseReq, drained, advertised, 
-                                      lock, cancelReg, cctx, drainRec, 
-                                      pruneRec, unpruned, gen, res, out, mark, 
-                                      cnt, leaveRec, leaveD, after, seen, 
-                                      leaveEnd, everInPrefs, lockedDrained, 
+                                      refused, dirty, logQ, fetchCount, 
+                                      removals, removedAt, removedTo, listed, 
+                                      listKnown, relisted, redrainReq, 
+                                      certIssued, supDaemon, stopped, leaving, 
+                                      retryGen, confReq, leaseReq, drained, 
+                                      lock, cancelReg, cctx, cancelled, rmRec, 
+                                      unpruned, gen, res, out, mark, lrec, 
+                                      leaveD, leaveEnd, settled, drainedGen, 
+                                      everInPrefs, lockedDrained, 
                                       addAfterDrained, startedDrained, 
-                                      drainApplied, ackMade, ackCounted, 
-                                      ackTimedOut, published, leftAdvertising, 
-                                      pruneApplied, pruneFetched, pruneOK, 
-                                      unfetched, hiddenAt, stack, svc, todo, 
-                                      cur, early >>
+                                      startDrainFailed, drainApplied, ackMade, 
+                                      ackCounted, ackTimedOut, published, 
+                                      leftAdvertising, upAtLeave, pruneApplied, 
+                                      pruneFetched, unfetched, stack, svc, 
+                                      todo, cur, early >>
 
 Readvertise_begin(self) == /\ pc[self] = "Readvertise_begin"
                            /\ lock = None
                            /\ IF drained /\ Checks
                                  THEN /\ pc' = [pc EXCEPT ![self] = "Confirm_idle"]
                                       /\ UNCHANGED << pending, waitOn, lock, 
-                                                      cancelReg >>
+                                                      cancelReg, rmRec >>
                                  ELSE /\ IF ~CallOK(self)
                                             THEN /\ pc' = [pc EXCEPT ![self] = "Confirm_idle"]
                                                  /\ UNCHANGED << pending, 
                                                                  waitOn, lock, 
-                                                                 cancelReg >>
+                                                                 cancelReg, 
+                                                                 rmRec >>
                                             ELSE /\ IF SvcOf(self) \notin prefs
                                                        THEN /\ pc' = [pc EXCEPT ![self] = "Readvertise_gap"]
                                                             /\ UNCHANGED << pending, 
                                                                             waitOn, 
                                                                             lock, 
-                                                                            cancelReg >>
+                                                                            cancelReg, 
+                                                                            rmRec >>
                                                        ELSE /\ lock' = self
                                                             /\ cancelReg' = self
+                                                            /\ IF RecordsAtSend(self)
+                                                                  THEN /\ rmRec' = [set |-> TRUE, gen |-> (gen[self]), removals |-> removals[(gen[self])],
+                                                                                    leaves |-> (prefs \ {SvcOf(self)}), start |-> FALSE, fetches |-> fetchCount[(gen[self])]]
+                                                                  ELSE /\ TRUE
+                                                                       /\ rmRec' = rmRec
                                                             /\ LET r == [from |-> self, gen |-> gen[self],
                                                                          val |-> prefs \ {SvcOf(self)}, kind |-> "remove"] IN
                                                                  /\ pending' = (pending \cup {r})
@@ -1940,23 +2266,31 @@ Readvertise_begin(self) == /\ pc[self] = "Readvertise_begin"
                                                             /\ pc' = [pc EXCEPT ![self] = "Readvertise_removed"]
                            /\ UNCHANGED << stateExists, prefs, daemonGen, 
                                            daemonUp, ctxDone, crashes, refused, 
-                                           dirty, fetchQ, fetchCount, 
+                                           dirty, logQ, fetchCount, removals, 
+                                           removedAt, removedTo, listed, 
+                                           listKnown, relisted, redrainReq, 
                                            certIssued, supDaemon, stopped, 
-                                           retryGen, confReq, leaseReq, 
-                                           drained, advertised, cctx, drainRec, 
-                                           pruneRec, unpruned, gen, res, out, 
-                                           mark, cnt, leaveRec, leaveD, after, 
-                                           seen, leaveEnd, everInPrefs, 
+                                           leaving, retryGen, confReq, 
+                                           leaseReq, drained, cctx, cancelled, 
+                                           unpruned, gen, res, out, mark, lrec, 
+                                           leaveD, leaveEnd, settled, 
+                                           drainedGen, everInPrefs, 
                                            lockedDrained, addAfterDrained, 
-                                           startedDrained, drainApplied, 
-                                           ackMade, ackCounted, ackTimedOut, 
-                                           published, leftAdvertising, 
-                                           pruneApplied, pruneFetched, pruneOK, 
-                                           unfetched, hiddenAt, stack, svc, 
-                                           todo, cur, nudges, cafter, early >>
+                                           startedDrained, startDrainFailed, 
+                                           drainApplied, ackMade, ackCounted, 
+                                           ackTimedOut, published, 
+                                           leftAdvertising, upAtLeave, 
+                                           pruneApplied, pruneFetched, 
+                                           unfetched, stack, svc, todo, cur, 
+                                           nudges, cafter, early >>
 
 Readvertise_removed(self) == /\ pc[self] = "Readvertise_removed"
                              /\ \/ /\ Applied(self)
+                                   /\ IF Mutation = "record-on-return"
+                                         THEN /\ rmRec' = [set |-> TRUE, gen |-> (gen[self]), removals |-> removals[(gen[self])],
+                                                           leaves |-> prefs, start |-> FALSE, fetches |-> fetchCount[(gen[self])]]
+                                         ELSE /\ TRUE
+                                              /\ rmRec' = rmRec
                                    /\ waitOn' = [waitOn EXCEPT ![self] = NoReq]
                                    /\ lock' = None
                                    /\ cancelReg' = None
@@ -1968,23 +2302,27 @@ Readvertise_removed(self) == /\ pc[self] = "Readvertise_removed"
                                    /\ cancelReg' = None
                                    /\ cctx' = [cctx EXCEPT ![self] = FALSE]
                                    /\ pc' = [pc EXCEPT ![self] = "Confirm_idle"]
+                                   /\ rmRec' = rmRec
                              /\ UNCHANGED << stateExists, prefs, daemonGen, 
                                              daemonUp, ctxDone, crashes, 
-                                             pending, refused, dirty, fetchQ, 
-                                             fetchCount, certIssued, supDaemon, 
-                                             stopped, retryGen, confReq, 
-                                             leaseReq, drained, advertised, 
-                                             drainRec, pruneRec, unpruned, gen, 
-                                             res, out, mark, cnt, leaveRec, 
-                                             leaveD, after, seen, leaveEnd, 
+                                             pending, refused, dirty, logQ, 
+                                             fetchCount, removals, removedAt, 
+                                             removedTo, listed, listKnown, 
+                                             relisted, redrainReq, certIssued, 
+                                             supDaemon, stopped, leaving, 
+                                             retryGen, confReq, leaseReq, 
+                                             drained, cancelled, unpruned, gen, 
+                                             res, out, mark, lrec, leaveD, 
+                                             leaveEnd, settled, drainedGen, 
                                              everInPrefs, lockedDrained, 
                                              addAfterDrained, startedDrained, 
-                                             drainApplied, ackMade, ackCounted, 
-                                             ackTimedOut, published, 
-                                             leftAdvertising, pruneApplied, 
-                                             pruneFetched, pruneOK, unfetched, 
-                                             hiddenAt, stack, svc, todo, cur, 
-                                             nudges, cafter, early >>
+                                             startDrainFailed, drainApplied, 
+                                             ackMade, ackCounted, ackTimedOut, 
+                                             published, leftAdvertising, 
+                                             upAtLeave, pruneApplied, 
+                                             pruneFetched, unfetched, stack, 
+                                             svc, todo, cur, nudges, cafter, 
+                                             early >>
 
 Readvertise_gap(self) == /\ pc[self] = "Readvertise_gap"
                          /\ lock = None \/ ctxDone[gen[self]]
@@ -2026,18 +2364,21 @@ Readvertise_gap(self) == /\ pc[self] = "Readvertise_gap"
                                                                      /\ pc' = [pc EXCEPT ![self] = "Readvertise_added"]
                          /\ UNCHANGED << stateExists, prefs, daemonGen, 
                                          daemonUp, ctxDone, crashes, refused, 
-                                         dirty, fetchQ, fetchCount, certIssued, 
-                                         supDaemon, stopped, retryGen, confReq, 
-                                         leaseReq, drained, advertised, cctx, 
-                                         drainRec, pruneRec, unpruned, gen, 
-                                         res, out, mark, cnt, leaveRec, leaveD, 
-                                         after, seen, leaveEnd, everInPrefs, 
-                                         startedDrained, drainApplied, ackMade, 
-                                         ackCounted, ackTimedOut, published, 
-                                         leftAdvertising, pruneApplied, 
-                                         pruneFetched, pruneOK, unfetched, 
-                                         hiddenAt, stack, svc, todo, cur, 
-                                         nudges, cafter, early >>
+                                         dirty, logQ, fetchCount, removals, 
+                                         removedAt, removedTo, listed, 
+                                         listKnown, relisted, redrainReq, 
+                                         certIssued, supDaemon, stopped, 
+                                         leaving, retryGen, confReq, leaseReq, 
+                                         drained, cctx, cancelled, rmRec, 
+                                         unpruned, gen, res, out, mark, lrec, 
+                                         leaveD, leaveEnd, settled, drainedGen, 
+                                         everInPrefs, startedDrained, 
+                                         startDrainFailed, drainApplied, 
+                                         ackMade, ackCounted, ackTimedOut, 
+                                         published, leftAdvertising, upAtLeave, 
+                                         pruneApplied, pruneFetched, unfetched, 
+                                         stack, svc, todo, cur, nudges, cafter, 
+                                         early >>
 
 Readvertise_added(self) == /\ pc[self] = "Readvertise_added"
                            /\ \/ /\ Applied(self)
@@ -2058,20 +2399,22 @@ Readvertise_added(self) == /\ pc[self] = "Readvertise_added"
                                  /\ pc' = [pc EXCEPT ![self] = "Confirm_idle"]
                            /\ UNCHANGED << stateExists, prefs, daemonGen, 
                                            daemonUp, ctxDone, crashes, pending, 
-                                           dirty, fetchQ, fetchCount, 
+                                           dirty, logQ, fetchCount, removals, 
+                                           removedAt, removedTo, listed, 
+                                           listKnown, relisted, redrainReq, 
                                            certIssued, supDaemon, stopped, 
-                                           retryGen, confReq, leaseReq, 
-                                           drained, advertised, drainRec, 
-                                           pruneRec, unpruned, gen, res, out, 
-                                           mark, cnt, leaveRec, leaveD, after, 
-                                           seen, leaveEnd, everInPrefs, 
+                                           leaving, retryGen, confReq, 
+                                           leaseReq, drained, cancelled, rmRec, 
+                                           unpruned, gen, res, out, mark, lrec, 
+                                           leaveD, leaveEnd, settled, 
+                                           drainedGen, everInPrefs, 
                                            addAfterDrained, startedDrained, 
-                                           drainApplied, ackMade, ackCounted, 
-                                           ackTimedOut, published, 
-                                           leftAdvertising, pruneApplied, 
-                                           pruneFetched, pruneOK, unfetched, 
-                                           hiddenAt, stack, svc, todo, cur, 
-                                           nudges, cafter, early >>
+                                           startDrainFailed, drainApplied, 
+                                           ackMade, ackCounted, ackTimedOut, 
+                                           published, leftAdvertising, 
+                                           upAtLeave, pruneApplied, 
+                                           pruneFetched, unfetched, stack, svc, 
+                                           todo, cur, nudges, cafter, early >>
 
 Confirm(self) == Confirm_idle(self) \/ Confirm_wait(self)
                     \/ Readvertise_begin(self) \/ Readvertise_removed(self)
@@ -2087,18 +2430,20 @@ Lease_idle(self) == /\ pc[self] = "Lease_idle"
                                /\ UNCHANGED << leaseReq, gen >>
                     /\ UNCHANGED << stateExists, prefs, daemonGen, daemonUp, 
                                     ctxDone, crashes, pending, waitOn, refused, 
-                                    dirty, fetchQ, fetchCount, certIssued, 
-                                    supDaemon, stopped, retryGen, confReq, 
-                                    drained, advertised, lock, cancelReg, cctx, 
-                                    drainRec, pruneRec, unpruned, res, out, 
-                                    mark, cnt, leaveRec, leaveD, after, seen, 
-                                    leaveEnd, everInPrefs, lockedDrained, 
+                                    dirty, logQ, fetchCount, removals, 
+                                    removedAt, removedTo, listed, listKnown, 
+                                    relisted, redrainReq, certIssued, 
+                                    supDaemon, stopped, leaving, retryGen, 
+                                    confReq, drained, lock, cancelReg, cctx, 
+                                    cancelled, rmRec, unpruned, res, out, mark, 
+                                    lrec, leaveD, leaveEnd, settled, 
+                                    drainedGen, everInPrefs, lockedDrained, 
                                     addAfterDrained, startedDrained, 
-                                    drainApplied, ackMade, ackCounted, 
-                                    ackTimedOut, published, leftAdvertising, 
-                                    pruneApplied, pruneFetched, pruneOK, 
-                                    unfetched, hiddenAt, stack, svc, todo, cur, 
-                                    nudges, cafter, early >>
+                                    startDrainFailed, drainApplied, ackMade, 
+                                    ackCounted, ackTimedOut, published, 
+                                    leftAdvertising, upAtLeave, pruneApplied, 
+                                    pruneFetched, unfetched, stack, svc, todo, 
+                                    cur, nudges, cafter, early >>
 
 Lease_poll(self) == /\ pc[self] = "Lease_poll"
                     /\ early' = [early EXCEPT ![self] = FALSE]
@@ -2116,18 +2461,20 @@ Lease_poll(self) == /\ pc[self] = "Lease_poll"
                                           /\ UNCHANGED << stack, svc >>
                     /\ UNCHANGED << stateExists, prefs, daemonGen, daemonUp, 
                                     ctxDone, crashes, pending, waitOn, refused, 
-                                    dirty, fetchQ, fetchCount, certIssued, 
-                                    supDaemon, stopped, retryGen, confReq, 
-                                    leaseReq, drained, advertised, lock, 
-                                    cancelReg, cctx, drainRec, pruneRec, 
-                                    unpruned, gen, res, out, mark, cnt, 
-                                    leaveRec, leaveD, after, seen, leaveEnd, 
+                                    dirty, logQ, fetchCount, removals, 
+                                    removedAt, removedTo, listed, listKnown, 
+                                    relisted, redrainReq, certIssued, 
+                                    supDaemon, stopped, leaving, retryGen, 
+                                    confReq, leaseReq, drained, lock, 
+                                    cancelReg, cctx, cancelled, rmRec, 
+                                    unpruned, gen, res, out, mark, lrec, 
+                                    leaveD, leaveEnd, settled, drainedGen, 
                                     everInPrefs, lockedDrained, 
                                     addAfterDrained, startedDrained, 
-                                    drainApplied, ackMade, ackCounted, 
-                                    ackTimedOut, published, leftAdvertising, 
-                                    pruneApplied, pruneFetched, pruneOK, 
-                                    unfetched, hiddenAt, todo, cur, nudges, 
+                                    startDrainFailed, drainApplied, ackMade, 
+                                    ackCounted, ackTimedOut, published, 
+                                    leftAdvertising, upAtLeave, pruneApplied, 
+                                    pruneFetched, unfetched, todo, cur, nudges, 
                                     cafter >>
 
 Lease_unadvertise(self) == /\ pc[self] = "Lease_unadvertise"
@@ -2135,20 +2482,27 @@ Lease_unadvertise(self) == /\ pc[self] = "Lease_unadvertise"
                            /\ IF drained /\ Checks
                                  THEN /\ pc' = [pc EXCEPT ![self] = "Lease_idle"]
                                       /\ UNCHANGED << pending, waitOn, lock, 
-                                                      cancelReg >>
+                                                      cancelReg, rmRec >>
                                  ELSE /\ IF ~CallOK(self)
                                             THEN /\ pc' = [pc EXCEPT ![self] = "Lease_poll"]
                                                  /\ UNCHANGED << pending, 
                                                                  waitOn, lock, 
-                                                                 cancelReg >>
+                                                                 cancelReg, 
+                                                                 rmRec >>
                                             ELSE /\ IF SvcOf(self) \notin prefs
                                                        THEN /\ pc' = [pc EXCEPT ![self] = "Lease_request"]
                                                             /\ UNCHANGED << pending, 
                                                                             waitOn, 
                                                                             lock, 
-                                                                            cancelReg >>
+                                                                            cancelReg, 
+                                                                            rmRec >>
                                                        ELSE /\ lock' = self
                                                             /\ cancelReg' = self
+                                                            /\ IF RecordsAtSend(self)
+                                                                  THEN /\ rmRec' = [set |-> TRUE, gen |-> (gen[self]), removals |-> removals[(gen[self])],
+                                                                                    leaves |-> (prefs \ {SvcOf(self)}), start |-> FALSE, fetches |-> fetchCount[(gen[self])]]
+                                                                  ELSE /\ TRUE
+                                                                       /\ rmRec' = rmRec
                                                             /\ LET r == [from |-> self, gen |-> gen[self],
                                                                          val |-> prefs \ {SvcOf(self)}, kind |-> "remove"] IN
                                                                  /\ pending' = (pending \cup {r})
@@ -2156,23 +2510,31 @@ Lease_unadvertise(self) == /\ pc[self] = "Lease_unadvertise"
                                                             /\ pc' = [pc EXCEPT ![self] = "Lease_unadvertiseSent"]
                            /\ UNCHANGED << stateExists, prefs, daemonGen, 
                                            daemonUp, ctxDone, crashes, refused, 
-                                           dirty, fetchQ, fetchCount, 
+                                           dirty, logQ, fetchCount, removals, 
+                                           removedAt, removedTo, listed, 
+                                           listKnown, relisted, redrainReq, 
                                            certIssued, supDaemon, stopped, 
-                                           retryGen, confReq, leaseReq, 
-                                           drained, advertised, cctx, drainRec, 
-                                           pruneRec, unpruned, gen, res, out, 
-                                           mark, cnt, leaveRec, leaveD, after, 
-                                           seen, leaveEnd, everInPrefs, 
+                                           leaving, retryGen, confReq, 
+                                           leaseReq, drained, cctx, cancelled, 
+                                           unpruned, gen, res, out, mark, lrec, 
+                                           leaveD, leaveEnd, settled, 
+                                           drainedGen, everInPrefs, 
                                            lockedDrained, addAfterDrained, 
-                                           startedDrained, drainApplied, 
-                                           ackMade, ackCounted, ackTimedOut, 
-                                           published, leftAdvertising, 
-                                           pruneApplied, pruneFetched, pruneOK, 
-                                           unfetched, hiddenAt, stack, svc, 
-                                           todo, cur, nudges, cafter, early >>
+                                           startedDrained, startDrainFailed, 
+                                           drainApplied, ackMade, ackCounted, 
+                                           ackTimedOut, published, 
+                                           leftAdvertising, upAtLeave, 
+                                           pruneApplied, pruneFetched, 
+                                           unfetched, stack, svc, todo, cur, 
+                                           nudges, cafter, early >>
 
 Lease_unadvertiseSent(self) == /\ pc[self] = "Lease_unadvertiseSent"
                                /\ \/ /\ Applied(self)
+                                     /\ IF Mutation = "record-on-return"
+                                           THEN /\ rmRec' = [set |-> TRUE, gen |-> (gen[self]), removals |-> removals[(gen[self])],
+                                                             leaves |-> prefs, start |-> FALSE, fetches |-> fetchCount[(gen[self])]]
+                                           ELSE /\ TRUE
+                                                /\ rmRec' = rmRec
                                      /\ waitOn' = [waitOn EXCEPT ![self] = NoReq]
                                      /\ lock' = None
                                      /\ cancelReg' = None
@@ -2186,25 +2548,28 @@ Lease_unadvertiseSent(self) == /\ pc[self] = "Lease_unadvertiseSent"
                                      /\ IF drained
                                            THEN /\ pc' = [pc EXCEPT ![self] = "Lease_idle"]
                                            ELSE /\ pc' = [pc EXCEPT ![self] = "Lease_poll"]
+                                     /\ rmRec' = rmRec
                                /\ UNCHANGED << stateExists, prefs, daemonGen, 
                                                daemonUp, ctxDone, crashes, 
-                                               pending, refused, dirty, fetchQ, 
-                                               fetchCount, certIssued, 
-                                               supDaemon, stopped, retryGen, 
-                                               confReq, leaseReq, drained, 
-                                               advertised, drainRec, pruneRec, 
+                                               pending, refused, dirty, logQ, 
+                                               fetchCount, removals, removedAt, 
+                                               removedTo, listed, listKnown, 
+                                               relisted, redrainReq, 
+                                               certIssued, supDaemon, stopped, 
+                                               leaving, retryGen, confReq, 
+                                               leaseReq, drained, cancelled, 
                                                unpruned, gen, res, out, mark, 
-                                               cnt, leaveRec, leaveD, after, 
-                                               seen, leaveEnd, everInPrefs, 
+                                               lrec, leaveD, leaveEnd, settled, 
+                                               drainedGen, everInPrefs, 
                                                lockedDrained, addAfterDrained, 
-                                               startedDrained, drainApplied, 
+                                               startedDrained, 
+                                               startDrainFailed, drainApplied, 
                                                ackMade, ackCounted, 
                                                ackTimedOut, published, 
-                                               leftAdvertising, pruneApplied, 
-                                               pruneFetched, pruneOK, 
-                                               unfetched, hiddenAt, stack, svc, 
-                                               todo, cur, nudges, cafter, 
-                                               early >>
+                                               leftAdvertising, upAtLeave, 
+                                               pruneApplied, pruneFetched, 
+                                               unfetched, stack, svc, todo, 
+                                               cur, nudges, cafter, early >>
 
 Lease_request(self) == /\ pc[self] = "Lease_request"
                        /\ certIssued[SvcOf(self)] \/ ~early[self] \/ ctxDone[gen[self]]
@@ -2227,20 +2592,21 @@ Lease_request(self) == /\ pc[self] = "Lease_request"
                                              /\ pc' = [pc EXCEPT ![self] = "Change_lock"]
                        /\ UNCHANGED << stateExists, prefs, daemonGen, daemonUp, 
                                        ctxDone, crashes, pending, waitOn, 
-                                       refused, dirty, fetchQ, fetchCount, 
-                                       certIssued, supDaemon, stopped, 
+                                       refused, dirty, logQ, fetchCount, 
+                                       removals, removedAt, removedTo, listed, 
+                                       listKnown, relisted, redrainReq, 
+                                       certIssued, supDaemon, stopped, leaving, 
                                        retryGen, confReq, leaseReq, drained, 
-                                       advertised, lock, cancelReg, cctx, 
-                                       drainRec, pruneRec, unpruned, gen, res, 
-                                       out, mark, cnt, leaveRec, leaveD, after, 
-                                       seen, leaveEnd, everInPrefs, 
-                                       lockedDrained, addAfterDrained, 
-                                       startedDrained, drainApplied, ackMade, 
+                                       lock, cancelReg, cctx, cancelled, rmRec, 
+                                       unpruned, gen, res, out, mark, lrec, 
+                                       leaveD, leaveEnd, settled, drainedGen, 
+                                       everInPrefs, lockedDrained, 
+                                       addAfterDrained, startedDrained, 
+                                       startDrainFailed, drainApplied, ackMade, 
                                        ackCounted, ackTimedOut, published, 
-                                       leftAdvertising, pruneApplied, 
-                                       pruneFetched, pruneOK, unfetched, 
-                                       hiddenAt, todo, cur, nudges, cafter, 
-                                       early >>
+                                       leftAdvertising, upAtLeave, 
+                                       pruneApplied, pruneFetched, unfetched, 
+                                       todo, cur, nudges, cafter, early >>
 
 Lease_advertisedEarly(self) == /\ pc[self] = "Lease_advertisedEarly"
                                /\ IF out[self] = "ok"
@@ -2256,22 +2622,25 @@ Lease_advertisedEarly(self) == /\ pc[self] = "Lease_advertisedEarly"
                                /\ UNCHANGED << stateExists, prefs, daemonGen, 
                                                daemonUp, ctxDone, crashes, 
                                                pending, waitOn, refused, dirty, 
-                                               fetchQ, fetchCount, certIssued, 
-                                               supDaemon, stopped, retryGen, 
-                                               confReq, leaseReq, drained, 
-                                               advertised, lock, cancelReg, 
-                                               cctx, drainRec, pruneRec, 
-                                               unpruned, gen, res, mark, cnt, 
-                                               leaveRec, leaveD, after, seen, 
-                                               leaveEnd, everInPrefs, 
+                                               logQ, fetchCount, removals, 
+                                               removedAt, removedTo, listed, 
+                                               listKnown, relisted, redrainReq, 
+                                               certIssued, supDaemon, stopped, 
+                                               leaving, retryGen, confReq, 
+                                               leaseReq, drained, lock, 
+                                               cancelReg, cctx, cancelled, 
+                                               rmRec, unpruned, gen, res, mark, 
+                                               lrec, leaveD, leaveEnd, settled, 
+                                               drainedGen, everInPrefs, 
                                                lockedDrained, addAfterDrained, 
-                                               startedDrained, drainApplied, 
+                                               startedDrained, 
+                                               startDrainFailed, drainApplied, 
                                                ackMade, ackCounted, 
                                                ackTimedOut, published, 
-                                               leftAdvertising, pruneApplied, 
-                                               pruneFetched, pruneOK, 
-                                               unfetched, hiddenAt, stack, svc, 
-                                               todo, cur, nudges, cafter >>
+                                               leftAdvertising, upAtLeave, 
+                                               pruneApplied, pruneFetched, 
+                                               unfetched, stack, svc, todo, 
+                                               cur, nudges, cafter >>
 
 Lease_result(self) == /\ pc[self] = "Lease_result"
                       /\ IF out[self] = "err" /\ ~ctxDone[gen[self]]
@@ -2283,19 +2652,21 @@ Lease_result(self) == /\ pc[self] = "Lease_result"
                                  /\ pc' = [pc EXCEPT ![self] = "Lease_idle"]
                       /\ UNCHANGED << stateExists, prefs, daemonGen, daemonUp, 
                                       ctxDone, crashes, pending, waitOn, 
-                                      refused, dirty, fetchQ, fetchCount, 
-                                      certIssued, supDaemon, stopped, retryGen, 
-                                      confReq, leaseReq, drained, advertised, 
-                                      lock, cancelReg, cctx, drainRec, 
-                                      pruneRec, unpruned, gen, res, mark, cnt, 
-                                      leaveRec, leaveD, after, seen, leaveEnd, 
+                                      refused, dirty, logQ, fetchCount, 
+                                      removals, removedAt, removedTo, listed, 
+                                      listKnown, relisted, redrainReq, 
+                                      certIssued, supDaemon, stopped, leaving, 
+                                      retryGen, confReq, leaseReq, drained, 
+                                      lock, cancelReg, cctx, cancelled, rmRec, 
+                                      unpruned, gen, res, mark, lrec, leaveD, 
+                                      leaveEnd, settled, drainedGen, 
                                       everInPrefs, lockedDrained, 
                                       addAfterDrained, startedDrained, 
-                                      drainApplied, ackMade, ackCounted, 
-                                      ackTimedOut, published, leftAdvertising, 
-                                      pruneApplied, pruneFetched, pruneOK, 
-                                      unfetched, hiddenAt, stack, svc, todo, 
-                                      cur, nudges, cafter >>
+                                      startDrainFailed, drainApplied, ackMade, 
+                                      ackCounted, ackTimedOut, published, 
+                                      leftAdvertising, upAtLeave, pruneApplied, 
+                                      pruneFetched, unfetched, stack, svc, 
+                                      todo, cur, nudges, cafter >>
 
 LeaseHolder(self) == Lease_idle(self) \/ Lease_poll(self)
                         \/ Lease_unadvertise(self)
@@ -2318,153 +2689,262 @@ Stop_signal == /\ pc["stop"] = "Stop_signal"
                      /\ stack' = stack
                /\ UNCHANGED << stateExists, prefs, daemonGen, daemonUp, 
                                ctxDone, crashes, pending, waitOn, refused, 
-                               dirty, fetchQ, fetchCount, certIssued, 
-                               supDaemon, stopped, retryGen, confReq, leaseReq, 
-                               drained, advertised, lock, cancelReg, cctx, 
-                               drainRec, pruneRec, unpruned, gen, res, out, 
-                               mark, cnt, leaveRec, leaveD, after, seen, 
-                               leaveEnd, everInPrefs, lockedDrained, 
-                               addAfterDrained, startedDrained, drainApplied, 
-                               ackMade, ackCounted, ackTimedOut, published, 
-                               leftAdvertising, pruneApplied, pruneFetched, 
-                               pruneOK, unfetched, hiddenAt, svc, todo, cur, 
-                               nudges, cafter, early >>
+                               dirty, logQ, fetchCount, removals, removedAt, 
+                               removedTo, listed, listKnown, relisted, 
+                               redrainReq, certIssued, supDaemon, stopped, 
+                               leaving, retryGen, confReq, leaseReq, drained, 
+                               lock, cancelReg, cctx, cancelled, rmRec, 
+                               unpruned, gen, res, out, mark, lrec, leaveD, 
+                               leaveEnd, settled, drainedGen, everInPrefs, 
+                               lockedDrained, addAfterDrained, startedDrained, 
+                               startDrainFailed, drainApplied, ackMade, 
+                               ackCounted, ackTimedOut, published, 
+                               leftAdvertising, upAtLeave, pruneApplied, 
+                               pruneFetched, unfetched, svc, todo, cur, nudges, 
+                               cafter, early >>
 
 StopSignal == Stop_signal
 
 Leave_begin == /\ pc["leave"] = "Leave_begin"
                /\ ~published \/ NeedsDrainRead
                /\ IF ~published
-                     THEN /\ leaveEnd' = "aborted"
-                          /\ pc' = [pc EXCEPT !["leave"] = "Leave_done"]
+                     THEN /\ IF daemonUp /\ Mutation # "abort-first-start"
+                                THEN /\ leaving' = TRUE
+                                     /\ drained' = TRUE
+                                     /\ IF cancelReg # None /\ Cancels
+                                           THEN /\ cctx' = [cctx EXCEPT ![cancelReg] = TRUE]
+                                                /\ cancelled' = TRUE
+                                           ELSE /\ TRUE
+                                                /\ UNCHANGED << cctx, 
+                                                                cancelled >>
+                                     /\ pc' = [pc EXCEPT !["leave"] = "Leave_started"]
+                                     /\ UNCHANGED << daemonUp, ctxDone, 
+                                                     pending, supDaemon, 
+                                                     stopped, leaveEnd, 
+                                                     leftAdvertising, 
+                                                     upAtLeave >>
+                                ELSE /\ leaveEnd' = "aborted"
+                                     /\ leftAdvertising' = (daemonUp /\ prefs # {} /\ leaveEnd' # "timeout")
+                                     /\ upAtLeave' = daemonUp
+                                     /\ stopped' = TRUE
+                                     /\ daemonUp' = FALSE
+                                     /\ supDaemon' = 0
+                                     /\ pending' = {}
+                                     /\ ctxDone' = [g \in Gens |-> TRUE]
+                                     /\ pc' = [pc EXCEPT !["leave"] = "Done"]
+                                     /\ UNCHANGED << leaving, drained, cctx, 
+                                                     cancelled >>
                           /\ stack' = stack
                      ELSE /\ IF ~NeedsDrain
                                 THEN /\ leaveEnd' = "nodrain"
                                      /\ pc' = [pc EXCEPT !["leave"] = "Leave_done"]
                                      /\ stack' = stack
                                 ELSE /\ stack' = [stack EXCEPT !["leave"] = << [ procedure |->  "DrainProc",
-                                                                                 pc        |->  "Wait_lock" ] >>
+                                                                                 pc        |->  "Wait_loop" ] >>
                                                                              \o stack["leave"]]
                                      /\ pc' = [pc EXCEPT !["leave"] = "Drain_begin"]
                                      /\ UNCHANGED leaveEnd
-               /\ UNCHANGED << stateExists, prefs, daemonGen, daemonUp, 
-                               ctxDone, crashes, pending, waitOn, refused, 
-                               dirty, fetchQ, fetchCount, certIssued, 
-                               supDaemon, stopped, retryGen, confReq, leaseReq, 
-                               drained, advertised, lock, cancelReg, cctx, 
-                               drainRec, pruneRec, unpruned, gen, res, out, 
-                               mark, cnt, leaveRec, leaveD, after, seen, 
-                               everInPrefs, lockedDrained, addAfterDrained, 
-                               startedDrained, drainApplied, ackMade, 
+                          /\ UNCHANGED << daemonUp, ctxDone, pending, 
+                                          supDaemon, stopped, leaving, drained, 
+                                          cctx, cancelled, leftAdvertising, 
+                                          upAtLeave >>
+               /\ UNCHANGED << stateExists, prefs, daemonGen, crashes, waitOn, 
+                               refused, dirty, logQ, fetchCount, removals, 
+                               removedAt, removedTo, listed, listKnown, 
+                               relisted, redrainReq, certIssued, retryGen, 
+                               confReq, leaseReq, lock, cancelReg, rmRec, 
+                               unpruned, gen, res, out, mark, lrec, leaveD, 
+                               settled, drainedGen, everInPrefs, lockedDrained, 
+                               addAfterDrained, startedDrained, 
+                               startDrainFailed, drainApplied, ackMade, 
                                ackCounted, ackTimedOut, published, 
-                               leftAdvertising, pruneApplied, pruneFetched, 
-                               pruneOK, unfetched, hiddenAt, svc, todo, cur, 
-                               nudges, cafter, early >>
+                               pruneApplied, pruneFetched, unfetched, svc, 
+                               todo, cur, nudges, cafter, early >>
 
-Wait_lock == /\ pc["leave"] = "Wait_lock"
+Leave_started == /\ pc["leave"] = "Leave_started"
+                 /\ published \/ ~daemonUp
+                 /\ IF ~published
+                       THEN /\ leaveEnd' = "aborted"
+                            /\ leftAdvertising' = (daemonUp /\ prefs # {} /\ leaveEnd' # "timeout")
+                            /\ upAtLeave' = daemonUp
+                            /\ stopped' = TRUE
+                            /\ daemonUp' = FALSE
+                            /\ supDaemon' = 0
+                            /\ pending' = {}
+                            /\ ctxDone' = [g \in Gens |-> TRUE]
+                            /\ pc' = [pc EXCEPT !["leave"] = "Done"]
+                            /\ stack' = stack
+                       ELSE /\ IF ~NeedsDrain
+                                  THEN /\ leaveEnd' = "nodrain"
+                                       /\ pc' = [pc EXCEPT !["leave"] = "Leave_done"]
+                                       /\ stack' = stack
+                                  ELSE /\ stack' = [stack EXCEPT !["leave"] = << [ procedure |->  "DrainProc",
+                                                                                   pc        |->  "Wait_loop" ] >>
+                                                                               \o stack["leave"]]
+                                       /\ pc' = [pc EXCEPT !["leave"] = "Drain_begin"]
+                                       /\ UNCHANGED leaveEnd
+                            /\ UNCHANGED << daemonUp, ctxDone, pending, 
+                                            supDaemon, stopped, 
+                                            leftAdvertising, upAtLeave >>
+                 /\ UNCHANGED << stateExists, prefs, daemonGen, crashes, 
+                                 waitOn, refused, dirty, logQ, fetchCount, 
+                                 removals, removedAt, removedTo, listed, 
+                                 listKnown, relisted, redrainReq, certIssued, 
+                                 leaving, retryGen, confReq, leaseReq, drained, 
+                                 lock, cancelReg, cctx, cancelled, rmRec, 
+                                 unpruned, gen, res, out, mark, lrec, leaveD, 
+                                 settled, drainedGen, everInPrefs, 
+                                 lockedDrained, addAfterDrained, 
+                                 startedDrained, startDrainFailed, 
+                                 drainApplied, ackMade, ackCounted, 
+                                 ackTimedOut, published, pruneApplied, 
+                                 pruneFetched, unfetched, svc, todo, cur, 
+                                 nudges, cafter, early >>
+
+Wait_loop == /\ pc["leave"] = "Wait_loop"
              /\ lock = None
-             /\ leaveRec' = (IF drainRec.external /\ pruneRec.set THEN pruneRec
-                             ELSE drainRec)
-             /\ pc' = [pc EXCEPT !["leave"] = "Wait_recordRead"]
+             /\ lrec' = rmRec
+             /\ IF rmRec.set /\ ~ctxDone[rmRec.gen]
+                   THEN /\ leaveD' = rmRec.gen
+                        /\ pc' = [pc EXCEPT !["leave"] = "Wait_block"]
+                        /\ UNCHANGED << leaveEnd, stack >>
+                   ELSE /\ IF Mutation = "always-wait" /\ PublishedRuns
+                              THEN /\ leaveD' = supDaemon
+                                   /\ pc' = [pc EXCEPT !["leave"] = "Wait_block"]
+                                   /\ UNCHANGED << leaveEnd, stack >>
+                              ELSE /\ IF ~PublishedRuns /\ (rmRec.set \/ stateExists)
+                                         /\ Mutation # "no-follow-restart"
+                                         THEN /\ pc' = [pc EXCEPT !["leave"] = "Wait_restart"]
+                                              /\ UNCHANGED << leaveEnd, stack >>
+                                         ELSE /\ IF PublishedRuns /\ supDaemon # drainedGen
+                                                    THEN /\ stack' = [stack EXCEPT !["leave"] = << [ procedure |->  "DrainProc",
+                                                                                                     pc        |->  "Wait_loop" ] >>
+                                                                                                 \o stack["leave"]]
+                                                         /\ pc' = [pc EXCEPT !["leave"] = "Drain_begin"]
+                                                         /\ UNCHANGED leaveEnd
+                                                    ELSE /\ IF cancelled /\ ~settled /\ Mutation # "no-settle"
+                                                               THEN /\ pc' = [pc EXCEPT !["leave"] = "Wait_settle"]
+                                                                    /\ UNCHANGED leaveEnd
+                                                               ELSE /\ leaveEnd' = IF rmRec.set THEN "stopped" ELSE "nothing"
+                                                                    /\ pc' = [pc EXCEPT !["leave"] = "Leave_done"]
+                                                         /\ stack' = stack
+                                   /\ UNCHANGED leaveD
              /\ UNCHANGED << stateExists, prefs, daemonGen, daemonUp, ctxDone, 
-                             crashes, pending, waitOn, refused, dirty, fetchQ, 
-                             fetchCount, certIssued, supDaemon, stopped, 
-                             retryGen, confReq, leaseReq, drained, advertised, 
-                             lock, cancelReg, cctx, drainRec, pruneRec, 
-                             unpruned, gen, res, out, mark, cnt, leaveD, after, 
-                             seen, leaveEnd, everInPrefs, lockedDrained, 
-                             addAfterDrained, startedDrained, drainApplied, 
-                             ackMade, ackCounted, ackTimedOut, published, 
-                             leftAdvertising, pruneApplied, pruneFetched, 
-                             pruneOK, unfetched, hiddenAt, stack, svc, todo, 
+                             crashes, pending, waitOn, refused, dirty, logQ, 
+                             fetchCount, removals, removedAt, removedTo, 
+                             listed, listKnown, relisted, redrainReq, 
+                             certIssued, supDaemon, stopped, leaving, retryGen, 
+                             confReq, leaseReq, drained, lock, cancelReg, cctx, 
+                             cancelled, rmRec, unpruned, gen, res, out, mark, 
+                             settled, drainedGen, everInPrefs, lockedDrained, 
+                             addAfterDrained, startedDrained, startDrainFailed, 
+                             drainApplied, ackMade, ackCounted, ackTimedOut, 
+                             published, leftAdvertising, upAtLeave, 
+                             pruneApplied, pruneFetched, unfetched, svc, todo, 
                              cur, nudges, cafter, early >>
 
-Wait_recordRead == /\ pc["leave"] = "Wait_recordRead"
-                   /\ leaveD' = supDaemon
-                   /\ IF ~leaveRec.set
-                         THEN /\ leaveEnd' = "norecord"
-                              /\ pc' = [pc EXCEPT !["leave"] = "Leave_done"]
-                              /\ after' = after
-                         ELSE /\ IF leaveRec.external /\ Mutation # "always-wait"
-                                    THEN /\ leaveEnd' = "external"
-                                         /\ pc' = [pc EXCEPT !["leave"] = "Leave_done"]
-                                         /\ after' = after
-                                    ELSE /\ IF supDaemon = 0
-                                               THEN /\ leaveEnd' = "nodaemon"
-                                                    /\ pc' = [pc EXCEPT !["leave"] = "Leave_done"]
-                                                    /\ after' = after
-                                               ELSE /\ IF ~advertised /\ Mutation # "always-wait"
-                                                          THEN /\ leaveEnd' = "unadvertised"
-                                                               /\ pc' = [pc EXCEPT !["leave"] = "Leave_done"]
-                                                               /\ after' = after
-                                                          ELSE /\ after' = (IF supDaemon # leaveRec.gen /\ Mutation # "ignore-restart"
-                                                                            THEN 0 ELSE leaveRec.fetches)
-                                                               /\ pc' = [pc EXCEPT !["leave"] = "Wait_check"]
-                                                               /\ UNCHANGED leaveEnd
-                   /\ UNCHANGED << stateExists, prefs, daemonGen, daemonUp, 
-                                   ctxDone, crashes, pending, waitOn, refused, 
-                                   dirty, fetchQ, fetchCount, certIssued, 
-                                   supDaemon, stopped, retryGen, confReq, 
-                                   leaseReq, drained, advertised, lock, 
-                                   cancelReg, cctx, drainRec, pruneRec, 
-                                   unpruned, gen, res, out, mark, cnt, 
-                                   leaveRec, seen, everInPrefs, lockedDrained, 
-                                   addAfterDrained, startedDrained, 
-                                   drainApplied, ackMade, ackCounted, 
-                                   ackTimedOut, published, leftAdvertising, 
-                                   pruneApplied, pruneFetched, pruneOK, 
-                                   unfetched, hiddenAt, stack, svc, todo, cur, 
-                                   nudges, cafter, early >>
-
-Wait_check == /\ pc["leave"] = "Wait_check"
-              /\ IF fetchCount[leaveD] > after
-                    THEN /\ leaveEnd' = "acked"
-                         /\ pc' = [pc EXCEPT !["leave"] = "Leave_done"]
-                         /\ seen' = seen
-                    ELSE /\ seen' = fetchCount[leaveD]
-                         /\ pc' = [pc EXCEPT !["leave"] = "Wait_block"]
-                         /\ UNCHANGED leaveEnd
-              /\ UNCHANGED << stateExists, prefs, daemonGen, daemonUp, ctxDone, 
-                              crashes, pending, waitOn, refused, dirty, fetchQ, 
-                              fetchCount, certIssued, supDaemon, stopped, 
-                              retryGen, confReq, leaseReq, drained, advertised, 
-                              lock, cancelReg, cctx, drainRec, pruneRec, 
-                              unpruned, gen, res, out, mark, cnt, leaveRec, 
-                              leaveD, after, everInPrefs, lockedDrained, 
-                              addAfterDrained, startedDrained, drainApplied, 
-                              ackMade, ackCounted, ackTimedOut, published, 
-                              leftAdvertising, pruneApplied, pruneFetched, 
-                              pruneOK, unfetched, hiddenAt, stack, svc, todo, 
-                              cur, nudges, cafter, early >>
-
 Wait_block == /\ pc["leave"] = "Wait_block"
-              /\ \/ /\ fetchCount[leaveD] # seen
-                    /\ pc' = [pc EXCEPT !["leave"] = "Wait_check"]
+              /\ \/ /\ RemovalFetched(lrec, leaveD)
+                    /\ pc' = [pc EXCEPT !["leave"] = "Leave_floor"]
+                    /\ UNCHANGED <<leaveEnd, ackTimedOut>>
+                 \/ /\ rmRec # lrec
+                    /\ pc' = [pc EXCEPT !["leave"] = "Wait_loop"]
                     /\ UNCHANGED <<leaveEnd, ackTimedOut>>
                  \/ /\ ctxDone[leaveD]
-                    /\ leaveEnd' = "ctx"
-                    /\ pc' = [pc EXCEPT !["leave"] = "Leave_done"]
+                    /\ IF Mutation = "no-follow-restart"
+                          THEN /\ leaveEnd' = "stopped"
+                               /\ pc' = [pc EXCEPT !["leave"] = "Leave_done"]
+                          ELSE /\ pc' = [pc EXCEPT !["leave"] = "Wait_loop"]
+                               /\ UNCHANGED leaveEnd
                     /\ UNCHANGED ackTimedOut
-                 \/ /\ Mutation # "wait-no-timeout" /\ fetchCount[leaveD] = seen
+                 \/ /\ Mutation # "wait-no-timeout" /\ ~RemovalFetched(lrec, leaveD)
                     /\ leaveEnd' = "timeout"
                     /\ ackTimedOut' = ackCounted[leaveD]
                     /\ pc' = [pc EXCEPT !["leave"] = "Leave_done"]
               /\ UNCHANGED << stateExists, prefs, daemonGen, daemonUp, ctxDone, 
-                              crashes, pending, waitOn, refused, dirty, fetchQ, 
-                              fetchCount, certIssued, supDaemon, stopped, 
-                              retryGen, confReq, leaseReq, drained, advertised, 
-                              lock, cancelReg, cctx, drainRec, pruneRec, 
-                              unpruned, gen, res, out, mark, cnt, leaveRec, 
-                              leaveD, after, seen, everInPrefs, lockedDrained, 
-                              addAfterDrained, startedDrained, drainApplied, 
-                              ackMade, ackCounted, published, leftAdvertising, 
-                              pruneApplied, pruneFetched, pruneOK, unfetched, 
-                              hiddenAt, stack, svc, todo, cur, nudges, cafter, 
-                              early >>
+                              crashes, pending, waitOn, refused, dirty, logQ, 
+                              fetchCount, removals, removedAt, removedTo, 
+                              listed, listKnown, relisted, redrainReq, 
+                              certIssued, supDaemon, stopped, leaving, 
+                              retryGen, confReq, leaseReq, drained, lock, 
+                              cancelReg, cctx, cancelled, rmRec, unpruned, gen, 
+                              res, out, mark, lrec, leaveD, settled, 
+                              drainedGen, everInPrefs, lockedDrained, 
+                              addAfterDrained, startedDrained, 
+                              startDrainFailed, drainApplied, ackMade, 
+                              ackCounted, published, leftAdvertising, 
+                              upAtLeave, pruneApplied, pruneFetched, unfetched, 
+                              stack, svc, todo, cur, nudges, cafter, early >>
+
+Leave_floor == /\ pc["leave"] = "Leave_floor"
+               /\ Settled
+               /\ IF rmRec = lrec /\ RemovalFetched(lrec, leaveD)
+                     THEN /\ leaveEnd' = "acked"
+                          /\ pc' = [pc EXCEPT !["leave"] = "Leave_done"]
+                     ELSE /\ pc' = [pc EXCEPT !["leave"] = "Wait_loop"]
+                          /\ UNCHANGED leaveEnd
+               /\ UNCHANGED << stateExists, prefs, daemonGen, daemonUp, 
+                               ctxDone, crashes, pending, waitOn, refused, 
+                               dirty, logQ, fetchCount, removals, removedAt, 
+                               removedTo, listed, listKnown, relisted, 
+                               redrainReq, certIssued, supDaemon, stopped, 
+                               leaving, retryGen, confReq, leaseReq, drained, 
+                               lock, cancelReg, cctx, cancelled, rmRec, 
+                               unpruned, gen, res, out, mark, lrec, leaveD, 
+                               settled, drainedGen, everInPrefs, lockedDrained, 
+                               addAfterDrained, startedDrained, 
+                               startDrainFailed, drainApplied, ackMade, 
+                               ackCounted, ackTimedOut, published, 
+                               leftAdvertising, upAtLeave, pruneApplied, 
+                               pruneFetched, unfetched, stack, svc, todo, cur, 
+                               nudges, cafter, early >>
+
+Wait_settle == /\ pc["leave"] = "Wait_settle"
+               /\ Settled
+               /\ settled' = TRUE
+               /\ pc' = [pc EXCEPT !["leave"] = "Wait_loop"]
+               /\ UNCHANGED << stateExists, prefs, daemonGen, daemonUp, 
+                               ctxDone, crashes, pending, waitOn, refused, 
+                               dirty, logQ, fetchCount, removals, removedAt, 
+                               removedTo, listed, listKnown, relisted, 
+                               redrainReq, certIssued, supDaemon, stopped, 
+                               leaving, retryGen, confReq, leaseReq, drained, 
+                               lock, cancelReg, cctx, cancelled, rmRec, 
+                               unpruned, gen, res, out, mark, lrec, leaveD, 
+                               leaveEnd, drainedGen, everInPrefs, 
+                               lockedDrained, addAfterDrained, startedDrained, 
+                               startDrainFailed, drainApplied, ackMade, 
+                               ackCounted, ackTimedOut, published, 
+                               leftAdvertising, upAtLeave, pruneApplied, 
+                               pruneFetched, unfetched, stack, svc, todo, cur, 
+                               nudges, cafter, early >>
+
+Wait_restart == /\ pc["leave"] = "Wait_restart"
+                /\ \/ /\ PublishedRuns \/ rmRec # lrec
+                      /\ pc' = [pc EXCEPT !["leave"] = "Wait_loop"]
+                      /\ UNCHANGED leaveEnd
+                   \/ /\ Mutation # "wait-no-timeout"
+                      /\ leaveEnd' = "timeout"
+                      /\ pc' = [pc EXCEPT !["leave"] = "Leave_done"]
+                /\ UNCHANGED << stateExists, prefs, daemonGen, daemonUp, 
+                                ctxDone, crashes, pending, waitOn, refused, 
+                                dirty, logQ, fetchCount, removals, removedAt, 
+                                removedTo, listed, listKnown, relisted, 
+                                redrainReq, certIssued, supDaemon, stopped, 
+                                leaving, retryGen, confReq, leaseReq, drained, 
+                                lock, cancelReg, cctx, cancelled, rmRec, 
+                                unpruned, gen, res, out, mark, lrec, leaveD, 
+                                settled, drainedGen, everInPrefs, 
+                                lockedDrained, addAfterDrained, startedDrained, 
+                                startDrainFailed, drainApplied, ackMade, 
+                                ackCounted, ackTimedOut, published, 
+                                leftAdvertising, upAtLeave, pruneApplied, 
+                                pruneFetched, unfetched, stack, svc, todo, cur, 
+                                nudges, cafter, early >>
 
 Leave_done == /\ pc["leave"] = "Leave_done"
-              /\ leftAdvertising' = (daemonUp /\ prefs # {}
-                                     /\ ~(drainApplied /\ leaveEnd \in {"acked", "timeout"}))
+              /\ leftAdvertising' = (daemonUp /\ prefs # {} /\ leaveEnd # "timeout")
+              /\ upAtLeave' = daemonUp
               /\ stopped' = TRUE
               /\ daemonUp' = FALSE
               /\ supDaemon' = 0
@@ -2472,27 +2952,115 @@ Leave_done == /\ pc["leave"] = "Leave_done"
               /\ ctxDone' = [g \in Gens |-> TRUE]
               /\ pc' = [pc EXCEPT !["leave"] = "Done"]
               /\ UNCHANGED << stateExists, prefs, daemonGen, crashes, waitOn, 
-                              refused, dirty, fetchQ, fetchCount, certIssued, 
-                              retryGen, confReq, leaseReq, drained, advertised, 
-                              lock, cancelReg, cctx, drainRec, pruneRec, 
-                              unpruned, gen, res, out, mark, cnt, leaveRec, 
-                              leaveD, after, seen, leaveEnd, everInPrefs, 
-                              lockedDrained, addAfterDrained, startedDrained, 
-                              drainApplied, ackMade, ackCounted, ackTimedOut, 
-                              published, pruneApplied, pruneFetched, pruneOK, 
-                              unfetched, hiddenAt, stack, svc, todo, cur, 
+                              refused, dirty, logQ, fetchCount, removals, 
+                              removedAt, removedTo, listed, listKnown, 
+                              relisted, redrainReq, certIssued, leaving, 
+                              retryGen, confReq, leaseReq, drained, lock, 
+                              cancelReg, cctx, cancelled, rmRec, unpruned, gen, 
+                              res, out, mark, lrec, leaveD, leaveEnd, settled, 
+                              drainedGen, everInPrefs, lockedDrained, 
+                              addAfterDrained, startedDrained, 
+                              startDrainFailed, drainApplied, ackMade, 
+                              ackCounted, ackTimedOut, published, pruneApplied, 
+                              pruneFetched, unfetched, stack, svc, todo, cur, 
                               nudges, cafter, early >>
 
-Leave == Leave_begin \/ Wait_lock \/ Wait_recordRead \/ Wait_check
-            \/ Wait_block \/ Leave_done
+Leave == Leave_begin \/ Leave_started \/ Wait_loop \/ Wait_block
+            \/ Leave_floor \/ Wait_settle \/ Wait_restart \/ Leave_done
+
+Redrain_idle == /\ pc["redrain"] = "Redrain_idle"
+                /\ IF ~stopped
+                      THEN /\ \E g \in Gens : redrainReq[g]
+                           /\ \E g \in {x \in Gens : redrainReq[x]}:
+                                /\ redrainReq' = [redrainReq EXCEPT ![g] = FALSE]
+                                /\ gen' = [gen EXCEPT !["redrain"] = g]
+                           /\ pc' = [pc EXCEPT !["redrain"] = "Redrain_lock"]
+                      ELSE /\ pc' = [pc EXCEPT !["redrain"] = "Done"]
+                           /\ UNCHANGED << redrainReq, gen >>
+                /\ UNCHANGED << stateExists, prefs, daemonGen, daemonUp, 
+                                ctxDone, crashes, pending, waitOn, refused, 
+                                dirty, logQ, fetchCount, removals, removedAt, 
+                                removedTo, listed, listKnown, relisted, 
+                                certIssued, supDaemon, stopped, leaving, 
+                                retryGen, confReq, leaseReq, drained, lock, 
+                                cancelReg, cctx, cancelled, rmRec, unpruned, 
+                                res, out, mark, lrec, leaveD, leaveEnd, 
+                                settled, drainedGen, everInPrefs, 
+                                lockedDrained, addAfterDrained, startedDrained, 
+                                startDrainFailed, drainApplied, ackMade, 
+                                ackCounted, ackTimedOut, published, 
+                                leftAdvertising, upAtLeave, pruneApplied, 
+                                pruneFetched, unfetched, stack, svc, todo, cur, 
+                                nudges, cafter, early >>
+
+Redrain_lock == /\ pc["redrain"] = "Redrain_lock"
+                /\ lock = None
+                /\ IF ~Live("redrain") \/ prefs = {}
+                      THEN /\ pc' = [pc EXCEPT !["redrain"] = "Redrain_idle"]
+                           /\ UNCHANGED << pending, waitOn, lock, rmRec >>
+                      ELSE /\ lock' = "redrain"
+                           /\ rmRec' = [set |-> TRUE, gen |-> (gen["redrain"]), removals |-> removals[(gen["redrain"])],
+                                        leaves |-> ({}), start |-> FALSE, fetches |-> fetchCount[(gen["redrain"])]]
+                           /\ LET r == [from |-> "redrain", gen |-> gen["redrain"], val |-> {},
+                                        kind |-> "drain"] IN
+                                /\ pending' = (pending \cup {r})
+                                /\ waitOn' = [waitOn EXCEPT !["redrain"] = r]
+                           /\ pc' = [pc EXCEPT !["redrain"] = "Redrain_sent"]
+                /\ UNCHANGED << stateExists, prefs, daemonGen, daemonUp, 
+                                ctxDone, crashes, refused, dirty, logQ, 
+                                fetchCount, removals, removedAt, removedTo, 
+                                listed, listKnown, relisted, redrainReq, 
+                                certIssued, supDaemon, stopped, leaving, 
+                                retryGen, confReq, leaseReq, drained, 
+                                cancelReg, cctx, cancelled, unpruned, gen, res, 
+                                out, mark, lrec, leaveD, leaveEnd, settled, 
+                                drainedGen, everInPrefs, lockedDrained, 
+                                addAfterDrained, startedDrained, 
+                                startDrainFailed, drainApplied, ackMade, 
+                                ackCounted, ackTimedOut, published, 
+                                leftAdvertising, upAtLeave, pruneApplied, 
+                                pruneFetched, unfetched, stack, svc, todo, cur, 
+                                nudges, cafter, early >>
+
+Redrain_sent == /\ pc["redrain"] = "Redrain_sent"
+                /\ \/ /\ Applied("redrain")
+                   \/ /\ ~Live("redrain")
+                   \/ /\ TRUE
+                /\ waitOn' = [waitOn EXCEPT !["redrain"] = NoReq]
+                /\ lock' = None
+                /\ pc' = [pc EXCEPT !["redrain"] = "Redrain_idle"]
+                /\ UNCHANGED << stateExists, prefs, daemonGen, daemonUp, 
+                                ctxDone, crashes, pending, refused, dirty, 
+                                logQ, fetchCount, removals, removedAt, 
+                                removedTo, listed, listKnown, relisted, 
+                                redrainReq, certIssued, supDaemon, stopped, 
+                                leaving, retryGen, confReq, leaseReq, drained, 
+                                cancelReg, cctx, cancelled, rmRec, unpruned, 
+                                gen, res, out, mark, lrec, leaveD, leaveEnd, 
+                                settled, drainedGen, everInPrefs, 
+                                lockedDrained, addAfterDrained, startedDrained, 
+                                startDrainFailed, drainApplied, ackMade, 
+                                ackCounted, ackTimedOut, published, 
+                                leftAdvertising, upAtLeave, pruneApplied, 
+                                pruneFetched, unfetched, stack, svc, todo, cur, 
+                                nudges, cafter, early >>
+
+Redrain == Redrain_idle \/ Redrain_lock \/ Redrain_sent
 
 Tailscaled_answer == /\ pc["tailscaled"] = "Tailscaled_answer"
                      /\ IF ~stopped
                            THEN /\ \/ /\ \E r \in {q \in pending : daemonUp /\ q.gen = daemonGen}:
                                            /\ IF r.val # prefs
                                                  THEN /\ dirty' = TRUE
+                                                      /\ logQ' = [logQ EXCEPT ![r.gen] =            Append(
+                                                                                         IF r.val # {}
+                                                                                         THEN [i \in DOMAIN logQ[r.gen] |->
+                                                                                                 [logQ[r.gen][i] EXCEPT !.ack = FALSE]]
+                                                                                         ELSE logQ[r.gen],
+                                                                                         EditLine(r.val))]
                                                  ELSE /\ TRUE
-                                                      /\ dirty' = dirty
+                                                      /\ UNCHANGED << dirty, 
+                                                                      logQ >>
                                            /\ IF (prefs \ r.val) \cap Services # {}
                                                  THEN /\ unfetched' = (unfetched \cup {r.from})
                                                  ELSE /\ TRUE
@@ -2513,10 +3081,8 @@ Tailscaled_answer == /\ pc["tailscaled"] = "Tailscaled_answer"
                                            /\ IF r.val # {}
                                                  THEN /\ ackMade' = FALSE
                                                       /\ ackCounted' = [g \in Gens |-> FALSE]
-                                                      /\ fetchQ' = [g \in Gens |-> [i \in DOMAIN fetchQ[g] |-> FALSE]]
                                                  ELSE /\ TRUE
-                                                      /\ UNCHANGED << fetchQ, 
-                                                                      ackMade, 
+                                                      /\ UNCHANGED << ackMade, 
                                                                       ackCounted >>
                                       /\ UNCHANGED refused
                                    \/ /\ \E r \in {q \in pending : daemonUp /\ q.gen = daemonGen
@@ -2524,77 +3090,139 @@ Tailscaled_answer == /\ pc["tailscaled"] = "Tailscaled_answer"
                                                                  /\ waitOn[q.from] = q}:
                                            /\ refused' = [refused EXCEPT ![r.from] = TRUE]
                                            /\ pending' = pending \ {r}
-                                      /\ UNCHANGED <<prefs, dirty, fetchQ, everInPrefs, drainApplied, ackMade, ackCounted, pruneApplied, pruneFetched, unfetched>>
+                                      /\ UNCHANGED <<prefs, dirty, logQ, everInPrefs, drainApplied, ackMade, ackCounted, pruneApplied, pruneFetched, unfetched>>
                                 /\ pc' = [pc EXCEPT !["tailscaled"] = "Tailscaled_answer"]
                            ELSE /\ pc' = [pc EXCEPT !["tailscaled"] = "Done"]
                                 /\ UNCHANGED << prefs, pending, refused, dirty, 
-                                                fetchQ, everInPrefs, 
+                                                logQ, everInPrefs, 
                                                 drainApplied, ackMade, 
                                                 ackCounted, pruneApplied, 
                                                 pruneFetched, unfetched >>
                      /\ UNCHANGED << stateExists, daemonGen, daemonUp, ctxDone, 
-                                     crashes, waitOn, fetchCount, certIssued, 
-                                     supDaemon, stopped, retryGen, confReq, 
-                                     leaseReq, drained, advertised, lock, 
-                                     cancelReg, cctx, drainRec, pruneRec, 
-                                     unpruned, gen, res, out, mark, cnt, 
-                                     leaveRec, leaveD, after, seen, leaveEnd, 
+                                     crashes, waitOn, fetchCount, removals, 
+                                     removedAt, removedTo, listed, listKnown, 
+                                     relisted, redrainReq, certIssued, 
+                                     supDaemon, stopped, leaving, retryGen, 
+                                     confReq, leaseReq, drained, lock, 
+                                     cancelReg, cctx, cancelled, rmRec, 
+                                     unpruned, gen, res, out, mark, lrec, 
+                                     leaveD, leaveEnd, settled, drainedGen, 
                                      lockedDrained, addAfterDrained, 
-                                     startedDrained, ackTimedOut, published, 
-                                     leftAdvertising, pruneOK, hiddenAt, stack, 
-                                     svc, todo, cur, nudges, cafter, early >>
+                                     startedDrained, startDrainFailed, 
+                                     ackTimedOut, published, leftAdvertising, 
+                                     upAtLeave, stack, svc, todo, cur, nudges, 
+                                     cafter, early >>
 
 Tailscaled == Tailscaled_answer
+
+Orphans_drop == /\ pc["orphans"] = "Orphans_drop"
+                /\ IF ~stopped
+                      THEN /\ \E r \in pending : r.kind = "add" /\ Orphan(r)
+                           /\ \E r \in {q \in pending : q.kind = "add" /\ Orphan(q)}:
+                                pending' = pending \ {r}
+                           /\ pc' = [pc EXCEPT !["orphans"] = "Orphans_drop"]
+                      ELSE /\ pc' = [pc EXCEPT !["orphans"] = "Done"]
+                           /\ UNCHANGED pending
+                /\ UNCHANGED << stateExists, prefs, daemonGen, daemonUp, 
+                                ctxDone, crashes, waitOn, refused, dirty, logQ, 
+                                fetchCount, removals, removedAt, removedTo, 
+                                listed, listKnown, relisted, redrainReq, 
+                                certIssued, supDaemon, stopped, leaving, 
+                                retryGen, confReq, leaseReq, drained, lock, 
+                                cancelReg, cctx, cancelled, rmRec, unpruned, 
+                                gen, res, out, mark, lrec, leaveD, leaveEnd, 
+                                settled, drainedGen, everInPrefs, 
+                                lockedDrained, addAfterDrained, startedDrained, 
+                                startDrainFailed, drainApplied, ackMade, 
+                                ackCounted, ackTimedOut, published, 
+                                leftAdvertising, upAtLeave, pruneApplied, 
+                                pruneFetched, unfetched, stack, svc, todo, cur, 
+                                nudges, cafter, early >>
+
+Orphans == Orphans_drop
 
 Control_fetch == /\ pc["control"] = "Control_fetch"
                  /\ IF ~stopped
                        THEN /\ daemonUp /\ dirty
                             /\ dirty' = FALSE
-                            /\ fetchQ' = [fetchQ EXCEPT ![daemonGen] = Append(fetchQ[daemonGen], Ack)]
+                            /\ logQ' = [logQ EXCEPT ![daemonGen] = Append(logQ[daemonGen], FetchLine(Ack))]
                             /\ ackMade' = (ackMade \/ Ack)
                             /\ pruneFetched' = (pruneFetched \/ pruneApplied)
                             /\ unfetched' = {}
                             /\ pc' = [pc EXCEPT !["control"] = "Control_fetch"]
                        ELSE /\ pc' = [pc EXCEPT !["control"] = "Done"]
-                            /\ UNCHANGED << dirty, fetchQ, ackMade, 
-                                            pruneFetched, unfetched >>
+                            /\ UNCHANGED << dirty, logQ, ackMade, pruneFetched, 
+                                            unfetched >>
                  /\ UNCHANGED << stateExists, prefs, daemonGen, daemonUp, 
                                  ctxDone, crashes, pending, waitOn, refused, 
-                                 fetchCount, certIssued, supDaemon, stopped, 
-                                 retryGen, confReq, leaseReq, drained, 
-                                 advertised, lock, cancelReg, cctx, drainRec, 
-                                 pruneRec, unpruned, gen, res, out, mark, cnt, 
-                                 leaveRec, leaveD, after, seen, leaveEnd, 
-                                 everInPrefs, lockedDrained, addAfterDrained, 
-                                 startedDrained, drainApplied, ackCounted, 
-                                 ackTimedOut, published, leftAdvertising, 
-                                 pruneApplied, pruneOK, hiddenAt, stack, svc, 
-                                 todo, cur, nudges, cafter, early >>
+                                 fetchCount, removals, removedAt, removedTo, 
+                                 listed, listKnown, relisted, redrainReq, 
+                                 certIssued, supDaemon, stopped, leaving, 
+                                 retryGen, confReq, leaseReq, drained, lock, 
+                                 cancelReg, cctx, cancelled, rmRec, unpruned, 
+                                 gen, res, out, mark, lrec, leaveD, leaveEnd, 
+                                 settled, drainedGen, everInPrefs, 
+                                 lockedDrained, addAfterDrained, 
+                                 startedDrained, startDrainFailed, 
+                                 drainApplied, ackCounted, ackTimedOut, 
+                                 published, leftAdvertising, upAtLeave, 
+                                 pruneApplied, stack, svc, todo, cur, nudges, 
+                                 cafter, early >>
 
 Control == Control_fetch
 
 Counter_count == /\ pc["counter"] = "Counter_count"
                  /\ IF ~stopped
-                       THEN /\ \E g \in {x \in Gens : fetchQ[x] # <<>> /\ Reads(x)}:
-                                 /\ fetchCount' = [fetchCount EXCEPT ![g] = fetchCount[g] + 1]
-                                 /\ ackCounted' = [ackCounted EXCEPT ![g] = ackCounted[g] \/ Head(fetchQ[g])]
-                                 /\ fetchQ' = [fetchQ EXCEPT ![g] = Tail(fetchQ[g])]
+                       THEN /\ \E g \in {x \in Gens : logQ[x] # <<>> /\ (Reads(x) \/ RelistLine(x))}:
+                                 LET e == Head(logQ[g]) IN
+                                   /\ IF e.k = "fetch"
+                                         THEN /\ fetchCount' = [fetchCount EXCEPT ![g] = fetchCount[g] + 1]
+                                              /\ ackCounted' = [ackCounted EXCEPT ![g] = ackCounted[g] \/ e.ack]
+                                              /\ UNCHANGED << removals, 
+                                                              removedAt, 
+                                                              removedTo, 
+                                                              listed, 
+                                                              listKnown, 
+                                                              relisted, 
+                                                              redrainReq >>
+                                         ELSE /\ IF ~listKnown[g] \/ listed[g] \ e.val # {}
+                                                    THEN /\ removals' = [removals EXCEPT ![g] = removals[g] + 1]
+                                                         /\ removedAt' = [removedAt EXCEPT ![g] = fetchCount[g]]
+                                                         /\ removedTo' = [removedTo EXCEPT ![g] = e.val]
+                                                    ELSE /\ TRUE
+                                                         /\ UNCHANGED << removals, 
+                                                                         removedAt, 
+                                                                         removedTo >>
+                                              /\ listed' = [listed EXCEPT ![g] = e.val]
+                                              /\ listKnown' = [listKnown EXCEPT ![g] = TRUE]
+                                              /\ relisted' = [relisted EXCEPT ![g] = drained /\ e.val # {}]
+                                              /\ IF drained /\ e.val # {} /\ ~ctxDone[g]
+                                                    /\ Mutation # "no-redrain"
+                                                    THEN /\ redrainReq' = [redrainReq EXCEPT ![g] = TRUE]
+                                                    ELSE /\ TRUE
+                                                         /\ UNCHANGED redrainReq
+                                              /\ UNCHANGED << fetchCount, 
+                                                              ackCounted >>
+                                   /\ logQ' = [logQ EXCEPT ![g] = Tail(logQ[g])]
                             /\ pc' = [pc EXCEPT !["counter"] = "Counter_count"]
                        ELSE /\ pc' = [pc EXCEPT !["counter"] = "Done"]
-                            /\ UNCHANGED << fetchQ, fetchCount, ackCounted >>
+                            /\ UNCHANGED << logQ, fetchCount, removals, 
+                                            removedAt, removedTo, listed, 
+                                            listKnown, relisted, redrainReq, 
+                                            ackCounted >>
                  /\ UNCHANGED << stateExists, prefs, daemonGen, daemonUp, 
                                  ctxDone, crashes, pending, waitOn, refused, 
                                  dirty, certIssued, supDaemon, stopped, 
-                                 retryGen, confReq, leaseReq, drained, 
-                                 advertised, lock, cancelReg, cctx, drainRec, 
-                                 pruneRec, unpruned, gen, res, out, mark, cnt, 
-                                 leaveRec, leaveD, after, seen, leaveEnd, 
-                                 everInPrefs, lockedDrained, addAfterDrained, 
-                                 startedDrained, drainApplied, ackMade, 
-                                 ackTimedOut, published, leftAdvertising, 
-                                 pruneApplied, pruneFetched, pruneOK, 
-                                 unfetched, hiddenAt, stack, svc, todo, cur, 
-                                 nudges, cafter, early >>
+                                 leaving, retryGen, confReq, leaseReq, drained, 
+                                 lock, cancelReg, cctx, cancelled, rmRec, 
+                                 unpruned, gen, res, out, mark, lrec, leaveD, 
+                                 leaveEnd, settled, drainedGen, everInPrefs, 
+                                 lockedDrained, addAfterDrained, 
+                                 startedDrained, startDrainFailed, 
+                                 drainApplied, ackMade, ackTimedOut, published, 
+                                 leftAdvertising, upAtLeave, pruneApplied, 
+                                 pruneFetched, unfetched, stack, svc, todo, 
+                                 cur, nudges, cafter, early >>
 
 Counter == Counter_count
 
@@ -2609,17 +3237,19 @@ Crash_exit == /\ pc["crash"] = "Crash_exit"
                     ELSE /\ pc' = [pc EXCEPT !["crash"] = "Done"]
                          /\ UNCHANGED << daemonUp, crashes, pending, dirty >>
               /\ UNCHANGED << stateExists, prefs, daemonGen, ctxDone, waitOn, 
-                              refused, fetchQ, fetchCount, certIssued, 
-                              supDaemon, stopped, retryGen, confReq, leaseReq, 
-                              drained, advertised, lock, cancelReg, cctx, 
-                              drainRec, pruneRec, unpruned, gen, res, out, 
-                              mark, cnt, leaveRec, leaveD, after, seen, 
-                              leaveEnd, everInPrefs, lockedDrained, 
-                              addAfterDrained, startedDrained, drainApplied, 
-                              ackMade, ackCounted, ackTimedOut, published, 
-                              leftAdvertising, pruneApplied, pruneFetched, 
-                              pruneOK, unfetched, hiddenAt, stack, svc, todo, 
-                              cur, nudges, cafter, early >>
+                              refused, logQ, fetchCount, removals, removedAt, 
+                              removedTo, listed, listKnown, relisted, 
+                              redrainReq, certIssued, supDaemon, stopped, 
+                              leaving, retryGen, confReq, leaseReq, drained, 
+                              lock, cancelReg, cctx, cancelled, rmRec, 
+                              unpruned, gen, res, out, mark, lrec, leaveD, 
+                              leaveEnd, settled, drainedGen, everInPrefs, 
+                              lockedDrained, addAfterDrained, startedDrained, 
+                              startDrainFailed, drainApplied, ackMade, 
+                              ackCounted, ackTimedOut, published, 
+                              leftAdvertising, upAtLeave, pruneApplied, 
+                              pruneFetched, unfetched, stack, svc, todo, cur, 
+                              nudges, cafter, early >>
 
 Crash == Crash_exit
 
@@ -2632,17 +3262,19 @@ Cert_issue == /\ pc["issuer"] = "Cert_issue"
                     ELSE /\ pc' = [pc EXCEPT !["issuer"] = "Done"]
                          /\ UNCHANGED certIssued
               /\ UNCHANGED << stateExists, prefs, daemonGen, daemonUp, ctxDone, 
-                              crashes, pending, waitOn, refused, dirty, fetchQ, 
-                              fetchCount, supDaemon, stopped, retryGen, 
-                              confReq, leaseReq, drained, advertised, lock, 
-                              cancelReg, cctx, drainRec, pruneRec, unpruned, 
-                              gen, res, out, mark, cnt, leaveRec, leaveD, 
-                              after, seen, leaveEnd, everInPrefs, 
-                              lockedDrained, addAfterDrained, startedDrained, 
-                              drainApplied, ackMade, ackCounted, ackTimedOut, 
-                              published, leftAdvertising, pruneApplied, 
-                              pruneFetched, pruneOK, unfetched, hiddenAt, 
-                              stack, svc, todo, cur, nudges, cafter, early >>
+                              crashes, pending, waitOn, refused, dirty, logQ, 
+                              fetchCount, removals, removedAt, removedTo, 
+                              listed, listKnown, relisted, redrainReq, 
+                              supDaemon, stopped, leaving, retryGen, confReq, 
+                              leaseReq, drained, lock, cancelReg, cctx, 
+                              cancelled, rmRec, unpruned, gen, res, out, mark, 
+                              lrec, leaveD, leaveEnd, settled, drainedGen, 
+                              everInPrefs, lockedDrained, addAfterDrained, 
+                              startedDrained, startDrainFailed, drainApplied, 
+                              ackMade, ackCounted, ackTimedOut, published, 
+                              leftAdvertising, upAtLeave, pruneApplied, 
+                              pruneFetched, unfetched, stack, svc, todo, cur, 
+                              nudges, cafter, early >>
 
 Issuer == Cert_issue
 
@@ -2650,8 +3282,8 @@ Issuer == Cert_issue
 Terminating == /\ \A self \in ProcSet: pc[self] = "Done"
                /\ UNCHANGED vars
 
-Next == Supervisor \/ Retry \/ StopSignal \/ Leave \/ Tailscaled \/ Control
-           \/ Counter \/ Crash \/ Issuer
+Next == Supervisor \/ Retry \/ StopSignal \/ Leave \/ Redrain \/ Tailscaled
+           \/ Orphans \/ Control \/ Counter \/ Crash \/ Issuer
            \/ (\E self \in ProcSet: Configure(self) \/ DrainProc(self))
            \/ (\E self \in Confs: Confirm(self))
            \/ (\E self \in Leases: LeaseHolder(self))
@@ -2664,6 +3296,9 @@ Spec == /\ Init /\ [][Next]_vars
         /\ \A self \in Leases : WF_vars(LeaseHolder(self)) /\ WF_vars(Configure(self))
         /\ WF_vars(StopSignal) /\ WF_vars(DrainProc("stop"))
         /\ WF_vars(Leave) /\ WF_vars(DrainProc("leave"))
+        /\ WF_vars(Redrain)
+        /\ WF_vars(Orphans)
+        /\ WF_vars(Counter)
 
 Termination == <>(\A self \in ProcSet: pc[self] = "Done")
 
@@ -2675,33 +3310,31 @@ Termination == <>(\A self \in ProcSet: pc[self] = "Done")
 Running == ~stopped
 
 \* The state as far as the fetch counts matter (VIEW CountView, in the
-\* cfgs that enable the confirmer): a count read from daemon g's
-\* d.fetches is only ever compared with d.fetches of the same daemon,
-\* which only grows (DrainAndWait compares a count of an earlier daemon
-\* with 0 instead). So what decides every later step is whether a fetch
-\* was counted since the read, not the numbers: states that agree on that
-\* are the same to every property. (Not for ignore-restart, which compares
-\* counts of different daemons.)
+\* cfgs that enable the confirmer, pruneServices or the lease holder): a
+\* count read from daemon g's d.fetches is only ever compared with
+\* d.fetches of the same daemon, which only grows. So what decides every
+\* later step is whether a fetch was counted since the read, not the
+\* numbers: states that agree on that are the same to every property.
+\* (Not for count-before-edit, whose cfg uses no VIEW.)
 Since(v, g) ==
     IF g = 0 THEN <<"raw", v>> ELSE <<"since", fetchCount[g] > v>>
 CountView ==
     << stateExists, prefs, daemonGen, daemonUp, ctxDone, crashes, pending,
-       waitOn, refused, dirty, fetchQ, [g \in Gens |-> fetchCount[g] > 0],
-       certIssued, supDaemon, stopped, retryGen,
+       waitOn, refused, dirty, logQ, [g \in Gens |-> fetchCount[g] > 0],
+       removals, [g \in Gens |-> Since(removedAt[g], g)], removedTo, listed,
+       listKnown, relisted, redrainReq, certIssued, supDaemon, stopped,
+       leaving, retryGen,
        [s \in Services |-> [gen |-> confReq[s].gen,
                             after |-> Since(confReq[s].after, confReq[s].gen)]],
-       leaseReq, drained, advertised, lock, cancelReg, cctx,
-       [drainRec EXCEPT !.fetches = Since(drainRec.fetches, drainRec.gen)],
-       [pruneRec EXCEPT !.fetches = Since(pruneRec.fetches, pruneRec.gen)],
+       leaseReq, drained, lock, cancelReg, cctx, cancelled,
+       [rmRec EXCEPT !.fetches = Since(rmRec.fetches, rmRec.gen)],
        unpruned, gen, res, out,
        [a \in Actors |-> Since(mark[a], gen[a])],
-       [a \in Actors |-> Since(cnt[a], gen[a])],
-       [leaveRec EXCEPT !.fetches = Since(leaveRec.fetches, leaveRec.gen)],
-       leaveD, Since(after, leaveD), Since(seen, leaveD), leaveEnd,
-       everInPrefs, lockedDrained, addAfterDrained, startedDrained,
-       drainApplied, ackMade, ackCounted, ackTimedOut, published,
-       leftAdvertising, pruneApplied, pruneFetched, pruneOK, unfetched, hiddenAt, pc,
-       stack, svc, todo, cur, nudges,
+       [lrec EXCEPT !.fetches = Since(lrec.fetches, lrec.gen)],
+       leaveD, leaveEnd, settled, drainedGen, everInPrefs, lockedDrained, addAfterDrained,
+       startedDrained, startDrainFailed, drainApplied, ackMade, ackCounted,
+       ackTimedOut, published, leftAdvertising, upAtLeave, pruneApplied,
+       pruneFetched, unfetched, pc, stack, svc, todo, cur, nudges,
        [c \in Confs |-> Since(cafter[c], gen[c])], early >>
 
 \* L3: a confirmer re-advertises at most advertiseNudges times, and stops

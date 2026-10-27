@@ -103,10 +103,18 @@ online) and without services or serve config. The state goes even if the logout 
 
 **Stop and drain**: a Docker `kill` event with the container's stop signal drains its Tailscale Service backends before
 the container exits; plugin shutdown drains all of them. `Leave` drains a Service host itself if that did not happen
-(a task that crashed or completed gets no `kill` event), then waits for control to fetch the drained Service list:
-tailscaled logs `c2n: GET /vip-services received`, at least 1 s and at most 10 s after the drain
-(`DaemonSupervisor.DrainAndWait`). Only then does it log ephemeral nodes out, with retries, and delete their state, or
-stop tailscaled. A node gone before control processed its drain leaves callers pointed at it for minutes. A drain is
+(a task that crashed or completed gets no `kill` event), then waits for control to fetch the Service list after
+tslink's last removal of a Service took effect, at least 1 s and at most 10 s after it (`DaemonSupervisor.DrainAndWait`).
+tailscaled logs a prefs edit it applies (`EditPrefs: MaskedPrefs{AdvertiseServices=[...]}`) before it sets the prefs,
+and `c2n: GET /vip-services received` before it reads them, so its log orders the two: each edit of tslink's removing
+a Service (drain, prune, readvertise, the lease holder) is recorded before it is sent (`serviceGate.removal`), whatever
+its call returns, and the wait ends at a fetch read after that edit's line. An edit advertising a Service once drained,
+as a call the drain cancelled that tailscaled carried out late, is undone (`drainAgain`), and Leave looks again a floor
+after a drain cancelled a call. The wait follows a restart of tailscaled to the same deadline: a daemon started
+drained removes what its state advertises (`drainAtStart`), and one published after the drain is drained. Leave during
+the first start lets a start whose tailscaled runs finish drained, then drains (`DaemonSupervisor.Leaving`). Only then
+does it log ephemeral nodes out, with retries, and delete their state, or stop tailscaled. A node gone before control
+processed its drain leaves callers pointed at it for minutes. A drain is
 final for the supervisor (`serviceGate`, shared by its daemons): neither a certificate that appears later nor a
 restarted tailscaled advertises the backend again, and the certificate lease holder is advertised only once its
 certificate exists, or once control has refused its domain for `certDomainGrace` (30 s), in case control makes it a
@@ -118,8 +126,8 @@ ends with the plugin and is abandoned as on `Stop`. A daemon's CLI calls and wai
 `daemon.Stop`, and its goroutines run under its wait group. Each state directory serves one endpoint at a time
 (`ClaimStateDir`). A drain clears every Service the node advertises in one prefs edit (`daemon.Drain`), so one fetch by
 control covers all; at start, Services in the node's state its labels do not name are removed (`pruneServices`); a
-node that had any removed, or could not have them removed, is drained at stop like a Service host (`NeedsDrain`), and
-waits for control to fetch the removal.
+node that had any removed, or could not have them removed (a drain stopping it included), is drained at stop like a
+Service host (`NeedsDrain`), and waits for control to fetch the removal.
 
 **Binaries**: the plugin image ships a pinned Tailscale (from the `tailscale/tailscale` stage of the Dockerfile, which
 Dependabot updates), and tslink runs only these binaries: it downloads nothing at runtime and ignores the old

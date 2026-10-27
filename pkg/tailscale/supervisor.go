@@ -8,6 +8,7 @@ import (
 	"os"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/moby/moby/client/pkg/stringid"
@@ -87,9 +88,13 @@ type DaemonSupervisor struct {
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 
+	// Set when the endpoint leaves during the first start
+	leaving atomic.Bool
+
 	// State (protected by mu)
 	mu            sync.RWMutex
 	daemon        *daemon
+	starting      *daemon // the daemon being started, before it is published
 	status        SupervisorStatus
 	restartCount  int
 	crashTimes    []time.Time
@@ -131,6 +136,11 @@ func (s *DaemonSupervisor) Start() error {
 // succeeded, as the endpoint leaving does, stops the supervisor and aborts a
 // daemon start in progress, its login included. Once started, the supervisor
 // no longer depends on ctx. The caller still calls Stop after an error.
+//
+// Once Leaving was called, a start whose tailscaled already runs is not
+// aborted: tailscaled may advertise Services from the node's state, and an
+// aborted start would leave the node with them. The start goes on drained,
+// and StartContext drains and waits for control before it returns.
 func (s *DaemonSupervisor) StartContext(ctx context.Context) error {
 	s.mu.Lock()
 	if s.status != StatusStopped {
@@ -140,7 +150,7 @@ func (s *DaemonSupervisor) StartContext(ctx context.Context) error {
 	s.status = StatusStarting
 	s.mu.Unlock()
 
-	stop := context.AfterFunc(ctx, s.cancel)
+	stop := context.AfterFunc(ctx, s.abortStart)
 	defer stop()
 
 	// Start supervision loop in background. It outlives ctx: stop cancels
@@ -161,9 +171,18 @@ func (s *DaemonSupervisor) StartContext(ctx context.Context) error {
 		return errors.New("timeout waiting for initial daemon startup")
 	}
 	if !stop() {
+		s.drainIfLeaving()
 		return fmt.Errorf("initial daemon startup aborted: %w", ctx.Err())
 	}
 	return nil
+}
+
+// Leaving notes that the endpoint leaves while the supervisor's first start
+// runs, before StartContext's ctx is cancelled: see StartContext. The
+// Service backends are drained from now on.
+func (s *DaemonSupervisor) Leaving() {
+	s.leaving.Store(true)
+	s.cfg.gate.markDrained()
 }
 
 // Stop gracefully stops the supervisor and daemon.
@@ -207,12 +226,8 @@ func (s *DaemonSupervisor) Logout() error {
 // drained, even if tailscaled is down and the drain fails: a daemon the
 // supervisor starts later does not advertise them.
 func (s *DaemonSupervisor) Drain() error {
-	s.cfg.gate.markDrained()
-	d := s.getDaemon()
-	if d == nil {
-		return errors.New("tailscaled is not running")
-	}
-	return d.Drain()
+	_, err := s.drain()
+	return err
 }
 
 // Status returns the current supervisor status and restart count.
@@ -232,7 +247,7 @@ func (s *DaemonSupervisor) NeedsDrain() bool {
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	return !g.prune.at.IsZero()
+	return g.removal.daemon != nil
 }
 
 // Drained reports whether the node's Service backend has been drained.
@@ -262,6 +277,41 @@ func (s *DaemonSupervisor) WaitForIP(ctx context.Context) (*Status, error) {
 	}
 
 	return d.WaitForIP(ctx)
+}
+
+// abortStart aborts the first start, unless the endpoint is leaving and
+// tailscaled already runs, being started or once started.
+func (s *DaemonSupervisor) abortStart() {
+	s.mu.Lock()
+	d := s.starting
+	if d == nil {
+		d = s.daemon
+	}
+	s.mu.Unlock()
+	if s.leaving.Load() && d != nil && d.IsRunning() {
+		logger.Infof("Endpoint %s left while tailscaled started: draining it once started",
+			stringid.TruncateID(s.cfg.EndpointID))
+		return
+	}
+	s.cancel()
+}
+
+// drainIfLeaving drains the node and waits for control, if the endpoint left
+// during the first start and the node may advertise a Service.
+func (s *DaemonSupervisor) drainIfLeaving() {
+	if s.leaving.Load() && s.ctx.Err() == nil && s.NeedsDrain() {
+		s.DrainAndWait()
+	}
+}
+
+// drain is Drain, and returns the daemon it drained, nil if none.
+func (s *DaemonSupervisor) drain() (*daemon, error) {
+	s.cfg.gate.markDrained()
+	d := s.getDaemon()
+	if d == nil {
+		return nil, errors.New("tailscaled is not running")
+	}
+	return d, d.Drain()
 }
 
 // getDaemon returns the current daemon (may be nil if not running).
@@ -440,15 +490,20 @@ func (s *DaemonSupervisor) startDaemon() error {
 	// Stopping the supervisor aborts the start, and its login. Once started,
 	// the daemon's own context lets Stop take tailscaled down gracefully.
 	stop := context.AfterFunc(s.ctx, d.cancel)
+	s.mu.Lock()
+	s.starting = d
+	s.mu.Unlock()
 	err = s.start(d)
 	stop()
+	s.mu.Lock()
+	s.starting = nil
+	if err == nil {
+		s.daemon = d
+	}
+	s.mu.Unlock()
 	if err != nil {
 		return fmt.Errorf("failed to start daemon: %w", err)
 	}
-
-	s.mu.Lock()
-	s.daemon = d
-	s.mu.Unlock()
 
 	return nil
 }

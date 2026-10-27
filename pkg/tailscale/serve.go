@@ -311,7 +311,9 @@ func (d *daemon) addAdvertised(ctx context.Context, service string) (bool, error
 }
 
 // editAdvertised stops advertising every Service of the node's prefs keep
-// rejects, in one prefs edit, and returns those it removed.
+// rejects, in one prefs edit, and returns those it removed. It records the
+// edit in the gate before it sends it, since tailscaled may carry it out even
+// if the call fails. The caller holds the gate's lock.
 func (d *daemon) editAdvertised(ctx context.Context, keep func(string) bool) ([]string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -330,6 +332,7 @@ func (d *daemon) editAdvertised(ctx context.Context, keep func(string) bool) ([]
 	if len(removed) == 0 {
 		return nil, nil
 	}
+	d.config.gate.noteRemoval(d, kept, false)
 	if _, err := d.lc.EditPrefs(ctx, &ipn.MaskedPrefs{
 		AdvertiseServicesSet: true,
 		AdvertiseServices:    kept,
@@ -371,19 +374,17 @@ func (d *daemon) pruneServices() {
 		if err != nil {
 			return err
 		}
-		fetches, _ := d.servicesFetches()
 		removed, err := d.editAdvertised(ctx, keep)
 		if len(removed) > 0 {
 			logger.Infof("Stopped advertising %q, which its container does not name, for %s",
 				removed, id)
-			// The caller holds the gate's lock
-			g.prune = drainRecord{at: time.Now(), daemon: d, fetches: fetches}
-			g.advertised.Store(true)
 		}
 		return err
 	})
-	g.unpruned.Store(err != nil && !errors.Is(err, errDrained))
-	if g.unpruned.Load() {
+	// A prune the drain stopped, as Leave's during the first start, may
+	// leave Services advertised as well: Leave drains them
+	g.unpruned.Store(err != nil)
+	if err != nil && !errors.Is(err, errDrained) {
 		logger.Warnf("Failed to remove stale Services of %s: %v", id, err)
 	}
 }
@@ -396,7 +397,6 @@ func (b *serviceBackend) runAdvertise(ctx context.Context, service string) error
 	if err != nil {
 		return err
 	}
-	b.d.config.gate.advertised.Store(true)
 	if added {
 		b.markAdvertised(fetches)
 		// ctx ends with this change; the check runs on the daemon's
@@ -404,14 +404,6 @@ func (b *serviceBackend) runAdvertise(ctx context.Context, service string) error
 	}
 	b.checkApprovalLater() //nolint:contextcheck // as is the approval check
 	return nil
-}
-
-// noteSurvivingState marks the backend advertised if the node's state exists
-// before tailscaled starts: it may advertise the Service from a previous run.
-func (d *daemon) noteSurvivingState() {
-	if StateExists(d.config.StateDir) {
-		d.config.gate.advertised.Store(true)
-	}
 }
 
 // advertise advertises the Service, unless the backend was drained. A

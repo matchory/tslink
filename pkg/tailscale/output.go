@@ -105,13 +105,14 @@ func (d *daemon) handleLine(line string) {
 	case strings.Contains(line, servicesFetchLog):
 		d.fetchMu.Lock()
 		d.fetches++
-		if d.fetched != nil {
-			close(d.fetched)
-			d.fetched = nil
-		}
+		d.wakeLocked()
 		d.fetchMu.Unlock()
 		for _, b := range d.backends {
 			b.noteFetch()
+		}
+	case strings.Contains(line, editPrefsLog):
+		if services, ok := parseAdvertisedEdit(line); ok {
+			d.noteAdvertisedEdit(services)
 		}
 	case strings.Contains(line, `cert("`):
 		d.handleCertLine(line)
@@ -119,12 +120,28 @@ func (d *daemon) handleLine(line string) {
 }
 
 // servicesFetches returns how often control has fetched the node's Service
-// list, and a channel closed at the next fetch.
+// list, and a channel closed at the next fetch or edit of the advertised
+// Services.
 func (d *daemon) servicesFetches() (int64, <-chan struct{}) {
 	d.fetchMu.Lock()
 	defer d.fetchMu.Unlock()
+	return d.fetches, d.nextLocked()
+}
+
+// nextLocked returns the channel closed at the next fetch or edit. The caller
+// holds fetchMu.
+func (d *daemon) nextLocked() <-chan struct{} {
 	if d.fetched == nil {
 		d.fetched = make(chan struct{})
 	}
-	return d.fetches, d.fetched
+	return d.fetched
+}
+
+// wakeLocked wakes those waiting for the next fetch or edit. The caller holds
+// fetchMu.
+func (d *daemon) wakeLocked() {
+	if d.fetched != nil {
+		close(d.fetched)
+		d.fetched = nil
+	}
 }

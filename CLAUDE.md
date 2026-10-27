@@ -113,7 +113,8 @@ as a call the drain cancelled that tailscaled carried out late, is undone (`drai
 after a drain cancelled a call. The wait follows a restart of tailscaled to the same deadline: a daemon started
 drained removes what its state advertises (`drainAtStart`), and one published after the drain is drained. Leave during
 the first start lets a start whose tailscaled runs finish drained, then drains (`DaemonSupervisor.Leaving`). Only then
-does it log ephemeral nodes out, with retries, and delete their state, or stop tailscaled. A node gone before control processed its drain leaves callers pointed at it for minutes. A drain is
+does it log ephemeral nodes out, with retries, and delete their state, or stop tailscaled. A node gone before control
+processed its drain leaves callers pointed at it for minutes. A drain is
 final for the supervisor (`serviceGate`, shared by its daemons): neither a certificate that appears later nor a
 restarted tailscaled advertises the backend again, and the certificate lease holder is advertised only once its
 certificate exists, or once control has refused its domain for `certDomainGrace` (30 s), in case control makes it a

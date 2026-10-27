@@ -88,7 +88,7 @@ Go test in `pkg/tailscale/drain_test.go` (I9 in `supervisor_test.go` and
 `pkg/core/run_test.go`) that fails on v0.3.5, and a mutation that brings it
 back:
 
-| Id | Interleaving | Mutation |
+| ID | Interleaving | Mutation |
 | --- | --- | --- |
 | I1 | a drain while tailscaled is down: the next tailscaled advertises from its state | `no-drain-at-start` |
 | I2 | a fetch made before the drain's edit, counted after the count was read, passes for its acknowledgement | `count-before-edit` |

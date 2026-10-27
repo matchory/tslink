@@ -226,13 +226,15 @@ func (d *daemon) noteAdvertisedEdit(services []string) {
 }
 
 // removalFetched reports whether control fetched the Service list after rec's
-// edit took effect, with nothing advertised again since, and returns a
-// channel closed at the next fetch or edit.
+// edit took effect, with nothing advertised again since, as by readvertise
+// before a drain that failed, and returns a channel closed at the next fetch
+// or edit.
 func (d *daemon) removalFetched(rec removalRecord) (bool, <-chan struct{}) {
 	d.fetchMu.Lock()
 	defer d.fetchMu.Unlock()
 	applied := rec.start || d.removals > rec.removals && within(d.removedTo, rec.leaves)
-	return applied && !d.relisted && d.fetches > d.removedAt, d.nextLocked()
+	kept := !d.relisted && within(d.listed, rec.leaves)
+	return applied && kept && d.fetches > d.removedAt, d.nextLocked()
 }
 
 // within reports whether every Service of services is one of set.
@@ -255,15 +257,22 @@ func (d *daemon) Drain() error {
 	return d.unadvertiseAll()
 }
 
-// unadvertiseAll stops advertising every Service of the node. The caller
-// holds the gate's lock.
+// unadvertiseAll stops advertising every Service of the node. Should a
+// removal on an earlier daemon have been pending, with nothing left to
+// remove, control learns of it from this daemon. The caller holds the gate's
+// lock.
 func (d *daemon) unadvertiseAll() error {
 	id := stringid.TruncateID(d.config.EndpointID)
+	g := d.config.gate
+	pending := g.removal.daemon != nil && g.removal.daemon != d
 	removed, err := d.editAdvertised(d.ctx, func(string) bool { return false })
 	if err != nil {
 		return err
 	}
 	if len(removed) == 0 {
+		if pending {
+			g.noteRemoval(d, nil, true)
+		}
 		logger.Infof("No Service is advertised for %s: nothing to drain", id)
 		return nil
 	}
@@ -296,15 +305,9 @@ func (d *daemon) drainAtStart() {
 	g := d.config.gate
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	pending := g.removal.daemon != nil && g.removal.daemon != d
-	removed, err := d.editAdvertised(d.ctx, func(string) bool { return false })
-	if err != nil {
+	if err := d.unadvertiseAll(); err != nil {
 		logger.Warnf("Endpoint %s: failed to drain the restarted tailscaled: %v",
 			stringid.TruncateID(d.config.EndpointID), err)
-		return
-	}
-	if len(removed) == 0 && pending {
-		g.noteRemoval(d, nil, true)
 	}
 }
 

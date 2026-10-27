@@ -712,6 +712,29 @@ func TestNeedsDrainAfterFailedPrune(t *testing.T) {
 	<-done
 }
 
+// I13: Leave during the first start marked the gate drained before
+// pruneServices ran, which then removed nothing, and a node whose container
+// names no Service left advertising the Service of its state
+// (NoLeaveWhileAdvertising, S8).
+//
+// Guards: G7
+func TestNeedsDrainAfterPruneSkippedByDrain(t *testing.T) {
+	s, d, api := newPruningSupervisor(t)
+	s.cfg.gate.markDrained()
+	d.pruneServices()
+	if ran(api.operations(), "unadvertise", "svc:old") {
+		t.Fatalf("operations = %q, want no prune once drained", api.operations())
+	}
+	if !s.NeedsDrain() {
+		t.Fatal("no drain needed after a prune the drain skipped")
+	}
+	done := leaveAsync(s)
+	waitFor(t, "the drain", func() bool { return ran(api.operations(), "unadvertise", "svc:old") })
+	assertWaiting(t, done, "the drain")
+	d.handleLine(servicesFetchLine)
+	assertLeft(t, done)
+}
+
 // advertiseTiming shortens the wait for control's fetch of an advertisement.
 func advertiseTiming(d *daemon) {
 	setTiming(&d.config, func(tm *timing) {
@@ -1211,6 +1234,72 @@ func TestLeaveAfterCrashWaitsForNextDaemon(t *testing.T) {
 		t.Fatalf("operations = %q, want svc:web unadvertised as tailscaled starts",
 			nextAPI.operations())
 	}
+	s.mu.Lock()
+	s.daemon = next
+	s.mu.Unlock()
+	assertWaiting(t, done, "the drain")
+	next.handleLine(servicesFetchLine)
+	assertLeft(t, done)
+}
+
+// I14: the lease holder's removal took effect, and tailscaled exited before
+// control fetched it. The next tailscaled started undrained with nothing
+// advertised, so the drain removed nothing, and Leave did not wait, the
+// record being of a daemon gone (LeaveWaitsForDrain, S3).
+//
+// Guards: G7
+func TestDrainAfterRestartWaitsForEarlierRemoval(t *testing.T) {
+	s, d, api := newPlainSupervisor(t, "svc:web")
+	if err := d.only(t).configureServiceBackend(false); err != nil {
+		t.Fatal(err)
+	}
+	if !ran(api.operations(), "unadvertise", "svc:web") {
+		t.Fatalf("operations = %q, want svc:web unadvertised", api.operations())
+	}
+	d.cancel()
+	next, nextAPI := newTestDaemon(t, "svc:web")
+	next.config.gate = s.cfg.gate
+	next.drainAtStart()
+	s.mu.Lock()
+	s.daemon = next
+	s.mu.Unlock()
+	done := leaveAsync(s)
+	assertWaiting(t, done, "the lease holder's removal")
+	if ops := nextAPI.operations(); ran(ops, "unadvertise", "svc:web") {
+		t.Fatalf("operations = %q, want nothing to drain", ops)
+	}
+	next.handleLine(servicesFetchLine)
+	assertLeft(t, done)
+}
+
+// I15: readvertise's removal was fetched, and its new advertisement taken
+// up, before tailscaled crashed. The drain failed, and Leave took the fetch
+// of the removal for one of the drain, stopping the next tailscaled before
+// it drained the Service of its state (NoLeaveWhileAdvertising, S8).
+//
+// Guards: G7
+func TestReadvertisedRemovalIsNoAck(t *testing.T) {
+	s, d, api := newPlainSupervisor(t, "svc:web")
+	if err := d.only(t).readvertise("svc:web", 0); err != nil {
+		t.Fatal(err)
+	}
+	d.handleLine(servicesFetchLine)
+	// tailscaled exited: its socket is gone
+	exited := make(chan struct{})
+	close(exited)
+	d.mu.Lock()
+	d.exited = exited
+	d.mu.Unlock()
+	api.mu.Lock()
+	api.state = ipn.NoState
+	api.mu.Unlock()
+	done := leaveAsync(s)
+	assertWaiting(t, done, "the drain")
+	d.cancel()
+	next, nextAPI := newTestDaemon(t, "svc:web")
+	nextAPI.serviceHost(ipn.Prefs{AdvertiseServices: []string{"svc:web"}})
+	next.config.gate = s.cfg.gate
+	next.drainAtStart()
 	s.mu.Lock()
 	s.daemon = next
 	s.mu.Unlock()

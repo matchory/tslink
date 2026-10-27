@@ -130,6 +130,11 @@
 \*   wait-no-timeout    the wait has no deadline
 \*   no-cancel          markDrained cancels nothing
 \*   unbounded-nudges   the confirmer does not stop after advertiseNudges
+\*   drained-pruned     a prune the drain stopped counts as done
+\*   no-start-record    a drain with nothing to remove leaves the record of
+\*                      an earlier daemon
+\*   no-listed-check    a removal counts as fetched though a Service was
+\*                      advertised again since
 EXTENDS Naturals, Sequences, TLC
 
 CONSTANTS
@@ -275,6 +280,7 @@ define
         ELSE /\ \/ rec.start
                 \/ removals[g] > rec.removals /\ removedTo[g] \subseteq rec.leaves
              /\ ~relisted[g]
+             /\ Mutation # "no-listed-check" => listed[g] \subseteq rec.leaves
              /\ fetchCount[g] > removedAt[g] + (IF Mutation = "off-by-one" THEN 1 ELSE 0)
     \* The labels at which an actor reads daemon g's log state to record a
     \* removal (noteRemoval reads d.removals)
@@ -514,8 +520,15 @@ Drain_marked:
     end if;
 Drain_countRead:
     \* unadvertiseAll: editAdvertised(d.ctx, keep nothing): GetPrefs;
-    \* nothing to remove is left as it is; else noteRemoval, EditPrefs
-    if ~Live(self) \/ prefs = {} then
+    \* nothing to remove is left as it is, with a start record if an
+    \* earlier daemon's removal is in the gate; else noteRemoval, EditPrefs
+    if ~Live(self) then
+        goto Drain_release;
+    elsif prefs = {} then
+        if rmRec.set /\ rmRec.gen # gen[self]
+           /\ Mutation # "no-start-record" then
+            rmRec := [rmRec EXCEPT !.gen = gen[self], !.start = TRUE];
+        end if;
         goto Drain_release;
     else
         if RecordsAtSend(self) then
@@ -618,12 +631,13 @@ Prune_begin:
         \* setCancel, if g.drained { return errDrained }; fn: editServe
         \* (instant), editAdvertised(ctx, keep): GetPrefs, noteRemoval and
         \* EditPrefs unless nothing is to be removed. Then
-        \* g.unpruned.Store(err != nil && !errDrained). (The lock and the
-        \* send are one step: a drain between them makes the change return
-        \* errDrained before the send, as a drain before the lock does.)
+        \* g.unpruned.Store(err != nil), errDrained included. (The lock and
+        \* the send are one step: a drain between them makes the change
+        \* return errDrained before the send, as a drain before the lock
+        \* does.)
         await lock = None;
         if drained then
-            unpruned := FALSE;
+            unpruned := Mutation # "drained-pruned";
             goto Start_backends;
         elsif ~CallOK("sup") then
             unpruned := TRUE;
@@ -663,9 +677,9 @@ Prune_sent:
         waitOn["sup"] := NoReq;
 Prune_edited:
         \* editAdvertised returned; change: if fn failed and g.drained {
-        \* errDrained }; setCancel(nil), Unlock; g.unpruned.Store(err !=
-        \* nil && !errDrained)
-        unpruned := res["sup"] = "err" /\ ~drained;
+        \* errDrained }; setCancel(nil), Unlock; g.unpruned.Store(err != nil)
+        unpruned := res["sup"] = "err"
+                    /\ (Mutation # "drained-pruned" \/ ~drained);
         lock := None;
         cancelReg := None;
         cctx["sup"] := FALSE;
@@ -1197,6 +1211,10 @@ Tailscaled_answer:
                     \* list are out of date
                     ackMade := FALSE;
                     ackCounted := [g \in Gens |-> FALSE];
+                elsif r.kind = "drain" then
+                    \* A drain that changed nothing, once control fetched
+                    \* the list as it is, needs no fetch of its own
+                    ackMade := ackMade \/ ~dirty;
                 end if;
             end with;
         or
@@ -1344,6 +1362,7 @@ RemovalFetched(rec, g) ==
     ELSE /\ \/ rec.start
             \/ removals[g] > rec.removals /\ removedTo[g] \subseteq rec.leaves
          /\ ~relisted[g]
+         /\ Mutation # "no-listed-check" => listed[g] \subseteq rec.leaves
          /\ fetchCount[g] > removedAt[g] + (IF Mutation = "off-by-one" THEN 1 ELSE 0)
 
 
@@ -1756,19 +1775,27 @@ Drain_marked(self) == /\ pc[self] = "Drain_marked"
                                       nudges, cafter, early >>
 
 Drain_countRead(self) == /\ pc[self] = "Drain_countRead"
-                         /\ IF ~Live(self) \/ prefs = {}
+                         /\ IF ~Live(self)
                                THEN /\ pc' = [pc EXCEPT ![self] = "Drain_release"]
                                     /\ UNCHANGED << pending, waitOn, rmRec >>
-                               ELSE /\ IF RecordsAtSend(self)
-                                          THEN /\ rmRec' = [set |-> TRUE, gen |-> (gen[self]), removals |-> removals[(gen[self])],
-                                                            leaves |-> ({}), start |-> FALSE, fetches |-> fetchCount[(gen[self])]]
-                                          ELSE /\ TRUE
-                                               /\ rmRec' = rmRec
-                                    /\ LET r == [from |-> self, gen |-> gen[self], val |-> {},
-                                                 kind |-> "drain"] IN
-                                         /\ pending' = (pending \cup {r})
-                                         /\ waitOn' = [waitOn EXCEPT ![self] = r]
-                                    /\ pc' = [pc EXCEPT ![self] = "Drain_sent"]
+                               ELSE /\ IF prefs = {}
+                                          THEN /\ IF rmRec.set /\ rmRec.gen # gen[self]
+                                                     /\ Mutation # "no-start-record"
+                                                     THEN /\ rmRec' = [rmRec EXCEPT !.gen = gen[self], !.start = TRUE]
+                                                     ELSE /\ TRUE
+                                                          /\ rmRec' = rmRec
+                                               /\ pc' = [pc EXCEPT ![self] = "Drain_release"]
+                                               /\ UNCHANGED << pending, waitOn >>
+                                          ELSE /\ IF RecordsAtSend(self)
+                                                     THEN /\ rmRec' = [set |-> TRUE, gen |-> (gen[self]), removals |-> removals[(gen[self])],
+                                                                       leaves |-> ({}), start |-> FALSE, fetches |-> fetchCount[(gen[self])]]
+                                                     ELSE /\ TRUE
+                                                          /\ rmRec' = rmRec
+                                               /\ LET r == [from |-> self, gen |-> gen[self], val |-> {},
+                                                            kind |-> "drain"] IN
+                                                    /\ pending' = (pending \cup {r})
+                                                    /\ waitOn' = [waitOn EXCEPT ![self] = r]
+                                               /\ pc' = [pc EXCEPT ![self] = "Drain_sent"]
                          /\ UNCHANGED << stateExists, prefs, daemonGen, 
                                          daemonUp, ctxDone, crashes, refused, 
                                          dirty, logQ, fetchCount, removals, 
@@ -1968,7 +1995,7 @@ Start_drainSent == /\ pc["sup"] = "Start_drainSent"
 Prune_begin == /\ pc["sup"] = "Prune_begin"
                /\ lock = None
                /\ IF drained
-                     THEN /\ unpruned' = FALSE
+                     THEN /\ unpruned' = (Mutation # "drained-pruned")
                           /\ pc' = [pc EXCEPT !["sup"] = "Start_backends"]
                           /\ UNCHANGED << pending, waitOn, lock, cancelReg, 
                                           rmRec >>
@@ -2044,7 +2071,8 @@ Prune_sent == /\ pc["sup"] = "Prune_sent"
                               nudges, cafter, early >>
 
 Prune_edited == /\ pc["sup"] = "Prune_edited"
-                /\ unpruned' = (res["sup"] = "err" /\ ~drained)
+                /\ unpruned' = (res["sup"] = "err"
+                                /\ (Mutation # "drained-pruned" \/ ~drained))
                 /\ lock' = None
                 /\ cancelReg' = None
                 /\ cctx' = [cctx EXCEPT !["sup"] = FALSE]
@@ -3081,9 +3109,11 @@ Tailscaled_answer == /\ pc["tailscaled"] = "Tailscaled_answer"
                                            /\ IF r.val # {}
                                                  THEN /\ ackMade' = FALSE
                                                       /\ ackCounted' = [g \in Gens |-> FALSE]
-                                                 ELSE /\ TRUE
-                                                      /\ UNCHANGED << ackMade, 
-                                                                      ackCounted >>
+                                                 ELSE /\ IF r.kind = "drain"
+                                                            THEN /\ ackMade' = (ackMade \/ ~dirty')
+                                                            ELSE /\ TRUE
+                                                                 /\ UNCHANGED ackMade
+                                                      /\ UNCHANGED ackCounted
                                       /\ UNCHANGED refused
                                    \/ /\ \E r \in {q \in pending : daemonUp /\ q.gen = daemonGen
                                                                  /\ q.kind = "add"

@@ -381,8 +381,10 @@ func (d *daemon) pruneServices() {
 		}
 		return err
 	})
-	g.unpruned.Store(err != nil && !errors.Is(err, errDrained))
-	if g.unpruned.Load() {
+	// A prune the drain stopped, as Leave's during the first start, may
+	// leave Services advertised as well: Leave drains them
+	g.unpruned.Store(err != nil)
+	if err != nil && !errors.Is(err, errDrained) {
 		logger.Warnf("Failed to remove stale Services of %s: %v", id, err)
 	}
 }

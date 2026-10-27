@@ -125,8 +125,8 @@ ends with the plugin and is abandoned as on `Stop`. A daemon's CLI calls and wai
 `daemon.Stop`, and its goroutines run under its wait group. Each state directory serves one endpoint at a time
 (`ClaimStateDir`). A drain clears every Service the node advertises in one prefs edit (`daemon.Drain`), so one fetch by
 control covers all; at start, Services in the node's state its labels do not name are removed (`pruneServices`); a
-node that had any removed, or could not have them removed, is drained at stop like a Service host (`NeedsDrain`), and
-waits for control to fetch the removal.
+node that had any removed, or could not have them removed (a drain stopping it included), is drained at stop like a
+Service host (`NeedsDrain`), and waits for control to fetch the removal.
 
 **Binaries**: the plugin image ships a pinned Tailscale (from the `tailscale/tailscale` stage of the Dockerfile, which
 Dependabot updates), and tslink runs only these binaries: it downloads nothing at runtime and ignores the old

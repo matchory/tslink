@@ -50,11 +50,14 @@ the abstractions and the mutations; labels (`Drain_marked`, `Change_locked`,
 signal, Leave, restarts) at two Services and one tailscaled restart. The
 confirmer (`confirmAdvertisedLater`, `readvertise`), `pruneServices` and the
 certificate lease holder are behind the constants `Confirmer`, `Prune` and
-`Lease`, each enabled in its own `drain-pass-<path>.cfg` with one Service:
-the paths together, or any of them with a restart and liveness, exceed half
-an hour. Each cfg's header gives its bounds, why, and its cost; the
-`-restart` ones check the safety properties with a restart, the others
-liveness too. They use `VIEW CountView`, which keeps of each fetch count
+`Lease`, each enabled in its own `drain-pass-<path>.cfg` with one Service.
+Each cfg's header gives its bounds and why; the `-restart` ones check the
+safety properties with a restart, the others liveness too. The pass cfgs
+do not finish yet: `drain-pass-confirmer-restart` exceeds 60 million
+distinct states and fills the disk, `drain-pass-confirmer` runs out of
+memory in the liveness check. Until their bounds are cut, only `drain.cfg`
+is checked exhaustively (5 million distinct states, about 25 minutes), and
+the mutations. They use `VIEW CountView`, which keeps of each fetch count
 read only whether a fetch was counted since (the model's header says why
 that is exact).
 
@@ -73,7 +76,7 @@ Properties:
 | L2 `DrainGetsLock` | a drain gets the gate's lock |
 | L3 `ConfirmerStops` | a confirmer re-advertises at most `advertiseNudges` times, and stops |
 
-All hold. S2 as formalised covers the drained check a change makes once it
+All hold in `drain.cfg`. S2 as formalised covers the drained check a change makes once it
 holds the lock. A change already past that check when the drain comes sends
 its edit anyway; the cancel stops the call, not the request, which S1 and
 S8 judge.

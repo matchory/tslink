@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A node no longer stops before control has fetched its drained Service list
+  in cases where tslink did not wait before: a removal whose request timed out
+  but took effect, a fetch control made before the drain, a removal by the
+  certificate lease holder or by the start's pruning, and a tailscaled that
+  restarted or crashed during the drain or before control fetched a removal.
+  Leave waits for a fetch from the new tailscaled. A fetch of a removal no
+  longer counts once the Service was advertised again, as by the re-advertising
+  of a Service control had not fetched.
+- A container that leaves while its node is still starting no longer stops a
+  tailscaled that advertises Services: the start finishes, and the node is
+  drained before it stops. This includes Services in the node's state that
+  the container no longer names.
+- A Service advertised once the node was drained, by a request carried out
+  late, is drained again.
+
 ## [0.3.5] - 2026-10-19
 
 ### Added

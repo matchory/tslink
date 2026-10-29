@@ -1,14 +1,14 @@
 ---
 title: Files and paths
-description: The data directory, logs and status files.
+description: Where tslink keeps node state, sockets, logs, status files and certificates, and what each file holds.
 category: reference
-tags: [files]
+tags: [files, data-directory, logs, status, state]
 ---
 
 # Files and paths
 
-tslink keeps all its files in the data directory, `/var/lib/docker-plugins/tailscale` on the host. Inside the
-plugin, the data directory is `/data`. An endpoint is the connection of one container to one tslink network.
+tslink keeps every file it writes in its data directory, `/var/lib/docker-plugins/tailscale` on the host, which the
+plugin sees as `/data`. Several files are per endpoint: one container's connection to one tslink network.
 
 ## Data directory
 
@@ -24,30 +24,29 @@ plugin, the data directory is `/data`. An endpoint is the connection of one cont
 └── plugin.log                       plugin log
 ```
 
-`<endpoint>` is the first 12 characters of the Docker endpoint ID. The sockets are in `sock/`, not in the state
-directories, because a Unix socket path can have only 108 bytes. `<hostname>` and `<stack>` must start with a
-letter or a digit, and contain only letters, digits, `.`, `_` and `-`.
+`<endpoint>` is the first 12 characters of the Docker endpoint ID. The sockets live in `sock/` rather than in the
+state directories because a Unix socket path can't be longer than 108 bytes. `<hostname>` and `<stack>` start with a
+letter or digit, and contain only letters, digits, `.`, `_` and `-`.
 
-The plugin creates the data directory, with mode 0755, when it starts. Do not delete it while the plugin is installed.
+The plugin creates the data directory, with mode 0755, as it starts. Don't delete it while the plugin is installed.
 
 ## State directory
 
-Each node has one state directory. One endpoint at a time can use a state directory.
+Each node has one state directory, and only one endpoint at a time can use it.
 
 | File | Content |
 | --- | --- |
 | `tailscaled.state` | The identity of the node, with its private keys |
 | `tailscaled.log` | The log of tailscaled |
 | `tailscaled.sock` | A link to the socket in `sock/` |
-| `ephemeral` | A marker: the node is ephemeral |
+| `ephemeral` | A marker that the node is ephemeral |
 
 > [!WARNING]
-> A person who can read `tailscaled.state` can use the identity of the node. Restrict access to the data directory to
-> root.
+> Whoever can read `tailscaled.state` can act as the node. Keep the data directory readable by root only.
 
 ## Logs
 
-tslink rotates each log at a fixed size, and keeps one rotated file.
+tslink rotates each log at a fixed size, and keeps one rotated file, so the logs can't fill the disk.
 
 | Log | Rotated at | Maximum on disk |
 | --- | --- | --- |
@@ -62,29 +61,33 @@ tslink writes `status/<endpoint>.json` while the endpoint exists.
 | --- | --- | --- |
 | `endpoint` | string | The endpoint ID |
 | `hostname` | string | The hostname of the node |
-| `stack` | string | The stack name. The field is absent outside a stack. |
+| `stack` | string | The stack's name. Absent outside a stack. |
 | `state` | string | `running`, `retrying` or `failed` |
-| `error` | string | The last error. The field is absent without an error. |
+| `error` | string | The last error. Absent without one. |
 | `attempts` | number | The number of start attempts |
 | `updated` | string | The time of the last change, in RFC 3339 format |
-| `warnings` | array | Conditions to examine. The field is absent without warnings. |
+| `warnings` | array | Conditions worth a look. Absent without any. |
 
 | State | Meaning |
 | --- | --- |
 | `running` | tailscaled is running. |
-| `retrying` | The start failed. tslink tries again. |
-| `failed` | The start failed. tslink does not try again, for example because a tag is not permitted. |
+| `retrying` | The start failed, and tslink tries again. |
+| `failed` | The start failed, and tslink won't try again, for example because the stack isn't allowed a tag. |
 
 Each item in `warnings` has the fields `key`, `message` and `since`.
 
 | Key | Condition |
 | --- | --- |
 | `dns-upstreams` | tailscaled found no DNS server of the container or the host, and uses a fallback. |
-| `renewal-blocked/<domain>` | Let's Encrypt refuses the renewal of the certificate of `<domain>`. |
+| `renewal-blocked/<domain>` | Let's Encrypt refuses to renew the certificate of `<domain>`. |
 | `cert-expiry/<domain>` | The certificate of `<domain>` expires in less than 14 days. |
-| `health` | tslink cannot start the readiness endpoint on the port of `tslink.health`. |
+| `health` | tslink can't start the readiness endpoint on the port of `tslink.health`. |
+| `node-name` | The control server named the node `<hostname>-N`, because another node holds the name. See [slow registrations](../explanation/limitations.md#slow-registrations). |
+| `service/<service>` | Configuring the Service failed. tslink retries, and clears the warning once it succeeds. |
+| `ports/<service>` | The container doesn't serve every port of the Service. The message names the ports. |
+| `control/<service>` | The control server hasn't fetched the node's Service list after tslink advertised the Service again 3 times. |
 
 ## Shared directory
 
-If the plugin setting `shared.source` is set, tslink keeps the HTTPS certificates and their ACME account key in
-`certs/` in that directory. Otherwise it keeps them in `certs/` in the data directory.
+With the plugin setting [`shared.source`](plugin-settings.md#sharedsource), tslink keeps HTTPS certificates and their
+ACME account key in `certs/` in that directory; otherwise in `certs/` in the data directory.

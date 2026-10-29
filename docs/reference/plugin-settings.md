@@ -1,14 +1,14 @@
 ---
 title: Plugin settings
-description: Settings of `docker plugin set`.
+description: Every setting of the tslink plugin, set with docker plugin set, with its values, default and effect.
 category: reference
-tags: [plugin]
+tags: [plugin, settings, isolation, control-server, ports]
 ---
 
 # Plugin settings
 
-Plugin settings configure tslink for all networks on one host. Set them with `docker plugin set` while the plugin
-is disabled. See [Change a setting](../guides/install-and-upgrade.md#change-a-setting).
+Plugin settings configure tslink for every network on one host. Set them with `docker plugin set` while the plugin is
+disabled, as [change a setting](../guides/install-and-upgrade.md#change-a-setting) shows.
 
 | Setting | Values | Default |
 | --- | --- | --- |
@@ -25,126 +25,162 @@ is disabled. See [Change a setting](../guides/install-and-upgrade.md#change-a-se
 
 ## TS_AUTHKEY
 
-The credential for networks without the option `tslink.authkey` on hosts without a cluster credential. See
-[Precedence](credentials.md#precedence).
+The credential for networks without their own `tslink.authkey`, on hosts without a cluster credential.
+
+| Value | Default |
+| --- | --- |
+| A credential | None |
+
+[Precedence](credentials.md#precedence) says which credential wins when several apply.
 
 ## shared.source
 
-The source of the plugin's `shared` mount. tslink keeps HTTPS certificates and their ACME account key in `certs/` in
-this directory. Set it to a volume that all hosts share. tslink then gets the certificate of a Service once for the
-cluster, and not once for each host.
+The source of the plugin's `shared` mount, where tslink keeps HTTPS certificates and their ACME account key, in
+`certs/`. Point it at a volume every host shares, and tslink gets each Service's certificate once for the cluster
+instead of once per host.
 
-To move to another directory, copy `certs/` with its contents into the new one, not the files in it: tslink looks only
-in `certs/`, and gets a certificate again if it is not there.
+| Value | Default |
+| --- | --- |
+| A directory on the host | `/var/lib`, which sets no shared directory |
 
-To check which source the plugin uses, read `.Config.Mounts` in `docker plugin inspect tslink`. `docker plugin set`
-changes the source there, and the plugin runs with it. `.Settings.Mounts` can still show the source from the install.
-Its default, `/var/lib`, sets no shared directory: tslink keeps the certificates in `certs/` in the data directory,
-and does not keep the mount. `docker plugin upgrade` resets the source to the default: set it again after an upgrade,
-before you enable the plugin.
+With the default, tslink keeps certificates in `certs/` in the data directory, and doesn't keep the mount.
+
+To move to another directory, copy the `certs/` directory itself, with its contents, into the new one, not just the
+files in it: tslink looks only in `certs/`, and gets a certificate again if it isn't there.
+
+To see which source the plugin uses, read `.Config.Mounts` in `docker plugin inspect tslink`: `docker plugin set`
+changes the source there, and the plugin runs with it, while `.Settings.Mounts` can still show the one from the
+install. `docker plugin upgrade` resets the source to the default, so set it again after an upgrade, before you
+enable the plugin.
 
 > [!WARNING]
-> The directory holds the private key of each Service. Restrict access to the hosts of the cluster.
+> The directory holds every Service's private key. Make it available to the hosts of the cluster only.
 
 ## TSLINK_ISOLATE_HOST_TAILNET
 
-Prevents containers from reaching the tailnet through the tailscaled of the host. It applies to all containers on the
-host, on tslink networks and on other networks.
+Keeps containers from reaching the tailnet through the host's own tailscaled. It covers every container on the host,
+on tslink networks and on any other network.
 
-| Value | Effect |
+| Value | Default |
 | --- | --- |
-| `true` | Containers cannot reach the tailnet through the host. DNS queries to `100.100.100.100` are permitted. |
-| `false` | Containers can reach the tailnet as the host. Use this value only if containers on the host must use the tailscaled of the host. |
-| Other values | tslink keeps the value `true` and logs a warning. |
+| `true` or `false` | `true` |
 
-The firewall rules stay when the plugin stops. For how they work, see
-[Isolation](../explanation/architecture.md#isolation). For the guarantee that this setting supports, see `G1` in
-[SECURITY.md](../../SECURITY.md).
+- `true`: containers can't reach the tailnet through the host. DNS queries to `100.100.100.100` still pass.
+- `false`: containers can reach the tailnet as the host. Use it only if containers on the host have to use the host's
+  tailscaled.
+- Any other value: tslink keeps `true`, and logs a warning.
+
+The firewall rules stay in place when the plugin stops. [Isolation](../explanation/architecture.md#isolation)
+explains how they work, and `G1` in [SECURITY.md](../../SECURITY.md) is the guarantee they back.
 
 ## TSLINK_TAG_SCOPE
 
-Sets which tags a stack can use with the cluster credential: `exact` or `prefix`. For the permitted tags, see
-[Tag rules](credentials.md#tag-rules). For other values, tslink uses `exact` and logs a warning.
+Which tags a stack can use with the cluster credential.
+
+| Value | Default |
+| --- | --- |
+| `exact` or `prefix` | `exact` |
+
+[Tag rules](credentials.md#tag-rules) lists the tags each value allows. For any other value, tslink uses `exact`, and
+logs a warning.
 
 > [!WARNING]
-> With `prefix`, a stack can use the base tag of a stack with a longer name. For example, stack `a` can use
-> `tag:a-b`, the base tag of stack `a-b`. If a stack needs more than one tag, give its network its own
-> `tslink.authkey`.
+> With `prefix`, a stack can use the base tag of a stack with a longer name: stack `a` can use `tag:a-b`, the base tag
+> of stack `a-b`. If a stack needs more than one tag, give its network its own `tslink.authkey` instead.
 
 ## TSLINK_LOGIN_SERVER
 
-The URL of the control server that all nodes of the plugin log in to, for example a
-[headscale](https://github.com/juanfont/headscale) server. Leave it empty for the control server of Tailscale. The URL
-must use `https` with a hostname or IP address, or `http` with an IP address, such as `http://10.0.0.5:8080` or
-`http://[fd00::5]:8080`, and must not contain a username or password. For other values, including `http` with a
-hostname such as `localhost`, the plugin does not start.
+The control server every node of the plugin logs in to, such as a [headscale](https://github.com/juanfont/headscale)
+server.
+
+| Value | Default |
+| --- | --- |
+| An `https` URL with a hostname or IP address, or an `http` URL with an IP address | Tailscale's control server |
+
+`http://10.0.0.5:8080` and `http://[fd00::5]:8080` are fine; the URL can't contain a username or password. With any
+other value, `http` with a hostname such as `localhost` included, the plugin doesn't start.
 
 > [!NOTE]
-> tailscaled resolves the name of the control server with the DNS servers of the container, which a stack can set.
-> Over `https`, the server's certificate proves its identity. Over `http`, nothing does, so a stack could direct a
-> name to a server of its own and receive the keys of its nodes.
+> tailscaled resolves the control server's name with the container's DNS servers, which a stack can set. Over
+> `https`, the server's certificate proves who it is. Over `http`, nothing does, so a stack could point the name at a
+> server of its own and receive its nodes' keys. That's why `http` needs an IP address.
 
-The setting applies to all networks on the host and all credentials, the cluster credential included. A network
-cannot set a control server of its own.
+The setting applies to every network on the host and every credential, the cluster credential included. A network
+can't choose a control server of its own.
 
 ## TSLINK_WIREGUARD_PORTS
 
-Sets the UDP ports on the host that the tailscaled of containers use for their WireGuard traffic to other hosts. Each
-container on the host gets its own port from the range, for all destinations. Thus peers on other hosts can connect
-to it directly, without a DERP relay. The range needs one port for each container on the host.
+The UDP ports on the host that containers' tailscaled use for their WireGuard traffic to other hosts. Each container
+gets a port of its own from the range, for every destination, so peers on other hosts can connect to it directly
+instead of through a DERP relay.
 
-Use ports from 1024 to 65535, outside the ephemeral port range of the kernel (`net.ipv4.ip_local_port_range`, by
-default `32768 60999`), and not used by services on the host. The range cannot contain `41641`, the port of
-tailscaled in the containers. For other values, tslink uses `61000-65535` and logs a warning. Containers keep their
-port until they leave the network.
+| Value | Default |
+| --- | --- |
+| A port range `first-last`, with one port per container on the host | `61000-65535` |
 
-The ports only change the source port of traffic that leaves the host. They do not accept connections: the host
-drops new UDP packets to the range before anything on it has sent a reply. Keep host services out of the range; one
-listening there gets no unsolicited UDP.
+Use ports from 1024 to 65535, outside the kernel's ephemeral port range (`net.ipv4.ip_local_port_range`, by default
+`32768 60999`), and not used by any service on the host. The range can't contain `41641`, the port tailscaled uses
+inside containers. For any other value, tslink uses `61000-65535` and logs a warning. A container keeps its port until
+it leaves the network.
+
+The ports only rewrite the source port of traffic leaving the host. They don't accept connections: the host drops new
+UDP packets to the range until something behind it has sent a reply, so a host service listening in the range gets
+no unsolicited UDP.
 
 ## TSLINK_HOST_ENDPOINTS
 
-Sets the host addresses containers' tailscaled advertise, each with the container's external port (see
-[`TSLINK_WIREGUARD_PORTS`](#tslink_wireguard_ports)), so nodes on hosts that share a network go direct over it instead
-of through a DERP relay.
+The host addresses that containers' tailscaled advertise, each with the container's external port from
+[`TSLINK_WIREGUARD_PORTS`](#tslink_wireguard_ports), so nodes on hosts that share a network connect directly over it
+instead of through a DERP relay.
 
-| Value | Effect |
+| Value | Default |
 | --- | --- |
-| `auto` | The private IPv4 addresses of the host's NICs, bonds and VLANs that are up, in interface order, at most 3. Bridges (Docker's, libvirt's), veths, tun, wireguard and vxlan devices are never included. |
-| `off` | Nothing is advertised. |
-| Up to 3 IPv4 addresses, comma-separated | Advertised as given. |
-| Other values | tslink keeps `auto` and logs a warning. |
+| `auto`, `off`, or up to 3 comma-separated IPv4 addresses | `auto` |
 
-With `auto` or explicit addresses, the host's private addresses are sent to every peer that gets the node's
-endpoints, the same as the host's own tailscaled does; `off` advertises none.
+- `auto`: the private IPv4 addresses of the host's NICs, bonds and VLANs that are up, in interface order, at most 3.
+  Bridges (Docker's, libvirt's), veths, tun, WireGuard and VXLAN devices never count.
+- `off`: nothing is advertised.
+- Addresses: advertised as given.
+- Any other value: tslink keeps `auto`, and logs a warning.
 
-If the shared network sits on a bridge (for example `br0` holding the NIC), `auto` does not find it: give the
-addresses explicitly.
+With `auto` or explicit addresses, every peer that gets the node's endpoints learns the host's private addresses, as
+it would from the host's own tailscaled.
 
-tailscaled reads these addresses when it starts; tslink restarts a container's tailscaled when its address or port
-changes, so a change is picked up within a minute.
+If the shared network sits on a bridge, such as a `br0` holding the NIC, `auto` doesn't find it: give the addresses
+explicitly.
+
+tailscaled reads the addresses when it starts. tslink restarts a container's tailscaled when its address or port
+changes, so a change takes effect within a minute.
 
 ## TSLINK_LOG_LEVEL
 
-Sets the lowest level the plugin logs to `plugin.log` and the Docker daemon's log: `debug`, `info`, `warn` or
-`error`. For other values, tslink uses `info` and logs a warning. Set `debug` to follow what the plugin does with each
-event and endpoint, for example while investigating a problem; it logs much more.
+The lowest level the plugin logs, to `plugin.log` and the Docker daemon's log.
+
+| Value | Default |
+| --- | --- |
+| `debug`, `info`, `warn` or `error` | `info` |
+
+For any other value, tslink uses `info`, and logs a warning. `debug` shows what the plugin does with every event and
+endpoint, which helps when you investigate a problem, and logs a lot more.
 
 ## TS_DEBUG_ACME_DIRECTORY_URL and SSL_CERT_FILE
 
-For tests only. `TS_DEBUG_ACME_DIRECTORY_URL` sets a different ACME directory, for example the staging environment
-of Let's Encrypt. `SSL_CERT_FILE` sets a root certificate bundle that trusts it.
+For tests only. `TS_DEBUG_ACME_DIRECTORY_URL` points certificate requests at a different ACME directory, such as
+Let's Encrypt's staging environment, and `SSL_CERT_FILE` sets a root certificate bundle that trusts it.
+
+| Value | Default |
+| --- | --- |
+| A URL; a file in the plugin | Let's Encrypt; the system's root certificates |
 
 ## Removed settings
 
-| Setting | Status |
-| --- | --- |
-| `TS_VERSION` | tslink ignores every value other than `bundled` and logs a warning. |
-| `TS_PATH` | tslink ignores the setting and logs a warning. |
+tslink runs only the Tailscale binaries in its own image (see [binaries](../explanation/architecture.md#binaries)),
+so the settings that chose another version are gone:
 
-tslink runs only the Tailscale binaries in the plugin image. See [Binaries](../explanation/architecture.md#binaries).
+- `TS_VERSION`: tslink ignores any value other than `bundled`, and logs a warning.
+- `TS_PATH`: tslink ignores it, and logs a warning.
 
 ## Internal settings
 
-Do not change `TS_DATA_DIR`, `TS_SHARED_DIR` and `DOCKER_HOST`. The plugin configuration sets them, and
-`docker plugin set` cannot change them.
+Leave `TS_DATA_DIR`, `TS_SHARED_DIR` and `DOCKER_HOST` alone. The plugin's configuration sets them, and
+`docker plugin set` can't change them.

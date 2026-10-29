@@ -36,7 +36,7 @@ The status code is `200` when the state is `ready`, and `503` for every other st
 A container with several Services is ready only once all of them are. One Service whose certificate is stuck, or
 that waits for approval, keeps the container unready, so a healthcheck on `/ready` fails the whole task, its working
 Services included. That's deliberate: an update must not replace working tasks with ones that serve less. Deploy
-Services that should fail independently as separate containers.
+Services you want to fail independently as separate containers.
 
 tslink keeps a result for 2 seconds; requests within that window get the same answer.
 

@@ -37,7 +37,7 @@ on the host, to enter containers' network namespaces, and to read their labels. 
 docker plugin ls
 ```
 
-You should see `tslink:latest` with `ENABLED` set to `true`.
+The list shows `tslink:latest`, with `ENABLED` set to `true`.
 
 ## 2. Create a network
 

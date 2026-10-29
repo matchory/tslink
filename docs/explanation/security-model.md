@@ -74,7 +74,7 @@ unavailable for 14 seconds, from `docker stack rm` until the new stack answered 
 
 | Alternative | Why not |
 | --- | --- |
-| A policy file on each host that maps stacks to credentials | Cluster deployments would depend on host provisioning. The cluster credential file names no stack, so it doesn't. |
+| A policy file on each host that maps stacks to credentials | Cluster deployments would depend on host provisioning. The cluster credential file mentions no stack, so it doesn't. |
 | Docker secrets | Swarm hands a secret only to the tasks that mount it, so tslink would have to read it from the application container. A compromised application would then hold a credential that doesn't expire, and that creates keys for its tags on any host. |
 | Plugin settings (`docker plugin set`) | They apply to one host, and changing them means disabling the plugin. |
 

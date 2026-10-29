@@ -114,5 +114,5 @@ The trust boundary would stay the same: whoever can deploy into a stack, or is r
 acts as that stack. The cost is a new component, a public URL, and a dependency on the issuer whenever tasks start.
 The tag rules and the stack check wouldn't change, only where the credential comes from.
 
-Before this is built, it has to be proved end to end: a minimal issuer, one federated credential, and one
+Before this is built, it has to be proved end-to-end: a minimal issuer, one federated credential, and one
 `tailscale up --id-token` from a task.

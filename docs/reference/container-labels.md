@@ -154,7 +154,7 @@ labels:
   [readiness](readiness-endpoint.md) waits for all of them.
 - When the container stops, all its Services are drained together.
 - A container can't mix this form with `tslink.service` and `tslink.serve.<port>`, or combine it with
-  `tslink.direct=true`. tslink refuses such a container, and its status file names the reason and the label.
+  `tslink.direct=true`. tslink refuses such a container, and its status file gives the reason and the label.
 - Every node of a cluster has to run tslink v0.3.5 or later before a stack uses these labels: older versions ignore
   them, and report the container ready while it serves nothing. Don't downgrade a node while such containers run on
   it, because an older version doesn't drain their Services.

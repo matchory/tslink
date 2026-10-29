@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The plugin image bundles Tailscale v1.104.4 (was v1.104.1), built with Go
+  1.27.3, which it requires.
+
 ### Fixed
 
 - A node no longer stops before control has fetched its drained Service list

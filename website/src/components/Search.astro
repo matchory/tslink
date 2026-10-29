@@ -46,7 +46,7 @@ import {Search} from "@lucide/astro";
     </div>
 </div>
 
-<script is:inline define:vars={{ pagefindUrl: withBase("/pagefind/pagefind.js") }}>
+<script is:inline define:vars={{ pagefindUrl: withBase("/pagefind/pagefind.js"), baseUrl: withBase("/") }}>
     if (!window.__searchInitialized) {
         window.__searchInitialized = true;
 
@@ -66,7 +66,13 @@ import {Search} from "@lucide/astro";
         const loadPagefind = () => {
             if (!pagefindPromise) {
                 // noinspection JSFileReferences
-                pagefindPromise = import(pagefindUrl).catch(() => {
+                // Result URLs are relative to the index, which sits under the
+                // site's base path rather than at the root of the domain.
+                pagefindPromise = import(pagefindUrl).then(async (pagefind) => {
+                    await pagefind.options({ baseUrl });
+
+                    return pagefind;
+                }).catch(() => {
                     pagefindPromise = null;
 
                     return null;

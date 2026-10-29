@@ -34,7 +34,7 @@
   --accent: oklch(0.955 0 0);
   --accent-foreground: oklch(0.205 0 0);
   --border: oklch(0.91 0 0);
-  --active: oklch(0.488 0.195 264);
+  --active: oklch(0.511 0.262 277);
   --active-foreground: oklch(1 0 0);
   /* A link is the active colour under a different name, so it can diverge later. */
   --link: var(--active);
@@ -59,7 +59,7 @@
   --accent: oklch(0.22 0 0);
   --accent-foreground: oklch(0.93 0 0);
   --border: oklch(1 0 0 / 8%);
-  --active: oklch(0.695 0.15 254);
+  --active: oklch(0.673 0.182 277);
   --active-foreground: oklch(1 0 0);
   --code-background: oklch(0.18 0 0);
   --code-foreground: oklch(0.8 0 0);

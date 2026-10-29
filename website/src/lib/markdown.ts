@@ -62,7 +62,7 @@ export function markdownResponse(body: string, path: string, site: URL | undefin
       // Only `astro dev` honours this. A static build discards a response's
       // headers unless the adapter opts into `staticHeaders`, and there is no
       // adapter here — GitHub Pages types `dist/*.md` from its own extension
-      // map. See the note in `pages/openapi.json.ts`.
+      // map.
       "Content-Type": "text/markdown; charset=utf-8",
     },
   });

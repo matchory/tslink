@@ -24,13 +24,12 @@ const linkClass =
         {group.label}
       </h3>
       <ul class="flex flex-col gap-0.5">
-        {group.items.map(({ slug, title, reload }) => (
+        {group.items.map(({ slug, title }) => (
           <li>
             <a
               href={withBase(`/${slug}`)}
               class={linkClass}
               aria-current={currentSlug === slug ? "page" : undefined}
-              data-astro-reload={reload || undefined}
             >
               {title}
             </a>

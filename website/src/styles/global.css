@@ -494,47 +494,6 @@
     }
 
     /* endregion */
-
-    /* region Cards (from tables marked <!-- cards -->) */
-
-    .card-list {
-      @apply my-6 flex flex-col gap-2;
-    }
-
-    .card {
-      @apply py-3.5 px-4 text-sm border rounded-lg;
-
-      &:target {
-        @apply border-active ring-1 ring-active;
-      }
-    }
-
-    .card-title {
-      @apply mb-1.5 text-base font-semibold;
-
-      code {
-        @apply rounded-none px-0 py-0 text-base font-semibold bg-transparent text-foreground;
-      }
-    }
-
-    .card-description {
-      @apply leading-relaxed;
-    }
-
-    .card-facts {
-      @apply mt-3 -mx-4 -mb-3.5 grid grid-cols-[fit-content(8rem)_minmax(0,1fr)] gap-x-3 gap-y-1 items-baseline
-      rounded-b-inner border-t bg-muted px-4 py-2 text-sm text-muted-foreground;
-
-      code {
-        @apply rounded-none px-0 py-0 text-sm bg-transparent text-code-foreground;
-      }
-    }
-
-    .card-label {
-      @apply font-medium;
-    }
-
-    /* endregion */
   }
 
   /* endregion */
@@ -579,47 +538,6 @@
   mask-size: contain;
   mask-repeat: no-repeat;
   mask-position: center;
-}
-
-/* endregion */
-
-/* region Code tabs */
-
-.prose .code-tabs {
-  @apply my-6;
-
-  pre {
-    @apply my-0 rounded-none border-t-0;
-  }
-
-  .code-tab-panel.active pre {
-    @apply rounded-b-lg;
-  }
-}
-
-.code-tabs-bar {
-  @apply flex gap-0 overflow-x-auto rounded-t-lg border border-b-0 bg-code-background;
-}
-
-.code-tabs-button {
-  @apply cursor-pointer whitespace-nowrap bg-transparent border-0 border-b-2 border-transparent
-  px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors duration-150;
-
-  &:hover {
-    @apply text-foreground;
-  }
-
-  &.active {
-    @apply text-foreground border-b-active;
-  }
-}
-
-.code-tab-panel {
-  @apply hidden;
-
-  &.active {
-    @apply block;
-  }
 }
 
 /* endregion */

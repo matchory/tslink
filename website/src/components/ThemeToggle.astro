@@ -57,6 +57,12 @@ import IconButton from "./IconButton.astro";
       document.getElementById("theme-status").textContent = themeLabels[next];
     });
 
+    // A navigation replaces the root element's attributes with the new page's,
+    // which carry no `dark` class: put it back before the page is drawn.
+    document.addEventListener("astro:after-swap", () => {
+      window.__applyTheme(window.__getTheme());
+    });
+
     document.addEventListener("astro:page-load", () => {
       var theme = window.__getTheme();
       window.__applyTheme(theme);

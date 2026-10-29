@@ -5,11 +5,6 @@ export const repoUrl: string = packageJson.repository;
 export interface NavItem {
   slug: string;
   title: string;
-
-  /**
-   * Force full page reload when navigating to this page (skips View Transitions).
-   */
-  reload?: boolean;
 }
 
 export interface NavGroup {

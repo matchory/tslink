@@ -82,6 +82,15 @@ test("a source link to a heading that does not exist fails, by GitHub's slug rul
   ]);
 });
 
+test("a heading's code span counts toward its slug, as on GitHub", () => {
+  const root = tree({
+    "docs/a.md": "See [it](b.md#docker-network-create-fails).\n",
+    "docs/b.md": "# B\n\n## `docker network create` fails\n\ntext\n",
+  });
+
+  assert.deepEqual(checkSource(root, ["docs/a.md"]), []);
+});
+
 test("links inside code are not links", () => {
   const root = tree({
     "docs/a.md": "Write `[x](missing.md)`, or:\n\n```markdown\n[y](missing.md)\n```\n",

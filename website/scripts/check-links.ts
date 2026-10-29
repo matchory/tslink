@@ -84,9 +84,13 @@ export function checkDist(dist: string, base: string): string[] {
   return problems;
 }
 
+function withoutCodeBlocks(markdown: string): string {
+  return markdown.replace(/^(`{3,}|~{3,})[\s\S]*?^\1/gm, "");
+}
+
 /** Markdown with code blocks and code spans blanked out: links in them are examples. */
 function withoutCode(markdown: string): string {
-  return markdown.replace(/^(`{3,}|~{3,})[\s\S]*?^\1/gm, "").replace(/`[^`\n]*`/g, "");
+  return withoutCodeBlocks(markdown).replace(/`[^`\n]*`/g, "");
 }
 
 function markdownLinks(markdown: string): string[] {
@@ -99,8 +103,9 @@ function headingSlugs(markdown: string): Set<string> {
   const slugger = new GithubSlugger();
   const slugs = new Set<string>();
 
-  for (const [, heading] of withoutCode(markdown).matchAll(/^#{1,6}\s+(.+?)\s*#*$/gm)) {
-    slugs.add(slugger.slug(heading));
+  // A code span's text is part of the heading's slug: only its backticks go.
+  for (const [, heading] of withoutCodeBlocks(markdown).matchAll(/^#{1,6}[ \t]+(.+?)[ \t]*#*$/gm)) {
+    slugs.add(slugger.slug(heading.replaceAll("`", "")));
   }
 
   return slugs;
@@ -113,7 +118,7 @@ export function checkSource(root: string, files: string[]): string[] {
     const markdown = readFileSync(join(root, file), "utf-8");
     const links = [
       ...markdownLinks(markdown),
-      ...[...markdown.matchAll(/\s(?:href|src)="([^"]+)"/g)].map(([, url]) => url),
+      ...[...withoutCode(markdown).matchAll(/\s(?:href|src)="([^"]+)"/g)].map(([, url]) => url),
     ];
 
     for (const url of links) {

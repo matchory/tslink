@@ -6,22 +6,11 @@ import { visit } from "unist-util-visit";
 import { rehypeMermaid } from "@/lib/mermaid-diagrams.ts";
 import { base, siteUrlFor } from "@/lib/links.ts";
 import { lastModifiedFor } from "@/lib/pages.ts";
-import { slugify } from "@/lib/slug.ts";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import sirv from "sirv";
 import type { Element, ElementContent, Properties } from "hast";
-import type {
-  Code,
-  Html,
-  Paragraph,
-  PhrasingContent,
-  Root,
-  RootContent,
-  TableCell,
-  TableRow,
-} from "mdast";
-import type { Node } from "unist";
+import type { Paragraph, PhrasingContent, Root, RootContent, TableRow } from "mdast";
 import type { AstroIntegration } from "astro";
 import type { VFile } from "vfile";
 import type { Plugin as VitePlugin } from "vite";
@@ -32,8 +21,7 @@ import type { Plugin as VitePlugin } from "vite";
  * `@astrojs/sitemap` wraps the whole `serialize` pass in a try/catch: a throw
  * from `lastModifiedFor` is handed to `logger.error` and the hook returns
  * early, so `astro build` still exits 0 with no `sitemap-index.xml` in `dist/`
- * — while `robots.txt`, `/llms.txt` and `/openapi.json` all keep advertising a
- * URL that now 404s. The throw over an undateable page is only an invariant if
+ * — while `/llms.txt` keeps advertising a URL that now 404s. The throw over an undateable page is only an invariant if
  * something outside that catch notices, which is this. It runs after the
  * sitemap integration because integration hooks run in declaration order.
  */
@@ -75,120 +63,11 @@ function remarkDocsLinks() {
   };
 }
 
-const defaultTabLabels: Record<string, string> = {
-  http: "HTTP",
-  bash: "cURL",
-  sh: "cURL",
-  shell: "Shell",
-  javascript: "JavaScript",
-  js: "JavaScript",
-  typescript: "TypeScript",
-  ts: "TypeScript",
-  python: "Python",
-  go: "Go",
-  json: "JSON",
-  yaml: "YAML",
-};
-
-function remarkCodeTabs() {
-  return (tree: Root) => {
-    const { children } = tree;
-    let index = 0;
-    let tabGroupCount = 0;
-
-    while (index < children.length) {
-      if (!isTabCode(children[index])) {
-        index++;
-
-        continue;
-      }
-
-      const group: Code[] = [];
-
-      while (index < children.length) {
-        const node = children[index];
-
-        if (!isTabCode(node)) {
-          break;
-        }
-
-        group.push(node);
-
-        index++;
-      }
-
-      if (group.length < 2) {
-        stripTabMeta(group[0]);
-
-        continue;
-      }
-
-      const labels = group.map((node) => {
-        const language = node.lang ?? "";
-        const label = parseTabLabel(node.meta) || defaultTabLabels[language] || language || "Code";
-
-        stripTabMeta(node);
-
-        return label;
-      });
-
-      const tabGroupId = `tabs-${tabGroupCount++}`;
-      const replacement: RootContent[] = [];
-      const buttons = labels
-        .map(
-          (label, index) =>
-            `<button role="tab" class="code-tabs-button${index === 0 ? " active" : ""}" data-tab="${index}" aria-selected="${index === 0}" aria-controls="${tabGroupId}-panel-${index}" id="${tabGroupId}-tab-${index}">${label}</button>`,
-        )
-        .join("");
-
-      replacement.push(
-        html(`<div class="code-tabs"><div class="code-tabs-bar" role="tablist">${buttons}</div>`),
-      );
-
-      for (let j = 0; j < group.length; j++) {
-        replacement.push(
-          html(
-            `<div class="code-tab-panel${j === 0 ? " active" : ""}" data-tab="${j}" role="tabpanel" id="${tabGroupId}-panel-${j}" aria-labelledby="${tabGroupId}-tab-${j}">`,
-          ),
-        );
-        replacement.push(group[j]);
-        replacement.push(html("</div>"));
-      }
-
-      replacement.push(html("</div>"));
-
-      const start = index - group.length;
-
-      children.splice(start, group.length, ...replacement);
-
-      index = start + replacement.length;
-    }
-  };
-}
-
-function isTabCode(node: RootContent | undefined): node is Code {
-  return node?.type === "code" && typeof node.meta === "string" && /\btab\b/.test(node.meta);
-}
-
-function parseTabLabel(meta: string | null | undefined) {
-  const match = meta?.match(/tab="([^"]+)"/);
-
-  return match?.[1] ?? null;
-}
-
-function stripTabMeta(node: Code) {
-  node.meta = node.meta?.replace(/\s*\btab(?:="[^"]*")?/g, "").trim() || null;
-}
-
-function html(value: string): Html {
-  return { type: "html", value };
-}
-
 /**
  * GitHub-style alerts. A blockquote whose first line is `[!NOTE]`, `[!TIP]`,
  * `[!WARNING]` or `[!CAUTION]` becomes a callout panel. The syntax renders as
  * an ordinary blockquote on GitHub and in the raw `.md` route, and the plugin
- * runs over both `.md` and `.mdx`, so no doc needs an import.
+ * runs over every doc, so no doc needs an import.
  *
  * Icons are Lucide (ISC), the set the components render through `@lucide/astro`.
  * A Lucide icon is more than one path, so each entry carries the whole node
@@ -349,15 +228,12 @@ function container(hName: string, children: RootContent[], properties?: Properti
  * description list, and three or more columns are left alone.
  *
  * Length picks the density, not the container. Sorting the docs' two-column
- * tables by mean cell length gives a continuum, not two groups — `Resource |
- * Sortable fields` and `Resource | Fields` sit next to each other in the API
- * reference and differ only in how long the values run — so any cutoff between
+ * tables by mean cell length gives a continuum, not two groups, so any cutoff between
  * "table" and "list" renders neighbours in two different shapes and reads as a
  * bug. A cutoff between two densities of the same list does not.
  *
  * The source stays an ordinary GFM table, so GitHub and the raw `.md` route are
- * unaffected, and the plugin runs over both `.md` and `.mdx`, so no doc needs
- * an import.
+ * unaffected, and the plugin runs over every doc, so no doc needs an import.
  */
 const compactCellLength = 40;
 
@@ -427,143 +303,6 @@ function definitionList(rows: TableRow[], compact: boolean): Paragraph {
   );
 }
 
-/**
- * A table marked `<!-- cards -->` renders as a card per row: the first cell
- * becomes the title, the second the description, and any further cells become
- * labelled facts under it, headed by their column name.
- *
- * MDX has no HTML comments, so an `.mdx` doc writes the same marker as an
- * expression comment instead. `isCardsMarker` reads both, and a doc that
- * changes format keeps its cards.
- *
- * This one is opted into rather than detected. Three-column tables split into
- * cards and genuine matrices with nothing to tell them apart mechanically —
- * the authentication guide compares two Tailscale modes in the same shape the
- * MCP reference uses to list tools, and every rule that catches the one
- * catches the other. The marker is a comment either way, so the source stays a
- * plain GFM table that GitHub and the raw `.md` route render as they always
- * did, and the author decides.
- *
- * Rows gain an ID from their title, which a table row cannot have, so a tool
- * or a finding can be linked to directly.
- */
-function remarkCardTables() {
-  return (tree: Root) => {
-    visit(tree, isCardsMarker, (_node, index, parent) => {
-      if (!parent || index === undefined) {
-        return;
-      }
-
-      const table = parent.children[index + 1];
-
-      if (table?.type !== "table" || table.children.length < 2) {
-        return;
-      }
-
-      const [header, ...rows] = table.children;
-
-      // A card reads one cell per column out of every row, so a table whose
-      // rows are not all as wide as its header would index past the end of
-      // one. Leave it as a table, the way `remarkDefinitionTables` does with a
-      // shape it cannot render, rather than failing the build on a stray pipe.
-      if (header.children.length < 2) {
-        return;
-      }
-      if (rows.some(({ children }) => children.length !== header.children.length)) {
-        return;
-      }
-
-      (parent.children as RootContent[]).splice(index, 2, cardList(header, rows));
-
-      return index + 1;
-    });
-  };
-}
-
-/**
- * The marker in the only form each format has for it: an HTML comment in
- * Markdown, and the expression an MDX doc's comment parses to. Both node types
- * carry their source in `value`, so the value is the whole of the test.
- *
- * The parameter is a bare unist `Node` rather than an mdast `RootContent`
- * because `mdxFlowExpression` is not one — it comes from `mdast-util-mdx`, and
- * against `RootContent` the check for it is a comparison with no overlap. It is
- * also what `visit` wants: a `Test` takes a `Node`.
- */
-function isCardsMarker(node: Node): boolean {
-  if (node.type !== "html" && node.type !== "mdxFlowExpression") {
-    return false;
-  }
-
-  const value = "value" in node ? String(node.value).trim() : "";
-
-  return value === "<!-- cards -->" || value === "/* cards */";
-}
-
-function cardList({ children }: TableRow, rows: TableRow[]): Paragraph {
-  const labels = children.map((cell) => nodeText(cell));
-
-  return container(
-    "div",
-    rows.map(({ children }) => card(labels, children, descriptionColumn(rows))),
-    { className: ["card-list"] },
-  );
-}
-
-/**
- * The description is the column that reads longest, not the one that comes
- * second: the MCP reference heads its prompts with four short columns before
- * the prose. Length is measured over rendered text, so a column of links is
- * judged by what a reader sees rather than by the URLs behind it.
- */
-function descriptionColumn(rows: TableRow[]): number {
-  let column = 1;
-  let longest = 0;
-
-  for (let candidate = 1; candidate < rows[0].children.length; candidate++) {
-    const total = rows.reduce((sum, row) => sum + nodeText(row.children[candidate]).length, 0);
-
-    if (total > longest) {
-      longest = total;
-      column = candidate;
-    }
-  }
-
-  return column;
-}
-
-function card(labels: string[], cells: TableCell[], description: number): Paragraph {
-  const [title] = cells;
-  const children: Paragraph[] = [container("div", title.children, { className: ["card-title"] })];
-
-  if (nodeText(cells[description]).trim()) {
-    children.push(
-      container("div", cells[description].children, { className: ["card-description"] }),
-    );
-  }
-
-  const facts = cells
-    .map((cell, column) => ({ cell, column }))
-    .filter(({ cell, column }) => column !== 0 && column !== description && nodeText(cell).trim());
-
-  if (facts.length) {
-    children.push(
-      container(
-        "div",
-        facts.flatMap(({ cell, column }) => [
-          container("span", [{ type: "text", value: labels[column] }], {
-            className: ["card-label"],
-          }),
-          container("span", cell.children, { className: ["card-value"] }),
-        ]),
-        { className: ["card-facts"] },
-      ),
-    );
-  }
-
-  return container("div", children, { className: ["card"], id: slugify(nodeText(title)) });
-}
-
 function remarkStripTitle() {
   return (tree: Root) => {
     const index = tree.children.findIndex((node) => node.type === "heading" && node.depth === 1);
@@ -578,9 +317,7 @@ function remarkStripTitle() {
  * The remark plugins every doc goes through, in order.
  */
 const remarkPlugins: RemarkPlugins = [
-  remarkCodeTabs,
   remarkCallouts,
-  remarkCardTables,
   remarkDefinitionTables,
   remarkDocsLinks,
   remarkStripTitle,

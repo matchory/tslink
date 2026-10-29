@@ -4,12 +4,7 @@ import { ChevronDown, Copy, FileText, Pencil } from "@lucide/astro";
 interface Props {
   markdownUrl: string;
 
-  /**
-   * Absent on the references generated from Go source and from `lib/schema.ts`:
-   * there is no `.md` file behind them to send a reader to. The rest of the
-   * menu — copying the page, reading it as Markdown, handing it to an AI app —
-   * is about the Markdown route and applies to them just as it does to a doc.
-   */
+  /** Absent on a page with no source file to send a reader to. */
   editUrl?: string;
 }
 

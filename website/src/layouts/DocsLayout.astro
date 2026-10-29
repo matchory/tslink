@@ -19,20 +19,12 @@ interface Props {
     slug: string;
     headings: Heading[];
     markdownUrl?: string;
-
-    /**
-     * Overrides the `rel="alternate"` this page advertises, which otherwise
-     * names `markdownUrl`. Only the API explorer needs it: the machine-readable
-     * form of a specification playground is the specification.
-     */
-    alternate?: { href: string; type?: string; title?: string };
     category?: string;
     tags?: string[];
 
     /**
-     * The page's source file, relative to the repository root. Pages generated
-     * from Go source have none, and get neither an edit link nor a modified
-     * date rather than a link to a file that was never written.
+     * The page's source file, relative to the repository root. A page without
+     * one gets neither an edit link nor a modified date.
      */
     sourcePath?: string;
 }
@@ -43,14 +35,12 @@ const {
     slug,
     headings,
     markdownUrl,
-    alternate,
     category,
     tags,
     sourcePath,
 } = Astro.props;
 // `undefined` rather than `null`: every component below models an absent date
-// or edit link as an omitted prop, and a page generated from Go source has
-// neither.
+// or edit link as an omitted prop.
 const lastModified = (sourcePath ? await getLastModified(sourcePath) : null) ?? undefined;
 const editUrl = sourcePath ? `${repoUrl}/edit/main/${sourcePath}` : undefined;
 ---
@@ -60,7 +50,7 @@ const editUrl = sourcePath ? `${repoUrl}/edit/main/${sourcePath}` : undefined;
     description={description}
     slug={slug}
     lastModified={lastModified}
-    alternate={alternate ?? (markdownUrl ? {href: markdownUrl} : undefined)}
+    alternate={markdownUrl ? {href: markdownUrl} : undefined}
 >
     <main
         id="main-content"
@@ -116,15 +106,6 @@ const editUrl = sourcePath ? `${repoUrl}/edit/main/${sourcePath}` : undefined;
         }
 
         document.addEventListener("astro:page-load", () => {
-            // Hide HTTP request separators (###).
-            document
-                .querySelectorAll("pre[data-language=\"http\"] .line")
-                .forEach((line) => {
-                    if (line.textContent.trim() === "###") {
-                        line.style.display = "none";
-                    }
-                });
-
             document
                 .querySelectorAll(".prose table:not([data-initialized])")
                 .forEach((table) => {
@@ -141,10 +122,6 @@ const editUrl = sourcePath ? `${repoUrl}/edit/main/${sourcePath}` : undefined;
                 .querySelectorAll(".prose pre:not([data-initialized])")
                 .forEach((pre) => {
                     pre.setAttribute("data-initialized", "");
-
-                    if (pre.closest(".code-tabs")) {
-                        return;
-                    }
 
                     const wrapper = document.createElement("div");
                     wrapper.className = "relative";
@@ -166,101 +143,6 @@ const editUrl = sourcePath ? `${repoUrl}/edit/main/${sourcePath}` : undefined;
                     });
                     wrapper.appendChild(button);
                 });
-
-            // Code tabs: switch panels and persist preference.
-            const tabPrefs = JSON.parse(
-                localStorage.getItem("code-tab-prefs") || "{}",
-            );
-
-            document
-                .querySelectorAll(".code-tabs:not([data-initialized])")
-                .forEach((tabs) => {
-                    tabs.setAttribute("data-initialized", "");
-
-                    const bar = tabs.querySelector(".code-tabs-bar");
-                    const buttons = bar.querySelectorAll(".code-tabs-button");
-
-                    const copyButton = document.createElement("button");
-                    copyButton.className = `ml-auto ${copyClass}`;
-                    copyButton.textContent = "Copy";
-
-                    copyButton.addEventListener("click", () => {
-                        const activeCode = tabs.querySelector(
-                            ".code-tab-panel.active code",
-                        );
-
-                        if (activeCode) {
-                            copyWithFeedback(
-                                copyButton,
-                                activeCode.textContent,
-                            );
-                        }
-                    });
-                    bar.appendChild(copyButton);
-
-                    const labels = Array.from(buttons).map(
-                        ({textContent}) => textContent,
-                    );
-
-                    const preferred = labels.find((label) => tabPrefs[label]);
-
-                    if (preferred) {
-                        activateGroup(tabs, labels.indexOf(preferred));
-                    }
-
-                    bar.addEventListener("click", (event) => {
-                        const button = event.target.closest(".code-tabs-button");
-
-                        if (!button) {
-                            return;
-                        }
-
-                        const index = Number(button.dataset.tab);
-
-                        activateGroup(tabs, index);
-
-                        tabPrefs[buttons[index].textContent] = true;
-
-                        localStorage.setItem("code-tab-prefs", JSON.stringify(tabPrefs));
-
-                        const label = buttons[index].textContent;
-
-                        document
-                            .querySelectorAll(".code-tabs")
-                            .forEach((other) => {
-                                if (other === tabs) {
-                                    return;
-                                }
-
-                                other
-                                    .querySelectorAll(".code-tabs-button")
-                                    .forEach(({textContent}, index) => {
-                                        if (textContent === label) {
-                                            activateGroup(other, index);
-                                        }
-                                    });
-                            });
-                    });
-                });
-
-            function activateGroup(group, index) {
-                const buttons = group.querySelectorAll(".code-tabs-button");
-                const panels = group.querySelectorAll(".code-tab-panel");
-
-                buttons.forEach((button) => {
-                    button.classList.remove("active");
-                    button.setAttribute("aria-selected", "false");
-                });
-
-                panels.forEach((panel) => panel.classList.remove("active"));
-
-                if (buttons[index]) {
-                    buttons[index].classList.add("active");
-                    buttons[index].setAttribute("aria-selected", "true");
-                }
-
-                panels[index]?.classList.add("active");
-            }
         });
     </script>
 </BaseLayout>

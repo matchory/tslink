@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { getLastModifiedSync, isShallowSync } from "./git";
+import { base } from "./links";
 
 /**
  * A page this site serves that is not a doc in the content collection: the
@@ -14,11 +15,6 @@ export interface GeneratedPage {
   path: string;
   title: string;
   description: string;
-
-  /**
-   * The Markdown representation of this page, if it has one.
-   */
-  markdown?: string;
 
   /**
    * The file whose last commit dates this page, relative to the repository
@@ -45,19 +41,6 @@ export function generatedPage(path: string): GeneratedPage {
   }
 
   return page;
-}
-
-/**
- * The Markdown representation of a generated page, for the pages that have one.
- */
-export function markdownFor(path: string): string {
-  const { markdown } = generatedPage(path);
-
-  if (!markdown) {
-    throw new Error(`${path} has no Markdown representation`);
-  }
-
-  return markdown;
 }
 
 const docsDir = resolve("../docs");
@@ -91,6 +74,9 @@ export function sourceForPath(pathname: string): string {
   return source;
 }
 
+/** Whether this clone is shallow, asked once per build rather than per entry. */
+let shallow: boolean | undefined;
+
 /**
  * The `lastmod` for one sitemap entry. Throwing rather than omitting the date is
  * the point: a page added without a source mapping fails `astro build` instead
@@ -99,14 +85,16 @@ export function sourceForPath(pathname: string): string {
  * integration itself catches and logs whatever `serialize` raises.
  */
 export function lastModifiedFor(url: string): string {
-  if (isShallowSync()) {
+  shallow ??= isShallowSync();
+
+  if (shallow) {
     throw new Error(
       "a shallow clone dates every page from its one commit; check out with fetch-depth: 0",
     );
   }
 
   // Sitemap URLs carry the deployment's base; the page registry does not.
-  const pathname = new URL(url).pathname.replace(/^\/tslink(?=\/|$)/, "") || "/";
+  const pathname = new URL(url).pathname.replace(new RegExp(`^${base}(?=/|$)`), "") || "/";
   const source = sourceForPath(pathname === "/" ? "/" : pathname.replace(/\/$/, ""));
   const modified = getLastModifiedSync(source);
 

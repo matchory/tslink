@@ -57,7 +57,7 @@ function gitSync(args: string[], cwd?: string): string {
  * needs to be able to say which of the two happened.
  */
 export function getLastModifiedSync(relativePath: string): Date | null {
-  const root = gitSync(["rev-parse", "--show-toplevel"]);
+  const root = (repoRoot ??= gitSync(["rev-parse", "--show-toplevel"]));
   const stdout = gitSync(["log", "-1", "--format=%aI", "--", relativePath], root);
 
   return stdout ? new Date(stdout) : null;

@@ -216,7 +216,7 @@ import {Search} from "@lucide/astro";
 
             if (!pagefind) {
                 resultsContainer.innerHTML =
-                    `<div class="${emptyClass}">Search unavailable — run <code>npm run build</code> to generate the index.</div>`;
+                    `<div class="${emptyClass}">Search unavailable — run <code>pnpm build</code> to generate the index.</div>`;
 
                 return;
             }
@@ -268,6 +268,16 @@ import {Search} from "@lucide/astro";
             setActive(0);
             getStatus().textContent = loaded.length + " result" + (loaded.length === 1 ? "" : "s") + " found.";
         };
+
+        // The header is rendered again on every navigation, and the client
+        // router runs this script only once, so the label is set on each load.
+        document.addEventListener("astro:page-load", () => {
+            const label = document.getElementById("search-shortcut-label");
+
+            if (label) {
+                label.textContent = /Mac|iPod|iPhone|iPad/.test(navigator.platform || "") ? "⌘K" : "Ctrl+K";
+            }
+        });
     }
 
     // Move overlay to body on initial load (persists across navigations via transition:persist).
@@ -275,11 +285,5 @@ import {Search} from "@lucide/astro";
 
     if (overlay && overlay.parentElement !== document.body) {
         document.body.appendChild(overlay);
-    }
-
-    const label = document.getElementById("search-shortcut-label");
-
-    if (label) {
-        label.textContent = /Mac|iPod|iPhone|iPad/.test(navigator.platform || "") ? "⌘K" : "Ctrl+K";
     }
 </script>

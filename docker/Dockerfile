@@ -1,5 +1,5 @@
 # Build stage
-FROM golang:1.27-alpine@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d AS builder
+FROM golang:1.27-alpine@sha256:d200d2dd76b03a99b52651fd1325aff7dcd35422c35c01bac56571b0507f3deb AS builder
 
 RUN apk add --no-cache git
 
@@ -33,10 +33,10 @@ RUN set -e; \
       done
 
 # Tailscale binaries, pinned here so every node runs the same version
-FROM tailscale/tailscale:v1.104.1@sha256:87c55d6be56ad85b3d8bceca5f87f73de288c609131460dd1be1874c250cc41d AS tailscale
+FROM tailscale/tailscale:v1.104.4@sha256:ed6480b33c6eb67c9cbd203ed42b9fb57e361986725b6856def71b7a3d9e276c AS tailscale
 
 # Tailscale's license, taken from the source of the version bundled above
-FROM golang:1.27-alpine@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d AS tailscale-licenses
+FROM golang:1.27-alpine@sha256:d200d2dd76b03a99b52651fd1325aff7dcd35422c35c01bac56571b0507f3deb AS tailscale-licenses
 SHELL ["/bin/ash", "-o", "pipefail", "-c"]
 COPY --from=tailscale /usr/local/bin/tailscale /tmp/tailscale
 RUN set -e; \

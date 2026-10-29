@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 400" width="880" height="400" role="img" aria-labelledby="title desc" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <title id="title">tslink: each container is its own node</title>
+  <desc id="desc">A Docker host runs two containers on a tslink network. Each runs its own tailscaled and joins the tailnet as its own node, with its own name, address and tags. Other traffic leaves through Docker as usual. The host's own Tailscale node is separate, and containers cannot use it.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#6b7280"/>
+    </marker>
+    <marker id="arrow-ts" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4f46e5"/>
+    </marker>
+  </defs>
+
+  <!-- Host -->
+  <rect x="8" y="8" width="560" height="384" rx="14" fill="#f3f4f6" stroke="#9ca3af" stroke-width="1.5"/>
+  <text x="28" y="38" font-size="15" font-weight="600" fill="#111827">Docker host</text>
+
+  <!-- Container: web -->
+  <rect x="28" y="56" width="330" height="112" rx="10" fill="#ffffff" stroke="#9ca3af"/>
+  <text x="44" y="80" font-size="14" font-weight="600" fill="#111827">Container “web”</text>
+  <rect x="44" y="94" width="96" height="58" rx="8" fill="#e5e7eb"/>
+  <text x="92" y="128" font-size="13" text-anchor="middle" fill="#111827">nginx</text>
+  <rect x="168" y="94" width="174" height="58" rx="8" fill="#e0e7ff" stroke="#4f46e5"/>
+  <text x="255" y="118" font-size="13" font-weight="600" text-anchor="middle" fill="#312e81">tailscaled</text>
+  <text x="255" y="138" font-size="12" text-anchor="middle" fill="#312e81">web · 100.101.12.4</text>
+  <line x1="140" y1="123" x2="164" y2="123" stroke="#4f46e5" stroke-width="1.5" marker-end="url(#arrow-ts)"/>
+
+  <!-- Container: api -->
+  <rect x="28" y="184" width="330" height="112" rx="10" fill="#ffffff" stroke="#9ca3af"/>
+  <text x="44" y="208" font-size="14" font-weight="600" fill="#111827">Container “api”</text>
+  <rect x="44" y="222" width="96" height="58" rx="8" fill="#e5e7eb"/>
+  <text x="92" y="256" font-size="13" text-anchor="middle" fill="#111827">your app</text>
+  <rect x="168" y="222" width="174" height="58" rx="8" fill="#e0e7ff" stroke="#4f46e5"/>
+  <text x="255" y="246" font-size="13" font-weight="600" text-anchor="middle" fill="#312e81">tailscaled</text>
+  <text x="255" y="266" font-size="12" text-anchor="middle" fill="#312e81">api · tag:api</text>
+  <line x1="140" y1="251" x2="164" y2="251" stroke="#4f46e5" stroke-width="1.5" marker-end="url(#arrow-ts)"/>
+
+  <!-- Plugin -->
+  <rect x="28" y="312" width="252" height="64" rx="10" fill="#ffffff" stroke="#9ca3af" stroke-dasharray="5 4"/>
+  <text x="44" y="336" font-size="13" font-weight="600" fill="#111827">tslink plugin</text>
+  <text x="44" y="356" font-size="12" fill="#374151">Starts each tailscaled, reads the labels</text>
+
+  <!-- Host's own Tailscale -->
+  <rect x="296" y="312" width="252" height="64" rx="10" fill="#ffffff" stroke="#9ca3af"/>
+  <text x="312" y="336" font-size="13" font-weight="600" fill="#111827">The host's own Tailscale</text>
+  <text x="312" y="356" font-size="12" fill="#374151">Separate; containers can't use it</text>
+
+  <!-- Tailnet -->
+  <rect x="640" y="56" width="228" height="240" rx="14" fill="#e0e7ff" stroke="#4f46e5" stroke-width="1.5"/>
+  <text x="754" y="160" font-size="15" font-weight="600" text-anchor="middle" fill="#312e81">Your tailnet</text>
+  <text x="754" y="182" font-size="12" text-anchor="middle" fill="#312e81">web and api are nodes,</text>
+  <text x="754" y="200" font-size="12" text-anchor="middle" fill="#312e81">governed by your grants</text>
+  <line x1="342" y1="123" x2="636" y2="123" stroke="#4f46e5" stroke-width="2" marker-end="url(#arrow-ts)"/>
+  <line x1="342" y1="251" x2="636" y2="251" stroke="#4f46e5" stroke-width="2" marker-end="url(#arrow-ts)"/>
+  <text x="460" y="114" font-size="12" text-anchor="middle" fill="#4f46e5">its own WireGuard path</text>
+
+  <!-- Internet -->
+  <rect x="640" y="312" width="228" height="64" rx="14" fill="#f3f4f6" stroke="#9ca3af" stroke-width="1.5"/>
+  <text x="754" y="339" font-size="15" font-weight="600" text-anchor="middle" fill="#111827">Internet</text>
+  <text x="754" y="359" font-size="12" text-anchor="middle" fill="#374151">everything else, via Docker</text>
+  <line x1="568" y1="344" x2="636" y2="344" stroke="#6b7280" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#arrow)"/>
+</svg>

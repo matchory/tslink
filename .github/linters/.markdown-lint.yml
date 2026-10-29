@@ -13,6 +13,10 @@ MD013:
 MD024:
   siblings_only: true
 
+# Inline HTML: only the elements the README's centred header uses
+MD033:
+  allowed_elements: [a, br, h1, img, p]
+
 # Ordered list item prefix
 MD029:
   style: ordered

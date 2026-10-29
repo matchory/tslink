@@ -1,0 +1,78 @@
+---
+import FeatureCard from "./FeatureCard.astro";
+import {repoUrl} from "../lib/navigation";
+import {withBase} from "../lib/paths";
+
+interface Props {
+    title: string;
+    description: string;
+}
+
+const {title, description} = Astro.props;
+
+const quickStart = `docker plugin install --alias tslink --grant-all-permissions \\
+  ghcr.io/matchory/tslink:latest-amd64
+docker network create --driver tslink:latest \\
+  --opt tslink.authkey=tskey-auth-… my-tailnet
+docker run -d --network my-tailnet --label tslink.hostname=web nginx:alpine`;
+
+const secondaryButtonClass =
+    "inline-flex items-center rounded-lg border px-5 py-2.5 text-sm font-medium text-foreground hover:bg-accent transition-colors";
+---
+<section class="flex flex-col items-center justify-center py-20 px-6 sm:px-8 gap-12 text-center" data-pagefind-ignore>
+    <header class="flex flex-col items-center">
+        <img src={withBase("/favicon.svg")} alt="" class="size-14 mb-6" />
+        <h1 class="text-3xl font-semibold tracking-tight mb-3">{title}</h1>
+        <p class="text-lg text-muted-foreground max-w-xl leading-relaxed">{description}</p>
+        <p class="mt-3 text-base text-muted-foreground max-w-xl leading-relaxed">
+            Each container gets its own name, tailnet address and tags, and your grants apply to it like to any other
+            node. Configure it with labels, on one host or across a Swarm.
+        </p>
+    </header>
+
+    <div class="w-full max-w-2xl text-left">
+        <pre class="rounded-lg p-4 overflow-x-auto text-sm leading-relaxed border bg-code-background text-code-foreground"><code>{quickStart}</code></pre>
+        <p class="mt-2 text-sm text-muted-foreground">
+            A few seconds later, <code>web</code> is a node in your tailnet. On an ARM host, use <code>arm64</code>.
+        </p>
+    </div>
+
+    <ul class="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-4xl text-left">
+        <FeatureCard href={withBase("/getting-started")} icon="🚀" title="Try it on one host">
+            Install the plugin, run nginx as a node of its own, and open it over HTTPS with a certificate for its
+            name.
+        </FeatureCard>
+        <FeatureCard href={withBase("/guides/deploy-on-swarm")} icon="🐳" title="Run it on Swarm">
+            Give each stack its own tags and credential, and keep stacks out of each other's identities and state.
+        </FeatureCard>
+        <FeatureCard href={withBase("/guides/expose-a-service")} icon="🔀" title="Expose a Service">
+            Put replicas behind one Tailscale Service, and let tslink take each out of rotation before it stops.
+        </FeatureCard>
+        <FeatureCard href={withBase("/explanation/security-model")} icon="🛡️" title="Know what it protects">
+            What tslink guarantees, whom you have to trust, and how containers are kept from the host's node.
+        </FeatureCard>
+    </ul>
+
+    <footer class="flex flex-wrap justify-center gap-3">
+        <a
+            href={withBase("/getting-started")}
+            class="inline-flex items-center rounded-lg bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
+        >
+            Get started
+        </a>
+        <a
+            href={repoUrl}
+            target="_blank"
+            rel="noopener"
+            class={secondaryButtonClass}
+            aria-label="GitHub (opens in new tab)"
+        >
+            GitHub
+        </a>
+    </footer>
+
+    <p class="max-w-xl text-xs text-muted-foreground">
+        tslink is an independent project, not affiliated with or endorsed by Tailscale Inc. Tailscale is a trademark
+        of Tailscale Inc.
+    </p>
+</section>

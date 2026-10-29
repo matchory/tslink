@@ -1,3 +1,10 @@
+---
+title: Network options
+description: Options of `docker network create`.
+category: reference
+tags: [network]
+---
+
 # Network options
 
 Network options configure all containers on a tslink network. Set them with `--opt` on `docker network create`, or

@@ -1,3 +1,10 @@
+---
+title: Troubleshoot
+description: Find the cause of a symptom.
+category: guide
+tags: [troubleshoot]
+---
+
 # Troubleshoot
 
 Find the symptom below, then do the checks in the sequence of the table. Before you start, collect the logs.

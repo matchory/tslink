@@ -1,3 +1,10 @@
+---
+title: Plugin settings
+description: Settings of `docker plugin set`.
+category: reference
+tags: [plugin]
+---
+
 # Plugin settings
 
 Plugin settings configure tslink for all networks on one host. Set them with `docker plugin set` while the plugin

@@ -1,3 +1,10 @@
+---
+title: tslink diag
+description: Diagnostics and the preflight check.
+category: reference
+tags: [diag]
+---
+
 # tslink diag
 
 `tslink diag` shows the state of each endpoint on a host. `tslink diag --preflight` checks the environment

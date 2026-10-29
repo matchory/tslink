@@ -1,3 +1,10 @@
+---
+title: Security model
+description: How tslink keeps stacks apart.
+category: explanation
+tags: [security]
+---
+
 # Security model
 
 This page tells how tslink keeps one stack from using the identity, tags or credential of another stack. The

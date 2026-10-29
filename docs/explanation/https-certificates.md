@@ -1,3 +1,10 @@
+---
+title: HTTPS certificates
+description: Certificates and the limits of Let's Encrypt.
+category: explanation
+tags: [https]
+---
+
 # HTTPS certificates
 
 This page tells how tslink gets HTTPS certificates for served names, and how to stay within the limits of Let's

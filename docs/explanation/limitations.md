@@ -1,3 +1,10 @@
+---
+title: Limitations
+description: What tslink cannot do.
+category: explanation
+tags: [limitations]
+---
+
 # Limitations
 
 This page lists what tslink cannot do, and why.

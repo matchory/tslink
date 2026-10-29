@@ -1,0 +1,22 @@
+---
+import Head from "../components/Head.astro";
+import Header from "../components/Header.astro";
+import Hero from "../components/Hero.astro";
+import {generatedPage} from "../lib/pages";
+import "../styles/global.css";
+
+const home = generatedPage("/");
+---
+<html lang="en">
+<head>
+    <Head title="tslink" description={home.description} isHome />
+</head>
+<body class="min-h-screen">
+<Header currentPath="/" />
+<div class="mx-auto max-w-shell">
+    <main id="main-content" class="min-w-0">
+        <Hero title="tslink" description={home.description} />
+    </main>
+</div>
+</body>
+</html>

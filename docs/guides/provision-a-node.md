@@ -1,3 +1,10 @@
+---
+title: Provision a host
+description: Prepare a production host or Swarm node.
+category: guide
+tags: [provision]
+---
+
 # Provision a host
 
 ## Goal

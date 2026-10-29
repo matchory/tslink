@@ -1,0 +1,59 @@
+---
+interface Heading {
+  depth: number;
+  slug: string;
+  text: string;
+}
+
+interface Props {
+  headings: Heading[];
+}
+
+const { headings } = Astro.props;
+const filtered = headings.filter(({depth}) => depth >= 2 && depth <= 3);
+---
+{filtered.length > 0 && (
+  <aside class="hidden xl:block print:hidden select-none w-48 shrink-0 rail py-8 pr-6 lg:pr-8 pl-4" aria-label="On this page">
+    <h3 class="text-2xs font-semibold uppercase tracking-widest text-muted-foreground mb-4">
+      On this page
+    </h3>
+    <ul id="toc-list" class="flex flex-col gap-1.5 text-sm border-l pl-3">
+      {filtered.map((heading) => (
+        <li>
+          <a
+            href={`#${heading.slug}`}
+            class="block py-0.5 leading-snug text-muted-foreground transition-colors hover:text-foreground data-nested:pl-3 data-active:font-medium data-active:text-active"
+            data-heading={heading.slug}
+            data-nested={heading.depth === 3 || undefined}
+          >
+            {heading.text}
+          </a>
+        </li>
+      ))}
+    </ul>
+  </aside>
+)}
+
+<script is:inline>
+  (function() {
+    const links = document.querySelectorAll("#toc-list a[data-heading]");
+    if (!links.length) return;
+    const headings = Array.from(links).map(function(link) {
+      return { link: link, target: document.getElementById(link.dataset.heading) };
+    }).filter(function(h) { return h.target; });
+    let current = null;
+    const observer = new IntersectionObserver(function(entries) {
+      entries.forEach(function(entry) {
+        if (entry.isIntersecting) {
+          if (current) { current.removeAttribute("data-active"); }
+          const match = headings.find(function(h) { return h.target === entry.target; });
+          if (match) {
+            match.link.setAttribute("data-active", "");
+            current = match.link;
+          }
+        }
+      });
+    }, { rootMargin: "-80px 0px -80% 0px" });
+    headings.forEach(function(h) { observer.observe(h.target); });
+  })();
+</script>

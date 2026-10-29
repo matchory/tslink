@@ -1,3 +1,10 @@
+---
+title: Readiness endpoint
+description: The endpoint for Docker healthchecks.
+category: reference
+tags: [readiness]
+---
+
 # Readiness endpoint
 
 The readiness endpoint tells a Docker healthcheck when the node of a container is ready. The label

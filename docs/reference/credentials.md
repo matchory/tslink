@@ -1,3 +1,10 @@
+---
+title: Credentials
+description: Credential types, precedence, ephemeral nodes and tag rules.
+category: reference
+tags: [credentials]
+---
+
 # Credentials
 
 A credential lets a node register in the tailnet. tslink accepts an auth key or an OAuth client secret, from three

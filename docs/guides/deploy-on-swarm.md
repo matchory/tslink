@@ -1,3 +1,10 @@
+---
+title: Deploy on Swarm
+description: Give each stack its own tags and credential.
+category: guide
+tags: [deploy]
+---
+
 # Deploy on Swarm
 
 ## Goal

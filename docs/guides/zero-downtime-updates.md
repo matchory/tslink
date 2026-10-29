@@ -1,3 +1,10 @@
+---
+title: Update without downtime
+description: Update Services, restart Docker and upgrade tslink.
+category: guide
+tags: [zero]
+---
+
 # Update without downtime
 
 ## Goal

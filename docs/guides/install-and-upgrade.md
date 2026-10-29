@@ -1,3 +1,10 @@
+---
+title: Install and upgrade tslink
+description: Install, upgrade and configure the plugin.
+category: guide
+tags: [install]
+---
+
 # Install and upgrade tslink
 
 ## Goal

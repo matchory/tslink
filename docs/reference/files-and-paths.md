@@ -1,3 +1,10 @@
+---
+title: Files and paths
+description: The data directory, logs and status files.
+category: reference
+tags: [files]
+---
+
 # Files and paths
 
 tslink keeps all its files in the data directory, `/var/lib/docker-plugins/tailscale` on the host. Inside the

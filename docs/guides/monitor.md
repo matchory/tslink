@@ -1,3 +1,10 @@
+---
+title: Monitor tslink
+description: Get an alert when a node is not running.
+category: guide
+tags: [monitor]
+---
+
 # Monitor tslink
 
 ## Goal

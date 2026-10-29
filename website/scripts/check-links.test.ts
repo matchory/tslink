@@ -51,6 +51,17 @@ test("a link to an anchor the built page lacks fails", () => {
   ]);
 });
 
+test("a relative link in a built Markdown page that leaves the base fails", () => {
+  const dist = tree({
+    "explanation/x.md": "See [ok](../guides/y.md) and [security](../../SECURITY.md).\n",
+    "guides/y.md": "# y\n",
+  });
+
+  assert.deepEqual(checkDist(dist, "/tslink"), [
+    "explanation/x.md: ../../SECURITY.md is outside /tslink",
+  ]);
+});
+
 test("a source link to a missing file fails", () => {
   const root = tree({ "docs/guides/a.md": "See [it](../reference/missing.md).\n" });
 

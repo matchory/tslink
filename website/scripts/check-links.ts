@@ -12,14 +12,14 @@
  */
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { dirname, join, normalize, resolve } from "node:path";
+import { dirname, join, normalize, posix, resolve } from "node:path";
 import GithubSlugger from "github-slugger";
 
 const external = /^([a-z][a-z0-9+.-]*:|\/\/)/i;
 
-function htmlFiles(dir: string): string[] {
+function filesEndingIn(dir: string, extension: string): string[] {
   return readdirSync(dir, { recursive: true, encoding: "utf-8" })
-    .filter((path) => path.endsWith(".html"))
+    .filter((path) => path.endsWith(extension))
     .sort();
 }
 
@@ -38,7 +38,7 @@ function builtFile(dist: string, path: string): string | null {
 export function checkDist(dist: string, base: string): string[] {
   const problems: string[] = [];
 
-  for (const page of htmlFiles(dist)) {
+  for (const page of filesEndingIn(dist, ".html")) {
     const html = readFileSync(join(dist, page), "utf-8");
 
     for (const [, url] of html.matchAll(/\s(?:href|src)="([^"]*)"/g)) {
@@ -63,12 +63,36 @@ export function checkDist(dist: string, base: string): string[] {
     }
   }
 
+  // The Markdown copy of each page, which llms.txt hands to agents, keeps its
+  // relative links, so they resolve against the page's own URL.
+  for (const page of filesEndingIn(dist, ".md")) {
+    for (const url of markdownLinks(readFileSync(join(dist, page), "utf-8"))) {
+      if (external.test(url) || url.startsWith("#") || url.startsWith("/")) {
+        continue;
+      }
+
+      const path = posix.normalize(posix.join(base, posix.dirname(page), url.split("#")[0]));
+
+      if (!path.startsWith(`${base}/`)) {
+        problems.push(`${page}: ${url} is outside ${base}`);
+      } else if (!builtFile(dist, path.slice(base.length))) {
+        problems.push(`${page}: ${url} does not exist`);
+      }
+    }
+  }
+
   return problems;
 }
 
 /** Markdown with code blocks and code spans blanked out: links in them are examples. */
 function withoutCode(markdown: string): string {
   return markdown.replace(/^(`{3,}|~{3,})[\s\S]*?^\1/gm, "").replace(/`[^`\n]*`/g, "");
+}
+
+function markdownLinks(markdown: string): string[] {
+  return [...withoutCode(markdown).matchAll(/\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/g)].map(
+    ([, url]) => url,
+  );
 }
 
 function headingSlugs(markdown: string): Set<string> {
@@ -88,9 +112,9 @@ export function checkSource(root: string, files: string[]): string[] {
   for (const file of files) {
     const markdown = readFileSync(join(root, file), "utf-8");
     const links = [
-      ...withoutCode(markdown).matchAll(/\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/g),
-      ...markdown.matchAll(/\s(?:href|src)="([^"]+)"/g),
-    ].map(([, url]) => url);
+      ...markdownLinks(markdown),
+      ...[...markdown.matchAll(/\s(?:href|src)="([^"]+)"/g)].map(([, url]) => url),
+    ];
 
     for (const url of links) {
       if (external.test(url)) {

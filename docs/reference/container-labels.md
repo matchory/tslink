@@ -112,8 +112,10 @@ For example: `tslink.serve.5432=tcp:5432?proxy-protocol=2`.
 | `http`, `https` | The caller's tailnet address in `X-Forwarded-For` |
 | `tcp`, `tls-terminated-tcp` | Connections from `127.0.0.1`. With `proxy-protocol`, the caller's address in the PROXY header. |
 
-A tagged caller gets no `Tailscale-User-*` headers; use `accept-app-caps` to authorize one. Serve replaces any
-`Tailscale-App-Capabilities` header the caller sends, so your application can trust it.
+A tagged caller gets no `Tailscale-User-*` headers; use `accept-app-caps` to authorize one. On requests that come
+through Serve, Serve replaces any `Tailscale-App-Capabilities` header the caller sends. A caller that reaches your
+application another way, such as over another Docker network, can set it freely, so trust the header only if the
+application listens on `127.0.0.1`.
 
 ## tslink.service
 

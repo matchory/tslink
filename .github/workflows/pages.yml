@@ -6,15 +6,15 @@ on:
     paths:
       - "docs/**"
       - "website/**"
-      - "CHANGELOG.md"
-      - "README.md"
+      # check-links --source checks every tracked Markdown file's links.
+      - "**/*.md"
       - ".github/workflows/pages.yml"
   pull_request:
     paths:
       - "docs/**"
       - "website/**"
-      - "CHANGELOG.md"
-      - "README.md"
+      # check-links --source checks every tracked Markdown file's links.
+      - "**/*.md"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 
@@ -23,9 +23,11 @@ on:
 permissions:
   contents: read
 
+# A newer push to a pull request replaces its build; a deploy from main runs to the
+# end, so the site is never left half-published.
 concurrency:
   group: pages-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:

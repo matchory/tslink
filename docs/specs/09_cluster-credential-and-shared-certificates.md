@@ -2,7 +2,7 @@
 
 > **Status:** Implemented
 > **Last Updated:** 2026-10-07
-> **See Also:** [docs/credentials.md](../reference/credentials.md) (the per-stack model this extends),
+> **See Also:** [docs/reference/credentials.md](../reference/credentials.md) (the per-stack model this extends),
 > [02_tailscale-services.md](02_tailscale-services.md)
 
 ## Overview

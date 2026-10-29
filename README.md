@@ -63,8 +63,8 @@ started](docs/getting-started.md) takes it further, to HTTPS with a certificate 
   stack can't use another stack's network, identity or state.
 - **Updates without dropped requests.** Before a Service backend stops, tslink drains it and waits until Tailscale's
   control server knows, so callers move to the other backends first.
-- **Isolation from the host.** Containers reach the tailnet only as their own node, never through the host's
-  Tailscale, and they can't reach each other's tslink interfaces.
+- **Isolation from the host.** By default, containers reach the tailnet only as their own node, never through the
+  host's Tailscale, and they can't reach each other's tslink interfaces.
 - **Self-healing.** tslink restarts a crashed tailscaled, logs a deleted node in again, picks up running containers
   after a plugin restart, and logs out the ephemeral nodes of containers that vanished.
 - **A readiness endpoint** for Docker healthchecks, which reports ready once the node is up and its Services are

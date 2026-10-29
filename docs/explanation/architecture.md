@@ -146,7 +146,7 @@ tslink recovers from these failures on its own:
 
 | Failure | What tslink does |
 | --- | --- |
-| tailscaled doesn't start | Tries again, at growing intervals, until the container leaves. A permanent error, such as a tag the credential doesn't allow, ends the retries. |
+| tailscaled doesn't start | Tries again, at growing intervals, until the container leaves. A permanent error ends the retries: one of tslink's own refusals, such as a tag outside the stack's [tag rules](../reference/credentials.md#tag-rules) or an invalid Service name. |
 | tailscaled stops | Restarts it. After a series of crashes, it waits for a while, then carries on. |
 | The control server doesn't know the node, for example because someone deleted the device | Logs the node in again, as a new device. |
 | The plugin restarts | Finds the running containers again. A node that's still logged in comes up without the credential, so a rotated or revoked credential doesn't take it down. |

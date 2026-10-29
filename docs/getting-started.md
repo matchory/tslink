@@ -29,9 +29,11 @@ docker plugin install --alias tslink --grant-all-permissions \
   ghcr.io/matchory/tslink:latest-amd64
 ```
 
-`--grant-all-permissions` accepts what the plugin asks for: the host's network, `CAP_NET_ADMIN` and
-`CAP_SYS_ADMIN`, the TUN device and the Docker socket. It needs them to create network interfaces and firewall rules
-on the host, to enter containers' network namespaces, and to read their labels. Check that Docker enabled it:
+`--grant-all-permissions` accepts everything the plugin asks for: the host's network, `CAP_NET_ADMIN` and
+`CAP_SYS_ADMIN`, access to all devices, and mounts of the host's `/var/lib`, `/run` and Docker socket. It needs them
+to create network interfaces and firewall rules on the host, to enter containers' network namespaces, to keep its
+data directory, and to read containers' labels. `docker plugin install` lists them before it asks, if you leave the
+flag out. Check that Docker enabled it:
 
 ```bash
 docker plugin ls

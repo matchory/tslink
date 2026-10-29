@@ -4,10 +4,11 @@ import sitemap from "@astrojs/sitemap";
 import tailwindcss from "@tailwindcss/vite";
 import { visit } from "unist-util-visit";
 import { rehypeMermaid } from "@/lib/mermaid-diagrams.ts";
+import { base, siteUrlFor } from "@/lib/links.ts";
 import { lastModifiedFor } from "@/lib/pages.ts";
 import { slugify } from "@/lib/slug.ts";
 import { existsSync } from "node:fs";
-import { dirname, relative, resolve } from "node:path";
+import { resolve } from "node:path";
 import sirv from "sirv";
 import type { Element, ElementContent, Properties } from "hast";
 import type {
@@ -24,24 +25,6 @@ import type { Node } from "unist";
 import type { AstroIntegration } from "astro";
 import type { VFile } from "vfile";
 import type { Plugin as VitePlugin } from "vite";
-import packageJson from "./package.json" with { type: "json" };
-
-/**
- * The site is served from `https://matchory.github.io/tslink/`, the GitHub
- * Pages domain of the repository, so every path it serves sits under this.
- */
-const base = "/tslink";
-
-const repoRoot = resolve("..");
-const docsRoot = resolve("../docs");
-
-/**
- * Whether a file, relative to `docs/`, is a page the site publishes. Must agree
- * with `docsPattern` in `src/content.config.ts`, which the config module cannot
- * import: it pulls in `astro:content`.
- */
-const isPublished = (path: string) =>
-  /^(getting-started|(guides|reference|explanation)\/[^/]+)\.md$/.test(path);
 
 /**
  * Fails the build if no sitemap was written.
@@ -80,29 +63,6 @@ function pagefindDevPlugin(): VitePlugin {
       }
     },
   };
-}
-
-/**
- * The site's URL for a link written for GitHub: a relative path from the doc it
- * is in, such as `../reference/container-labels.md#tslinkhealth`. A link to a
- * published page becomes that page's path under `base`; a link to anything else
- * in the repository, such as `SECURITY.md` or the style guide, goes to the file
- * on GitHub, where it lives.
- */
-export function siteUrlFor(url: string, fromFile: string): string {
-  if (/^([a-z]+:|\/\/|#)/i.test(url)) {
-    return url;
-  }
-
-  const [path, hash] = url.split(/(?=#)/);
-  const target = resolve(dirname(fromFile), path);
-  const inDocs = relative(docsRoot, target);
-
-  if (isPublished(inDocs)) {
-    return `${base}/${inDocs.replace(/\.md$/, "")}${hash ?? ""}`;
-  }
-
-  return `${packageJson.repository}/blob/main/${relative(repoRoot, target)}${hash ?? ""}`;
 }
 
 function remarkDocsLinks() {

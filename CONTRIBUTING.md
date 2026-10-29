@@ -59,6 +59,28 @@ Linux, Docker and `sudo`. `test/cluster` runs a regression suite on a Swarm
 reached over SSH against a real tailnet, including Tailscale Services (see
 [test/cluster/README.md](test/cluster/README.md)).
 
+[docs/testing.md](docs/testing.md) describes every kind of test tslink has,
+and what each one covers.
+
+## Documentation
+
+The documentation in [docs/](docs/README.md) is published at
+<https://matchory.github.io/tslink/> by the Astro site in `website/`, on every
+push to `main` that changes it. Pages read the same on GitHub and on the site:
+write them by the [style guide](docs/STYLE.md), with relative `.md` links. To
+preview the site, with Node and pnpm at the versions `website/` pins:
+
+```bash
+cd website
+pnpm install
+pnpm dev                    # http://localhost:4321/tslink/
+pnpm build && pnpm check-links && pnpm check-links --source
+```
+
+`check-links` checks the built site; `--source` checks the Markdown as GitHub
+renders it, anchors included. CI runs both on every pull request that touches
+the docs.
+
 ## Linters
 
 CI runs two linters; run both before opening a pull request.
@@ -76,7 +98,7 @@ golangci-lint fmt        # format
 **Everything else** (Markdown, YAML, shell, Dockerfile, and more):
 [super-linter](https://github.com/super-linter/super-linter), configured in
 [.github/workflows/linter.yml](.github/workflows/linter.yml) with rule files in
-`.github/linters/`. It ignores `specs/`. To run it locally, start its container
+`.github/linters/`. It ignores `docs/specs/` and `website/`. To run it locally, start its container
 image with `RUN_LOCAL=true`, the repository mounted at `/tmp/lint`, and the
 `VALIDATE_*` and `FILTER_REGEX_EXCLUDE` settings from `linter.yml`. Or run the
 most common checks on their own:
@@ -96,7 +118,7 @@ shellcheck scripts/*.sh
 
 [Architecture](docs/explanation/architecture.md) explains the main design
 decisions for operators. [CLAUDE.md](CLAUDE.md) adds the details for
-developers, and `specs/` holds the design history.
+developers, and [docs/specs/](docs/specs/) holds the design history.
 
 ## Scope
 
@@ -119,6 +141,8 @@ developers, and `specs/` holds the design history.
   `docs/reference/`, and a new task in `docs/guides/`.
 - Add an entry under `Unreleased` in [CHANGELOG.md](CHANGELOG.md).
 - Dependency updates come from Dependabot.
+
+[docs/releasing.md](docs/releasing.md) describes how a release is cut.
 
 By contributing, you agree that your contributions are licensed under the
 [MIT License](LICENSE).

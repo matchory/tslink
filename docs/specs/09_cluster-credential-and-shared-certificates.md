@@ -2,7 +2,7 @@
 
 > **Status:** Implemented
 > **Last Updated:** 2026-10-07
-> **See Also:** [docs/credentials.md](../docs/credentials.md) (the per-stack model this extends),
+> **See Also:** [docs/credentials.md](../reference/credentials.md) (the per-stack model this extends),
 > [02_tailscale-services.md](02_tailscale-services.md)
 
 ## Overview
@@ -101,7 +101,7 @@ With the cluster credential, a network's tags must therefore be `tag:<stack>` or
 `<stack>` is the network's `com.docker.stack.namespace`. A network outside a stack cannot use the cluster credential.
 Docker does not pass a network's labels to the driver when it creates the network, so the check runs when a task
 starts; a task that fails it never starts tailscaled, as with a task from the wrong stack.
-This puts the boundary back where [credentials.md](../docs/credentials.md) has it: whoever can deploy a stack under a
+This puts the boundary back where [credentials.md](../reference/credentials.md) has it: whoever can deploy a stack under a
 name acts as that stack, and `docker stack deploy` sets the namespace label itself. Tags a stack needs beyond its
 prefix require a per-stack secret.
 
@@ -222,7 +222,7 @@ expires with at least 23 days to spare. tslink does not intervene, but makes it 
 
 ## Validation
 
-On the test bed ([test/cluster](../test/cluster/README.md)), against Let's Encrypt staging through
+On the test bed ([test/cluster](../../test/cluster/README.md)), against Let's Encrypt staging through
 `TS_DEBUG_ACME_DIRECTORY_URL`, with a shared volume mounted on all nodes (NFS in this run). Results follow each
 item.
 
@@ -283,7 +283,7 @@ item.
 
 ## Future Enhancements
 
-1. **Workload identity federation** — replaces the cluster secret; see [credentials.md](../docs/credentials.md)
+1. **Workload identity federation** — replaces the cluster secret; see [credentials.md](../reference/credentials.md)
 2. **A single renewer** — if validation shows N renewals per cycle are a problem, run all but one replica with
    `TS_CERT_SHARE_MODE=ro`; this brings back a lasting role and its handover problem
 
@@ -305,4 +305,4 @@ Key files:
 - `pkg/core/gc.go` — collects the certificate directory, including tailscaled's `<file>.tmp<digits>` files
 - `pkg/docker/events.go` — `tslink.direct` defaults to `false` with `tslink.service`
 - `docker/config.json` — `shared` mount, `TS_SHARED_DIR`, `TS_DEBUG_ACME_DIRECTORY_URL`
-- `docs/credentials.md` — record the cluster credential as the default and the per-stack model as the alternative
+- `docs/reference/credentials.md` — record the cluster credential as the default and the per-stack model as the alternative

@@ -223,7 +223,12 @@ test/
     ├── redteam-tn.sh  # Runs the tn probes and writes their report for report.sh
     ├── testbed/  # Scripts for a single-host security testbed (optional Hetzner Cloud provisioner)
     └── redteam/  # Standalone probe scripts for redteam.sh, moved here once their fix ships
+docs/           # User docs (getting-started.md, guides/, reference/, explanation/), STYLE.md, testing.md, releasing.md
+└── specs/      # Design history, not published
+website/        # Astro site publishing docs/ to https://matchory.github.io/tslink/ (pages.yml), check-links.ts
 ```
+
+The published pages are the ones `website/src/content.config.ts` lists; `docs/STYLE.md` sets their voice.
 
 `pkg/core`, `pkg/docker` and `pkg/tailscale` run their tests through `leakcheck.Main`, which reads Go's `goroutineleak`
 profile after the tests: goroutines blocked forever on a channel or lock nothing else can reach fail the package.

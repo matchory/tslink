@@ -1,0 +1,72 @@
+---
+import { Monitor, Moon, Sun } from "@lucide/astro";
+import IconButton from "./IconButton.astro";
+---
+
+<!--
+  The icons are all hidden until the script names the active theme in
+  `data-theme`, which is the one thing it has to say: which of the three is
+  shown follows from the attribute, so no icon is reached for individually.
+-->
+<IconButton id="theme-toggle" class="group rounded-md p-1.5" aria-label="Toggle theme">
+  <Sun class="size-5 hidden group-theme-light:block" aria-hidden="true" />
+  <Moon class="size-5 hidden group-theme-dark:block" aria-hidden="true" />
+  <Monitor class="size-5 hidden group-theme-system:block" aria-hidden="true" />
+  <span id="theme-status" class="sr-only" aria-live="polite" role="status"></span>
+</IconButton>
+
+<script is:inline>
+  if (!window.__themeInitialized) {
+    window.__themeInitialized = true;
+
+    const states = ["light", "dark", "system"];
+
+    window.__getTheme = () => localStorage.getItem("theme") || "system";
+
+    window.__applyTheme = (theme) => {
+      const dark = theme === "dark" ||
+        (theme === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+      document.documentElement.classList.toggle("dark", dark);
+    };
+
+    window.__applyTheme(window.__getTheme());
+
+    const themeLabels = { light: "Light theme", dark: "Dark theme", system: "System theme" };
+
+    window.__updateThemeUI = function(theme) {
+      const toggle = document.getElementById("theme-toggle");
+      toggle.dataset.theme = theme;
+      toggle.setAttribute("aria-label", "Toggle theme, current: " + themeLabels[theme]);
+    };
+
+    window.matchMedia("(prefers-color-scheme: dark)")
+      .addEventListener("change", () => {
+        if (window.__getTheme() === "system") {
+          window.__applyTheme("system");
+          window.__updateThemeUI("system");
+        }
+      });
+
+    document.addEventListener("click", (e) => {
+      if (!e.target.closest("#theme-toggle")) return;
+      const current = window.__getTheme();
+      const next = states[(states.indexOf(current) + 1) % states.length];
+      localStorage.setItem("theme", next);
+      window.__applyTheme(next);
+      window.__updateThemeUI(next);
+      document.getElementById("theme-status").textContent = themeLabels[next];
+    });
+
+    // A navigation replaces the root element's attributes with the new page's,
+    // which carry no `dark` class: put it back before the page is drawn.
+    document.addEventListener("astro:after-swap", () => {
+      window.__applyTheme(window.__getTheme());
+    });
+
+    document.addEventListener("astro:page-load", () => {
+      var theme = window.__getTheme();
+      window.__applyTheme(theme);
+      window.__updateThemeUI(theme);
+    });
+  }
+</script>

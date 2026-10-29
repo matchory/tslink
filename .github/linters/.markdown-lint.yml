@@ -13,6 +13,14 @@ MD013:
 MD024:
   siblings_only: true
 
+# One H1: the page's heading. The frontmatter title is for the website and does not count
+MD025:
+  front_matter_title: ""
+
+# Inline HTML: only the elements the README's centred header uses
+MD033:
+  allowed_elements: [a, br, h1, img, p]
+
 # Ordered list item prefix
 MD029:
   style: ordered

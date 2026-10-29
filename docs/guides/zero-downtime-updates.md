@@ -1,20 +1,27 @@
+---
+title: Update without downtime
+description: Roll out new versions of a Tailscale Service, restart Docker and upgrade tslink without callers seeing errors.
+category: guide
+tags: [updates, draining, services, swarm, maintenance]
+---
+
 # Update without downtime
 
-## Goal
+When a Service backend stops, tslink drains it first, so callers move to the other backends before it goes away.
+This guide sets up everything around that, so you can roll out a new version, restart Docker or upgrade tslink while
+callers of the Service see no errors.
 
-Update a Tailscale Service, restart Docker and upgrade tslink while the callers of the Service get no errors.
-
-## Prerequisites
+## Before you start
 
 - The Service has more than one backend. See [Expose a service](expose-a-service.md).
-- Root access on each host.
+- You have root access on each host.
 
-## Steps
+## Set it up
 
-1. Give the application time to stop. When Docker sends the stop signal, tslink drains the backend of the container,
-   and callers move to other backends. Callers need some time to find out about the drain. Thus the application must
-   continue to serve for some seconds after `SIGTERM`, then finish its requests and exit. Set the time that Docker
-   waits with `stop_grace_period`:
+1. **Give your application time to stop.** When Docker sends the stop signal, tslink drains the container's backend,
+   and callers start moving to the other backends. They need a few seconds to notice, so your application has to
+   keep serving for a few seconds after `SIGTERM`, then finish its requests and exit. Docker's default of 10 seconds
+   is tight; set the time it waits with `stop_grace_period`:
 
    ```yaml
    services:
@@ -22,28 +29,25 @@ Update a Tailscale Service, restart Docker and upgrade tslink while the callers 
        stop_grace_period: 15s
    ```
 
-   The default of Docker is 10 seconds.
+2. **Replace tasks only once the new one takes traffic.** Use the readiness healthcheck with `order: start-first`, as
+   in [Expose a service](expose-a-service.md#make-the-containers-its-backends), so Swarm stops an old task only after
+   the new one is a backend.
 
-2. Use the readiness healthcheck with `order: start-first`. Then Swarm stops an old task only when the new task is a
-   backend. See step 3 of [Expose a service](expose-a-service.md).
+3. **Install the drain drop-in** on every host, as the next section describes.
 
-3. Install the drain drop-in on each host. See [Install the drain drop-in](#install-the-drain-drop-in).
-
-4. Before planned maintenance on a Swarm node, drain the node:
+4. **Before planned maintenance on a Swarm node, drain it**, and Swarm moves its tasks to other nodes:
 
    ```bash
    docker node update --availability drain <node>
    ```
 
-   Swarm moves the tasks of the node to other nodes.
+5. **Upgrade tslink one host at a time**, as [Upgrade](install-and-upgrade.md#upgrade) describes. It drains the node
+   first, because tailnet traffic stops for a few seconds while each tailscaled restarts.
 
-5. To upgrade tslink, follow [Upgrade](install-and-upgrade.md#upgrade). It drains the node first, because tailnet
-   traffic stops for some seconds while each tailscaled restarts.
+## Install the drain drop-in
 
-### Install the drain drop-in
-
-Docker sends no events when it stops. Thus tslink cannot drain the backends of a host whose Docker stops, for example
-at a restart or a reboot. The drop-in drains all backends on the host before Docker gets `SIGTERM`.
+Docker sends no events when it stops itself, so tslink can't drain the backends of a host whose Docker restarts or
+shuts down. This systemd drop-in drains every backend on the host before Docker gets `SIGTERM`.
 
 1. From a clone of the repository, install the script and the drop-in:
 
@@ -54,37 +58,37 @@ at a restart or a reboot. The drop-in drains all backends on the host before Doc
    systemctl daemon-reload
    ```
 
-   The script needs `sh` and `timeout` (coreutils). The drop-in takes effect at the next stop of Docker. You do not
-   restart Docker.
+   The script needs `sh` and `timeout` (from coreutils). The drop-in takes effect the next time Docker stops; you
+   don't need to restart Docker now.
 
-2. If necessary, set environment variables for the script with `Environment=` in the drop-in:
+2. If your setup differs from the defaults, set the script's environment with `Environment=` in the drop-in:
 
-   | Variable | Default | Content |
+   | Variable | Default | What it is |
    | --- | --- | --- |
    | `TSLINK_DATA` | `/var/lib/docker-plugins/tailscale` | The data directory |
-   | `TSLINK_TAILSCALE` | The `tailscale` CLI in the plugin, under `/var/lib/docker/plugins` | The `tailscale` CLI. Set it if Docker uses a different data root. |
-   | `TSLINK_DRAIN_WAIT` | `3` | The seconds to wait after the drain |
+   | `TSLINK_TAILSCALE` | The plugin's `tailscale` CLI, under `/var/lib/docker/plugins` | The `tailscale` CLI. Set it if Docker uses a different data root. |
+   | `TSLINK_DRAIN_WAIT` | `3` | Seconds to wait after the drain |
 
-The drop-in does not help when dockerd crashes.
+The drop-in can't help when dockerd crashes: nothing runs before it's gone.
 
-## Verify
+## Check that it works
 
-1. Make sure that systemd uses the drop-in:
+systemd uses the drop-in:
 
-   ```bash
-   systemctl cat docker | grep tslink-drain
-   ```
+```bash
+systemctl cat docker | grep tslink-drain
+```
 
-   The output contains `ExecStop=/usr/local/sbin/tslink-drain`.
+The output contains `ExecStop=/usr/local/sbin/tslink-drain`. Then restart Docker on one host while a client sends
+requests to the Service:
 
-2. Restart Docker on a host while a client sends requests to the Service. The client gets one failed request or
-   none:
+```bash
+systemctl restart docker
+```
 
-   ```bash
-   systemctl restart docker
-   ```
+The client sees one failed request at most.
 
 ## Next steps
 
-- [Monitor tslink](monitor.md)
-- [Architecture: draining](../explanation/architecture.md#draining)
+- [Monitor tslink](monitor.md): get an alert when a node isn't running.
+- [Draining](../explanation/architecture.md#draining): how tslink knows a drain has reached the control server.

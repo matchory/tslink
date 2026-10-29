@@ -1,0 +1,31 @@
+---
+import { withBase } from "../lib/paths";
+import { getPrevNext } from "../lib/navigation";
+
+interface Props {
+  slug: string;
+}
+
+const { slug } = Astro.props;
+const { prev, next } = getPrevNext(slug);
+
+const linkClass = "flex flex-col gap-1 text-foreground no-underline transition-colors hover:text-active";
+const labelClass = "text-xs font-medium uppercase tracking-wide text-muted-foreground";
+const titleClass = "text-sm font-medium";
+---
+{(prev || next) && (
+  <nav class="mt-4 flex justify-between gap-4 border-t pt-6 select-none" aria-label="Page navigation">
+    {prev ? (
+      <a href={withBase(`/${prev.slug}`)} class={linkClass}>
+        <span class={labelClass}>Previous</span>
+        <span class={titleClass}>&larr; {prev.title}</span>
+      </a>
+    ) : <span />}
+    {next && (
+      <a href={withBase(`/${next.slug}`)} class:list={[linkClass, "ml-auto text-right"]}>
+        <span class={labelClass}>Next</span>
+        <span class={titleClass}>{next.title} &rarr;</span>
+      </a>
+    )}
+  </nav>
+)}

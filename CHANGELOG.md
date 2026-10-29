@@ -475,8 +475,8 @@ features were tested on three- and five-node swarms; see
   `Tailscale-App-Capabilities` header.
 - tailscaled writes to its own `tailscaled.log` per endpoint, rotated at
   10 MB, instead of the plugin log; `plugin.log` is rotated at 50 MB.
-- Documentation: [node provisioning](docs/node-provisioning.md),
-  [credentials and tags on Swarm](docs/credentials.md), the Swarm test
+- Documentation: [node provisioning](docs/guides/provision-a-node.md),
+  [credentials and tags on Swarm](docs/reference/credentials.md), the Swarm test
   reports, `SECURITY.md` and `CONTRIBUTING.md`.
 - `test/cluster`: scripts that build a Swarm test bed and a regression suite.
 - `test/integration`: an end-to-end test against a local headscale, run in CI

@@ -1,92 +1,93 @@
+---
+title: Credentials
+description: The credentials tslink accepts, which one a network uses, when its nodes are ephemeral, and the tag rules.
+category: reference
+tags: [credentials, oauth, auth-key, ephemeral, tags]
+---
+
 # Credentials
 
-A credential lets a node register in the tailnet. tslink accepts an auth key or an OAuth client secret, from three
-sources.
+A credential is what lets a node register in your tailnet. tslink accepts an auth key or an OAuth client secret,
+from three sources, and uses it only to register: a node that's logged in doesn't need it again.
 
 ## Credential types
 
 | Type | Format | Nodes are ephemeral | Needs `tslink.tags` |
 | --- | --- | --- | --- |
-| Auth key | `tskey-auth-…` | Not known to tslink. See [Ephemeral nodes](#ephemeral-nodes). | No |
+| Auth key | `tskey-auth-…` | Unknown to tslink; see [ephemeral nodes](#ephemeral-nodes) | No |
 | OAuth client secret | `tskey-client-…`, with optional parameters | Yes, unless `?ephemeral=false` is appended or the network has `tslink.ephemeral=false` | Yes |
-| Cluster credential | An OAuth client secret in a file, without parameters | Yes, always | Yes |
+| Cluster credential | An OAuth client secret in a file, without parameters | Always | Yes |
 
-Properties of an auth key that tslink uses:
+Three properties of an auth key matter to tslink:
 
-| Property | Effect |
-| --- | --- |
-| Ephemeral | The control server removes the node some time after it goes offline. |
-| Reusable | More than one node can register with the key. |
-| Pre-approved | The nodes do not need approval in the admin console. |
+- **Ephemeral:** the control server removes the node some time after it goes offline.
+- **Reusable:** more than one node can register with the key, so every container on a network can share it.
+- **Pre-approved:** the nodes don't wait for approval in the admin console.
 
-Parameters such as `?ephemeral=false` and `?preauthorized=true` are permitted only on OAuth client secrets. A
-network with an auth key that has parameters cannot be created.
+Parameters such as `?ephemeral=false` and `?preauthorized=true` belong on OAuth client secrets only. A network whose
+auth key has parameters can't be created.
 
 ## Precedence
 
-tslink takes the credential of a network from the first source that is set:
+A network takes its credential from the first of these that's set:
 
-1. The network option `tslink.authkey`.
+1. The network option [`tslink.authkey`](network-options.md#tslinkauthkey).
 2. The cluster credential file on the host.
-3. The plugin setting `TS_AUTHKEY`.
+3. The plugin setting [`TS_AUTHKEY`](plugin-settings.md#ts_authkey).
 
-If no source is set, `docker network create` fails.
-
-Whatever the source, the node registers with the control server of the plugin setting
-[`TSLINK_LOGIN_SERVER`](plugin-settings.md#tslink_login_server).
+If none is, `docker network create` fails. Whichever it is, the node registers with the control server of the plugin
+setting [`TSLINK_LOGIN_SERVER`](plugin-settings.md#tslink_login_server).
 
 ## Ephemeral nodes
 
-When the container of an ephemeral node stops, tslink logs the node out and deletes its state directory. The node is
-then removed from the tailnet, and its hostname is free. When the container of another node stops, tslink keeps the
-state directory, and the node stays in the tailnet, offline.
+When an ephemeral node's container stops, tslink logs the node out and deletes its state directory, so the node
+leaves your tailnet and its hostname is free again. Any other node keeps its state directory when its container
+stops, and stays in your tailnet, offline, ready to come back as the same node.
 
-If the network has `tslink.ephemeral`, its value decides. Otherwise the credential decides:
+A network's `tslink.ephemeral` option decides, if it's set. Otherwise the credential does:
 
-| Credential | The node is ephemeral if |
+| Credential | The node is ephemeral |
 | --- | --- |
-| Cluster credential | Always. The network cannot have `tslink.ephemeral=false`. |
-| OAuth client secret | The secret has no `ephemeral` parameter, or it has `?ephemeral=true` |
-| Auth key | Never. An auth key does not tell tslink if it creates ephemeral nodes. |
+| Cluster credential | Always. Its networks can't set `tslink.ephemeral=false`. |
+| OAuth client secret | Unless the secret has `?ephemeral=false` |
+| Auth key | Never, as far as tslink knows: an auth key doesn't tell tslink whether it creates ephemeral nodes |
 
 ## Optional API scopes
 
-tslink uses an OAuth client secret to create auth keys through the Tailscale API. If the OAuth client also has this
-scope, tslink uses it for one more task:
+tslink uses an OAuth client secret to create auth keys through Tailscale's API. If the OAuth client also has the
+scope `services:read`, tslink uses it for one more job: it reads the ports of each of a container's Services, and
+reports `ports-uncovered` if the container doesn't serve all of them (see
+[conditions for ready](readiness-endpoint.md#conditions-for-ready)).
 
-| Scope | Use |
-| --- | --- |
-| `services:read` | tslink reads the ports of each Service of a container, and reports `ports-uncovered` if the container does not serve all of them. See [Readiness endpoint](readiness-endpoint.md#conditions-for-ready). |
-
-Without the scope, tslink logs once per Service that it cannot read the ports. It then checks the ports only if the
-capabilities of the node give them. An auth key does not give access to the API.
+Without the scope, tslink logs once per Service that it can't read the ports, and checks them only if the node's
+capabilities list them. An auth key gives no access to the API.
 
 ## Cluster credential
 
-The cluster credential is one OAuth client secret for all stacks of a Swarm.
+One OAuth client secret for every stack of a Swarm, in a file on each host.
 
 | Property | Value |
 | --- | --- |
 | File | `oauth-client.secret` in the data directory, on each host |
 | Content | The OAuth client secret (`tskey-client-…`), without parameters |
-| When tslink reads it | Each time a node registers. To rotate the credential, replace the file. |
+| When tslink reads it | Whenever a node registers, so you rotate it by replacing the file |
 | Nodes | Ephemeral and pre-approved |
-| Networks | Only networks of a stack can use it. They must have `tslink.tags`, and they cannot have `tslink.ephemeral=false`. |
+| Networks | Only stack networks can use it. They have to set `tslink.tags`, and can't set `tslink.ephemeral=false`. |
 
 ## Tag rules
 
-These rules apply to networks that use the cluster credential. `<stack>` is the name of the stack, from the label
-`com.docker.stack.namespace` of the network.
+These rules apply to networks that use the cluster credential. `<stack>` is the stack's name, from the network's
+`com.docker.stack.namespace` label, which `docker stack deploy` sets and a stack file can't override.
 
-| `TSLINK_TAG_SCOPE` | Permitted tags |
+| `TSLINK_TAG_SCOPE` | Tags a stack can use |
 | --- | --- |
 | `exact` (default) | `tag:<stack>` |
 | `prefix` | `tag:<stack>` and `tag:<stack>-*` |
 
-If a tag is not permitted, the container does not get a node, and tslink does not try again.
+A container whose tag isn't allowed gets no node, and tslink doesn't retry.
 
-The OAuth client must own the tags of all stacks in the tailnet policy. For example, if the OAuth client has the tag
-`tag:tslink`, make `tag:tslink` the owner of each stack tag:
+In the tailnet policy, the OAuth client has to own every stack's tag. If the OAuth client has the tag `tag:tslink`,
+make `tag:tslink` the owner of each stack's tag:
 
 ```json
 "tagOwners": {
@@ -94,4 +95,4 @@ The OAuth client must own the tags of all stacks in the tailnet policy. For exam
 }
 ```
 
-For the security reasons of these rules, see [Security model](../explanation/security-model.md).
+The [security model](../explanation/security-model.md) explains why the rules are what they are.

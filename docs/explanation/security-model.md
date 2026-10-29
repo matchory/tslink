@@ -1,74 +1,82 @@
+---
+title: Security model
+description: How tslink keeps one stack from using another's identity, tags or credential, whom you have to trust, and why.
+category: explanation
+tags: [security, stacks, credentials, tags, isolation]
+---
+
 # Security model
 
-This page tells how tslink keeps one stack from using the identity, tags or credential of another stack. The
-guarantees, the attackers they defend against and the environment properties they rely on are in
-[SECURITY.md](../../SECURITY.md). This page gives the reasons for the design.
+tslink's main promise on a shared Swarm is that one stack can't act as another: it can't take another stack's
+identity, tags or credential. This page explains how the design keeps that promise, and where its limits are. The
+guarantees themselves, the attackers they defend against and the environment properties they rely on are listed in
+[SECURITY.md](../../SECURITY.md).
 
 ## Trust boundaries
 
-Access to the Docker API is equal to root access on the host. A person with this access can read each credential and
-each node key on the host. tslink does not defend against this person.
+Access to the Docker API is root on the host, and whoever has it can read every credential and node key there.
+tslink doesn't try to defend against them.
 
-On a Swarm, a person who can deploy a stack under a name acts as that stack. A person with root access on a host acts
-as each stack that has a container on the host. tslink keeps all other actors in their stack.
+On a Swarm, whoever can deploy a stack under a name acts as that stack, and root on a host acts as every stack with a
+container on that host. Everyone else stays inside their own stack.
 
 ## Tags come from the network
 
-The option `tslink.tags` of a network overrides the label `tslink.tags` of the container. Thus a container cannot
-select its own tags. With an OAuth client for each stack, the control server refuses tags that the OAuth client does
-not own. Thus a stack that declares the tags of another stack cannot register.
+A network's [`tslink.tags`](../reference/network-options.md#tslinktags) option overrides the containers'
+`tslink.tags` labels, so a container can't choose its own tags. With an OAuth client per stack, the control server
+also refuses any tag the OAuth client doesn't own, so a stack that claims another stack's tags can't even register.
 
-## Containers must be in the stack of the network
+## Containers must be in the network's stack
 
-`docker stack deploy` gives each network of a stack the label `com.docker.stack.namespace`. tslink starts tailscaled
-only for containers with the same label. Thus stack B cannot use the network of stack A as an external network, and
-cannot get the identity of stack A.
+`docker stack deploy` labels every network of a stack with `com.docker.stack.namespace`, and tslink starts tailscaled
+only for containers with the same label. So stack B can't attach to stack A's network as an external network, and
+can't pick up stack A's identity that way.
 
-`docker stack deploy` sets the label after it applies the labels of the stack file. Thus a stack file cannot claim the
-name of another stack. A person with access to the Docker API can set the label, but this person is already root on
-the host.
+`docker stack deploy` sets the label after it applies the stack file's labels, so a stack file can't claim another
+stack's name. Someone with access to the Docker API can set the label, but they're root on the host already.
 
 ## State directories are in the directory of the stack
 
-The state directory of a stack container is `by-stack/<stack>/<hostname>`. Thus a container cannot use or delete the
-state of another stack when it selects a hostname.
+A stack container's state directory is `by-stack/<stack>/<hostname>`. Choosing a hostname therefore can't reach
+another stack's state, to use it or to delete it.
 
 ## Where credentials are visible
 
 | Place | Visible to |
 | --- | --- |
-| Network options (`docker network inspect`) | Persons with access to the Docker API |
-| Plugin settings (`docker plugin inspect`) | Persons with access to the Docker API |
-| The Raft store of the Swarm managers | Persons with root access on a manager |
+| Network options (`docker network inspect`) | Anyone with access to the Docker API |
+| Plugin settings (`docker plugin inspect`) | Anyone with access to the Docker API |
+| The Swarm managers' Raft store | Root on a manager |
 | `oauth-client.secret` | Root on each host |
-| The application container, logs, status files and the output of `tslink diag` | Never. See `G5` in [SECURITY.md](../../SECURITY.md). |
+| The application container, logs, status files and `tslink diag` output | No one: see `G5` in [SECURITY.md](../../SECURITY.md) |
 
-## Cluster credential and OAuth clients for each stack
+## Cluster credential or an OAuth client per stack
 
-With an OAuth client for each stack, the control server stops a stack from using other tags. With the cluster
-credential, one OAuth client owns the tags of all stacks, so the control server cannot stop this. tslink stops it:
-a stack can use only `tag:<stack>`. See [Tag rules](../reference/credentials.md#tag-rules).
+With an OAuth client per stack, the control server keeps a stack to its own tags. With the cluster credential, one
+OAuth client owns every stack's tags, so the control server can't; tslink does instead, by allowing a stack only
+`tag:<stack>` (see [tag rules](../reference/credentials.md#tag-rules)).
 
-The boundary stays the same: a person who can deploy a stack under a name acts as that stack. The difference is the
-breadth of root access on a host. With the cluster credential, root on any host can read a credential for the tags of
-all stacks. With an OAuth client for each stack, root on a host can read only the credentials of the stacks that run
-there.
+The boundary between stacks is the same either way: whoever can deploy a stack under a name acts as that stack. What
+differs is how far root on a single host reaches. With the cluster credential, root on any host can read a credential
+for every stack's tags. With an OAuth client per stack, root on a host can read only the credentials of the stacks
+running there.
 
 ## Rotation and revocation
 
-A credential is used only to register nodes. When you revoke it, the running nodes stay online. They also stay
-online after a plugin restart or a reboot, because a node that is still logged in starts without its credential.
-New containers cannot register until the network has a valid credential.
+A credential is only used to register nodes. When you revoke it, running nodes stay online, and they stay online
+through a plugin restart or a reboot too, because a node that's still logged in starts without its credential. New
+containers can't register until the network has a valid credential again.
 
-To rotate the secret of an OAuth client for a stack, you recreate the network. In the cluster test, the stack was
-unavailable for 14 seconds, from `docker stack rm` until the new stack answered on the address of its Service.
+Rotating a per-stack OAuth client's secret means recreating the network. In the cluster test, the stack was
+unavailable for 14 seconds, from `docker stack rm` until the new stack answered on its Service's address.
 
-## Alternatives that tslink does not use
+## Alternatives tslink doesn't use
 
-| Alternative | Why tslink does not use it |
+| Alternative | Why not |
 | --- | --- |
-| A policy file on each host that maps stacks to credentials | It makes cluster deployments depend on host provisioning. The cluster credential file contains no stack name, so it does not. |
-| Docker secrets | Swarm gives a secret only to the tasks that mount it. tslink would read the secret from the application container. A compromised application would then have a credential that does not expire, and that can create keys for its tags on any host. |
-| Plugin settings (`docker plugin set`) | They apply to one host, and a change requires that you disable the plugin. |
+| A policy file on each host that maps stacks to credentials | Cluster deployments would depend on host provisioning. The cluster credential file mentions no stack, so it doesn't. |
+| Docker secrets | Swarm hands a secret only to the tasks that mount it, so tslink would have to read it from the application container. A compromised application would then hold a credential that doesn't expire, and that creates keys for its tags on any host. |
+| Plugin settings (`docker plugin set`) | They apply to one host, and changing them means disabling the plugin. |
 
-For workload identity federation, see [Limitations](limitations.md#workload-identity-federation).
+Workload identity federation would remove the secrets altogether;
+[limitations](limitations.md#workload-identity-federation) sketches how it could work.

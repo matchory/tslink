@@ -1,192 +1,210 @@
+---
+title: Architecture
+description: How tslink makes each container a node of its own, and why it routes, isolates, starts and drains the way it does.
+category: explanation
+tags: [architecture, networking, isolation, dns, draining]
+---
+
 # Architecture
 
-This page tells how tslink gives each container its own node in the tailnet, and why it works as it does.
+tslink is a Docker network plugin. For every container on a tslink network, it runs a tailscaled inside the
+container's network namespace, so the container itself is a node in your tailnet, with its own identity and
+addresses. This page explains how that works, and why it's built the way it is.
 
-## Overview
+## The big picture
 
-tslink is a Docker network plugin. For each container on a tslink network, the plugin starts a tailscaled in the
-network namespace of the container. The container is then a node in the tailnet, with its own identity and tailnet
-addresses.
-
-```text
-┌────────────────────────────────────────────────────────────┐
-│ Host                                                       │
-│                                                            │
-│  ┌──────────────────────────────────────────┐              │
-│  │ Container (tailnet address 100.x.y.z)    │              │
-│  │                                          │              │
-│  │ App ─► tailscale0 ─► tailscaled ─► veth ─┼─► NAT ───────┼─► Tailnet
-│  │                                          │              │
-│  │ App ─► eth0 ─────────────────────────────┼─► Docker ────┼─► Internet
-│  └──────────────────────────────────────────┘              │
-│                                                            │
-│  ┌──────────────────────────────┐                          │
-│  │ Plugin                       │                          │
-│  │ • Runs tailscaled            │                          │
-│  │ • Creates the veth pair      │                          │
-│  │ • Routes and NATs the veth   │                          │
-│  └──────────────────────────────┘                          │
-└────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+  subgraph host["Docker host"]
+    subgraph container["Container"]
+      app["Your app"]
+      ts0["tailscale0"]
+      tsd["tailscaled"]
+      eth0["eth0"]
+      app --> ts0 --> tsd
+      app --> eth0
+    end
+    veth["veth pair"]
+    nat["NAT"]
+    docker["Docker gateway"]
+    plugin["tslink plugin:<br/>runs tailscaled,<br/>creates the veth pair,<br/>routes and NATs it"]
+    tsd --> veth --> nat
+    eth0 --> docker
+  end
+  nat --> tailnet(["Tailnet"])
+  docker --> internet(["Internet"])
 ```
 
-The container has two paths out:
+A container on a tslink network has two ways out:
 
-- **The tailnet.** Traffic to tailnet addresses goes through `tailscale0` to the tailscaled of the container.
-  tailscaled sends its encrypted traffic through a veth pair that tslink adds to the container.
-- **All other traffic.** It goes through `eth0` and the usual gateway of Docker. On a Swarm, this is
-  `docker_gwbridge`.
+- **To the tailnet**, through `tailscale0` to its own tailscaled. tailscaled sends its encrypted WireGuard traffic out
+  through a veth pair that tslink adds to the container.
+- **Everywhere else**, through `eth0` and Docker's usual gateway, which is `docker_gwbridge` on a Swarm.
 
-## Start-up
+## Starting a node
 
-Docker requires the plugin to answer the request to connect a container quickly. A tailscaled login can take more
-than 60 seconds. Thus tslink starts Tailscale in two parts:
+Docker expects a network plugin to answer quickly when it connects a container, but logging a node in can take more
+than 60 seconds. So tslink splits the start in two:
 
-1. When Docker connects the container, tslink creates the veth pair and answers at once.
-2. tslink watches the events of Docker. When the container has started, tslink reads its name and labels, and starts
-   tailscaled in the background.
+1. When Docker connects the container, tslink creates the veth pair and answers right away.
+2. tslink watches Docker's events. Once the container has started, it reads the container's name and labels, and
+   starts tailscaled in the background.
 
-During the start, the container has no node. Connections to tailnet addresses fail at once. See
-[Start-up delay](limitations.md#start-up-delay).
+Until tailscaled is up, the container has no node, and connections to tailnet addresses fail at once rather than
+going anywhere else. [Start-up delay](limitations.md#start-up-delay) explains what that means for your application.
 
 ## Identity
 
-tslink keeps the state of a node by hostname, not by container ID. When a container starts with the hostname of an
-earlier container, it gets the earlier identity: the same node and the same tailnet addresses. For the exceptions,
-see [`tslink.hostname`](../reference/container-labels.md#tslinkhostname).
+tslink keeps a node's state by hostname, not by container ID. A container that starts with the hostname of an
+earlier one gets the earlier identity: the same node and the same tailnet addresses. That's what lets you recreate a
+container without a new device appearing in your tailnet.
+[`tslink.hostname`](../reference/container-labels.md#tslinkhostname) lists the exceptions.
 
-Containers in a stack have their state directories in the directory of the stack. See
-[State directories](security-model.md#state-directories-are-in-the-directory-of-the-stack). One endpoint at a time can
-use a state directory.
+A Swarm stack's containers keep their state directories under the stack's own directory (see
+[state directories](security-model.md#state-directories-are-in-the-directory-of-the-stack)), and only one endpoint at
+a time can use a state directory.
 
 ## Routing
 
-Docker gives the container its usual gateway. Without a gateway, the DNS server of Docker does not resolve public
-names.
+Docker gives the container its usual default gateway, and tslink leaves it alone: without it, Docker's embedded DNS
+server doesn't resolve public names.
 
-The veth pair carries only the traffic of tailscaled. tailscaled marks its sockets, and a routing rule sends marked
-traffic to a table with a default route through the veth pair. In the main routing table, the tailnet address ranges
-are unreachable. Thus tailnet traffic leaves the container through its own tailscaled, or it does not leave.
+The veth pair carries tailscaled's own traffic and nothing else. tailscaled marks its sockets, and a routing rule
+sends marked traffic to a table whose default route goes through the veth pair. In the container's main routing
+table, the tailnet's address ranges are unreachable. So tailnet traffic either leaves through the container's own
+tailscaled, or doesn't leave at all.
 
-Each veth pair gets a /30 subnet from `10.200.0.0/16`.
+Each veth pair gets a /30 subnet from `10.200.0.0/16`, and the host masquerades it.
 
-The host masquerades this traffic. All tailscaled in containers use UDP port 41641, so the host maps the port of each
-container to a port of its own, from the plugin setting `TSLINK_WIREGUARD_PORTS`. A container then uses the same
-external port for all destinations, and peers on other hosts can connect to it directly.
+Every tailscaled listens on UDP port 41641. Plain masquerading would give a container a different external port per
+destination whenever another flow from the host already used its port, and hole punching between hosts would fail.
+So the host maps each container's port 41641 to an external port of its own, from the plugin setting
+[`TSLINK_WIREGUARD_PORTS`](../reference/plugin-settings.md#tslink_wireguard_ports). A container then uses the same
+external port towards every peer, and peers on other hosts can reach it directly.
 
-Each tailscaled also advertises the host's private IPv4 addresses with this external port, so two containers on hosts
+Each tailscaled also advertises the host's private IPv4 addresses with that external port, so two containers on hosts
 that share a private network connect over it directly instead of through a DERP relay. tslink reads the addresses
-once, when tailscaled starts, and restarts tailscaled if they change. The host also drops new, unsolicited UDP
-packets to `TSLINK_WIREGUARD_PORTS`, so a peer's probe that reaches a container's port before the container has sent
-it anything does not block the container's own traffic to that peer.
+when tailscaled starts, and restarts tailscaled if they change.
+
+The host drops new, unsolicited UDP packets to `TSLINK_WIREGUARD_PORTS`. Otherwise a peer's probe that arrives before
+the container has sent the peer anything would leave a connection-tracking entry behind that blocks the container's
+own traffic to that peer.
 
 ## Isolation
 
-The container reaches the tailnet only as its own node, not as the host. Routes stop sockets, but not raw frames, and
-the tailscaled of a host accepts forwarded traffic. Thus the host also enforces the isolation with firewall rules:
+A container reaches the tailnet only as its own node, never as the host. Routes alone can't promise that: they stop
+sockets, not raw frames, and a host's tailscaled accepts traffic forwarded to it. So the host enforces it with
+firewall rules as well.
 
-- **Host isolation.** Containers on the host cannot reach the tailnet through the tailscaled of the host, nor the
-  tailnet addresses of the host. This applies to all containers, on tslink networks and on other networks. The rules
-  match the interface names that Docker uses by default, and the names of bridges that have their own name
-  (`com.docker.network.bridge.name`). tslink gets these names from Docker when it starts, on each watchdog run, and
-  when a network is created. It keeps the last list in its data directory, and starts with that list and the bridges
-  that its rules already cover, so that it does not wait for Docker before it accepts requests. The plugin setting
-  `TSLINK_ISOLATE_HOST_TAILNET` controls host isolation. tslink installs the rules before it accepts requests,
-  restores them when they change, and keeps them when the plugin stops. This is the guarantee `G1` in
-  [SECURITY.md](../../SECURITY.md), with the conditions that it relies on.
-- **Isolation between containers.** The host drops all traffic that it forwards to `10.200.0.0/16`, whatever
-  interface it arrives on. Two kinds of traffic pass: replies on connections that the container opened, and the
-  WireGuard traffic of tailscaled, on UDP port 41641, from the veth pairs of tslink. Thus containers cannot reach the
-  veth addresses of other containers, nor can a host on the LAN that routes `10.200.0.0/16` through the Docker host.
-  Two nodes on one host keep a direct connection, and do not use a DERP relay. This isolation is always on.
+### Isolation from the host's node
+
+Containers on the host can't reach the tailnet through the host's tailscaled, and can't reach the host's tailnet
+addresses. This covers every container, on tslink networks and on any other network.
+
+The rules match Docker's default interface names, and the bridges that have a name of their own
+(`com.docker.network.bridge.name`). tslink asks Docker for these names when it starts, on every watchdog run, and
+whenever a network is created. It keeps the last list in its data directory, and starts with that list plus the
+bridges its rules already cover, so it never has to wait for Docker before it can accept requests: after a host
+reboot, Docker answers no API call involving plugins until the plugin is serving.
+
+tslink installs the rules before it accepts requests, restores them when something changes them, and keeps them when
+the plugin stops. The plugin setting
+[`TSLINK_ISOLATE_HOST_TAILNET`](../reference/plugin-settings.md#tslink_isolate_host_tailnet) turns them off. This is
+guarantee `G1` in [SECURITY.md](../../SECURITY.md), which also lists the conditions it relies on.
+
+### Isolation between containers
+
+The host drops everything it forwards to `10.200.0.0/16`, whatever interface it arrives on, except two kinds of
+traffic: replies on connections the container opened, and tailscaled's WireGuard traffic on UDP port 41641 from
+tslink's veth pairs. So containers can't reach each other's veth addresses, and neither can a machine on the LAN that
+routes `10.200.0.0/16` through the Docker host. Two nodes on the same host still connect directly, without a DERP
+relay. This isolation is always on.
 
 ## DNS
 
-tailscaled resolves names, and forwards queries for names outside the tailnet. It uses the first of these sources
-that gives a DNS server:
+tailscaled answers DNS queries in the container, and forwards names outside the tailnet to upstream servers. It takes
+them from the first of these sources that has any:
 
-1. The DNS servers of the container (`dns` of the container or the service, or else `dns` in
-   `/etc/docker/daemon.json`). tslink removes the servers of Tailscale
-   (`100.100.100.100`, `fd7a:115c:a1e0::53`) and of Docker (`127.0.0.11`). It keeps servers on the loopback
-   interface, such as `127.0.0.1`, because they run in the network namespace that tailscaled shares.
-2. The DNS servers in `/etc/resolv.conf` of the host, without the servers on the loopback interface of the host.
-3. The upstream servers of systemd-resolved, in `/run/systemd/resolve/resolv.conf`.
+1. The container's own DNS servers: `dns` of the container or service, or else `dns` in `/etc/docker/daemon.json`.
+   tslink leaves out Tailscale's servers (`100.100.100.100`, `fd7a:115c:a1e0::53`) and Docker's (`127.0.0.11`). It
+   keeps servers on the loopback interface, such as `127.0.0.1`, because they run in the network namespace tailscaled
+   shares.
+2. The DNS servers in the host's `/etc/resolv.conf`, except those on the host's loopback interface.
+3. systemd-resolved's upstream servers, in `/run/systemd/resolve/resolv.conf`.
 
-Docker uses the same sources. If no source gives a server, tailscaled uses the DNS server of Docker. If no source
-gives a server and the DNS server of the container is `100.100.100.100`, tailscaled uses the public servers of
-Google, the default of Docker. In both cases, tslink writes the warning `dns-upstreams` in the plugin log and the
-status file.
+These are the same sources Docker uses. If none has a server, tailscaled uses Docker's DNS server, or, if the
+container's DNS server is `100.100.100.100`, Google's public servers, which is Docker's own default. Either way,
+tslink reports a `dns-upstreams` warning in the plugin log and the status file.
 
-tailscaled selects its servers when it starts, as Docker does when the container starts. Docker does not show the
-`dns` setting of `daemon.json` in the configuration of the container. tslink reads it from the comments that Docker
-writes in `/etc/resolv.conf` of the container. If the container changed that file, tslink does not find the setting.
+tailscaled picks its servers when it starts, as Docker does when the container starts. Docker doesn't include the
+`dns` setting of `daemon.json` in the container's configuration, so tslink reads it from the comments Docker writes
+into the container's `/etc/resolv.conf`. If the container has rewritten that file, tslink can't find the setting.
 
 ## Self-healing
 
-tslink recovers from these failures without help:
+tslink recovers from these failures on its own:
 
 | Failure | What tslink does |
 | --- | --- |
-| tailscaled does not start | It tries again, with longer intervals, until the container leaves. It does not try again after a permanent error, such as a tag that is not permitted. |
-| tailscaled stops | It restarts tailscaled. After a series of crashes, it waits, then continues. |
-| The control server does not know the node, for example because the device was deleted | It logs the node in again. |
-| The plugin restarts | It finds the running containers again. A node that is still logged in starts without the credential. Thus a rotated or revoked credential does not stop it. |
-| A container stops without a message to tslink, for example at a power loss | It logs out the ephemeral nodes that no container uses, and deletes their state. Thus a container with a fixed `tslink.hostname` gets its name back, and not `<hostname>-1`. |
-| The control server does not get the Services that a node advertises | It advertises the Service again, up to 3 times. See [Advertising](#advertising). |
+| tailscaled doesn't start | Tries again, at growing intervals, until the container leaves. A permanent error ends the retries: one of tslink's own refusals, such as a tag outside the stack's [tag rules](../reference/credentials.md#tag-rules) or an invalid Service name. |
+| tailscaled stops | Restarts it. After a series of crashes, it waits for a while, then carries on. |
+| The control server doesn't know the node, for example because someone deleted the device | Logs the node in again, as a new device. |
+| The plugin restarts | Finds the running containers again. A node that's still logged in comes up without the credential, so a rotated or revoked credential doesn't take it down. |
+| A container vanishes without tslink being told, for example in a power loss | Logs out the ephemeral nodes no container uses any more, and deletes their state, so a container with a fixed `tslink.hostname` gets its name back instead of `<hostname>-1`. |
+| The control server doesn't pick up the Services a node advertises | Advertises them again, up to 3 times. See [advertising](#advertising). |
 
 ## Advertising
 
-When a node advertises a Service, tailscaled tells the control server, and the control server then fetches the
-Services of the node. `tailscaled.log` shows each fetch as `c2n: GET /vip-services received`. After a restart of the
-plugin, the control server sometimes did not fetch them. In the cluster test, this occurred on 2 of 5 hosts. The
-backends on these hosts got no traffic for more than 13 minutes, until the advertised Services changed again.
+When a node advertises a Service, tailscaled tells the control server, which then fetches the node's Service list.
+`tailscaled.log` shows each fetch as `c2n: GET /vip-services received`.
 
-This is a behavior of the Tailscale control server. tslink works around it: if the control server has not fetched the
-Services within 15 seconds after an advertisement, tslink stops the advertisement and advertises the Service again 2
-seconds later. It does this up to 3 times, with a warning in the plugin log each time.
+After a plugin restart, the control server sometimes didn't fetch the list. In the cluster test, this happened on 2
+of 5 hosts, and their backends got no traffic for more than 13 minutes, until the advertised Services changed again.
+That's the control server's behavior, and tslink works around it: if there's no fetch within 15 seconds of an
+advertisement, tslink withdraws the advertisement and makes it again 2 seconds later. It does this up to 3 times,
+with a warning in the plugin log each time.
 
 ## Draining
 
-When a container is a backend of a Tailscale Service, tslink drains the backend before the container stops:
+When a container is a backend of a Tailscale Service, tslink takes it out of rotation before it stops:
 
-1. Docker sends the stop signal. tslink sees the event and drains the backend. Callers move to other backends.
-2. If a container stops without the stop signal, because it crashed or completed, tslink drains the backend when the
-   container leaves the network.
-3. tslink waits until the control server has the drained list of backends: at least 1 second and at most 10 seconds.
-4. Then tslink logs out an ephemeral node and deletes its state, or stops tailscaled.
+1. Docker sends the container its stop signal. tslink sees the event and drains the backend, and callers move to the
+   other backends.
+2. A container that stops without a stop signal, because it crashed or exited, is drained when it leaves the network.
+3. tslink waits until the control server has fetched the drained Service list: at least 1 second, at most 10.
+4. Only then does it log an ephemeral node out and delete its state, or stop tailscaled.
 
-If tslink stopped the node before the control server knew about the drain, callers would send traffic to the node
-for some minutes. A drain is final: tslink does not make the container a backend again, also after a restart of
-tailscaled.
+The wait matters: a node that stops before the control server knows about the drain keeps receiving traffic for
+minutes. A drain is also final. tslink doesn't make the container a backend again, not even after tailscaled
+restarts.
 
-tslink learns from `tailscaled.log` when the control server has the drained list: tailscaled logs each change of the
-advertised Services before it makes it, and each fetch before it reads them. tslink waits for a fetch after its last
-change, also a change whose request timed out. If tailscaled restarts while tslink waits, the new tailscaled removes
-the Services before anything else, and tslink waits for the control server to fetch them from it. A change the control
-server had not fetched when tailscaled restarted is waited for in the same way. If the container
-leaves the network while its node is still starting, tslink lets the start finish, drains the node, and then stops it.
+tslink learns from `tailscaled.log` when the control server has the drained list: tailscaled logs every change to the
+advertised Services before it makes it, and every fetch before it reads the list. tslink waits for a fetch after its last
+change, including a change whose request timed out but took effect. If tailscaled restarts while tslink waits, the new
+tailscaled removes the Services first, and tslink waits for the control server to fetch that removal instead. If the
+container leaves while its node is still starting, tslink lets the start finish, drains the node, then stops it.
 
-If the control server has not fetched the drained list after 10 seconds, tslink logs a warning and stops the node
-anyway. Callers can then send traffic to the stopped node until the control server removes it. In the cluster test,
-this occurred once, and no request failed.
+If there's still no fetch after 10 seconds, tslink logs a warning and stops the node anyway. Callers can then reach a
+stopped node until the control server removes it. In the cluster test, this happened once, and no request failed.
 
-When Docker stops, it sends no more events. The
-[drain drop-in](../guides/zero-downtime-updates.md#install-the-drain-drop-in) drains the backends of the host before
-Docker stops.
+When Docker itself stops, it sends no more events. The
+[drain drop-in](../guides/zero-downtime-updates.md#install-the-drain-drop-in) drains the host's backends before Docker
+stops.
 
 ## Throughput
 
-These values were measured on a 4-vCPU cloud VM with Ubuntu 24.04 and Docker 29.8:
+Measured on a 4-vCPU cloud VM with Ubuntu 24.04 and Docker 29.8:
 
 | Condition | Tailnet throughput |
 | --- | --- |
 | The host itself | 2.8 Gbit/s |
-| A container, without UDP GRO forwarding | 1.2 Gbit/s, which is 40 % of the host |
-| Without outbound UDP, through a DERP relay | 25 Mbit/s |
+| A container, without UDP GRO forwarding | 1.2 Gbit/s, 40 % of the host |
+| No outbound UDP, through a DERP relay | 25 Mbit/s |
 
-Thus [Provision a host](../guides/provision-a-node.md) enables UDP GRO forwarding.
+That's why [Provision a host](../guides/provision-a-node.md) turns on UDP GRO forwarding.
 
 ## Binaries
 
-The plugin image contains the Tailscale binaries that tslink runs. tslink downloads nothing at runtime. Each tslink
-release pins one Tailscale version, and Dependabot updates it. tailscaled writes its output to `tailscaled.log` in the
-state directory.
+The plugin image contains the Tailscale binaries tslink runs, and tslink downloads nothing at runtime. Each tslink
+release pins one Tailscale version, which Dependabot keeps up to date. tailscaled writes its output to
+`tailscaled.log` in the node's state directory.

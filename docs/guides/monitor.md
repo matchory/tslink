@@ -1,33 +1,37 @@
+---
+title: Monitor tslink
+description: Get an alert when a container's tailscaled isn't running, from tslink's status files through Prometheus.
+category: guide
+tags: [monitoring, prometheus, alerts, status]
+---
+
 # Monitor tslink
 
-## Goal
+Docker reports a container as healthy whether or not its tailscaled runs: the plugin's work happens outside the
+container's own processes. To find out when a node is down, watch tslink's status files. This guide exports them to
+Prometheus and alerts on them.
 
-Get an alert when the tailscaled of a container is not running.
-
-## Prerequisites
+## Before you start
 
 - tslink is installed on the host.
 - `jq` is installed on the host.
-- For steps 3 and 4: the Prometheus node exporter, with its textfile collector in
+- For the Prometheus export, the node exporter runs with its textfile collector in
   `/var/lib/node_exporter/textfile`.
 
-Docker reports a container as healthy when its tailscaled is not running. Thus monitor the status files of tslink.
+## Set it up
 
-## Steps
-
-1. Read the status files. tslink writes one file for each endpoint:
+1. **Read the status files.** tslink writes one file per endpoint:
 
    ```bash
    jq -r '[.hostname, .stack // "-", .state, (.error // "")] | @tsv' \
      /var/lib/docker-plugins/tailscale/status/*.json
    ```
 
-   The state is `running`, `retrying` or `failed`. The field `warnings` lists conditions to examine. For all fields,
-   see [Status files](../reference/files-and-paths.md#status-files).
+   Each one's state is `running`, `retrying` or `failed`, and its `warnings` list conditions worth a look.
+   [Status files](../reference/files-and-paths.md#status-files) describes every field, and
+   [`tslink diag`](../reference/diag.md) shows the same and more in one command.
 
-2. For more detail, run `tslink diag`. See [tslink diag](../reference/diag.md).
-
-3. Export the states to Prometheus. Put this script in `/usr/local/sbin/tslink-metrics`:
+2. **Export the states to Prometheus.** Put this script in `/usr/local/sbin/tslink-metrics`:
 
    ```bash
    #!/bin/sh
@@ -38,13 +42,13 @@ Docker reports a container as healthy when its tailscaled is not running. Thus m
      (if .state == "running" then "1" else "0" end)' "$@" </dev/null >"$out.tmp" && mv "$out.tmp" "$out"
    ```
 
-   Run it each minute, for example with this line in `/etc/cron.d/tslink-metrics`:
+   Run it every minute, for example from `/etc/cron.d/tslink-metrics`:
 
    ```text
    * * * * * root /usr/local/sbin/tslink-metrics
    ```
 
-4. Add an alert for an endpoint that is not running for more than 5 minutes:
+3. **Alert on an endpoint that hasn't run for 5 minutes:**
 
    ```yaml
    groups:
@@ -58,22 +62,20 @@ Docker reports a container as healthy when its tailscaled is not running. Thus m
              summary: "tailscaled of {{ $labels.hostname }} is not running"
    ```
 
-5. In the admin console, monitor the number of offline ephemeral nodes for each tag. A power loss or a crash of
-   dockerd leaves ephemeral nodes behind. The control server removes them after some time.
+4. **Watch for offline ephemeral nodes** per tag in the admin console. A power loss or a dockerd crash leaves
+   ephemeral nodes behind, offline, until the control server removes them.
 
-## Verify
+## Check that it works
 
-1. Read the metrics file:
+The metrics file has one line per endpoint, with `1` for each running one:
 
-   ```bash
-   cat /var/lib/node_exporter/textfile/tslink.prom
-   ```
+```bash
+cat /var/lib/node_exporter/textfile/tslink.prom
+```
 
-   The file has one line for each endpoint, with the value `1` for a running endpoint.
-
-2. In Prometheus, query `tslink_endpoint_running`. The query returns one series for each endpoint.
+In Prometheus, `tslink_endpoint_running` returns one series per endpoint.
 
 ## Next steps
 
-- [Troubleshoot](troubleshoot.md)
-- [Files and paths](../reference/files-and-paths.md)
+- [Troubleshoot](troubleshoot.md): find the cause when an endpoint isn't running.
+- [Files and paths](../reference/files-and-paths.md): where tslink keeps its state, logs and status files.

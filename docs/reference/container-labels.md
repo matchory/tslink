@@ -1,9 +1,17 @@
+---
+title: Container labels
+description: Every label a container on a tslink network can set, with its values, defaults and conditions.
+category: reference
+tags: [labels, serve, services, hostname, tags]
+---
+
 # Container labels
 
-Container labels configure one container on a tslink network. tslink reads the labels of the container: `--label`
-on `docker run`, or `labels` of a service in a Compose or stack file. tslink does not read the labels of a Swarm
-service (`deploy.labels`). For a label that starts with `tslink.` and is not in this table, tslink logs a warning
-with the container's name and ignores the label.
+Labels configure one container on a tslink network: its node's name and tags, what it serves, and which Tailscale
+Services it backs. Set them with `--label` on `docker run`, or under `labels` of a service in a Compose or stack file.
+
+tslink reads the container's labels only. It doesn't see a Swarm service's `deploy.labels`. A label that starts with
+`tslink.` but isn't listed here is ignored, with a warning that names the container.
 
 | Label | Value | Default |
 | --- | --- | --- |
@@ -17,23 +25,41 @@ with the container's name and ignores the label.
 
 ## tslink.hostname
 
-The hostname of the node in the tailnet, for example `my-api`.
+The name of the container's node in your tailnet, such as `my-api`.
 
-| Condition | Effect |
+| Value | Default |
 | --- | --- |
-| The label is not set | tslink uses the container name. It replaces each character that is not an ASCII letter or a digit with `-`, uses the first 63 characters, and removes `-` at the start and the end. |
-| Two containers on one host use the same hostname | The second container waits without a node until the first container leaves. |
-| A container starts with the hostname of an earlier container | It gets the identity of the earlier container: the same node and the same tailnet addresses. This is not true if the earlier node was ephemeral, or if the network has a different `tslink.authkey`: tslink deleted the state, and the node is new. |
+| A hostname | The container's name, cleaned up |
+
+Without the label, tslink uses the container's name: it replaces every character that isn't an ASCII letter or digit
+with `-`, keeps the first 63 characters, and trims `-` from both ends.
+
+tslink keeps a node's state by hostname, so a container that starts with the hostname of an earlier one comes back as
+the same node, with the same tailnet addresses. Two exceptions start a new node instead: the earlier node was
+ephemeral, or the network has a different `tslink.authkey`. In both cases tslink has deleted the old state.
+
+If two containers on one host use the same hostname, the second one waits, without a node, until the first leaves.
 
 ## tslink.tags
 
-The ACL tags of the node, separated by commas, for example `tag:server,tag:prod`. If the network has the option
-`tslink.tags`, tslink ignores this label.
+The node's ACL tags, separated by commas, such as `tag:server,tag:prod`.
+
+| Value | Default |
+| --- | --- |
+| Comma-separated tags | None |
+
+If the network sets the option [`tslink.tags`](network-options.md#tslinktags), tslink ignores this label: the
+network's tags take precedence, so a container can't pick its own.
 
 ## tslink.serve.\<port\>
 
-Makes a port of the container available in the tailnet through Tailscale Serve. `<port>` is the port in the tailnet.
-The value has this syntax:
+Serves a port of the container in your tailnet through Tailscale Serve. `<port>` is the port in the tailnet.
+
+| Value | Default |
+| --- | --- |
+| A serve rule | None |
+
+A serve rule has this form:
 
 ```text
 <protocol>[:<target>][/<path>][?<option>[&<option>]]
@@ -42,65 +68,78 @@ The value has this syntax:
 | Part | Value |
 | --- | --- |
 | `<protocol>` | `http`, `https`, `tcp`, `tls-terminated-tcp` or `tun` |
-| `<target>` | The port in the container. The default is `<port>`. |
-| `<path>` | For `http` and `https`: the path to serve, for example `/api` |
-| `<option>` | See [Serve options](#serve-options) |
+| `<target>` | The port in the container. Defaults to `<port>`. |
+| `<path>` | For `http` and `https`: the path to serve, such as `/api` |
+| `<option>` | One of the [serve options](#serve-options) |
 
-| Example | Effect |
+| Example | What it does |
 | --- | --- |
 | `tslink.serve.443=https:8080` | HTTPS on port 443, to port 8080 in the container |
 | `tslink.serve.80=http:3000/api` | HTTP on port 80 at `/api`, to port 3000 |
 | `tslink.serve.5432=tcp` | TCP on port 5432, to port 5432 |
-| `tslink.serve.0=tun` | All traffic to the Service, see [Layer 3 forwarding](#layer-3-forwarding) |
+| `tslink.serve.0=tun` | All traffic to the Service, see [layer 3 forwarding](#layer-3-forwarding) |
 
-tslink ignores a rule with an incorrect option or an unknown protocol, and logs a warning.
+A rule with an unknown protocol or an invalid option is ignored, with a warning.
 
 > [!NOTE]
-> Tailscale gets a Let's Encrypt certificate for each name that it serves HTTP on, also for plain HTTP. See
+> Tailscale gets a Let's Encrypt certificate for every name it serves HTTP on, plain HTTP included. See
 > [HTTPS certificates](../explanation/https-certificates.md).
 
 ### Layer 3 forwarding
 
-With `tun`, Tailscale forwards all traffic to the addresses of the container's Service to its Tailscale interface,
-whatever the port (`tailscale serve --tun`). The application must receive this traffic there, for example through
-firewall rules in the container: tslink adds none.
+With `tun`, Tailscale forwards all traffic to the addresses of the container's Service to the container's Tailscale
+interface, on any port, as `tailscale serve --tun` does. Your application has to receive it there, for example
+through firewall rules in the container; tslink adds none.
 
-- `tun` needs [`tslink.service`](#tslinkservice). Without one, tslink ignores the rule and logs this only at the debug
-  level (see [`TSLINK_LOG_LEVEL`](plugin-settings.md#tslink_log_level)).
-- `<port>` must be a number, but tslink ignores it, the target and the path.
-- Serve options are not allowed: tslink ignores a `tun` rule with an option and logs a warning.
+- `tun` needs [`tslink.service`](#tslinkservice). Without one, tslink ignores the rule, and logs that only at the
+  debug level (see [`TSLINK_LOG_LEVEL`](plugin-settings.md#tslink_log_level)).
+- `<port>` must be a number, but tslink ignores it, along with the target and the path.
+- Serve options aren't allowed: a `tun` rule with an option is ignored, with a warning.
 
 ### Serve options
 
-| Option | Protocols | Effect |
+| Option | Protocols | What it does |
 | --- | --- | --- |
-| `proxy-protocol=1` or `proxy-protocol=2` | `tcp`, `tls-terminated-tcp` | Tailscale sends a PROXY protocol header, version 1 or 2, with the tailnet address of the caller. The application must accept the header. |
-| `accept-app-caps=<cap>[,<cap>]` | `http`, `https` | Tailscale sends the grants of the caller for these [app capabilities](https://tailscale.com/kb/1537/grants-app-capabilities) as JSON in the `Tailscale-App-Capabilities` header. Each `<cap>` has the form `<domain>/<name>`. |
+| `proxy-protocol=1` or `proxy-protocol=2` | `tcp`, `tls-terminated-tcp` | Tailscale sends a PROXY protocol header, version 1 or 2, with the caller's tailnet address. Your application has to accept the header. |
+| `accept-app-caps=<cap>[,<cap>]` | `http`, `https` | Tailscale sends the caller's grants for these [app capabilities](https://tailscale.com/kb/1537/grants-app-capabilities) as JSON in the `Tailscale-App-Capabilities` header. Each `<cap>` has the form `<domain>/<name>`. |
 
-Example: `tslink.serve.5432=tcp:5432?proxy-protocol=2`.
+For example: `tslink.serve.5432=tcp:5432?proxy-protocol=2`.
 
 ### Caller identity
 
-| Protocol | What the application receives |
+| Protocol | What your application receives |
 | --- | --- |
-| `http`, `https` | The tailnet address of the caller in `X-Forwarded-For` |
-| `tcp`, `tls-terminated-tcp` | Connections from `127.0.0.1`. With `proxy-protocol`, the address of the caller in the PROXY header. |
+| `http`, `https` | The caller's tailnet address in `X-Forwarded-For` |
+| `tcp`, `tls-terminated-tcp` | Connections from `127.0.0.1`. With `proxy-protocol`, the caller's address in the PROXY header. |
 
-A tagged caller gets no `Tailscale-User-*` headers. To authorize a tagged caller, use `accept-app-caps`. Serve
-replaces a `Tailscale-App-Capabilities` header that the caller sends.
+A tagged caller gets no `Tailscale-User-*` headers; use `accept-app-caps` to authorize one. On requests that come
+through Serve, Serve replaces any `Tailscale-App-Capabilities` header the caller sends. A caller that reaches your
+application another way, such as over another Docker network, can set it freely, so trust the header only if the
+application listens on `127.0.0.1`.
 
 ## tslink.service
 
-Makes the container a backend of a Tailscale Service, for example `svc:my-api`. The name after `svc:` must be a DNS
-label in lower case: letters, digits and hyphens, at most 63 characters, without a hyphen at either end. Otherwise the
-container does not start Tailscale. The container must also have at least one `tslink.serve.<port>` label. The Service
-must exist in the tailnet, and the credential of the network must have tags. For several Services in one container,
-see [`tslink.service.<name>.serve.<port>`](#tslinkservicenameserveport).
+Makes the container a backend of a Tailscale Service, such as `svc:my-api`.
+
+| Value | Default |
+| --- | --- |
+| `svc:<name>` | None |
+
+The name after `svc:` must be a lowercase DNS label: letters, digits and hyphens, at most 63 characters, with no
+hyphen at either end. With any other name, the container's Tailscale doesn't start.
+
+The container also needs at least one [`tslink.serve.<port>`](#tslinkserveport) label, the Service has to exist in
+your tailnet, and the network's credential has to give the node tags. To back several Services from one container,
+use [`tslink.service.<name>.serve.<port>`](#tslinkservicenameserveport) instead.
 
 ## tslink.service.\<name\>.serve.\<port\>
 
-Makes the container a backend of the Tailscale Service `svc:<name>` and serves `<port>` on it. The value is that of
-[`tslink.serve.<port>`](#tslinkserveport). Use one label per port and Service:
+Makes the container a backend of the Tailscale Service `svc:<name>`, and serves `<port>` on it. Use one label per
+Service and port.
+
+| Value | Default |
+| --- | --- |
+| A serve rule, as for [`tslink.serve.<port>`](#tslinkserveport) | None |
 
 ```yaml
 labels:
@@ -109,28 +148,37 @@ labels:
   tslink.service.ai-metrics.serve.9090: tcp
 ```
 
-- `<name>` is the Service name without `svc:`, in lower case.
-- Each Service is advertised as soon as its own configuration is applied and, for HTTPS, its certificate exists; one
-  Service waiting does not hold back the others. The container's [readiness](readiness-endpoint.md) waits for all of
-  them.
-- On stop, all the container's Services are drained together.
-- `tslink.service` with `tslink.serve.<port>` is the form for one Service. A container with both forms, or with
-  `tslink.direct=true`, is refused: its status file gives the reason and the label.
-- Every node of a cluster must run tslink v0.4.0 or later before a stack uses these labels: older versions ignore
-  them and report the container ready while it serves nothing. Do not downgrade a node while such containers run on
-  it: an older version does not drain their Services.
+- `<name>` is the Service's name without `svc:`, in lowercase.
+- tslink advertises each Service as soon as its own configuration is applied and, for HTTPS, its certificate exists.
+  A Service that's still waiting doesn't hold back the others. The container's
+  [readiness](readiness-endpoint.md) waits for all of them.
+- When the container stops, all its Services are drained together.
+- A container can't mix this form with `tslink.service` and `tslink.serve.<port>`, or combine it with
+  `tslink.direct=true`. tslink refuses such a container, and its status file gives the reason and the label.
+- Every node of a cluster has to run tslink v0.3.5 or later before a stack uses these labels: older versions ignore
+  them, and report the container ready while it serves nothing. Don't downgrade a node while such containers run on
+  it, because an older version doesn't drain their Services.
 
 ## tslink.direct
 
-Also serves the `tslink.serve.<port>` rules on the hostname of the container.
+Serves the container's `tslink.serve.<port>` rules on its own hostname as well as on its Service.
 
-| Value | Effect |
+| Value | Default |
 | --- | --- |
-| `false`, `0` or `no` | Serves only on the Service |
-| Other values | Serves on the Service and on the hostname |
-| Not set | `true` without a Service, `false` with one |
+| `true` or `false` | `true` without a Service, `false` with one |
+
+`false`, `0` and `no` serve on the Service only. Any other value serves on both.
+
+It's off by default with a Service because serving on the hostname too gives every replica a certificate of its own,
+which uses up Let's Encrypt's [rate limits](../explanation/https-certificates.md#rate-limits).
 
 ## tslink.health
 
-Starts the readiness endpoint on this port of the loopback interface of the container. tslink ignores a value that is
-not a port from 1 to 65535, and logs a warning. See [Readiness endpoint](readiness-endpoint.md).
+Starts the [readiness endpoint](readiness-endpoint.md) on this port of the container's loopback interface, for use
+in a Docker healthcheck.
+
+| Value | Default |
+| --- | --- |
+| A port, 1 to 65535 | None |
+
+A value that isn't a port from 1 to 65535 is ignored, with a warning.

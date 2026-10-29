@@ -1,0 +1,96 @@
+name: Documentation site
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "website/**"
+      # check-links --source checks every tracked Markdown file's links.
+      - "**/*.md"
+      - ".github/workflows/pages.yml"
+  pull_request:
+    paths:
+      - "docs/**"
+      - "website/**"
+      # check-links --source checks every tracked Markdown file's links.
+      - "**/*.md"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+# Read-only by default: the build runs pnpm install and the Astro build, and must not
+# hold a scope that can publish. deploy takes the write scopes on its own.
+permissions:
+  contents: read
+
+# A newer push to a pull request replaces its build; a deploy from main runs to the
+# end, so the site is never left half-published.
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: website
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # Every page's modified date comes from the last commit that touched
+          # its file. A shallow clone would date every page from the deploy, so
+          # the build refuses one.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: website/.nvmrc
+
+      # From packageManager, so the version lives in one place and pnpm is the
+      # one that wrote the lockfile.
+      - name: Install pnpm and the dependencies
+        run: |
+          npm install -g "pnpm@$(node -p 'require("./package.json").packageManager.split("@")[1]')"
+          pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: |
+          pnpm lint
+          pnpm fmt:check
+          pnpm check
+
+      - name: Test the link checker
+        run: pnpm test:links
+
+      - name: Build
+        run: pnpm build
+
+      - name: Check links
+        run: |
+          pnpm check-links
+          pnpm check-links --source
+
+      - if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: website/dist
+
+  deploy:
+    name: Deploy
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: build
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

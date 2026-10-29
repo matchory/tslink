@@ -1,36 +1,49 @@
+---
+title: Getting started
+description: Install tslink on one host, put an nginx container on your tailnet as a node of its own, and open it over HTTPS.
+category: tutorial
+tags: [installation, quickstart, https]
+---
+
 # Getting started
 
-In this tutorial, you install tslink on one host. Then you connect an nginx container to your tailnet, and open it
-over HTTPS from another device in the tailnet.
+You'll install the plugin, run nginx as a node of its own in your tailnet, and open it from your laptop at
+`https://web.<tailnet>.ts.net`, with a valid certificate.
 
 ## What you need
 
 - A Linux host with Docker, or a Mac with OrbStack or Docker Desktop.
-- A Tailscale tailnet, with HTTPS enabled in the DNS settings of the admin console.
-- An auth key that is ephemeral, reusable and pre-approved. Create it in the admin console under
-  [Settings → Keys](https://login.tailscale.com/admin/settings/keys).
-- A second device in the same tailnet, for example your laptop.
+- A tailnet with HTTPS enabled, in the DNS settings of the admin console.
+- An auth key that's ephemeral, reusable and pre-approved, from
+  [Settings → Keys](https://login.tailscale.com/admin/settings/keys) in the admin console. Ephemeral means the node
+  goes away when its container does, so trying things out leaves nothing behind.
+- A second device in the same tailnet to test from, such as your laptop.
 
 ## 1. Install the plugin
 
-1. Install the plugin. On an ARM host or an Apple silicon Mac, replace `amd64` with `arm64`:
+Install the plugin from the GitHub container registry. On an ARM host or an Apple silicon Mac, replace `amd64` with
+`arm64`:
 
-   ```bash
-   docker plugin install --alias tslink --grant-all-permissions \
-     ghcr.io/matchory/tslink:latest-amd64
-   ```
+```bash
+docker plugin install --alias tslink --grant-all-permissions \
+  ghcr.io/matchory/tslink:latest-amd64
+```
 
-2. Make sure that the plugin is enabled:
+`--grant-all-permissions` accepts everything the plugin asks for: the host's network, `CAP_NET_ADMIN` and
+`CAP_SYS_ADMIN`, access to all devices, and mounts of the host's `/var/lib`, `/run` and Docker socket. It needs them
+to create network interfaces and firewall rules on the host, to enter containers' network namespaces, to keep its
+data directory, and to read containers' labels. `docker plugin install` lists them before it asks, if you leave the
+flag out. Check that Docker enabled it:
 
-   ```bash
-   docker plugin ls
-   ```
+```bash
+docker plugin ls
+```
 
-   The output shows `tslink:latest` with `ENABLED` set to `true`.
+The list shows `tslink:latest`, with `ENABLED` set to `true`.
 
 ## 2. Create a network
 
-Create a tslink network with your auth key:
+A tslink network is where the credential lives: every container you attach to it joins your tailnet with it.
 
 ```bash
 docker network create --driver tslink:latest \
@@ -39,12 +52,12 @@ docker network create --driver tslink:latest \
   my-tailnet
 ```
 
-The option `tslink.ephemeral=true` tells tslink that the key creates ephemeral nodes. tslink then removes the node
-when the container stops.
+`tslink.ephemeral=true` tells tslink that the key creates ephemeral nodes, so it logs the node out as soon as the
+container stops instead of leaving it offline in your tailnet.
 
 ## 3. Run a container
 
-Start nginx on the network. The labels give the node the name `web`, and serve port 80 of nginx as HTTPS on port 443:
+Start nginx on the network. The two labels name the node `web`, and serve nginx's port 80 as HTTPS on port 443:
 
 ```bash
 docker run -d --name web --network my-tailnet \
@@ -53,40 +66,41 @@ docker run -d --name web --network my-tailnet \
   nginx:alpine
 ```
 
-Some seconds later, the node `web` is in the Machines list of the admin console.
+After a few seconds, `web` appears in the Machines list of the admin console: a node of its own, with its own tailnet
+address, not the host's.
 
-## 4. Open the container from the tailnet
+## 4. Open it from your tailnet
 
-On your second device, open the container. Replace `<tailnet>` with the name of your tailnet, for example
-`tail1234`:
+On your second device, replace `<tailnet>` with your tailnet's name, such as `tail1234`, and open the page:
 
 ```bash
 curl https://web.<tailnet>.ts.net
 ```
 
-The output is the welcome page of nginx. The first request can take some seconds, because Tailscale gets a
-certificate for the name.
+You get nginx's welcome page. The first request can take a few seconds, while Tailscale gets a certificate for the
+name from Let's Encrypt.
 
 ## 5. Clean up
 
-Stop the container, and remove the network:
+Remove the container and the network:
 
 ```bash
 docker rm -f web
 docker network rm my-tailnet
 ```
 
-tslink logs the node out. The node disappears from the admin console.
+tslink logs the node out, and it disappears from the admin console.
 
-## What happened
+## What just happened
 
-tslink started a tailscaled in the network namespace of the container. Thus the container was a node in the tailnet
-with its own name and address, separate from the host. Tailscale Serve received HTTPS on port 443 and forwarded it to
-nginx. For details, see [Architecture](explanation/architecture.md).
+When the container started, tslink ran a tailscaled inside the container's network namespace, so the container
+itself became a node in your tailnet, with its own name and address. Tailscale Serve, inside that same node,
+answered HTTPS on port 443 and forwarded each request to nginx on port 80. The host's own Tailscale, if it has one,
+wasn't involved. [Architecture](explanation/architecture.md) explains the details.
 
 ## Next steps
 
-- [Expose a service](guides/expose-a-service.md): use a Tailscale Service with more than one container.
-- [Deploy on Swarm](guides/deploy-on-swarm.md): run stacks with their own tags.
-- [Provision a host](guides/provision-a-node.md): prepare a production host.
-- [Container labels](reference/container-labels.md): all labels.
+- [Expose a service](guides/expose-a-service.md): put several containers behind one Tailscale Service.
+- [Deploy on Swarm](guides/deploy-on-swarm.md): run stacks, each with its own tags.
+- [Provision a host](guides/provision-a-node.md): get a host ready for production.
+- [Container labels](reference/container-labels.md): everything a container can configure.

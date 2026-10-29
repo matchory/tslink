@@ -1,58 +1,64 @@
+---
+title: Install and upgrade tslink
+description: Install the plugin on a host, pick the right image tag, upgrade it safely, and change its settings.
+category: guide
+tags: [installation, upgrade, plugin, settings]
+---
+
 # Install and upgrade tslink
 
-## Goal
+tslink is a Docker managed plugin, so Docker installs, upgrades and configures it. This guide covers all three.
 
-Install the tslink plugin on a host, upgrade it, and change its settings.
-
-## Prerequisites
+## Before you start
 
 - A Linux host with Docker Engine 19.03 or later, or Docker in a Linux VM such as OrbStack or Docker Desktop.
 - Root access on the host.
 - Access to `ghcr.io`, or to a registry that mirrors `ghcr.io/matchory/tslink`.
 
-## Steps
+## Install
 
-1. Find the architecture of the host:
+Docker plugins have no multi-architecture images, so every tag names its architecture. Check yours:
 
-   ```bash
-   uname -m
-   ```
+```bash
+uname -m
+```
 
-   If the output is `x86_64`, use `amd64`. If the output is `aarch64` or `arm64`, use `arm64`.
+`x86_64` means `amd64`; `aarch64` or `arm64` means `arm64`. Then pick a tag:
 
-2. Select an image tag. Docker plugins have no multi-architecture images, so each tag contains the architecture:
+| Tag | What it is |
+| --- | --- |
+| `<version>-<arch>`, such as `v1.2.0-amd64` | A release. Use this in production, so every host runs the same version. |
+| `latest-<arch>` | The newest release |
+| `main-<arch>` | The current `main` branch |
 
-   | Tag | Content |
-   | --- | --- |
-   | `<version>-<arch>`, for example `v1.2.0-amd64` | A release. Use this tag in production. |
-   | `latest-<arch>` | The newest release |
-   | `main-<arch>` | The `main` branch |
+Install the plugin under the alias `tslink`:
 
-3. Install the plugin with the alias `tslink`:
+```bash
+docker plugin install --alias tslink --grant-all-permissions \
+  ghcr.io/matchory/tslink:<version>-amd64
+```
 
-   ```bash
-   docker plugin install --alias tslink --grant-all-permissions \
-     ghcr.io/matchory/tslink:<version>-amd64
-   ```
+Docker enables the plugin once it's installed, and the plugin creates its data directory,
+`/var/lib/docker-plugins/tailscale`, as it starts. Versions up to v0.3.4 don't enable without that directory: for
+them, create it first with `sudo install -d -m 0755 /var/lib/docker-plugins/tailscale`.
 
-   On an ARM host, use `<version>-arm64`. Docker enables the plugin when the installation is complete. The plugin
-   creates its data directory, `/var/lib/docker-plugins/tailscale`, when it starts. Versions up to v0.3.4 do not
-   enable without it: for them, create it first with `sudo install -d -m 0755 /var/lib/docker-plugins/tailscale`.
+> [!NOTE]
+> Docker stores the alias with the tag `latest`, so networks and stack files always use the driver name
+> `tslink:latest`, whatever version and architecture you installed. Plugin commands accept plain `tslink`, but a
+> network's driver name has to be complete.
 
-   > [!NOTE]
-   > Docker stores the alias with the tag `latest`. Thus networks and stack files use the driver name
-   > `tslink:latest` for all versions and architectures. Plugin commands accept `tslink`, but the driver name of a
-   > network must be complete.
+## Upgrade
 
-### Upgrade
+An upgrade restarts every tailscaled on the host. Containers keep their nodes, but their tailnet traffic stops for a
+few seconds while that happens.
 
-1. If possible, move the containers off the host. On a Swarm, drain the node:
+1. If you can, move the containers off the host first. On a Swarm, drain the node:
 
    ```bash
    docker node update --availability drain <node>
    ```
 
-2. Disable the plugin, upgrade it and enable it again:
+2. Disable the plugin, upgrade it, and enable it again:
 
    ```bash
    docker plugin disable -f tslink
@@ -61,26 +67,16 @@ Install the tslink plugin on a host, upgrade it, and change its settings.
    docker plugin enable tslink
    ```
 
-   Without `--skip-remote-check`, `docker plugin upgrade` asks whether to upgrade to an image other than the
-   installed one, which a new version always is. Without a terminal, as in configuration management, CI or a script
-   piped to `ssh`, it reads the answer from standard input, takes an empty one as "no", and exits with status 0
-   having changed nothing. In a script piped to it, it reads the script's next line as its answer, so the commands
-   after it do not run.
+   Keep `--skip-remote-check`. Without it, `docker plugin upgrade` asks whether to switch to a different image, which
+   a new version always is. Without a terminal, as in configuration management, CI or a script piped to `ssh`, it
+   reads the answer from standard input, treats an empty one as "no", and exits with status 0 having changed
+   nothing. In a script piped to it, it even takes the script's next line as its answer, so the commands after it
+   never run.
 
-   `docker plugin upgrade` keeps the plugin's settings but resets the source of its mounts to their defaults. If you set
-   [`shared.source`](../reference/plugin-settings.md#sharedsource), set it again before you enable the plugin, as
-   above. Otherwise leave out that command. Without it, the host uses certificates of its own and gets them again from
-   Let's Encrypt.
-
-   On an ARM host, use `<version>-arm64`. Containers keep their nodes. Their tailnet traffic stops for some seconds
-   while each tailscaled restarts.
-
-   > [!NOTE]
-   > On a test host that was not drained, these commands brought its Swarm tasks back within 4 to 11 seconds,
-   > and the containers kept their nodes. An upgrade from v0.3.0 to v0.3.1 on a seven-node Swarm, one host at a
-   > time and without draining, brought each host's tasks back within 1 to 5 seconds, and the containers kept their
-   > nodes. Before you upgrade production hosts, upgrade a host that serves nothing important, and check that its
-   > containers keep their nodes.
+   `docker plugin upgrade` keeps the plugin's settings, but resets the sources of its mounts to their defaults. If
+   you set [`shared.source`](../reference/plugin-settings.md#sharedsource), set it again before you enable the
+   plugin, as above; otherwise leave that line out. If you forget, the host falls back to certificates of its own and
+   gets them from Let's Encrypt again.
 
 3. On a Swarm, make the node active again:
 
@@ -88,11 +84,18 @@ Install the tslink plugin on a host, upgrade it, and change its settings.
    docker node update --availability active <node>
    ```
 
-To upgrade Tailscale, upgrade tslink. See [Binaries](../explanation/architecture.md#binaries).
+> [!NOTE]
+> On a test host that wasn't drained, these commands brought its Swarm tasks back within 4 to 11 seconds, and the
+> containers kept their nodes. Upgrading a seven-node Swarm from v0.3.0 to v0.3.1, one host at a time and without
+> draining, brought each host's tasks back within 1 to 5 seconds. Still, upgrade a host that serves nothing important
+> first, and check that its containers keep their nodes, before you move on to production.
 
-### Change a setting
+Tailscale comes with the plugin, so to upgrade Tailscale, upgrade tslink. See
+[binaries](../explanation/architecture.md#binaries).
 
-Disable the plugin, set the values and enable the plugin. `docker plugin set` accepts more than one `KEY=VALUE`:
+## Change a setting
+
+Disable the plugin, set the values, and enable it again. `docker plugin set` takes several `KEY=VALUE` pairs at once:
 
 ```bash
 docker plugin disable tslink
@@ -100,21 +103,19 @@ docker plugin set tslink TS_AUTHKEY=tskey-auth-…
 docker plugin enable tslink
 ```
 
-If containers use the plugin, `docker plugin disable` fails. Stop the containers first, or use
-`docker plugin disable -f`.
+`docker plugin disable` refuses while containers use the plugin. Stop them first, or use `docker plugin disable -f`.
+[Plugin settings](../reference/plugin-settings.md) lists every setting.
 
-For all settings, see [Plugin settings](../reference/plugin-settings.md).
-
-## Verify
+## Check that it works
 
 ```bash
 docker plugin ls --filter enabled=true
 ```
 
-The output contains `tslink:latest`, with `ENABLED` set to `true`.
+The list contains `tslink:latest`, with `ENABLED` set to `true`.
 
 ## Next steps
 
-- [Getting started](../getting-started.md): connect a first container to the tailnet.
-- [Provision a host](provision-a-node.md): prepare a production host.
-- [Update without downtime](zero-downtime-updates.md): upgrade a host while Services keep working.
+- [Getting started](../getting-started.md): put a first container on your tailnet.
+- [Provision a host](provision-a-node.md): get a host ready for production.
+- [Update without downtime](zero-downtime-updates.md): upgrade hosts while Services keep answering.

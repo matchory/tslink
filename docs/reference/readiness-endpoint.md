@@ -1,8 +1,15 @@
+---
+title: Readiness endpoint
+description: The endpoint a Docker healthcheck asks whether a container's node and Services are ready to take traffic.
+category: reference
+tags: [readiness, healthcheck, services, swarm]
+---
+
 # Readiness endpoint
 
-The readiness endpoint tells a Docker healthcheck when the node of a container is ready. The label
-`tslink.health=<port>` starts it on `127.0.0.1:<port>` in the container. Only the processes of the container can
-reach it.
+The readiness endpoint tells a Docker healthcheck when a container's node, and every Service it backs, is ready to
+take traffic. The label [`tslink.health=<port>`](container-labels.md#tslinkhealth) starts it on `127.0.0.1:<port>`
+inside the container, where only the container's own processes can reach it.
 
 ## Request
 
@@ -10,11 +17,11 @@ reach it.
 | --- | --- |
 | `GET /ready` | A status code and a JSON body |
 | `HEAD /ready` | The status code only |
-| Other methods | `405 Method Not Allowed` |
+| Any other method | `405 Method Not Allowed` |
 
 ## Response
 
-The status code is `200` if the state is `ready`, and `503` for all other states. The body is a JSON object:
+The status code is `200` when the state is `ready`, and `503` for every other state. The body is a JSON object:
 
 ```json
 {"state": "certificate-pending", "services": {"svc:a": "ready", "svc:b": "certificate-pending"}}
@@ -23,57 +30,55 @@ The status code is `200` if the state is `ready`, and `503` for all other states
 | Field | Value |
 | --- | --- |
 | `state` | One of the [states](#states): the least ready of the container's Services. It [latches](#latching) at `ready`. |
-| `services` | The current state of each Service, also after `state` latched: a Service that lost its approval shows here while `state` stays `ready`. Once latched, the answer does not wait for tailscaled: it shows the states from the previous check, a few seconds old at most when the container asks regularly. The field is absent without a Service. |
-| `service` | The name of the Service when the container has exactly one. The field is absent otherwise. |
+| `services` | The current state of each Service, even after `state` latched: a Service that lost its approval shows up here while `state` stays `ready`. Once latched, the answer doesn't wait for tailscaled; it shows the states from the previous check, a few seconds old at most when the container asks regularly. Absent without a Service. |
+| `service` | The Service's name, when the container has exactly one. Absent otherwise. |
 
-A container with several Services is ready only when all are. One Service whose certificate is stuck or that waits
-for approval keeps the container unready, so a healthcheck on `/ready` fails the whole task, its working Services
-included. This is deliberate: an update must not replace working tasks with tasks that serve less. Deploy Services
-that should fail independently as separate containers.
+A container with several Services is ready only once all of them are. One Service whose certificate is stuck, or
+that waits for approval, keeps the container unready, so a healthcheck on `/ready` fails the whole task, its working
+Services included. That's deliberate: an update must not replace working tasks with ones that serve less. Deploy
+Services you want to fail independently as separate containers.
 
-tslink keeps a result for 2 seconds. A request in this period gets the same result.
+tslink keeps a result for 2 seconds; requests within that window get the same answer.
 
 ## States
 
 | State | Meaning |
 | --- | --- |
-| `starting` | tailscaled is not running yet. |
-| `failed` | tailscaled cannot start, and tslink does not try again. |
-| `logged-out` | The node must log in. |
-| `serving-pending` | The `tslink.serve.<port>` rules are not applied yet. |
-| `certificate-pending` | The Service waits for its HTTPS certificate. |
-| `ports-uncovered` | The Service defines ports that the container does not serve. The control server sends no traffic to such a backend. The status file lists the ports. |
-| `awaiting-approval` | The control server has not approved the container as a backend of the Service. |
-| `awaiting-control` | tslink advertised the Service, and the control server has not fetched the Service list of the node since. Until it does, it may send no traffic to the container. |
+| `starting` | tailscaled isn't running yet. |
+| `failed` | tailscaled can't start, and tslink won't retry. |
+| `logged-out` | The node needs to log in. |
+| `serving-pending` | The `tslink.serve.<port>` rules aren't applied yet. |
+| `certificate-pending` | The Service is waiting for its HTTPS certificate. |
+| `ports-uncovered` | The Service defines ports the container doesn't serve, so the control server sends it no traffic. The status file lists the ports. |
+| `awaiting-approval` | The control server hasn't approved the container as a backend of the Service. |
+| `awaiting-control` | tslink advertised the Service, and the control server hasn't fetched the node's Service list since. Until it does, it can send the container no traffic. |
 | `drained` | The backend is drained, or the container is leaving the network. |
-| `ready` | All conditions for ready are true. |
+| `ready` | Every condition for ready holds. |
 
 ## Conditions for ready
 
-The state is `ready` when all these conditions are true:
+The state is `ready` when all of these hold:
 
 1. The node is running.
 2. tailscaled has applied the `tslink.serve.<port>` rules.
-3. For each Service: the container serves every port that the Service defines, if tslink knows these ports.
-4. For each Service: the control server has approved the container as a backend of the Service.
-5. For each Service: the control server has fetched the Service list of the node since tslink last advertised the
+3. For each Service: the container serves every port the Service defines, if tslink knows those ports.
+4. For each Service: the control server has approved the container as its backend.
+5. For each Service: the control server has fetched the node's Service list since tslink last advertised the
    Service.
 
-tslink knows the ports of a Service from the capabilities that the control server gives the node. Otherwise, if the
-credential is an OAuth client with the scope `services:read`, tslink reads them from the Tailscale API. If neither
-source has them, or the Service does not validate its ports (`do-not-validate`), tslink does not check them. See
-[Credentials](credentials.md#optional-api-scopes).
+tslink learns a Service's ports from the capabilities the control server gives the node, or else, when the credential
+is an OAuth client with the scope `services:read`, from Tailscale's API. If neither has them, or the Service doesn't
+validate its ports (`do-not-validate`), tslink doesn't check them. See
+[optional API scopes](credentials.md#optional-api-scopes).
 
 ## Latching
 
-When the state of a container is `ready` once, it stays `ready` until one of these events:
+Once a container's state has been `ready`, it stays `ready` until tslink drains the container's backend or the
+container leaves the network.
 
-- tslink drains the backend of the container.
-- The container leaves the network.
+tslink records the latch in `status/<endpoint>.ready` in the data directory, so it survives a plugin restart. So the
+endpoint decides when a container first becomes healthy, but it isn't a liveness check: a container doesn't turn
+unhealthy when it loses its connection to the control server, or while the plugin restarts.
 
-tslink records the latch in `status/<endpoint>.ready` in the data directory, so the latch stays after a plugin
-restart. Thus the endpoint controls when a container becomes healthy, but it is not a liveness check. A container
-does not become unhealthy when it loses its connection to the control server, or during a plugin restart.
-
-During a plugin restart, the endpoint does not answer for some seconds. For a healthcheck that allows for this, see
-[Expose a service](../guides/expose-a-service.md).
+While the plugin restarts, the endpoint doesn't answer for a few seconds. [Expose a
+service](../guides/expose-a-service.md#make-the-containers-its-backends) shows a healthcheck that allows for that.

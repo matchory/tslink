@@ -10,7 +10,7 @@ require (
 	github.com/moby/moby/client v0.6.2
 	github.com/vishvananda/netlink v1.3.1
 	github.com/vishvananda/netns v0.0.5
-	golang.org/x/net v0.61.0
+	golang.org/x/net v0.62.0
 	golang.org/x/sys v0.49.0
 	tailscale.com v1.104.4
 	tailscale.com/client/tailscale/v2 v2.12.0

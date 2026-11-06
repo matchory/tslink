@@ -1,0 +1,83 @@
+// Renovate is the only dependency updater in this repository (no Dependabot
+// version updates). It runs as Mend's hosted Renovate app, installed org-wide.
+// GitHub's Dependabot *alerts* stay on, since Renovate reads them to open
+// security PRs.
+//
+// The rules follow the matchory supply chain baseline
+// (matchory/.github, supply-chain/STANDARD.md):
+//   - cooldown: a release must be 3 days old before it is proposed
+//     (security updates are not delayed)
+//   - minor + patch updates are grouped per manager; npm splits them into
+//     production and development, so a runtime bump is reviewed apart from a
+//     tooling bump
+//   - majors are never grouped: one PR per dependency
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+  // best-practices pins GitHub Actions and container images by digest.
+  extends: ["config:best-practices"],
+  timezone: "Europe/Berlin",
+  schedule: ["* 5-9 * * 1"],
+  minimumReleaseAge: "3 days",
+  internalChecksFilter: "strict",
+  vulnerabilityAlerts: {
+    labels: ["dependencies", "security"],
+    schedule: ["at any time"],
+    minimumReleaseAge: null,
+  },
+  labels: ["dependencies"],
+  dependencyDashboardTitle: "Dependency Updates",
+  postUpdateOptions: ["gomodTidy"],
+
+  customManagers: [
+    {
+      // Container images pinned by tag and digest in shell variables, e.g.
+      //   HEADSCALE_IMAGE=docker.io/headscale/headscale:0.29.4@sha256:…
+      // in test/integration/run.sh. Renovate updates tag and digest together.
+      // Renovate applies the g and m flags itself; inline flags are invalid.
+      customType: "regex",
+      description: "Digest-pinned images in shell scripts",
+      managerFilePatterns: ["/\\.(sh|bash)$/"],
+      matchStrings: [
+        '^\\s*(export\\s+)?[A-Z][A-Z0-9_]*="?(?<depName>[a-z0-9][a-z0-9./_-]*):(?<currentValue>[\\w.-]+)@(?<currentDigest>sha256:[a-f0-9]{64})"?\\s*$',
+      ],
+      datasourceTemplate: "docker",
+    },
+  ],
+
+  packageRules: [
+    {
+      description: "Group minor and patch updates per manager; majors stay separate PRs",
+      matchUpdateTypes: ["minor", "patch", "digest"],
+      groupName: "{{manager}} minor and patch",
+      groupSlug: "{{manager}}-minor-patch",
+    },
+    {
+      description: "npm: production dependencies apart from development tooling",
+      matchManagers: ["npm"],
+      matchDepTypes: ["dependencies"],
+      matchUpdateTypes: ["minor", "patch"],
+      groupName: "npm production minor and patch",
+      groupSlug: "npm-production-minor-patch",
+    },
+    {
+      matchManagers: ["npm"],
+      matchDepTypes: ["devDependencies"],
+      matchUpdateTypes: ["minor", "patch"],
+      groupName: "npm development minor and patch",
+      groupSlug: "npm-development-minor-patch",
+    },
+    {
+      description: "Keep the go directive in go.mod current, not just the modules",
+      matchDatasources: ["golang-version"],
+      rangeStrategy: "bump",
+    },
+    {
+      description: [
+        "The upgrade test in test/integration/run.sh deliberately starts from an old",
+        "tslink release (v0.3.4). Never bump those pins.",
+      ],
+      matchPackageNames: ["ghcr.io/matchory/tslink"],
+      enabled: false,
+    },
+  ],
+}
